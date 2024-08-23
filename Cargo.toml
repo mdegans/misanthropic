@@ -1,0 +1,65 @@
+[package]
+name = "misanthropic"
+version = "0.1.0"
+edition = "2021"
+authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
+description = "An async, ergonomic, client for Anthropic's Messages API"
+homepage = "https://github.com/mdegans/misanthropic"
+repository = "https://github.com/mdegans/misanthropic"
+readme = "README.md"
+keywords = ["anthropic", "messages", "client", "async", "stream"]
+categories = [
+    "api-bindings",
+    "asynchronous",
+    "network-programming",
+    "text-processing",
+    "web-programming::http-client",
+]
+license = "MIT"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+base64 = "0.22"
+derive_more = { version = "1", features = ["from", "is_variant", "display"] }
+eventsource-stream = "0.2"
+futures = "0.3"
+image = { version = "0.25", optional = true }
+log = { version = "0.4", optional = true }
+memsecurity = "3.5"
+# rustls because I am sick of getting Dependabot alerts for OpenSSL.
+reqwest = { version = "0.12", features = ["json", "stream"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+
+[dev-dependencies]
+clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[features]
+# rustls because I am sick of getting Dependabot alerts for OpenSSL.
+default = ["rustls-tls"]
+# Image crate support. Note that images are supported without this feature but
+# you must handle encoding/decoding yourself. This is mostly for interop with
+# the `image` crate.
+image = ["dep:image"]
+# A beta has been enabled. It is not necessary to set this manually. Only one
+# beta can be enabled at a time (for example, `prompt-caching`).
+beta = []
+# Use the image crate to support JPEG images.
+jpeg = ["image", "image/jpeg"]
+# Use the image crate to support PNG images.
+png = ["image", "image/png"]
+# Use the image crate to support GIF images.
+gif = ["image", "image/gif"]
+# Use the image crate to support WEBP images.
+webp = ["image", "image/webp"]
+# Enable prompt caching (recommended, however limits model choices)
+prompt-caching = ["beta"]
+# Enable logging
+log = ["dep:log"]
+# Use rustls instead of the system SSL, such as OpenSSL.
+rustls-tls = ["reqwest/rustls-tls"]
