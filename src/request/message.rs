@@ -65,9 +65,11 @@ pub enum Content {
 }
 
 impl Content {
-    /// Length of the content in bytes, not including metadata like the
-    /// [`MediaType`] for images, the [`CacheControl`] for text, or any
-    /// separators or headers.
+    /// Length of the visible content in bytes, not including metadata like the
+    /// [`MediaType`] for images, the [`CacheControl`] for text, [`Tool`]
+    /// calls, results, or any separators or headers.
+    ///
+    /// [`Tool`]: crate::tool::Tool
     pub fn len(&self) -> usize {
         match self {
             Self::SinglePart(string) => string.len(),
@@ -138,6 +140,33 @@ pub enum Part {
         /// An base64 encoded image.
         image: Image,
     },
+    /// [`Tool`] call. This should only be used with the [`Assistant`] role.
+    ///
+    /// [`Assistant`]: Role::Assistant
+    /// [`Tool`]: crate::Tool
+    #[display("")]
+    ToolUse {
+        /// Unique Id for this tool call.
+        id: String,
+        /// Name of the tool.
+        name: String,
+        /// Input for the tool.
+        input: serde_json::Value,
+    },
+    /// Result of a [`Tool`] call. This should only be used with the [`User`]
+    /// role.
+    ///
+    /// [`User`]: Role::User
+    /// [`Tool`]: crate::Tool
+    #[display("")]
+    ToolResult {
+        /// Unique Id for this tool call.
+        tool_use_id: String,
+        /// Output of the tool.
+        content: serde_json::Value,
+        /// Whether the tool call result was an error.
+        is_error: bool,
+    },
 }
 
 impl Part {
@@ -149,6 +178,7 @@ impl Part {
             Self::Image { image } => match image {
                 Image::Base64 { data, .. } => data.len(),
             },
+            _ => 0,
         }
     }
 

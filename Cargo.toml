@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
