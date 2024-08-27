@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Choice {
-    /// Model which tool to use, if any.
+    /// Model chooses which tool to use, or no tool at all.
     Auto,
     /// Model must use at least one of the tools provided.
     Any,
@@ -24,14 +24,14 @@ pub enum Choice {
 #[derive(Serialize, Deserialize)]
 pub struct Tool {
     /// Name of the tool.
-    name: String,
+    pub name: String,
     /// Description of the tool. The model will use this as documentation.
-    description: String,
+    pub description: String,
     /// Input schema for the tool. See [tool use guide] for more information.
     /// The schema is not validated by this crate but should conform to the
     /// [JSON Schema] specification.
     ///
     /// [tool use guide]: <https://docs.anthropic.com/en/docs/build-with-claude/tool-use>
     /// [JSON Schema]: <https://json-schema.org/>
-    input_schema: serde_json::Value,
+    pub input_schema: serde_json::Value,
 }
