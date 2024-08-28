@@ -188,6 +188,16 @@ impl Part {
     }
 }
 
+impl From<&str> for Part {
+    fn from(text: &str) -> Self {
+        Self::Text {
+            text: text.to_string(),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+}
+
 /// Cache control for prompt caching.
 #[cfg(feature = "prompt-caching")]
 #[derive(Default, Debug, Serialize, Deserialize)]
