@@ -111,9 +111,7 @@ impl Content {
 /// A [`Content`] [`Part`] of a [`Message`], either [`Text`] or [`Image`].
 ///
 /// [`Text`]: Part::Text
-#[derive(
-    Debug, Serialize, Deserialize, derive_more::From, derive_more::Display,
-)]
+#[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 pub enum Part {
@@ -122,7 +120,6 @@ pub enum Part {
     #[display("{}", text)]
     Text {
         /// The actual text content.
-        #[from]
         text: String,
         /// Use prompt caching. The [`text`] needs to be at least 1024 tokens
         /// for Sonnet 3.5 and Opus 3.0 or 2048 for Haiku 3.0 or this will be
@@ -135,7 +132,6 @@ pub enum Part {
     },
     /// Image content.
     Image {
-        #[from]
         #[serde(rename = "source")]
         /// An base64 encoded image.
         image: Image,
@@ -195,6 +191,22 @@ impl From<&str> for Part {
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
+    }
+}
+
+impl From<String> for Part {
+    fn from(text: String) -> Self {
+        Self::Text {
+            text,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+}
+
+impl From<Image> for Part {
+    fn from(image: Image) -> Self {
+        Self::Image { image }
     }
 }
 
