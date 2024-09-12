@@ -54,7 +54,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 content: args.prompt.into(),
             }],
             max_tokens: 1000.try_into().unwrap(),
-            metadata: serde_json::Value::Null,
+            metadata: serde_json::Map::new(),
             stop_sequences: None,
             stream: None,
             system: None,

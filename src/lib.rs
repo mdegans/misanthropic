@@ -32,6 +32,10 @@ pub use tool::Tool;
 pub mod response;
 pub use response::Response;
 
+#[cfg(feature = "markdown")]
+/// Markdown utilities for parsing and rendering.
+pub mod markdown;
+
 /// Re-exports of commonly used crates to avoid version conflicts and reduce
 /// dependency bloat.
 pub mod exports {
@@ -43,6 +47,10 @@ pub mod exports {
     #[cfg(feature = "log")]
     pub use log;
     pub use memsecurity;
+    #[cfg(feature = "markdown")]
+    pub use pulldown_cmark;
+    #[cfg(feature = "markdown")]
+    pub use pulldown_cmark_to_cmark;
     pub use reqwest;
     pub use serde;
     pub use serde_json;

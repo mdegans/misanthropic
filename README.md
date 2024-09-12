@@ -1,5 +1,8 @@
 # `misanthropic`
 
+![Build Status](https://github.com/mdegans/misanthropic/actions/workflows/tests.yaml/badge.svg)
+[![codecov](https://codecov.io/gh/mdegans/misanthropic/branch/main/graph/badge.svg)](https://codecov.io/gh/your-username/your-repo)
+
 Is an unofficial simple, ergonomic, client for the Anthropic Messages API.
 
 ## Usage
