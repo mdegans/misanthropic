@@ -56,16 +56,17 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --verbose
 
+      # This should only happen on push to main. PRs should not upload coverage.
       - name: Install tarpaulin
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         run: cargo install cargo-tarpaulin
 
       - name: Run tarpaulin
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         run: cargo tarpaulin --out Xml --all-features
 
       - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         uses: codecov/codecov-action@v2
         with:
           files: ./cobertura.xml
