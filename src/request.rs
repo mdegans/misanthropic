@@ -511,17 +511,42 @@ impl Request {
 
 #[cfg(feature = "markdown")]
 impl crate::markdown::ToMarkdown for Request {
+    /// Format the [`Request`] chat as markdown in OpenAI style. H3 headings are
+    /// used for "System", "Tool", "User", and "Assistant" messages even though
+    /// technically there are only [`User`] and [`Assistant`] [`Role`]s.
+    ///
+    /// [`User`]: message::Role::User
+    /// [`Assistant`]: message::Role::Assistant
+    /// [`Role`]: message::Role
     fn markdown_events_custom<'a>(
         &'a self,
         options: &'a crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        let system = if let Some(system) = self
-            .system
-            .as_ref()
-            .map(|s| s.markdown_events_custom(options))
+        use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+
+        // TODO: Add the title if there is metadata for it. Also add a metadata
+        // option to Options to include arbitrary metadata. In my use case I am
+        // feeding the markdown to another model that will make use of this data
+        // so it does need to be included.
+
+        let system: Box<dyn Iterator<Item = Event<'_>>> = if let Some(system) =
+            self.system
+                .as_ref()
+                .map(|s| s.markdown_events_custom(options))
         {
             if options.system {
-                system
+                let header = [
+                    Event::Start(Tag::Heading {
+                        level: HeadingLevel::H3,
+                        id: None,
+                        classes: vec![],
+                        attrs: vec![],
+                    }),
+                    Event::Text("System".into()),
+                    Event::End(TagEnd::Heading(HeadingLevel::H3)),
+                ];
+
+                Box::new(header.into_iter().chain(system))
             } else {
                 Box::new(std::iter::empty())
             }
@@ -809,5 +834,145 @@ mod tests {
             "Ping a server. Part deux."
         );
         assert_eq!(request.tools.as_ref().unwrap()[0].input_schema, schema);
+
+        // Test with a fallible tool. This should fail.
+
+        let invalid = json!({
+            "potato": "ping3",
+            "description": "Ping a server. Part trois.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "host": {
+                        "type": "string",
+                        "description": "The host to ping."
+                    }
+                },
+                "required": ["host"]
+            }
+        });
+        let err = Request::default().try_add_tool(invalid.clone());
+        if let Err(e) = err {
+            assert_eq!(e.to_string(), "missing field `name`");
+        } else {
+            panic!("Expected an error.");
+        }
+
+        let err = Request::default().try_tools([invalid]);
+        if let Err(e) = err {
+            assert_eq!(e.to_string(), "missing field `name`");
+        } else {
+            panic!("Expected an error.");
+        }
+    }
+
+    #[test]
+    fn test_temperature() {
+        let request = Request::default().temperature(Some(0.5));
+        assert_eq!(request.temperature, Some(0.5));
+    }
+
+    #[test]
+    #[allow(unused_variables)] // because the compiler is silly sometimes
+    fn test_tool_choice() {
+        let choice = tool::Choice::Any;
+        let request = Request::default().tool_choice(choice);
+        assert!(matches!(request.tool_choice, Some(choice)));
+    }
+
+    #[test]
+    fn test_top_k() {
+        let request =
+            Request::default().top_k(Some(NonZeroU16::new(5).unwrap()));
+        assert_eq!(request.top_k, Some(NonZeroU16::new(5).unwrap()));
+    }
+
+    #[test]
+    fn test_top_p() {
+        let request = Request::default().top_p(Some(0.5));
+        assert_eq!(request.top_p, Some(0.5));
+    }
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn test_markdown() {
+        use crate::markdown::{Markdown, ToMarkdown};
+        use message::Block;
+
+        let request = Request::default()
+            .tools([Tool {
+                name: "ping".into(),
+                description: "Ping a server.".into(),
+                input_schema: json!({
+                    "type": "object",
+                    "properties": {
+                        "host": {
+                            "type": "string",
+                            "description": "The host to ping."
+                        }
+                    },
+                    "required": ["host"]
+                }),
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            }])
+            .system("You are a very succinct assistant.")
+            .messages([
+                Message {
+                    role: Role::User,
+                    content: Content::text("Hello"),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Content::text("Hi"),
+                },
+                Message {
+                    role: Role::User,
+                    content: Content::text("Call a tool."),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Block::ToolUse {
+                        call: tool::Use {
+                            id: "abc123".into(),
+                            name: "ping".into(),
+                            input: json!({
+                                "host": "example.com"
+                            }),
+                            cache_control: None,
+                        },
+                    }
+                    .into(),
+                },
+                Message {
+                    role: Role::User,
+                    content: Block::ToolResult {
+                        tool_use_id: "abc123".into(),
+                        content: "Pinging example.com.".into(),
+                        is_error: false,
+                        cache_control: None,
+                    }
+                    .into(),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: Content::text("Done."),
+                },
+            ]);
+
+        let opts = crate::markdown::Options::default()
+            .with_system()
+            .with_tool_use()
+            .with_tool_results();
+
+        let markdown: Markdown = request.markdown_custom(&opts);
+
+        // OpenAI format. Anthropic doesn't have a "system" or "tool" role but
+        // we generate markdown like this because it's easier to read. The user
+        // does not submit a tool result, so it's confusing if the header is
+        // "User".
+        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":\"Pinging example.com.\",\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
+
+        assert_eq!(markdown.as_ref(), expected);
     }
 }
