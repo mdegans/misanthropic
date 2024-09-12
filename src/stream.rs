@@ -2,7 +2,7 @@
 //! associated types and errors only used when streaming.
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
+use std::{borrow::Cow, pin::Pin};
 
 #[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
@@ -172,7 +172,7 @@ pub struct MessageDelta {
     pub stop_reason: Option<StopReason>,
     /// Stop sequence.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_sequence: Option<String>,
+    pub stop_sequence: Option<Cow<'static, str>>,
     /// Token usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -302,7 +302,7 @@ impl futures::Stream for Stream {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
 
     use super::*;
 
@@ -310,6 +310,28 @@ mod tests {
 
     pub const CONTENT_BLOCK_START: &str = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"} }";
     pub const CONTENT_BLOCK_DELTA: &str = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Certainly! I\"}     }";
+
+    pub fn mock_stream() -> Stream {
+        let inner = futures::stream::iter(
+            [
+                Ok(eventsource_stream::Event {
+                    data: CONTENT_BLOCK_START.into(),
+                    id: "123".into(),
+                    event: "content_block_start".into(),
+                    retry: None,
+                }),
+                Ok(eventsource_stream::Event {
+                    data: CONTENT_BLOCK_DELTA.into(),
+                    id: "123".into(),
+                    event: "content_block_delta".into(),
+                    retry: None,
+                }),
+            ]
+            .into_iter(),
+        );
+
+        Stream::new(inner)
+    }
 
     #[test]
     fn test_content_block_start() {

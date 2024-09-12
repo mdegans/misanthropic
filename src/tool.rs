@@ -1,6 +1,8 @@
 //! [`Tool`] and tool [`Choice`] types for the Anthropic Messages API.
 use serde::{Deserialize, Serialize};
 
+use crate::request::message::Content;
+
 /// Choice of [`Tool`] for a specific [`request::Message`].
 ///
 /// [`request::Message`]: crate::request::Message
@@ -70,7 +72,9 @@ impl Tool {
 impl TryFrom<serde_json::Value> for Tool {
     type Error = serde_json::Error;
 
-    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: serde_json::Value,
+    ) -> std::result::Result<Self, Self::Error> {
         serde_json::from_value(value)
     }
 }
@@ -100,7 +104,9 @@ pub struct Use {
 impl TryFrom<serde_json::Value> for Use {
     type Error = serde_json::Error;
 
-    fn try_from(value: serde_json::Value) -> Result<Self, Self::Error> {
+    fn try_from(
+        value: serde_json::Value,
+    ) -> std::result::Result<Self, Self::Error> {
         serde_json::from_value(value)
     }
 }
@@ -137,4 +143,28 @@ impl std::fmt::Display for Use {
 
         self.write_markdown(f)
     }
+}
+
+/// Result of [`Tool`] [`Use`] sent back to the [`Assistant`] as a [`User`]
+/// [`Message`].
+///
+/// [`Assistant`]: crate::request::message::Role::Assistant
+/// [`User`]: crate::request::message::Role::User
+/// [`Message`]: crate::request::Message
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+// On the one hand this can clash with the `Result` type from the standard
+// library, but on the other hand it's what the API uses, and I'm trying to
+// be as faithful to the API as possible.
+pub struct Result {
+    /// Unique Id for this tool call.
+    pub tool_use_id: String,
+    /// Output of the tool.
+    pub content: Content,
+    /// Whether the tool call result was an error.
+    pub is_error: bool,
+    /// Use prompt caching. See [`Block::cache`] for more information.
+    #[cfg(feature = "prompt-caching")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::request::message::CacheControl>,
 }

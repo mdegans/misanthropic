@@ -897,7 +897,6 @@ mod tests {
     #[cfg(feature = "markdown")]
     fn test_markdown() {
         use crate::markdown::{Markdown, ToMarkdown};
-        use message::Block;
 
         let request = Request::default()
             .tools([Tool {
@@ -930,30 +929,23 @@ mod tests {
                     role: Role::User,
                     content: Content::text("Call a tool."),
                 },
-                Message {
-                    role: Role::Assistant,
-                    content: Block::ToolUse {
-                        call: tool::Use {
-                            id: "abc123".into(),
-                            name: "ping".into(),
-                            input: json!({
-                                "host": "example.com"
-                            }),
-                            cache_control: None,
-                        },
-                    }
-                    .into(),
-                },
-                Message {
-                    role: Role::User,
-                    content: Block::ToolResult {
-                        tool_use_id: "abc123".into(),
-                        content: "Pinging example.com.".into(),
-                        is_error: false,
-                        cache_control: None,
-                    }
-                    .into(),
-                },
+                tool::Use {
+                    id: "abc123".into(),
+                    name: "ping".into(),
+                    input: json!({
+                        "host": "example.com"
+                    }),
+                    cache_control: None,
+                }
+                .into(),
+                tool::Result {
+                    tool_use_id: "abc123".into(),
+                    content: "Pinging example.com.".into(),
+                    is_error: false,
+                    #[cfg(feature = "prompt-caching")]
+                    cache_control: None,
+                }
+                .into(),
                 Message {
                     role: Role::Assistant,
                     content: Content::text("Done."),

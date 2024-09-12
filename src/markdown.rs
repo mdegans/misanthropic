@@ -10,8 +10,19 @@ pub const DEFAULT_OPTIONS: Options = Options {
     system: false,
 };
 
+/// Verbose [`Options`]
+pub const VERBOSE_OPTIONS: Options = Options {
+    inner: pulldown_cmark::Options::empty(),
+    tool_use: true,
+    tool_results: true,
+    system: true,
+};
+
 /// A static reference to the default [`Options`].
 pub static DEFAULT_OPTIONS_REF: &'static Options = &DEFAULT_OPTIONS;
+
+/// A static reference to the verbose [`Options`].
+pub static VERBOSE_OPTIONS_REF: &'static Options = &VERBOSE_OPTIONS;
 
 mod serde_inner {
     use super::*;
@@ -56,6 +67,11 @@ pub struct Options {
 }
 
 impl Options {
+    /// Maximum verbosity
+    pub fn verbose() -> Self {
+        VERBOSE_OPTIONS
+    }
+
     /// Set [`tool_use`] to true
     ///
     /// [`tool_use`]: Options::tool_use
@@ -160,6 +176,11 @@ pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with custom [`Options`].
     fn markdown_custom(&self, options: &Options) -> Markdown {
         self.markdown_events_custom(options).into()
+    }
+
+    /// Render the type to a [`Markdown`] string with maximum verbosity.
+    fn markdown_verbose(&self) -> Markdown {
+        self.markdown_custom(VERBOSE_OPTIONS_REF)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with

@@ -102,6 +102,15 @@ impl From<response::Message> for Message {
     }
 }
 
+impl From<(Role, String)> for Message {
+    fn from((role, content): (Role, String)) -> Self {
+        Self {
+            role,
+            content: Content::SinglePart(content.into()),
+        }
+    }
+}
+
 impl From<(Role, Cow<'static, str>)> for Message {
     fn from((role, content): (Role, Cow<'static, str>)) -> Self {
         Self {
@@ -116,6 +125,24 @@ impl From<(Role, &'static str)> for Message {
         Self {
             role,
             content: Content::SinglePart(Cow::Borrowed(content)),
+        }
+    }
+}
+
+impl From<tool::Use> for Message {
+    fn from(call: tool::Use) -> Self {
+        Message {
+            role: Role::Assistant,
+            content: call.into(),
+        }
+    }
+}
+
+impl From<tool::Result> for Message {
+    fn from(result: tool::Result) -> Self {
+        Message {
+            role: Role::User,
+            content: result.into(),
         }
     }
 }
@@ -135,7 +162,9 @@ impl crate::markdown::ToMarkdown for Message {
 
         let content = self.content.markdown_events_custom(options);
         let role = match self.content.last() {
-            Some(Block::ToolResult { is_error, .. }) => {
+            Some(Block::ToolResult {
+                result: tool::Result { is_error, .. },
+            }) => {
                 if *is_error {
                     "Error"
                 } else {
@@ -165,7 +194,12 @@ impl std::fmt::Display for Message {
 
 /// Content of a [`Message`].
 #[derive(
-    Debug, Serialize, Deserialize, derive_more::From, derive_more::IsVariant,
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    derive_more::From,
+    derive_more::IsVariant,
 )]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
@@ -360,8 +394,20 @@ impl From<Block> for Content {
     }
 }
 
+impl From<tool::Use> for Content {
+    fn from(call: tool::Use) -> Self {
+        Block::from(call).into()
+    }
+}
+
+impl From<tool::Result> for Content {
+    fn from(result: tool::Result) -> Self {
+        Block::from(result).into()
+    }
+}
+
 /// A [`Content`] [`Block`] of a [`Message`].
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(not(feature = "markdown"), derive(derive_more::Display))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
@@ -397,7 +443,7 @@ pub enum Block {
     ToolUse {
         /// Tool use input.
         #[serde(flatten)]
-        call: crate::tool::Use,
+        call: tool::Use,
     },
     /// Result of a [`Tool`] call. This should only be used with the [`User`]
     /// role.
@@ -406,16 +452,9 @@ pub enum Block {
     /// [`Tool`]: crate::Tool
     #[cfg_attr(not(feature = "markdown"), display(""))]
     ToolResult {
-        /// Unique Id for this tool call.
-        tool_use_id: String,
-        /// Output of the tool.
-        content: Content,
-        /// Whether the tool call result was an error.
-        is_error: bool,
-        /// Use prompt caching. See [`Block::cache`] for more information.
-        #[cfg(feature = "prompt-caching")]
-        #[serde(skip_serializing_if = "Option::is_none")]
-        cache_control: Option<CacheControl>,
+        /// Tool result
+        #[serde(flatten)]
+        result: tool::Result,
     },
 }
 
@@ -505,7 +544,9 @@ impl Block {
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
-            | Self::ToolResult { cache_control, .. } => {
+            | Self::ToolResult {
+                result: tool::Result { cache_control, .. },
+            } => {
                 *cache_control = Some(CacheControl::Ephemeral);
             }
         }
@@ -522,7 +563,9 @@ impl Block {
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
-            | Self::ToolResult { cache_control, .. } => cache_control.is_some(),
+            | Self::ToolResult {
+                result: tool::Result { cache_control, .. },
+            } => cache_control.is_some(),
         }
     }
 
@@ -634,6 +677,18 @@ impl From<Image> for Block {
     }
 }
 
+impl From<tool::Use> for Block {
+    fn from(call: tool::Use) -> Self {
+        Self::ToolUse { call }
+    }
+}
+
+impl From<tool::Result> for Block {
+    fn from(result: tool::Result) -> Self {
+        Self::ToolResult { result }
+    }
+}
+
 #[cfg(feature = "png")]
 impl From<image::RgbaImage> for Block {
     fn from(image: image::RgbaImage) -> Self {
@@ -668,7 +723,7 @@ pub enum CacheControl {
 /// Image content for [`MultiPart`] [`Message`]s.
 ///
 /// [`MultiPart`]: Content::MultiPart
-#[derive(Debug, Serialize, Deserialize, derive_more::Display)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
@@ -1062,17 +1117,14 @@ mod tests {
         );
 
         // Test tool result (success)
-        let message = Message {
-            role: Role::User,
-            content: Block::ToolResult {
-                tool_use_id: "tool_123".into(),
-                content: Content::SinglePart("Hello, world!".into()),
-                is_error: false,
-                #[cfg(feature = "prompt-caching")]
-                cache_control: None,
-            }
-            .into(),
-        };
+        let message: Message = tool::Result {
+            tool_use_id: "tool_123".into(),
+            content: Content::SinglePart("Hello, world!".into()),
+            is_error: false,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
 
         assert_eq!(
             message.markdown_custom(&opts).to_string(),
@@ -1080,21 +1132,37 @@ mod tests {
         );
 
         // Test tool result (error)
-        let message = Message {
-            role: Role::User,
-            content: Block::ToolResult {
-                tool_use_id: "tool_123".into(),
-                content: Content::SinglePart("Hello, world!".into()),
-                is_error: true,
-                #[cfg(feature = "prompt-caching")]
-                cache_control: None,
-            }
-            .into(),
-        };
+        let message: Message = tool::Result {
+            tool_use_id: "tool_123".into(),
+            content: Content::SinglePart("Hello, world!".into()),
+            is_error: true,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
 
         assert_eq!(
             message.markdown_custom(&opts).to_string(),
             "### Error\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":true}\n````"
         );
     }
+
+    #[test]
+    fn test_block_tool_use() {
+        let expected = tool::Use {
+            id: "tool_123".into(),
+            name: "tool".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let block = Block::ToolUse {
+            call: expected.clone(),
+        };
+
+        assert_eq!(block.tool_use(), Some(&expected));
+    }
+
+    // TODO: Image tests
 }

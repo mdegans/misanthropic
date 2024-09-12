@@ -1,15 +1,11 @@
 //! See `source` for an example of [`Client::message`] using the "neologism
 //! creator" prompt. For a streaming example, see the `website_wizard` example.
 
-// Note: This example uses blocking calls for simplicity such as `print`
-// `read_to_string`, `stdin().lock()`, and `write`. In a real application, these
-// should usually be replaced with async alternatives.
-
+// Note: This example uses blocking calls for simplicity such as `println!()`
+// and `stdin().lock()`. In a real application, these should *usually* be
+// replaced with async alternatives.
 use clap::Parser;
-use misanthropic::{
-    request::{message::Role, Message},
-    Client, Model, Request,
-};
+use misanthropic::{request::message::Role, Client, Request};
 use std::io::{stdin, BufRead};
 
 /// Invent new words and provide their definitions based on user-provided
@@ -40,30 +36,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Enter your API key:");
     let key = stdin().lock().lines().next().unwrap()?;
 
-    // Create a client. `key` will be consumed and zeroized.
+    // Create a client. The key is encrypted in memory and source string is
+    // zeroed. When requests are made, the key header is marked as sensitive.
     let client = Client::new(key)?;
 
-    // Request a completion. `json!` can be used, `Request` or a combination of
-    // strings and types like `Model`. Client request methods accept anything
-    // serializable for maximum flexibility.
+    // Request a completion. `json!` can be used, the `Request` builder pattern,
+    // or anything serializable. Many common usage patterns are supported out of
+    // the box for building `Request`s, such as messages from a list of tuples
+    // of `Role` and `String`.
     let message = client
-        .message(Request {
-            model: Model::Sonnet35,
-            messages: vec![Message {
-                role: Role::User,
-                content: args.prompt.into(),
-            }],
-            max_tokens: 1000.try_into().unwrap(),
-            metadata: serde_json::Map::new(),
-            stop_sequences: None,
-            stream: None,
-            system: None,
-            temperature: Some(1.0),
-            tool_choice: None,
-            tools: None,
-            top_k: None,
-            top_p: None,
-        })
+        .message(Request::default().messages([(Role::User, args.prompt)]))
         .await?;
 
     println!("{}", message);

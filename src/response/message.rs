@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::{request, stream::MessageDelta, Model};
 use serde::{Deserialize, Serialize};
 
@@ -7,7 +9,7 @@ use serde::{Deserialize, Serialize};
 #[display("{}", message)]
 pub struct Message {
     /// Unique `id` for the message.
-    pub id: String,
+    pub id: Cow<'static, str>,
     /// Inner [`request::Message`].
     #[serde(flatten)]
     pub message: request::Message,
@@ -19,7 +21,7 @@ pub struct Message {
     /// triggered it.
     ///
     /// [`StopSequence`]: StopReason::StopSequence
-    pub stop_sequence: Option<String>,
+    pub stop_sequence: Option<Cow<'static, str>>,
     /// Usage statistics for the message.
     pub usage: Usage,
 }
@@ -81,4 +83,82 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // FIXME: This is Copilot generated JSON. It should be replaced with actual
+    // response JSON, however this is pretty close to what the actual JSON looks
+    // like.
+    pub const RESPONSE_JSON: &str = r#"{
+    "content": [
+        {
+        "text": "Hi! My name is Claude.",
+        "type": "text"
+        }
+    ],
+    "id": "msg_013Zva2CMHLNnXjNJJKqJ2EF",
+    "model": "claude-3-5-sonnet-20240620",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+        "input_tokens": 2095,
+        "output_tokens": 503
+    }
+}"#;
+
+    #[test]
+    fn deserialize_response_message() {
+        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        assert_eq!(message.message.content.len(), 1);
+        assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
+        assert_eq!(message.model, crate::Model::Sonnet35);
+        assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
+        assert_eq!(message.stop_sequence, None);
+        assert_eq!(message.usage.input_tokens, 2095);
+        assert_eq!(message.usage.output_tokens, 503);
+    }
+
+    #[test]
+    fn test_apply_delta() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let delta = MessageDelta {
+            stop_reason: Some(StopReason::MaxTokens),
+            stop_sequence: Some("sequence".into()),
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 200,
+                ..Default::default()
+            }),
+        };
+
+        message.apply_delta(delta);
+
+        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(message.stop_sequence, Some("sequence".into()));
+        assert_eq!(message.usage.input_tokens, 100);
+        assert_eq!(message.usage.output_tokens, 200);
+    }
+
+    #[test]
+    fn test_tool_use() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        assert!(message.tool_use().is_none());
+
+        message.stop_reason = Some(StopReason::ToolUse);
+        assert!(message.tool_use().is_none());
+
+        message.message.content.push(crate::tool::Use {
+            id: "id".into(),
+            name: "name".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        });
+        assert!(message.tool_use().is_some());
+    }
 }

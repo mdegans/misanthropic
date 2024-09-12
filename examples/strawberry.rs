@@ -8,11 +8,8 @@ use std::io::BufRead;
 use clap::Parser;
 use misanthropic::{
     json,
-    markdown::{self, ToMarkdown},
-    request::{
-        message::{Block, Role},
-        Message,
-    },
+    markdown::ToMarkdown,
+    request::{message::Role, Message},
     response, tool, Client, Request, Tool,
 };
 
@@ -66,18 +63,16 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Error> {
     ) {
         let count = count_letters(letter, string.into());
 
-        Ok(Message {
-            role: Role::User,
-            content: Block::ToolResult {
-                tool_use_id: call.id.clone(),
-                content: count.to_string().into(),
-                is_error: false,
-                #[cfg(feature = "prompt-caching")]
-                cache_control: None,
-            }
-            // A Content Block is always convertable into Content.
-            .into(),
-        })
+        Ok(tool::Result {
+            tool_use_id: call.id.clone(),
+            content: count.to_string().into(),
+            is_error: false,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        // A `tool::Result` is always convertable to a `Message`. The `Role` is
+        // always `User` and the `Content` is always a `Block::ToolResult`.
+        .into())
     } else {
         // Optionally, we could always return a Message and inform the Assistant
         // that they called the tool incorrectly so they can try again.
@@ -123,10 +118,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inform the assistant about their limitations.
     }).system("You are a helpful assistant. You cannot count letters in a word by yourself because you see in tokens, not letters. Use the `count_letters` tool to overcome this limitation.")
     // Add user input.
-    .add_message(Message {
-        role: Role::User,
-        content: args.prompt.into(),
-    });
+    .add_message((Role::User, args.prompt));
 
     // Generate the next message in the chat.
     let message = client.message(&chat).await?;
@@ -152,15 +144,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // default display also renders markdown, but without system prompt and
         // tool use information.
         chat.messages.push(message.into());
-        println!(
-            "{}",
-            chat.markdown_custom(
-                &markdown::Options::default()
-                    .with_system()
-                    .with_tool_use()
-                    .with_tool_results()
-            )
-        );
+        println!("{}", chat.markdown_verbose());
     } else {
         // Just print the message content. The response `Message` contains the
         // `request::Message` with a `Role` and `Content`. The message can also
