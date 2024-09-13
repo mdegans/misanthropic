@@ -74,6 +74,7 @@ jobs:
         if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
         uses: codecov/codecov-action@v2
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           flags: unittests
           name: codecov-umbrella
