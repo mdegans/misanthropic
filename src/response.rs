@@ -119,34 +119,195 @@ impl Response {
 mod tests {
     use super::*;
 
-    pub const RESPONSE_JSON: &str = r#"{
-  "content": [
-    {
-      "text": "Hi! My name is Claude.",
-      "type": "text"
-    }
-  ],
-  "id": "msg_013Zva2CMHLNnXjNJJKqJ2EF",
-  "model": "claude-3-5-sonnet-20240620",
-  "role": "assistant",
-  "stop_reason": "end_turn",
-  "stop_sequence": null,
-  "type": "message",
-  "usage": {
-    "input_tokens": 2095,
-    "output_tokens": 503
-  }
-}"#;
+    use std::borrow::Cow;
+
+    const TEST_ID: &str = "test_id";
+
+    const CONTENT: &str = "Hello, world!";
+
+    const RESPONSE: Response = Response::Message {
+        message: Message {
+            id: Cow::Borrowed(TEST_ID),
+            message: request::Message {
+                role: request::message::Role::User,
+                content: request::message::Content::SinglePart(Cow::Borrowed(
+                    CONTENT,
+                )),
+            },
+            model: crate::Model::Sonnet35,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage {
+                input_tokens: 1,
+                #[cfg(feature = "prompt-caching")]
+                cache_creation_input_tokens: Some(2),
+                #[cfg(feature = "prompt-caching")]
+                cache_read_input_tokens: Some(3),
+                output_tokens: 4,
+            },
+        },
+    };
 
     #[test]
-    fn deserialize_response_message() {
-        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        assert_eq!(message.message.content.len(), 22);
-        assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(message.model, crate::Model::Sonnet35);
-        assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
-        assert_eq!(message.stop_sequence, None);
-        assert_eq!(message.usage.input_tokens, 2095);
-        assert_eq!(message.usage.output_tokens, 503);
+    fn test_into_stream() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.into_stream().is_some());
+        assert!(RESPONSE.into_stream().is_none());
+    }
+
+    #[test]
+    fn test_unwrap_stream() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        let _stream = response.unwrap_stream();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_stream_panics() {
+        let _panic = RESPONSE.unwrap_stream();
+    }
+
+    #[test]
+    fn test_unwrap_message() {
+        assert_eq!(
+            RESPONSE.unwrap_message().content.to_string(),
+            "Hello, world!"
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_message_panics() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        let _panic = response.unwrap_message();
+    }
+
+    #[test]
+    fn test_message() {
+        assert_eq!(
+            RESPONSE.message().unwrap().content.to_string(),
+            "Hello, world!"
+        );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.message().is_none());
+    }
+
+    #[test]
+    fn test_into_message() {
+        assert_eq!(
+            RESPONSE.into_message().unwrap().content.to_string(),
+            "Hello, world!"
+        );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.into_message().is_none());
+    }
+
+    #[test]
+    fn test_into_response_message() {
+        assert_eq!(
+            RESPONSE
+                .into_response_message()
+                .unwrap()
+                .message
+                .content
+                .to_string(),
+            "Hello, world!"
+        );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.into_response_message().is_none());
+    }
+
+    #[test]
+    fn test_response_message() {
+        assert_eq!(
+            RESPONSE
+                .response_message()
+                .unwrap()
+                .message
+                .content
+                .to_string(),
+            "Hello, world!"
+        );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.response_message().is_none());
+    }
+
+    #[test]
+    fn test_unwrap_response_message() {
+        assert_eq!(
+            RESPONSE
+                .unwrap_response_message()
+                .message
+                .content
+                .to_string(),
+            "Hello, world!"
+        );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_response_message_panics() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        let _panic = response.unwrap_response_message();
     }
 }

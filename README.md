@@ -1,5 +1,8 @@
 # `misanthropic`
 
+![Build Status](https://github.com/mdegans/misanthropic/actions/workflows/tests.yaml/badge.svg)
+[![codecov](https://codecov.io/gh/mdegans/misanthropic/branch/main/graph/badge.svg)](https://codecov.io/gh/mdegans/misanthropic)
+
 Is an unofficial simple, ergonomic, client for the Anthropic Messages API.
 
 ## Usage
@@ -7,12 +10,13 @@ Is an unofficial simple, ergonomic, client for the Anthropic Messages API.
 ### Streaming
 
 ```rust
-// Create a client. `key` will be consumed, zeroized, and stored securely.
+// Create a client. The key is encrypted in memory and source string is zeroed.
+// When requests are made, the key header is marked as sensitive.
 let client = Client::new(key)?;
 
-// Request a stream of events or errors. `json!` can be used, a `Request`, or a
-// combination of strings and concrete types like `Model`. All Client request
-// methods accept anything serializable for maximum flexibility.
+// Request a stream of events or errors. `json!` can be used, the `Request`
+// builder pattern (shown in the `Single Message` example below), or anything
+// serializable.
 let stream = client
     // Forces `stream=true` in the request.
     .stream(json!({
@@ -44,31 +48,13 @@ let content: String = stream
 ### Single Message
 
 ```rust
-// Create a client. `key` will be consumed and zeroized.
 let client = Client::new(key)?;
 
-// Request a single message. The parameters are the same as the streaming
-// example above. If a value is `None` it will be omitted from the request.
-// This is less flexible than json! but some may prefer it. A Builder pattern
-// is not yet available but is planned to reduce the verbosity.
+// Many common usage patterns are supported out of the box for building
+// `Request`s, such as messages from an iterable of tuples of `Role` and
+// `String`.
 let message = client
-    .message(Request {
-        model: Model::Sonnet35,
-        messages: vec![Message {
-            role: Role::User,
-            content: args.prompt.into(),
-        }],
-        max_tokens: 1000.try_into().unwrap(),
-        metadata: serde_json::Value::Null,
-        stop_sequences: None,
-        stream: None,
-        system: None,
-        temperature: Some(1.0),
-        tool_choice: None,
-        tools: None,
-        top_k: None,
-        top_p: None,
-    })
+    .message(Request::default().messages([(Role::User, args.prompt)]))
     .await?;
 
 println!("{}", message);
@@ -77,12 +63,14 @@ println!("{}", message);
 ## Features
 
 - [x] Async but does not _directly_ depend on tokio
+- [x] Tool use,
 - [x] Streaming responses
 - [x] Message responses
 - [x] Image support with or without the `image` crate
 - [x] Markdown formatting of messages, including images
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
+- [ ] Zero-copy serde - Coming soon!
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
 

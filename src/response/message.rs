@@ -1,12 +1,15 @@
-use crate::{request, Model};
+use std::borrow::Cow;
+
+use crate::{request, stream::MessageDelta, Model};
 use serde::{Deserialize, Serialize};
 
 /// A [`request::Message`] with additional response metadata.
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
+#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[display("{}", message)]
 pub struct Message {
     /// Unique `id` for the message.
-    pub id: String,
+    pub id: Cow<'static, str>,
     /// Inner [`request::Message`].
     #[serde(flatten)]
     pub message: request::Message,
@@ -18,13 +21,41 @@ pub struct Message {
     /// triggered it.
     ///
     /// [`StopSequence`]: StopReason::StopSequence
-    pub stop_sequence: Option<String>,
+    pub stop_sequence: Option<Cow<'static, str>>,
     /// Usage statistics for the message.
     pub usage: Usage,
 }
 
+impl Message {
+    /// Apply a [`MessageDelta`] with metadata to the message.
+    pub fn apply_delta(&mut self, delta: MessageDelta) {
+        self.stop_reason = delta.stop_reason;
+        self.stop_sequence = delta.stop_sequence;
+        if let Some(usage) = delta.usage {
+            self.usage = usage;
+        }
+    }
+
+    /// Get the [`tool::Use`] from the message if the [`StopReason`] was
+    /// [`StopReason::ToolUse`] and the final message [`Content`] [`Block`] is
+    /// [`ToolUse`].
+    ///
+    /// [`Content`]: crate::request::message::Content
+    /// [`Block`]: crate::request::message::Block
+    /// [`tool::Use`]: crate::tool::Use
+    /// [`ToolUse`]: crate::request::message::Block::ToolUse
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+        if !matches!(self.stop_reason, Some(StopReason::ToolUse)) {
+            return None;
+        }
+
+        self.message.content.last()?.tool_use()
+    }
+}
+
 /// Reason the model stopped generating tokens.
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model reached a natural stopping point.
@@ -39,7 +70,8 @@ pub enum StopReason {
 
 /// Usage statistics from the API. This is used in multiple contexts, not just
 /// for messages.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 pub struct Usage {
     /// Number of input tokens used.
     pub input_tokens: u64,
@@ -51,4 +83,82 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // FIXME: This is Copilot generated JSON. It should be replaced with actual
+    // response JSON, however this is pretty close to what the actual JSON looks
+    // like.
+    pub const RESPONSE_JSON: &str = r#"{
+    "content": [
+        {
+        "text": "Hi! My name is Claude.",
+        "type": "text"
+        }
+    ],
+    "id": "msg_013Zva2CMHLNnXjNJJKqJ2EF",
+    "model": "claude-3-5-sonnet-20240620",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+        "input_tokens": 2095,
+        "output_tokens": 503
+    }
+}"#;
+
+    #[test]
+    fn deserialize_response_message() {
+        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        assert_eq!(message.message.content.len(), 1);
+        assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
+        assert_eq!(message.model, crate::Model::Sonnet35);
+        assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
+        assert_eq!(message.stop_sequence, None);
+        assert_eq!(message.usage.input_tokens, 2095);
+        assert_eq!(message.usage.output_tokens, 503);
+    }
+
+    #[test]
+    fn test_apply_delta() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let delta = MessageDelta {
+            stop_reason: Some(StopReason::MaxTokens),
+            stop_sequence: Some("sequence".into()),
+            usage: Some(Usage {
+                input_tokens: 100,
+                output_tokens: 200,
+                ..Default::default()
+            }),
+        };
+
+        message.apply_delta(delta);
+
+        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(message.stop_sequence, Some("sequence".into()));
+        assert_eq!(message.usage.input_tokens, 100);
+        assert_eq!(message.usage.output_tokens, 200);
+    }
+
+    #[test]
+    fn test_tool_use() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        assert!(message.tool_use().is_none());
+
+        message.stop_reason = Some(StopReason::ToolUse);
+        assert!(message.tool_use().is_none());
+
+        message.message.content.push(crate::tool::Use {
+            id: "id".into(),
+            name: "name".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        });
+        assert!(message.tool_use().is_some());
+    }
 }

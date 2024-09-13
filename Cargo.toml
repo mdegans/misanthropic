@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "0.1.4"
+version = "0.2.0"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
@@ -33,11 +33,16 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
+# markdown support
+pulldown-cmark = { version = "0.12", optional = true }
+pulldown-cmark-to-cmark = { version = "17", optional = true }
+static_assertions = "1"
 
 [dev-dependencies]
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+itertools = "0.13"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -63,3 +68,12 @@ prompt-caching = ["beta"]
 log = ["dep:log"]
 # Use rustls instead of the system SSL, such as OpenSSL.
 rustls-tls = ["reqwest/rustls-tls"]
+# Use `pulldown-cmark` for markdown parsing and `pulldown-cmark-to-cmark` for
+# converting to CommonMark.
+markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
+# Derive PartialEq for all structs and enums.
+partialeq = []
+
+[[example]]
+name = "strawberry"
+required-features = ["markdown"]

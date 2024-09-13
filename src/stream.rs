@@ -2,10 +2,15 @@
 //! associated types and errors only used when streaming.
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::pin::Pin;
+use std::{borrow::Cow, pin::Pin};
 
+#[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
     client::AnthropicError,
+    request::{
+        self,
+        message::{Block, Content},
+    },
     response::{self, StopReason, Usage},
 };
 
@@ -17,33 +22,33 @@ use crate::{
 pub enum Event {
     /// Periodic ping.
     Ping,
-    /// [`response::Message`] with empty content. The deltas arrive in
-    /// [`ContentBlock`]s.
+    /// [`response::Message`] with empty content. [`MessageDelta`] and
+    /// [`Content`] [`Delta`]s must be applied to this message.
     MessageStart {
         /// The message.
         message: response::Message,
     },
-    /// Content block with empty content.
+    /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
-        /// Index of the content block.
+        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
         index: usize,
         /// Empty content block.
-        content_block: ContentBlock,
+        content_block: Block,
     },
     /// Content block delta.
     ContentBlockDelta {
-        /// Index of the content block.
+        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
         index: usize,
         /// Delta to apply to the content block.
-        delta: ContentBlock,
+        delta: Delta,
     },
     /// Content block end.
     ContentBlockStop {
-        /// Index of the content block.
+        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
         index: usize,
     },
-    /// Message delta. Confusingly this does not contain message content rather
-    /// metadata about the message in progress.
+    /// [`MessageDelta`]. Contains metadata, not [`Content`] [`Delta`]s. Apply
+    /// to the [`response::Message`].
     MessageDelta {
         /// Delta to apply to the [`response::Message`].
         delta: MessageDelta,
@@ -66,80 +71,100 @@ enum ApiResult {
     Error { error: AnthropicError },
 }
 
-/// A content block or delta. This can be [`Text`], [`Json`], or [`Tool`] use.
+/// [`Text`] or [`Json`] to be applied to a [`Block::Text`] or
+/// [`Block::ToolUse`] [`Content`] [`Block`].
 ///
-/// [`Text`]: ContentBlock::Text
-/// [`Json`]: ContentBlock::Json
-/// [`Tool`]: ContentBlock::Tool
+/// [`Text`]: Delta::Text
+/// [`Json`]: Delta::Json
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum ContentBlock {
-    /// Text content.
+pub enum Delta {
+    /// Text delta for a [`Text`] [`Content`] [`Block`].
+    ///
+    /// [`Text`]: Block::Text
     #[serde(alias = "text_delta")]
     Text {
         /// The text content.
         text: String,
     },
-    /// JSON delta.
+    /// JSON delta for the input field of a [`ToolUse`] [`Content`] [`Block`].
+    ///
+    /// [`ToolUse`]: Block::ToolUse
     #[serde(rename = "input_json_delta")]
     Json {
         /// The JSON delta.
         partial_json: String,
     },
-    /// Tool use.
-    #[serde(rename = "tool_use")]
-    Tool {
-        /// ID of the request.
-        id: String,
-        /// Name of the tool.
-        name: String,
-        /// Input to the tool.
-        input: serde_json::Value,
-    },
 }
 
-/// Error when applying a [`ContentBlock`] delta to a target [`ContentBlock`].
+/// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the types do
+/// not match.
 #[derive(Serialize, thiserror::Error, Debug)]
-#[error("Cannot apply delta {from:?} to {to:?}.")]
-pub struct ContentMismatch<'a> {
+#[error("`Delta::{from:?}` canot be applied to `{to}`.")]
+pub struct ContentMismatch {
     /// The content block that failed to apply.
-    from: ContentBlock,
-    /// The target content block.
-    to: &'a ContentBlock,
+    pub from: Delta,
+    /// The target [`Content`].
+    pub to: &'static str,
 }
 
-impl ContentBlock {
-    /// Apply a [`ContentBlock`] delta to self.
-    pub fn append(
-        &mut self,
-        delta: ContentBlock,
-    ) -> Result<(), ContentMismatch> {
-        match (self, delta) {
-            (
-                ContentBlock::Text { text },
-                ContentBlock::Text { text: delta },
-            ) => {
+/// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the index is
+/// out of bounds.
+#[derive(Serialize, thiserror::Error, Debug)]
+#[error("Index {index} out of bounds. Max index is {max}.")]
+pub struct OutOfBounds {
+    /// The index that was out of bounds.
+    pub index: usize,
+    /// The maximum index.
+    pub max: usize,
+}
+
+/// Error when applying a [`Delta`].
+#[derive(Serialize, thiserror::Error, Debug, derive_more::From)]
+#[allow(missing_docs)]
+pub enum DeltaError {
+    #[error("Cannot apply delta because: {error}")]
+    ContentMismatch { error: ContentMismatch },
+    #[error("Cannot apply delta because: {error}")]
+    OutOfBounds { error: OutOfBounds },
+    #[error(
+        "Cannot apply delta because deserialization failed because: {error}"
+    )]
+    Parse { error: String },
+}
+
+impl Delta {
+    /// Merge another [`Delta`] onto the end of `self`.
+    pub fn merge(mut self, delta: Delta) -> Result<Self, ContentMismatch> {
+        match (&mut self, delta) {
+            (Delta::Text { text }, Delta::Text { text: delta }) => {
                 text.push_str(&delta);
             }
             (
-                ContentBlock::Json { partial_json },
-                ContentBlock::Json {
+                Delta::Json { partial_json },
+                Delta::Json {
                     partial_json: delta,
                 },
             ) => {
                 partial_json.push_str(&delta);
             }
             (to, from) => {
-                return Err(ContentMismatch { from, to });
+                return Err(ContentMismatch {
+                    from,
+                    to: match to {
+                        Delta::Text { .. } => stringify!(Delta::Text),
+                        Delta::Json { .. } => stringify!(Delta::Json),
+                    },
+                });
             }
         }
 
-        Ok(())
+        Ok(self)
     }
 }
 
 /// Metadata about a message in progress. This does not contain actual text
-/// deltas. That's the [`ContentBlock`] in [`Event::ContentBlockDelta`].
+/// deltas. That's the [`Delta`] in [`Event::ContentBlockDelta`].
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MessageDelta {
     /// Stop reason.
@@ -147,7 +172,7 @@ pub struct MessageDelta {
     pub stop_reason: Option<StopReason>,
     /// Stop sequence.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_sequence: Option<String>,
+    pub stop_sequence: Option<Cow<'static, str>>,
     /// Token usage.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<Usage>,
@@ -245,9 +270,7 @@ impl Stream {
 
     /// Filter out everything but [`Event::ContentBlockDelta`]. This can include
     /// text, JSON, and tool use.
-    pub fn deltas(
-        self,
-    ) -> impl futures::Stream<Item = Result<ContentBlock, Error>> {
+    pub fn deltas(self) -> impl futures::Stream<Item = Result<Delta, Error>> {
         self.inner.filter_map(|result| async move {
             match result {
                 Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
@@ -260,11 +283,21 @@ impl Stream {
     pub fn text(self) -> impl futures::Stream<Item = Result<String, Error>> {
         self.deltas().filter_map(|result| async move {
             match result {
-                Ok(ContentBlock::Text { text }) => Some(Ok(text)),
+                Ok(Delta::Text { text }) => Some(Ok(text)),
                 _ => None,
             }
         })
     }
+
+    // TODO: Figure out an ergonomic way to handle tool use when streaming. We
+    // may need another wrapper stream to store json deltas until a full block
+    // is received. This would allow us to merge json deltas and then emit a
+    // tool use event. Emitting `Block`s might not be a bad idea, but it would
+    // delay the text output, which is the primary use case for streaming. Even
+    // though events can be made up of multiple text blocks, generally the model
+    // only generates a single block per message per type. Waiting for an entire
+    // text block would mean waiting for the entire message. Waiting on JSON, is
+    // however necessary since we can't do anything useful with partial JSON.
 }
 
 impl futures::Stream for Stream {
@@ -279,7 +312,9 @@ impl futures::Stream for Stream {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+
+    use futures::TryStreamExt;
 
     use super::*;
 
@@ -287,6 +322,31 @@ mod tests {
 
     pub const CONTENT_BLOCK_START: &str = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"} }";
     pub const CONTENT_BLOCK_DELTA: &str = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Certainly! I\"}     }";
+
+    /// Creates a mock stream from a string (likely `include_str!`). The string
+    /// should be a series of `event`, `data`, and empty lines (a SSE stream).
+    /// Anthropic provides such example data in the API documentation.
+    pub fn mock_stream(text: &'static str) -> Stream {
+        use itertools::Itertools;
+
+        // TODO: one of every possible variants, even if it doesn't make sense.
+        let inner = futures::stream::iter(
+            // first line should be `event`, second line should be `data`, third
+            // line should be empty.
+            text.lines().tuples().map(|(event, data, _empty)| {
+                assert!(_empty.is_empty());
+
+                Ok(eventsource_stream::Event {
+                    event: event.strip_prefix("event: ").unwrap().into(),
+                    data: data.strip_prefix("data: ").unwrap().into(),
+                    id: "".into(),
+                    retry: None,
+                })
+            }),
+        );
+
+        Stream::new(inner)
+    }
 
     #[test]
     fn test_content_block_start() {
@@ -297,10 +357,23 @@ mod tests {
                 content_block,
             } => {
                 assert_eq!(index, 0);
-                assert_eq!(
-                    content_block,
-                    ContentBlock::Text { text: "".into() }
-                );
+                #[cfg(feature = "prompt-caching")]
+                if let Block::Text {
+                    text,
+                    cache_control,
+                } = content_block
+                {
+                    assert_eq!(text, "");
+                    assert!(cache_control.is_none());
+                } else {
+                    panic!("Unexpected content block: {:?}", content_block);
+                }
+                #[cfg(not(feature = "prompt-caching"))]
+                if let Block::Text { text } = content_block {
+                    assert_eq!(text, "");
+                } else {
+                    panic!("Unexpected content block: {:?}", content_block);
+                }
             }
             _ => panic!("Unexpected event: {:?}", event),
         }
@@ -314,12 +387,105 @@ mod tests {
                 assert_eq!(index, 0);
                 assert_eq!(
                     delta,
-                    ContentBlock::Text {
+                    Delta::Text {
                         text: "Certainly! I".into()
                     }
                 );
             }
             _ => panic!("Unexpected event: {:?}", event),
         }
+    }
+
+    #[test]
+    fn test_content_block_delta_merge() {
+        // Merge text deltas.
+        let text_delta = Delta::Text {
+            text: "Certainly! I".into(),
+        }
+        .merge(Delta::Text {
+            text: " can".into(),
+        })
+        .unwrap()
+        .merge(Delta::Text { text: " do".into() })
+        .unwrap();
+
+        assert_eq!(
+            text_delta,
+            Delta::Text {
+                text: "Certainly! I can do".into()
+            }
+        );
+
+        // Merge JSON deltas.
+        let json_delta = Delta::Json {
+            partial_json: r#"{"key":"#.into(),
+        }
+        .merge(Delta::Json {
+            partial_json: r#""value"}"#.into(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            json_delta,
+            Delta::Json {
+                partial_json: r#"{"key":"value"}"#.into()
+            }
+        );
+
+        // Content mismatch.
+        let mismatch = json_delta.merge(text_delta).unwrap_err();
+
+        assert_eq!(
+            mismatch.to_string(),
+            ContentMismatch {
+                from: Delta::Text {
+                    text: "Certainly! I can do".into()
+                },
+                to: "Delta::Json"
+            }
+            .to_string()
+        );
+
+        // Other way around, for coverage.
+        let text_delta = Delta::Text {
+            text: "Certainly!".into(),
+        };
+        let json_delta = Delta::Json {
+            partial_json: r#"{"key":"value"}"#.into(),
+        };
+
+        let mismatch = text_delta.merge(json_delta).unwrap_err();
+
+        assert_eq!(
+            mismatch.to_string(),
+            ContentMismatch {
+                from: Delta::Json {
+                    partial_json: r#"{"key":"value"}"#.into()
+                },
+                to: "Delta::Text"
+            }
+            .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream() {
+        // sse.stream.txt is from the API docs and includes one of every event
+        // type, with the exception of fatal errors, but they all have the same
+        // structure, so if one works, they all should. It covers every code
+        // path in the `Stream` struct and every event type.
+        let stream = mock_stream(include_str!("../test/data/sse.stream.txt"));
+
+        let text: String = stream
+            .filter_rate_limit()
+            .text()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            text,
+            "Okay, let's check the weather for San Francisco, CA:"
+        );
     }
 }
