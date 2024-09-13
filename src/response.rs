@@ -150,7 +150,9 @@ mod tests {
 
     #[test]
     fn test_into_stream() {
-        let mock_stream = crate::stream::tests::mock_stream();
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
 
         let response = Response::Stream {
             stream: mock_stream,
@@ -161,7 +163,9 @@ mod tests {
 
     #[test]
     fn test_unwrap_stream() {
-        let mock_stream = crate::stream::tests::mock_stream();
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
 
         let response = Response::Stream {
             stream: mock_stream,

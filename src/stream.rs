@@ -288,6 +288,16 @@ impl Stream {
             }
         })
     }
+
+    // TODO: Figure out an ergonomic way to handle tool use when streaming. We
+    // may need another wrapper stream to store json deltas until a full block
+    // is received. This would allow us to merge json deltas and then emit a
+    // tool use event. Emitting `Block`s might not be a bad idea, but it would
+    // delay the text output, which is the primary use case for streaming. Even
+    // though events can be made up of multiple text blocks, generally the model
+    // only generates a single block per message per type. Waiting for an entire
+    // text block would mean waiting for the entire message. Waiting on JSON, is
+    // however necessary since we can't do anything useful with partial JSON.
 }
 
 impl futures::Stream for Stream {
@@ -304,6 +314,8 @@ impl futures::Stream for Stream {
 #[cfg(test)]
 pub(crate) mod tests {
 
+    use futures::TryStreamExt;
+
     use super::*;
 
     // Actual JSON from the API.
@@ -311,23 +323,26 @@ pub(crate) mod tests {
     pub const CONTENT_BLOCK_START: &str = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"} }";
     pub const CONTENT_BLOCK_DELTA: &str = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Certainly! I\"}     }";
 
-    pub fn mock_stream() -> Stream {
+    /// Creates a mock stream from a string (likely `include_str!`). The string
+    /// should be a series of `event`, `data`, and empty lines (a SSE stream).
+    /// Anthropic provides such example data in the API documentation.
+    pub fn mock_stream(text: &'static str) -> Stream {
+        use itertools::Itertools;
+
+        // TODO: one of every possible variants, even if it doesn't make sense.
         let inner = futures::stream::iter(
-            [
+            // first line should be `event`, second line should be `data`, third
+            // line should be empty.
+            text.lines().tuples().map(|(event, data, _empty)| {
+                assert!(_empty.is_empty());
+
                 Ok(eventsource_stream::Event {
-                    data: CONTENT_BLOCK_START.into(),
-                    id: "123".into(),
-                    event: "content_block_start".into(),
+                    event: event.strip_prefix("event: ").unwrap().into(),
+                    data: data.strip_prefix("data: ").unwrap().into(),
+                    id: "".into(),
                     retry: None,
-                }),
-                Ok(eventsource_stream::Event {
-                    data: CONTENT_BLOCK_DELTA.into(),
-                    id: "123".into(),
-                    event: "content_block_delta".into(),
-                    retry: None,
-                }),
-            ]
-            .into_iter(),
+                })
+            }),
         );
 
         Stream::new(inner)
@@ -383,7 +398,8 @@ pub(crate) mod tests {
 
     #[test]
     fn test_content_block_delta_merge() {
-        let delta = Delta::Text {
+        // Merge text deltas.
+        let text_delta = Delta::Text {
             text: "Certainly! I".into(),
         }
         .merge(Delta::Text {
@@ -394,10 +410,82 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(
-            delta,
+            text_delta,
             Delta::Text {
                 text: "Certainly! I can do".into()
             }
+        );
+
+        // Merge JSON deltas.
+        let json_delta = Delta::Json {
+            partial_json: r#"{"key":"#.into(),
+        }
+        .merge(Delta::Json {
+            partial_json: r#""value"}"#.into(),
+        })
+        .unwrap();
+
+        assert_eq!(
+            json_delta,
+            Delta::Json {
+                partial_json: r#"{"key":"value"}"#.into()
+            }
+        );
+
+        // Content mismatch.
+        let mismatch = json_delta.merge(text_delta).unwrap_err();
+
+        assert_eq!(
+            mismatch.to_string(),
+            ContentMismatch {
+                from: Delta::Text {
+                    text: "Certainly! I can do".into()
+                },
+                to: "Delta::Json"
+            }
+            .to_string()
+        );
+
+        // Other way around, for coverage.
+        let text_delta = Delta::Text {
+            text: "Certainly!".into(),
+        };
+        let json_delta = Delta::Json {
+            partial_json: r#"{"key":"value"}"#.into(),
+        };
+
+        let mismatch = text_delta.merge(json_delta).unwrap_err();
+
+        assert_eq!(
+            mismatch.to_string(),
+            ContentMismatch {
+                from: Delta::Json {
+                    partial_json: r#"{"key":"value"}"#.into()
+                },
+                to: "Delta::Text"
+            }
+            .to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream() {
+        // sse.stream.txt is from the API docs and includes one of every event
+        // type, with the exception of fatal errors, but they all have the same
+        // structure, so if one works, they all should. It covers every code
+        // path in the `Stream` struct and every event type.
+        let stream = mock_stream(include_str!("../test/data/sse.stream.txt"));
+
+        let text: String = stream
+            .filter_rate_limit()
+            .text()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            text,
+            "Okay, let's check the weather for San Francisco, CA:"
         );
     }
 }

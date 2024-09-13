@@ -168,3 +168,59 @@ pub struct Result {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::request::message::CacheControl>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn use_try_from_value() {
+        let value = serde_json::json!({
+            "id": "test_id",
+            "name": "test_name",
+            "input": {
+                "test_key": "test_value"
+            }
+        });
+
+        let use_ = Use::try_from(value).unwrap();
+
+        assert_eq!(use_.id, "test_id");
+        assert_eq!(use_.name, "test_name");
+        assert_eq!(
+            use_.input,
+            serde_json::json!({
+                "test_key": "test_value"
+            })
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn test_use_markdown() {
+        use crate::markdown::ToMarkdown;
+
+        let use_ = Use {
+            id: "test_id".into(),
+            name: "test_name".into(),
+            input: serde_json::json!({
+                "test_key": "test_value"
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let markdown = use_.markdown_verbose();
+
+        assert_eq!(
+            markdown.as_ref(),
+            "\n````json\n{\"id\":\"test_id\",\"name\":\"test_name\",\"input\":{\"test_key\":\"test_value\"}}\n````"
+        );
+
+        // By default the tool use is not included in the markdown, however this
+        // might change in the future. Really, our Display impl could just
+        // return an empty &str but this is more consistent with the rest of the
+        // crate.
+        assert_eq!(use_.to_string(), "");
+    }
+}
