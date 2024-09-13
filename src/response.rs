@@ -159,6 +159,7 @@ mod tests {
         };
 
         assert!(response.into_stream().is_some());
+        assert!(RESPONSE.into_stream().is_none());
     }
 
     #[test]
@@ -171,15 +172,35 @@ mod tests {
             stream: mock_stream,
         };
 
-        assert!(response.into_stream().is_some());
+        let _stream = response.unwrap_stream();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_stream_panics() {
+        let _panic = RESPONSE.unwrap_stream();
     }
 
     #[test]
     fn test_unwrap_message() {
         assert_eq!(
-            RESPONSE.into_message().unwrap().content.to_string(),
+            RESPONSE.unwrap_message().content.to_string(),
             "Hello, world!"
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_message_panics() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        let _panic = response.unwrap_message();
     }
 
     #[test]
@@ -188,6 +209,16 @@ mod tests {
             RESPONSE.message().unwrap().content.to_string(),
             "Hello, world!"
         );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.message().is_none());
     }
 
     #[test]
@@ -196,6 +227,16 @@ mod tests {
             RESPONSE.into_message().unwrap().content.to_string(),
             "Hello, world!"
         );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.into_message().is_none());
     }
 
     #[test]
@@ -209,6 +250,16 @@ mod tests {
                 .to_string(),
             "Hello, world!"
         );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.into_response_message().is_none());
     }
 
     #[test]
@@ -222,6 +273,16 @@ mod tests {
                 .to_string(),
             "Hello, world!"
         );
+
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        assert!(response.response_message().is_none());
     }
 
     #[test]
@@ -234,5 +295,19 @@ mod tests {
                 .to_string(),
             "Hello, world!"
         );
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_unwrap_response_message_panics() {
+        let mock_stream = crate::stream::tests::mock_stream(include_str!(
+            "../test/data/sse.stream.txt"
+        ));
+
+        let response = Response::Stream {
+            stream: mock_stream,
+        };
+
+        let _panic = response.unwrap_response_message();
     }
 }

@@ -106,7 +106,7 @@ impl From<(Role, String)> for Message {
     fn from((role, content): (Role, String)) -> Self {
         Self {
             role,
-            content: Content::SinglePart(content.into()),
+            content: content.into(),
         }
     }
 }
@@ -115,7 +115,7 @@ impl From<(Role, Cow<'static, str>)> for Message {
     fn from((role, content): (Role, Cow<'static, str>)) -> Self {
         Self {
             role,
-            content: Content::SinglePart(content),
+            content: content.into(),
         }
     }
 }
@@ -124,7 +124,7 @@ impl From<(Role, &'static str)> for Message {
     fn from((role, content): (Role, &'static str)) -> Self {
         Self {
             role,
-            content: Content::SinglePart(Cow::Borrowed(content)),
+            content: content.into(),
         }
     }
 }
@@ -254,12 +254,11 @@ impl Content {
     }
 
     /// Add a [`Block`] to the [`Content`]. If the [`Content`] is a
-    /// [`SinglePart`], it will be converted to a [`MultiPart`]. Returns the
-    /// index of the added [`Block`].
+    /// [`SinglePart`], it will be converted to a [`MultiPart`].
     ///
     /// [`SinglePart`]: Content::SinglePart
     /// [`MultiPart`]: Content::MultiPart
-    pub fn push<P>(&mut self, part: P) -> usize
+    pub fn push<P>(&mut self, part: P)
     where
         P: Into<Block>,
     {
@@ -275,10 +274,6 @@ impl Content {
 
         if let Content::MultiPart(parts) = self {
             parts.push(part.into());
-
-            parts.len() - 1
-        } else {
-            unreachable!("Content is not MultiPart");
         }
     }
 
@@ -693,9 +688,11 @@ impl From<tool::Result> for Block {
 impl From<image::RgbaImage> for Block {
     fn from(image: image::RgbaImage) -> Self {
         Image::encode(MediaType::Png, image)
-            // Unwrap can never panic unless the PNG encoding fails.
+            // Unwrap can never panic unless the PNG encoding fails, which
+            // should really never happen, but no matter what we don't panic.
             .unwrap_or_else(|e| {
-                eprintln!("Error encoding image: {}", e);
+                #[cfg(feature = "log")]
+                log::error!("Error encoding image: {}", e);
                 Image::from_parts(MediaType::Png, String::new())
             })
             .into()
@@ -838,7 +835,11 @@ pub enum MediaType {
 impl std::fmt::Display for MediaType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Use serde to get the string representation.
-        write!(f, "{}", serde_json::to_string(self).unwrap())
+        write!(
+            f,
+            "{}",
+            serde_json::to_string(self).unwrap().trim_matches('"')
+        )
     }
 }
 
@@ -900,6 +901,12 @@ mod tests {
 ]"#;
 
     #[test]
+    fn test_role_display() {
+        assert_eq!(Role::User.to_string(), "User");
+        assert_eq!(Role::Assistant.to_string(), "Assistant");
+    }
+
+    #[test]
     fn deserialize_content() {
         let content: Content = serde_json::from_str(CONTENT_SINGLE).unwrap();
         assert_eq!(content.to_string(), "Hello, world!");
@@ -917,6 +924,12 @@ mod tests {
         // FIXME: This is really testing the Display impl. There should be a
         // separate test for that.
         assert_eq!(message.to_string(), "### User\n\nHello, world");
+    }
+
+    #[test]
+    fn test_message_from_role_string_tuple() {
+        let message: Message = (Role::User, "Hello, world!".to_string()).into();
+        assert_eq!(message.to_string(), "### User\n\nHello, world!");
     }
 
     #[test]
@@ -1164,5 +1177,59 @@ mod tests {
         assert_eq!(block.tool_use(), Some(&expected));
     }
 
+    #[test]
+    fn test_block_from_str() {
+        let block: Block = "Hello, world!".into();
+        assert_eq!(block.to_string(), "Hello, world!");
+    }
+
+    #[test]
+    fn test_block_from_string() {
+        let block: Block = "Hello, world!".to_string().into();
+        assert_eq!(block.to_string(), "Hello, world!");
+    }
+
+    #[test]
+    fn test_block_from_image() {
+        let image = Image::from_parts(MediaType::Png, "data".to_string());
+        let block: Block = image.into();
+        assert_eq!(block.to_string(), "![Image](data:image/png;base64,data)");
+    }
+
     // TODO: Image tests
+    #[test]
+    #[cfg(feature = "png")]
+    fn test_block_from_rgba_image() {
+        let image = image::RgbaImage::new(1, 1);
+        let block: Block = image.into();
+        assert!(matches!(block, Block::Image { .. }));
+    }
+
+    #[test]
+    #[cfg(feature = "png")]
+    fn test_block_from_dynamic_image() {
+        let image = image::DynamicImage::new_rgba8(1, 1);
+        let block: Block = image.into();
+        assert!(matches!(block, Block::Image { .. }));
+    }
+
+    #[test]
+    #[cfg(feature = "png")]
+    fn test_image_from_compressed() {
+        use std::io::Cursor;
+
+        // Encode a sample image
+        let expected = image::RgbaImage::new(1, 1);
+        let mut encoded = Cursor::new(vec![]);
+        expected
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+
+        // Decode the image
+        let image =
+            Image::from_compressed(MediaType::Png, encoded.into_inner());
+        let actual: image::RgbaImage = image.try_into().unwrap();
+
+        assert_eq!(actual, expected);
+    }
 }

@@ -15,8 +15,11 @@ pub type Arr = [u8; LEN];
 ///
 /// [`key::LEN`]: LEN
 #[derive(Debug, thiserror::Error)]
-#[error("Invalid key length: {0} (expected {LEN})")]
-pub struct InvalidKeyLength(usize);
+#[error("Invalid key length: {actual} (expected {LEN})")]
+pub struct InvalidKeyLength {
+    /// The incorrect actual length of the key.
+    pub actual: usize,
+}
 
 /// Stores an Anthropic API key securely. The API key is encrypted in memory.
 /// The object features a [`Display`] implementation that can be used to write
@@ -60,8 +63,9 @@ impl TryFrom<Vec<u8>> for Key {
     fn try_from(mut v: Vec<u8>) -> Result<Self, Self::Error> {
         let mut arr: Arr = [0; LEN];
         if v.len() != LEN {
+            let actual = v.len();
             v.zeroize();
-            return Err(InvalidKeyLength(v.len()));
+            return Err(InvalidKeyLength { actual });
         }
 
         arr.copy_from_slice(&v);
@@ -103,5 +107,29 @@ impl std::fmt::Display for Key {
         // or String which are guaranteed to be valid UTF-8.
         let key_str = std::str::from_utf8(key.as_ref()).unwrap();
         write!(f, "{}", key_str)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Note: This is a real key but it's been disabled. As is warned in the
+    // docs above, do not use a string literal for a real key. There is no
+    // TryFrom<&'static str> for Key for this reason.
+    const API_KEY: &str = "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";
+
+    #[test]
+    fn test_key() {
+        let key = Key::try_from(API_KEY.to_string()).unwrap();
+        let key_str = key.to_string();
+        assert_eq!(key_str, API_KEY);
+    }
+
+    #[test]
+    fn test_invalid_key_length() {
+        let key = "test_key".to_string();
+        let err = Key::try_from(key).unwrap_err();
+        assert_eq!(err.to_string(), "Invalid key length: 8 (expected 108)");
     }
 }

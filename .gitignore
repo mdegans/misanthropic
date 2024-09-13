@@ -2,3 +2,5 @@
 Cargo.lock
 .vscode
 cobertura.xml
+api.key
+lcov.info

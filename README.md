@@ -66,11 +66,11 @@ println!("{}", message);
 - [x] Tool use,
 - [x] Streaming responses
 - [x] Message responses
-- [x] Zero-copy where possible
 - [x] Image support with or without the `image` crate
 - [x] Markdown formatting of messages, including images
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
+- [ ] Zero-copy serde - Coming soon!
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
 

@@ -170,7 +170,7 @@ impl PartialEq<str> for Markdown {
 pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with [`DEFAULT_OPTIONS`].
     fn markdown(&self) -> Markdown {
-        self.markdown_custom(DEFAULT_OPTIONS_REF)
+        self.markdown_events().into()
     }
 
     /// Render the type to a [`Markdown`] string with custom [`Options`].
@@ -232,6 +232,8 @@ impl Default for Options {
 
 #[cfg(test)]
 mod tests {
+    use crate::request::{message::Role, Message};
+
     use super::*;
 
     use std::borrow::Borrow;
@@ -247,6 +249,21 @@ mod tests {
     }
 
     #[test]
+    fn test_options_from_pulldown() {
+        let inner = pulldown_cmark::Options::empty();
+        let options: Options = inner.into();
+        assert_eq!(options.inner, inner);
+    }
+
+    #[test]
+    fn test_options_verbose() {
+        let options = Options::verbose();
+        assert!(options.tool_use);
+        assert!(options.tool_results);
+        assert!(options.system);
+    }
+
+    #[test]
     fn test_markdown() {
         let expected = "Hello, **world**!";
         let events = pulldown_cmark::Parser::new(&expected);
@@ -256,5 +273,18 @@ mod tests {
         assert!(&markdown == expected);
         let markdown: String = markdown.into();
         assert_eq!(markdown, expected);
+    }
+
+    #[test]
+    fn test_message_markdown() {
+        let message = Message {
+            role: Role::User,
+            content: "Hello, **world**!".into(),
+        };
+
+        assert_eq!(
+            message.markdown().as_ref(),
+            "### User\n\nHello, **world**!"
+        );
     }
 }

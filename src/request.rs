@@ -721,6 +721,10 @@ mod tests {
     #[test]
     #[cfg(feature = "prompt-caching")]
     fn test_cache() {
+        // Test with nothing to cache. This should be a no-op.
+        let request = Request::default().cache();
+        assert!(request == Request::default());
+
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
         let request = Request::default().add_tool(Tool {
