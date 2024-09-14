@@ -1,4 +1,6 @@
 //! [`Tool`] and tool [`Choice`] types for the Anthropic Messages API.
+use std::borrow::Cow;
+
 use serde::{Deserialize, Serialize};
 
 use crate::request::message::Content;
@@ -88,11 +90,11 @@ impl TryFrom<serde_json::Value> for Tool {
 )]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Use {
+pub struct Use<'a> {
     /// Unique Id for this tool call.
-    pub id: String,
+    pub id: Cow<'a, str>,
     /// Name of the tool.
-    pub name: String,
+    pub name: Cow<'a, str>,
     /// Input for the tool.
     pub input: serde_json::Value,
     /// Use prompt caching. See [`Block::cache`] for more information.
@@ -101,7 +103,7 @@ pub struct Use {
     pub cache_control: Option<crate::request::message::CacheControl>,
 }
 
-impl TryFrom<serde_json::Value> for Use {
+impl TryFrom<serde_json::Value> for Use<'_> {
     type Error = serde_json::Error;
 
     fn try_from(
@@ -112,7 +114,7 @@ impl TryFrom<serde_json::Value> for Use {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Use {
+impl crate::markdown::ToMarkdown for Use<'_> {
     fn markdown_events_custom<'a>(
         &'a self,
         options: &'a crate::markdown::Options,
@@ -137,7 +139,7 @@ impl crate::markdown::ToMarkdown for Use {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Use {
+impl std::fmt::Display for Use<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -156,11 +158,11 @@ impl std::fmt::Display for Use {
 // On the one hand this can clash with the `Result` type from the standard
 // library, but on the other hand it's what the API uses, and I'm trying to
 // be as faithful to the API as possible.
-pub struct Result {
+pub struct Result<'a> {
     /// Unique Id for this tool call.
-    pub tool_use_id: String,
+    pub tool_use_id: Cow<'a, str>,
     /// Output of the tool.
-    pub content: Content,
+    pub content: Content<'a>,
     /// Whether the tool call result was an error.
     pub is_error: bool,
     /// Use prompt caching. See [`Block::cache`] for more information.

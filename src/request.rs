@@ -16,7 +16,7 @@ pub use message::Message;
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub struct Request {
+pub struct Request<'a> {
     /// [`Model`] to use for inference.
     pub model: Model,
     /// Input [`request::Message`]s. If this ends with an [`Assistant`]
@@ -28,7 +28,7 @@ pub struct Request {
     /// [`Assistant`]: crate::request::message::Role::Assistant
     /// [`request::Message`]: crate::request::Message
     /// [Anthropic docs]: <https://docs.anthropic.com/en/api/messages>
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message<'a>>,
     /// Max tokens to generate. See Anthropic [docs] for the maximum number of
     /// tokens for each model.
     ///
@@ -43,7 +43,7 @@ pub struct Request {
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_sequences: Option<Vec<Cow<'static, str>>>,
+    pub stop_sequences: Option<Vec<Cow<'a, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the
     /// response will be a single [`response::Message`].
     ///
@@ -57,7 +57,7 @@ pub struct Request {
     /// [`MultiPart`]: message::Content::MultiPart
     /// [`Content`]: message::Content
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<message::Content>,
+    pub system: Option<message::Content<'a>>,
     /// Temperature for sampling. Must be between 0 and 1. Higher values mean
     /// more randomness. Note that 0.0 is not fully deterministic.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -81,7 +81,7 @@ pub struct Request {
     pub top_p: Option<f32>,
 }
 
-impl Default for Request {
+impl Default for Request<'_> {
     fn default() -> Self {
         Self {
             model: Default::default(),
@@ -100,7 +100,7 @@ impl Default for Request {
     }
 }
 
-impl Request {
+impl<'a> Request<'a> {
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -138,7 +138,7 @@ impl Request {
     /// [`messages`]: Request::messages
     pub fn messages<M, Ms>(mut self, messages: Ms) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages = messages.into_iter().map(Into::into).collect();
@@ -150,7 +150,7 @@ impl Request {
     /// [`messages`]: Request::messages
     pub fn add_message<M>(mut self, message: M) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
     {
         self.messages.push(message.into());
         self
@@ -161,7 +161,7 @@ impl Request {
     /// [`messages`]: Request::messages
     pub fn extend_messages<M, Ms>(mut self, messages: Ms) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages.extend(messages.into_iter().map(Into::into));
@@ -285,7 +285,7 @@ impl Request {
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     pub fn extend_stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
     where
-        S: Into<Cow<'static, str>>,
+        S: Into<Cow<'a, str>>,
         Ss: IntoIterator<Item = S>,
     {
         self.stop_sequences
@@ -300,7 +300,7 @@ impl Request {
     /// [`system`]: Request::system
     pub fn system<S>(mut self, system: S) -> Self
     where
-        S: Into<message::Content>,
+        S: Into<message::Content<'a>>,
     {
         self.system = Some(system.into());
         self
@@ -327,7 +327,7 @@ impl Request {
     /// [`MediaType`]: message::MediaType
     pub fn add_system_block<B>(mut self, block: B) -> Self
     where
-        B: Into<message::Block>,
+        B: Into<message::Block<'a>>,
     {
         match self.system {
             Some(mut content) => {
@@ -510,7 +510,7 @@ impl Request {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Request {
+impl crate::markdown::ToMarkdown for Request<'_> {
     /// Format the [`Request`] chat as markdown in OpenAI style. H3 headings are
     /// used for "System", "Tool", "User", and "Assistant" messages even though
     /// technically there are only [`User`] and [`Assistant`] [`Role`]s.

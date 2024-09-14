@@ -13,13 +13,13 @@ use crate::request;
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(IsVariant)]
-pub enum Response {
+pub enum Response<'a> {
     /// Single [`response::Message`] from the API.
     ///
     /// [`response::Message`]: Message
     Message {
         #[allow(missing_docs)]
-        message: self::Message,
+        message: self::Message<'a>,
     },
     /// [`Stream`] of [`Event`]s (message delta, etc.).
     ///
@@ -27,13 +27,13 @@ pub enum Response {
     /// [`Event`]: crate::stream::Event
     Stream {
         #[allow(missing_docs)]
-        stream: crate::Stream,
+        stream: crate::Stream<'a>,
     },
 }
 
-impl Response {
+impl<'a> Response<'a> {
     /// Convert a [`Response::Stream`] variant into a [`crate::Stream`].
-    pub fn into_stream(self) -> Option<crate::Stream> {
+    pub fn into_stream(self) -> Option<crate::Stream<'a>> {
         match self {
             Self::Stream { stream } => Some(stream),
             _ => None,
@@ -44,7 +44,7 @@ impl Response {
     ///
     /// # Panics
     /// - If the variant is not a [`Response::Stream`].
-    pub fn unwrap_stream(self) -> crate::Stream {
+    pub fn unwrap_stream(self) -> crate::Stream<'a> {
         self.into_stream()
             .expect("`Response` is not a `Stream` variant.")
     }
@@ -56,7 +56,7 @@ impl Response {
     /// - If the variant is not a [`Response::Message`].
     ///
     /// [`response::Message`]: self::Message
-    pub fn unwrap_message(self) -> request::Message {
+    pub fn unwrap_message(self) -> request::Message<'a> {
         self.into_message()
             .expect("`Response` is not a `Message` variant.")
     }
@@ -76,7 +76,7 @@ impl Response {
     /// this if you don't care about [`response::Message`] metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn into_message(self) -> Option<request::Message> {
+    pub fn into_message(self) -> Option<request::Message<'a>> {
         match self {
             Self::Message { message, .. } => Some(message.message),
             _ => None,
@@ -86,7 +86,7 @@ impl Response {
     /// Convert a [`Response::Message`] variant into a [`response::Message`].
     ///
     /// [`response::Message`]: self::Message
-    pub fn into_response_message(self) -> Option<Message> {
+    pub fn into_response_message(self) -> Option<Message<'a>> {
         match self {
             Self::Message { message, .. } => Some(message),
             _ => None,
@@ -96,7 +96,7 @@ impl Response {
     /// Get the [`response::Message`] from a [`Response::Message`] variant.
     ///
     /// [`response::Message`]: self::Message
-    pub fn response_message(&self) -> Option<&Message> {
+    pub fn response_message(&self) -> Option<&Message<'a>> {
         match self {
             Self::Message { message, .. } => Some(message),
             _ => None,
@@ -109,7 +109,7 @@ impl Response {
     /// - If the variant is not a [`Response::Message`].
     ///
     /// [`response::Message`]: self::Message
-    pub fn unwrap_response_message(self) -> Message {
+    pub fn unwrap_response_message(self) -> Message<'a> {
         self.into_response_message()
             .expect("`Response` is not a `Message` variant.")
     }

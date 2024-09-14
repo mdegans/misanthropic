@@ -462,7 +462,7 @@ mod tests {
 
     // Test the Client
 
-    use crate::{request::message::Role, Request};
+    use crate::{request::message::Role, stream::FilterExt, Request};
 
     const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 

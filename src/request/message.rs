@@ -61,17 +61,17 @@ impl std::fmt::Display for Role {
     display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
 )]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub struct Message {
+pub struct Message<'a> {
     /// Who is the message from.
     pub role: Role,
     /// The [`Content`] of the message as [one] or [more] [`Block`]s.
     ///
     /// [one]: Content::SinglePart
     /// [more]: Content::MultiPart
-    pub content: Content,
+    pub content: Content<'a>,
 }
 
-impl Message {
+impl Message<'_> {
     /// Heading for the message when rendered as markdown using [`Display`].
     ///
     /// [`Display`]: std::fmt::Display
@@ -96,13 +96,13 @@ impl Message {
     }
 }
 
-impl From<response::Message> for Message {
-    fn from(message: response::Message) -> Self {
+impl<'a> From<response::Message<'a>> for Message<'a> {
+    fn from(message: response::Message<'a>) -> Self {
         message.message
     }
 }
 
-impl From<(Role, String)> for Message {
+impl From<(Role, String)> for Message<'_> {
     fn from((role, content): (Role, String)) -> Self {
         Self {
             role,
@@ -111,8 +111,8 @@ impl From<(Role, String)> for Message {
     }
 }
 
-impl From<(Role, Cow<'static, str>)> for Message {
-    fn from((role, content): (Role, Cow<'static, str>)) -> Self {
+impl<'a> From<(Role, Cow<'a, str>)> for Message<'a> {
+    fn from((role, content): (Role, Cow<'a, str>)) -> Self {
         Self {
             role,
             content: content.into(),
@@ -120,8 +120,8 @@ impl From<(Role, Cow<'static, str>)> for Message {
     }
 }
 
-impl From<(Role, &'static str)> for Message {
-    fn from((role, content): (Role, &'static str)) -> Self {
+impl<'a> From<(Role, &'a str)> for Message<'a> {
+    fn from((role, content): (Role, &'a str)) -> Self {
         Self {
             role,
             content: content.into(),
@@ -129,8 +129,8 @@ impl From<(Role, &'static str)> for Message {
     }
 }
 
-impl From<tool::Use> for Message {
-    fn from(call: tool::Use) -> Self {
+impl<'a> From<tool::Use<'a>> for Message<'a> {
+    fn from(call: tool::Use<'a>) -> Self {
         Message {
             role: Role::Assistant,
             content: call.into(),
@@ -138,8 +138,8 @@ impl From<tool::Use> for Message {
     }
 }
 
-impl From<tool::Result> for Message {
-    fn from(result: tool::Result) -> Self {
+impl<'a> From<tool::Result<'a>> for Message<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
         Message {
             role: Role::User,
             content: result.into(),
@@ -148,7 +148,7 @@ impl From<tool::Result> for Message {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Message {
+impl crate::markdown::ToMarkdown for Message<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
@@ -184,7 +184,7 @@ impl crate::markdown::ToMarkdown for Message {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Message {
+impl std::fmt::Display for Message<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -204,14 +204,14 @@ impl std::fmt::Display for Message {
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub enum Content {
+pub enum Content<'a> {
     /// Single part text-only content.
-    SinglePart(Cow<'static, str>),
+    SinglePart(Cow<'a, str>),
     /// Multiple content [`Block`]s.
-    MultiPart(Vec<Block>),
+    MultiPart(Vec<Block<'a>>),
 }
 
-impl Content {
+impl<'a> Content<'a> {
     /// Const constructor for static text content.
     pub const fn text(text: &'static str) -> Self {
         Self::SinglePart(Cow::Borrowed(text))
@@ -238,7 +238,7 @@ impl Content {
     ///
     /// # Panics
     /// - If the content is [`MultiPart`].
-    pub fn unwrap_single_part(self) -> Block {
+    pub fn unwrap_single_part(self) -> Block<'a> {
         match self {
             #[cfg(feature = "prompt-caching")]
             Self::SinglePart(text) => Block::Text {
@@ -260,7 +260,7 @@ impl Content {
     /// [`MultiPart`]: Content::MultiPart
     pub fn push<P>(&mut self, part: P)
     where
-        P: Into<Block>,
+        P: Into<Block<'a>>,
     {
         // If there is a SinglePart message, convert it to a MultiPart message.
         if self.is_single_part() {
@@ -308,7 +308,7 @@ impl Content {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Content {
+impl crate::markdown::ToMarkdown for Content<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
@@ -336,7 +336,7 @@ impl crate::markdown::ToMarkdown for Content {
 }
 
 #[cfg(not(feature = "markdown"))]
-impl std::fmt::Display for Content {
+impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SinglePart(string) => write!(f, "{}", string),
@@ -357,7 +357,7 @@ impl std::fmt::Display for Content {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Content {
+impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -365,38 +365,38 @@ impl std::fmt::Display for Content {
     }
 }
 
-impl Content {
+impl Content<'_> {
     /// Separator for multi-part content.
     #[cfg(not(feature = "markdown"))]
     pub const SEP: &'static str = "\n\n";
 }
 
-impl From<&'static str> for Content {
-    fn from(s: &'static str) -> Self {
+impl<'a> From<&'a str> for Content<'a> {
+    fn from(s: &'a str) -> Self {
         Self::SinglePart(s.into())
     }
 }
 
-impl From<String> for Content {
+impl From<String> for Content<'_> {
     fn from(s: String) -> Self {
         Self::SinglePart(s.into())
     }
 }
 
-impl From<Block> for Content {
-    fn from(block: Block) -> Self {
+impl<'a> From<Block<'a>> for Content<'a> {
+    fn from(block: Block<'a>) -> Self {
         Self::MultiPart(vec![block])
     }
 }
 
-impl From<tool::Use> for Content {
-    fn from(call: tool::Use) -> Self {
+impl<'a> From<tool::Use<'a>> for Content<'a> {
+    fn from(call: tool::Use<'a>) -> Self {
         Block::from(call).into()
     }
 }
 
-impl From<tool::Result> for Content {
-    fn from(result: tool::Result) -> Self {
+impl<'a> From<tool::Result<'a>> for Content<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
         Block::from(result).into()
     }
 }
@@ -407,13 +407,13 @@ impl From<tool::Result> for Content {
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub enum Block {
+pub enum Block<'a> {
     /// Text content.
     #[serde(alias = "text_delta")]
     #[cfg_attr(not(feature = "markdown"), display("{text}"))]
     Text {
         /// The actual text content.
-        text: Cow<'static, str>,
+        text: Cow<'a, str>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -423,7 +423,7 @@ pub enum Block {
     Image {
         #[serde(rename = "source")]
         /// An base64 encoded image.
-        image: Image,
+        image: Image<'a>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,7 +438,7 @@ pub enum Block {
     ToolUse {
         /// Tool use input.
         #[serde(flatten)]
-        call: tool::Use,
+        call: tool::Use<'a>,
     },
     /// Result of a [`Tool`] call. This should only be used with the [`User`]
     /// role.
@@ -449,12 +449,12 @@ pub enum Block {
     ToolResult {
         /// Tool result
         #[serde(flatten)]
-        result: tool::Result,
+        result: tool::Result<'a>,
     },
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Block {
+impl std::fmt::Display for Block<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -462,9 +462,9 @@ impl std::fmt::Display for Block {
     }
 }
 
-impl Block {
-    /// Const constructor for static text content.
-    pub const fn new_text(text: &'static str) -> Self {
+impl<'a> Block<'a> {
+    /// Const constructor for text content.
+    pub const fn new_text(text: &'a str) -> Self {
         Self::Text {
             text: Cow::Borrowed(text),
             #[cfg(feature = "prompt-caching")]
@@ -476,7 +476,7 @@ impl Block {
     /// will return a [`ContentMismatch`] error.
     pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
     where
-        Ds: IntoIterator<Item = Delta>,
+        Ds: IntoIterator<Item = Delta<'a>>,
     {
         let mut it = deltas.into_iter();
 
@@ -575,7 +575,7 @@ impl Block {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Block {
+impl crate::markdown::ToMarkdown for Block<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
@@ -642,17 +642,13 @@ impl crate::markdown::ToMarkdown for Block {
     }
 }
 
-impl From<&'static str> for Block {
-    fn from(text: &'static str) -> Self {
-        Self::Text {
-            text: text.into(),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        }
+impl<'a> From<&'a str> for Block<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::new_text(text)
     }
 }
 
-impl From<String> for Block {
+impl From<String> for Block<'_> {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
@@ -662,8 +658,8 @@ impl From<String> for Block {
     }
 }
 
-impl From<Image> for Block {
-    fn from(image: Image) -> Self {
+impl<'a> From<Image<'a>> for Block<'a> {
+    fn from(image: Image<'a>) -> Self {
         Self::Image {
             image,
             #[cfg(feature = "prompt-caching")]
@@ -672,20 +668,20 @@ impl From<Image> for Block {
     }
 }
 
-impl From<tool::Use> for Block {
-    fn from(call: tool::Use) -> Self {
+impl<'a> From<tool::Use<'a>> for Block<'a> {
+    fn from(call: tool::Use<'a>) -> Self {
         Self::ToolUse { call }
     }
 }
 
-impl From<tool::Result> for Block {
-    fn from(result: tool::Result) -> Self {
+impl<'a> From<tool::Result<'a>> for Block<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
         Self::ToolResult { result }
     }
 }
 
 #[cfg(feature = "png")]
-impl From<image::RgbaImage> for Block {
+impl From<image::RgbaImage> for Block<'_> {
     fn from(image: image::RgbaImage) -> Self {
         Image::encode(MediaType::Png, image)
             // Unwrap can never panic unless the PNG encoding fails, which
@@ -700,7 +696,7 @@ impl From<image::RgbaImage> for Block {
 }
 
 #[cfg(feature = "png")]
-impl From<image::DynamicImage> for Block {
+impl From<image::DynamicImage> for Block<'_> {
     fn from(image: image::DynamicImage) -> Self {
         image.to_rgba8().into()
     }
@@ -724,7 +720,7 @@ pub enum CacheControl {
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
-pub enum Image {
+pub enum Image<'a> {
     /// Base64 encoded image data. When displayed, it will be rendered as a
     /// markdown image with embedded data.
     #[display("![Image](data:{media_type};base64,{data})")]
@@ -732,15 +728,18 @@ pub enum Image {
         /// Image encoding format.
         media_type: MediaType,
         /// Base64 encoded compressed image data.
-        data: String,
+        data: Cow<'a, str>,
     },
 }
 
-impl Image {
+impl Image<'_> {
     /// From raw parts. The data is expected to be base64 encoded compressed
     /// image data or the API will reject it.
     pub fn from_parts(media_type: MediaType, data: String) -> Self {
-        Self::Base64 { media_type, data }
+        Self::Base64 {
+            media_type,
+            data: data.into(),
+        }
     }
 
     /// Encode from compressed image data (not base64 encoded). This cannot fail
@@ -754,7 +753,7 @@ impl Image {
 
         Self::Base64 {
             media_type: format,
-            data: encoder.encode(data),
+            data: encoder.encode(data).into(),
         }
     }
 
@@ -782,7 +781,7 @@ impl Image {
     pub fn decode(&self) -> Result<image::RgbaImage, ImageDecodeError> {
         match self {
             Self::Base64 { data, .. } => {
-                let data = general_purpose::STANDARD.decode(data)?;
+                let data = general_purpose::STANDARD.decode(data.as_bytes())?;
                 Ok(image::load_from_memory(&data)?.to_rgba8())
             }
         }
@@ -802,7 +801,7 @@ pub enum ImageDecodeError {
 }
 
 #[cfg(feature = "image")]
-impl TryInto<image::RgbaImage> for Image {
+impl TryInto<image::RgbaImage> for Image<'_> {
     type Error = ImageDecodeError;
 
     /// An [`Image`] can be decoded into an [`image::RgbaImage`] if it is valid
@@ -944,10 +943,10 @@ mod tests {
 
         let deltas = [
             Delta::Text {
-                text: ", how are you?".to_string(),
+                text: ", how are you?".into(),
             },
             Delta::Text {
-                text: " I'm fine.".to_string(),
+                text: " I'm fine.".into(),
             },
         ];
 
@@ -968,7 +967,7 @@ mod tests {
 
         // partial json to apply to the input portion
         let deltas = [Delta::Json {
-            partial_json: r#"{"key": "value"}"#.to_string(),
+            partial_json: r#"{"key": "value"}"#.into(),
         }];
 
         block.merge_deltas(deltas).unwrap();
@@ -985,7 +984,7 @@ mod tests {
 
         // content mismatch
         let deltas = [Delta::Json {
-            partial_json: "blabla".to_string(),
+            partial_json: "blabla".into(),
         }];
         let mut block = Block::Text {
             text: "Hello, world!".into(),
@@ -1087,7 +1086,7 @@ mod tests {
         let mut block: Block = "Hello, world!".into();
 
         let deltas = [Delta::Json {
-            partial_json: "blabla".to_string(),
+            partial_json: "blabla".into(),
         }];
 
         let err = block.merge_deltas(deltas).unwrap_err();
@@ -1190,6 +1189,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "png")]
     fn test_block_from_image() {
         let image = Image::from_parts(MediaType::Png, "data".to_string());
         let block: Block = image.into();

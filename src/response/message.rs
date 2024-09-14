@@ -7,12 +7,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[display("{}", message)]
-pub struct Message {
+pub struct Message<'a> {
     /// Unique `id` for the message.
-    pub id: Cow<'static, str>,
+    pub id: Cow<'a, str>,
     /// Inner [`request::Message`].
     #[serde(flatten)]
-    pub message: request::Message,
+    pub message: request::Message<'a>,
     /// [`Model`] that generated the message.
     pub model: Model,
     /// The reason the model stopped generating tokens.
@@ -21,12 +21,12 @@ pub struct Message {
     /// triggered it.
     ///
     /// [`StopSequence`]: StopReason::StopSequence
-    pub stop_sequence: Option<Cow<'static, str>>,
+    pub stop_sequence: Option<Cow<'a, str>>,
     /// Usage statistics for the message.
     pub usage: Usage,
 }
 
-impl Message {
+impl Message<'_> {
     /// Apply a [`MessageDelta`] with metadata to the message.
     pub fn apply_delta(&mut self, delta: MessageDelta) {
         self.stop_reason = delta.stop_reason;
