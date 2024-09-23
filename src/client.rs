@@ -172,7 +172,7 @@ impl Client {
     /// as well as [`Self::request_custom`] for a custom URL.
     ///
     /// [`Response`]: crate::Response
-    /// [`Request`]: crate::Request
+    /// [`Request`]: crate::prompt
     /// [`Message`]: crate::Message
     /// [`Stream`]: crate::Stream
     pub async fn request<P>(&self, prompt: P) -> Result<crate::Response>
@@ -462,7 +462,7 @@ mod tests {
 
     // Test the Client
 
-    use crate::{request::message::Role, stream::FilterExt, Request};
+    use crate::{prompt::message::Role, stream::FilterExt, Prompt};
 
     const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
@@ -504,7 +504,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let message = client
-            .message(Request::default().messages([(
+            .message(Prompt::default().messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))
@@ -522,7 +522,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let stream = client
-            .stream(Request::default().messages([(
+            .stream(Prompt::default().messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))

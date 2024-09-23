@@ -232,7 +232,7 @@ impl Default for Options {
 
 #[cfg(test)]
 mod tests {
-    use crate::request::{message::Role, Message};
+    use crate::prompt::{message::Role, Message};
 
     use super::*;
 

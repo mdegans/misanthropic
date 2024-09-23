@@ -3,14 +3,17 @@
 //! they do not see words as humans do). This example demonstrates how easy it
 //! is to overcome this with an assistive device in the form of a tool.
 
+// Note: This example uses blocking calls for simplicity such as `println!()`
+// and `stdin().lock()`. In a real application, these should *usually* be
+// replaced with async alternatives.
 use std::io::BufRead;
 
 use clap::Parser;
 use misanthropic::{
     json,
     markdown::ToMarkdown,
-    request::{message::Role, Message},
-    tool, Client, Request, Tool,
+    prompt::{message::Role, Message},
+    tool, Client, Prompt, Tool,
 };
 
 /// Count the number of letters in a word (or any string). An example of tool
@@ -38,7 +41,7 @@ pub fn count_letters(letter: char, string: String) -> usize {
     string.chars().filter(|c| *c == letter).count()
 }
 
-/// Handle the tool call. Returns a [`User`] message with the result.
+/// Handle the tool call. Returns a [`User`] [`Message`] with the result.
 ///
 /// [`User`]: Role::User
 pub fn handle_tool_call(call: &tool::Use) -> Result<Message<'static>, String> {
@@ -85,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `count_letters`. In the future this will be derivable from the function
     // signature and docstring. Like many things in our API, `Tool` is also
     // convertable from a `serde_json::Value`.
-    let mut chat = Request::default().add_tool(Tool {
+    let mut chat = Prompt::default().add_tool(Tool {
         name: "count_letters".into(),
         description: "Count the number of letters in a word.".into(),
         input_schema: json!({

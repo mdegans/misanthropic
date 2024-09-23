@@ -7,7 +7,7 @@ use derive_more::derive::IsVariant;
 pub(crate) mod message;
 pub use message::{Message, StopReason, Usage};
 
-use crate::request;
+use crate::prompt;
 
 /// Sucessful API response from the [Anthropic Messages API].
 ///
@@ -49,34 +49,34 @@ impl<'a> Response<'a> {
             .expect("`Response` is not a `Stream` variant.")
     }
 
-    /// Unwrap a [`Response::Message`] variant into a [`request::Message`]. Use
+    /// Unwrap a [`Response::Message`] variant into a [`prompt::message`]. Use
     /// this if you don't care about [`response::Message`] metadata.
     ///
     /// # Panics
     /// - If the variant is not a [`Response::Message`].
     ///
     /// [`response::Message`]: self::Message
-    pub fn unwrap_message(self) -> request::Message<'a> {
+    pub fn unwrap_message(self) -> prompt::Message<'a> {
         self.into_message()
             .expect("`Response` is not a `Message` variant.")
     }
 
-    /// Get the [`request::Message`] from a [`Response::Message`] variant. Use
+    /// Get the [`prompt::message`] from a [`Response::Message`] variant. Use
     /// this if you don't care about [`response::Message`] metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn message(&self) -> Option<&request::Message> {
+    pub fn message(&self) -> Option<&prompt::Message> {
         match self {
             Self::Message { message, .. } => Some(&message.message),
             _ => None,
         }
     }
 
-    /// Convert a [`Response::Message`] variant into a [`request::Message`]. Use
+    /// Convert a [`Response::Message`] variant into a [`prompt::message`]. Use
     /// this if you don't care about [`response::Message`] metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn into_message(self) -> Option<request::Message<'a>> {
+    pub fn into_message(self) -> Option<prompt::Message<'a>> {
         match self {
             Self::Message { message, .. } => Some(message.message),
             _ => None,
@@ -128,9 +128,9 @@ mod tests {
     const RESPONSE: Response = Response::Message {
         message: Message {
             id: Cow::Borrowed(TEST_ID),
-            message: request::Message {
-                role: request::message::Role::User,
-                content: request::message::Content::SinglePart(Cow::Borrowed(
+            message: prompt::Message {
+                role: prompt::message::Role::User,
+                content: prompt::message::Content::SinglePart(Cow::Borrowed(
                     CONTENT,
                 )),
             },

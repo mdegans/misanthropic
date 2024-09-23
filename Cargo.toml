@@ -39,10 +39,15 @@ pulldown-cmark-to-cmark = { version = "17", optional = true }
 static_assertions = "1"
 
 [dev-dependencies]
+# for all examples
 clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# for the strawberry example
 itertools = "0.13"
+# for the python example
+subprocess = "0.2"
+tempfile = "3.12"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -77,3 +82,7 @@ partialeq = []
 [[example]]
 name = "strawberry"
 required-features = ["markdown"]
+
+[[example]]
+name = "python"
+required-features = ["markdown", "prompt-caching"]

@@ -7,7 +7,7 @@ use std::{borrow::Cow, pin::Pin};
 #[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
     client::AnthropicError,
-    request::{
+    prompt::{
         self,
         message::{Block, Content},
     },
@@ -30,21 +30,25 @@ pub enum Event<'a> {
     },
     /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
+        // TODO: Indexing. Issue is the Content::SinglePart is a String and
+        // Content::MultiPart is a Vec of Block. This is for serialization
+        // purposes. We should probably just use a Vec for both and write a
+        // custom serializer for that field.
         index: usize,
         /// Empty content block.
         content_block: Block<'a>,
     },
     /// Content block delta.
     ContentBlockDelta {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
         /// Delta to apply to the content block.
         delta: Delta<'a>,
     },
     /// Content block end.
     ContentBlockStop {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
     },
     /// [`MessageDelta`]. Contains metadata, not [`Content`] [`Delta`]s. Apply

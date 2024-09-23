@@ -1,18 +1,18 @@
 use std::borrow::Cow;
 
-use crate::{request, stream::MessageDelta, Model};
+use crate::{prompt, stream::MessageDelta, Model};
 use serde::{Deserialize, Serialize};
 
-/// A [`request::Message`] with additional response metadata.
+/// A [`prompt::message`] with additional response metadata.
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[display("{}", message)]
 pub struct Message<'a> {
     /// Unique `id` for the message.
     pub id: Cow<'a, str>,
-    /// Inner [`request::Message`].
+    /// Inner [`prompt::message`].
     #[serde(flatten)]
-    pub message: request::Message<'a>,
+    pub message: prompt::Message<'a>,
     /// [`Model`] that generated the message.
     pub model: Model,
     /// The reason the model stopped generating tokens.
@@ -40,16 +40,31 @@ impl Message<'_> {
     /// [`StopReason::ToolUse`] and the final message [`Content`] [`Block`] is
     /// [`ToolUse`].
     ///
-    /// [`Content`]: crate::request::message::Content
-    /// [`Block`]: crate::request::message::Block
+    /// [`Content`]: crate::prompt::message::Content
+    /// [`Block`]: crate::prompt::message::Block
     /// [`tool::Use`]: crate::tool::Use
-    /// [`ToolUse`]: crate::request::message::Block::ToolUse
+    /// [`ToolUse`]: crate::prompt::message::Block::ToolUse
     pub fn tool_use(&self) -> Option<&crate::tool::Use> {
         if !matches!(self.stop_reason, Some(StopReason::ToolUse)) {
             return None;
         }
 
         self.message.content.last()?.tool_use()
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Message<'static> {
+        Message {
+            id: Cow::Owned(self.id.into_owned()),
+            message: self.message.into_static(),
+            model: self.model,
+            stop_reason: self.stop_reason,
+            stop_sequence: self
+                .stop_sequence
+                .map(|s| Cow::Owned(s.into_owned())),
+            usage: self.usage,
+        }
     }
 }
 
@@ -83,6 +98,16 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+}
+
+#[cfg(feature = "markdown")]
+impl crate::markdown::ToMarkdown for Message<'_> {
+    fn markdown_events_custom<'a>(
+        &'a self,
+        options: &'a crate::markdown::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        self.message.markdown_events_custom(options)
+    }
 }
 
 #[cfg(test)]

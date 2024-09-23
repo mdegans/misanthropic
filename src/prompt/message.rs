@@ -1,8 +1,8 @@
-//! A [`request::Message`] and associated types. The API will return a
+//! A [`prompt::Message`] and associated types. The API will return a
 //! [`response::Message`] with the same type plus additional metadata.
 //!
 //! [`response::Message`]: crate::response::Message
-//! [`request::Message`]: crate::request::Message
+//! [`prompt::Message`]: crate::prompt::Message
 
 use std::borrow::Cow;
 
@@ -50,7 +50,7 @@ impl std::fmt::Display for Role {
 /// markdown images with embedded base64 data.
 ///
 /// [`Display`]: std::fmt::Display
-/// [`Request`]: crate::Request
+/// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
 /// [heading]: Message::HEADING
 #[derive(Debug, Serialize, Deserialize)]
@@ -94,6 +94,21 @@ impl Message<'_> {
     pub fn len(&self) -> usize {
         self.content.len()
     }
+
+    /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
+    /// [`Block::ToolUse`].
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+        self.content.last()?.tool_use()
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Message<'static> {
+        Message {
+            role: self.role,
+            content: self.content.into_static(),
+        }
+    }
 }
 
 impl<'a> From<response::Message<'a>> for Message<'a> {
@@ -102,26 +117,11 @@ impl<'a> From<response::Message<'a>> for Message<'a> {
     }
 }
 
-impl From<(Role, String)> for Message<'_> {
-    fn from((role, content): (Role, String)) -> Self {
-        Self {
-            role,
-            content: content.into(),
-        }
-    }
-}
-
-impl<'a> From<(Role, Cow<'a, str>)> for Message<'a> {
-    fn from((role, content): (Role, Cow<'a, str>)) -> Self {
-        Self {
-            role,
-            content: content.into(),
-        }
-    }
-}
-
-impl<'a> From<(Role, &'a str)> for Message<'a> {
-    fn from((role, content): (Role, &'a str)) -> Self {
+impl<'a, T> From<(Role, T)> for Message<'a>
+where
+    T: Into<Content<'a>>,
+{
+    fn from((role, content): (Role, T)) -> Self {
         Self {
             role,
             content: content.into(),
@@ -165,11 +165,22 @@ impl crate::markdown::ToMarkdown for Message<'_> {
             Some(Block::ToolResult {
                 result: tool::Result { is_error, .. },
             }) => {
+                if !options.tool_results {
+                    return Box::new(std::iter::empty());
+                }
+
                 if *is_error {
                     "Error"
                 } else {
                     "Tool"
                 }
+            }
+            Some(Block::ToolUse { .. }) => {
+                if !options.tool_use {
+                    return Box::new(std::iter::empty());
+                }
+
+                self.role.as_str()
             }
             _ => self.role.as_str(),
         };
@@ -305,6 +316,42 @@ impl<'a> Content<'a> {
             Self::MultiPart(parts) => parts.last(),
         }
     }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Content<'static> {
+        match self {
+            Self::SinglePart(text) => {
+                Content::SinglePart(Cow::Owned(text.into_owned()))
+            }
+            Self::MultiPart(parts) => Content::MultiPart(
+                parts.into_iter().map(Block::into_static).collect(),
+            ),
+        }
+    }
+
+    /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
+    /// this will return a [`ContentMismatch`] error.
+    pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
+        let delta = delta.into();
+
+        match self {
+            Self::SinglePart(_) => {
+                let mut old = Content::MultiPart(vec![]);
+                std::mem::swap(self, &mut old);
+                self.push(old.unwrap_single_part());
+                self.push_delta(delta)?;
+            }
+            Self::MultiPart(parts) => {
+                parts
+                    .last_mut()
+                    .unwrap()
+                    .merge_deltas(std::iter::once(delta))?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -371,33 +418,12 @@ impl Content<'_> {
     pub const SEP: &'static str = "\n\n";
 }
 
-impl<'a> From<&'a str> for Content<'a> {
-    fn from(s: &'a str) -> Self {
-        Self::SinglePart(s.into())
-    }
-}
-
-impl From<String> for Content<'_> {
-    fn from(s: String) -> Self {
-        Self::SinglePart(s.into())
-    }
-}
-
-impl<'a> From<Block<'a>> for Content<'a> {
-    fn from(block: Block<'a>) -> Self {
-        Self::MultiPart(vec![block])
-    }
-}
-
-impl<'a> From<tool::Use<'a>> for Content<'a> {
-    fn from(call: tool::Use<'a>) -> Self {
-        Block::from(call).into()
-    }
-}
-
-impl<'a> From<tool::Result<'a>> for Content<'a> {
-    fn from(result: tool::Result<'a>) -> Self {
-        Block::from(result).into()
+impl<'a, T> From<T> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from(block: T) -> Self {
+        Self::MultiPart(vec![block.into()])
     }
 }
 
@@ -524,11 +550,10 @@ impl<'a> Block<'a> {
         Ok(())
     }
 
-    /// Create a cache breakpoint at this block. For this to have any effect,
-    /// the full prefix before this point needs to be at least 1024 tokens for
-    /// [`Sonnet35`] and [`Opus30`] or 2048 tokens for [`Haiku30`].
+    /// Create a cache breakpoint at this block. See [`Prompt::cache`] for more
+    /// information.
     ///
-    /// Note: The caching feature is in beta, so this is likely to change.
+    /// [`Prompt::cache`]: crate::Prompt::cache
     #[cfg(feature = "prompt-caching")]
     pub fn cache(&mut self) {
         use crate::tool;
@@ -570,6 +595,37 @@ impl<'a> Block<'a> {
         match self {
             Self::ToolUse { call, .. } => Some(call),
             _ => None,
+        }
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Block<'static> {
+        match self {
+            Self::Text {
+                text,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            } => Block::Text {
+                text: Cow::Owned(text.into_owned()),
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+            Self::Image {
+                image,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            } => Block::Image {
+                image: image.into_static(),
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+            Self::ToolUse { call } => Block::ToolUse {
+                call: call.into_static(),
+            },
+            Self::ToolResult { result } => Block::ToolResult {
+                result: result.into_static(),
+            },
         }
     }
 }
@@ -707,6 +763,7 @@ impl From<image::DynamicImage> for Block<'_> {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 pub enum CacheControl {
     /// Caches for 5 minutes.
     #[default]
@@ -784,6 +841,17 @@ impl Image<'_> {
                 let data = general_purpose::STANDARD.decode(data.as_bytes())?;
                 Ok(image::load_from_memory(&data)?.to_rgba8())
             }
+        }
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Image<'static> {
+        match self {
+            Self::Base64 { media_type, data } => Image::Base64 {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
         }
     }
 }
