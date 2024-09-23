@@ -23,7 +23,7 @@ use misanthropic::{
         message::{Content, Role},
         Message,
     },
-    tool, Client, Prompt, Tool,
+    tool, Client, Model, Prompt, Tool,
 };
 
 /// Count the number of letters in a word (or any string). An example of tool
@@ -41,6 +41,9 @@ struct Args {
     /// Show tool use, results, and system prompt.
     #[arg(long)]
     verbose: bool,
+    /// Use Sonnet instead of Haiku.
+    #[arg(long)]
+    sonnet: bool,
 }
 
 /// Prompt the user if they want to run the Python script.
@@ -177,6 +180,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // docstring. Like many things in our API, `Tool` is also convertable from a
     // `serde_json::Value`.
     let mut chat = Prompt::default()
+        .model(if args.sonnet {
+            Model::Sonnet35
+        } else {
+            Model::Haiku30
+        })
         .add_tool(Tool {
             name: "python".into(),
             description: "Run a Python script.".into(),
