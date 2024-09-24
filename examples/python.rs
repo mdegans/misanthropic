@@ -73,6 +73,10 @@ pub fn handle_tool_call(
     }
 
     if let Some(script) = call.input["script"].as_str() {
+        // FIXME: Before 0.3.0, we should provide more concise constructors for
+        // `tool::Result` and `tool::Use`. It could cut this code in half and
+        // remove the need for conditional compilation.
+
         if !prompt_user(script) {
             return Err(tool::Result {
                 tool_use_id: call.id.to_string().into(),
@@ -110,7 +114,7 @@ pub fn handle_tool_call(
                 .unwrap();
 
             if status.success() {
-                return Ok(tool::Result::<'static> {
+                return Ok(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: false,
@@ -119,7 +123,7 @@ pub fn handle_tool_call(
                 }
                 .into());
             } else {
-                return Err(tool::Result::<'static> {
+                return Err(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: true,
