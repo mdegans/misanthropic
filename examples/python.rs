@@ -10,9 +10,6 @@ use std::{
     vec,
 };
 
-// Note: This example uses blocking calls for simplicity such as `println!()`
-// and `stdin().lock()`. In a real application, these should *usually* be
-// replaced with async alternatives.
 use clap::Parser;
 use subprocess::{Exec, Redirection};
 
