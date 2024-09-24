@@ -961,10 +961,7 @@ mod tests {
                 },
             ]);
 
-        let opts = crate::markdown::Options::default()
-            .with_system()
-            .with_tool_use()
-            .with_tool_results();
+        let opts = crate::markdown::Options::verbose();
 
         let markdown: Markdown = request.markdown_custom(&opts);
 
@@ -972,7 +969,7 @@ mod tests {
         // we generate markdown like this because it's easier to read. The user
         // does not submit a tool result, so it's confusing if the header is
         // "User".
-        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":\"Pinging example.com.\",\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
+        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":[{\"type\":\"text\",\"text\":\"Pinging example.com.\"}],\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
 
         assert_eq!(markdown.as_ref(), expected);
     }

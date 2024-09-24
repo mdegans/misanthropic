@@ -2,6 +2,9 @@
 use std::borrow::Cow;
 
 use crate::prompt::message::Content;
+#[allow(unused_imports)]
+use crate::Prompt; // without this rustdoc doesn't link to Prompt, even with the
+                   // full path and all features enabled. Rustdoc bug?
 use serde::{Deserialize, Serialize};
 
 /// Choice of [`Tool`] for a specific [`prompt::message`].
@@ -41,7 +44,7 @@ pub struct Tool<'a> {
     pub input_schema: serde_json::Value,
     /// Set a cache breakpoint. See [`Prompt::cache`] for more information.
     ///
-    /// [`Prompt::cache`] crate::prompt::Prompt::cache
+    /// [`Prompt::cache`] crate::Prompt::cache
     #[cfg(feature = "prompt-caching")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
