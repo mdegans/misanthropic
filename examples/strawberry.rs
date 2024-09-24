@@ -3,14 +3,17 @@
 //! they do not see words as humans do). This example demonstrates how easy it
 //! is to overcome this with an assistive device in the form of a tool.
 
+// Note: This example uses blocking calls for simplicity such as `println!()`
+// and `stdin().lock()`. In a real application, these should *usually* be
+// replaced with async alternatives.
 use std::io::BufRead;
 
 use clap::Parser;
 use misanthropic::{
     json,
     markdown::ToMarkdown,
-    request::{message::Role, Message},
-    response, tool, Client, Request, Tool,
+    prompt::{message::Role, Message},
+    tool, Client, Prompt, Tool,
 };
 
 /// Count the number of letters in a word (or any string). An example of tool
@@ -30,17 +33,6 @@ struct Args {
     verbose: bool,
 }
 
-/// Things that can go wrong.
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    /// Assistant did not call the tool.
-    #[error("Assistant did not call the tool. Response: {message}")]
-    NoToolCall { message: response::Message },
-    /// Assistant called the wrong tool.
-    #[error("Assistant called the tool incorrectly. Call: {call}")]
-    MalformedToolCall { call: tool::Use },
-}
-
 /// Count the number of letters in a word (or any string).
 pub fn count_letters(letter: char, string: String) -> usize {
     let letter = letter.to_ascii_lowercase();
@@ -49,12 +41,12 @@ pub fn count_letters(letter: char, string: String) -> usize {
     string.chars().filter(|c| *c == letter).count()
 }
 
-/// Handle the tool call. Returns a [`User`] message with the result.
+/// Handle the tool call. Returns a [`User`] [`Message`] with the result.
 ///
 /// [`User`]: Role::User
-pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Error> {
+pub fn handle_tool_call(call: &tool::Use) -> Result<Message<'static>, String> {
     if call.name != "count_letters" {
-        return Err(Error::MalformedToolCall { call: call.clone() });
+        return Err(format!("Unknown tool: {}", call.name));
     }
 
     if let (Some(letter), Some(string)) = (
@@ -64,7 +56,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Error> {
         let count = count_letters(letter, string.into());
 
         Ok(tool::Result {
-            tool_use_id: call.id.clone(),
+            tool_use_id: call.id.to_string().into(),
             content: count.to_string().into(),
             is_error: false,
             #[cfg(feature = "prompt-caching")]
@@ -76,7 +68,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Error> {
     } else {
         // Optionally, we could always return a Message and inform the Assistant
         // that they called the tool incorrectly so they can try again.
-        Err(Error::MalformedToolCall { call: call.clone() })
+        Err(format!("Invalid input: {:?}", call.input))
     }
 }
 
@@ -96,7 +88,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `count_letters`. In the future this will be derivable from the function
     // signature and docstring. Like many things in our API, `Tool` is also
     // convertable from a `serde_json::Value`.
-    let mut chat = Request::default().add_tool(Tool {
+    let mut chat = Prompt::default().add_tool(Tool {
         name: "count_letters".into(),
         description: "Count the number of letters in a word.".into(),
         input_schema: json!({
@@ -134,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // The Assistant did not call the tool. This may not be an error if the
         // user did not ask for the tool to be used, in which case it could be
         // handled as a normal message.
-        return Err(Error::NoToolCall { message }.into());
+        return Err("Tool was not called".into());
     }
 
     let message = client.message(&chat).await?;

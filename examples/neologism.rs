@@ -5,7 +5,7 @@
 // and `stdin().lock()`. In a real application, these should *usually* be
 // replaced with async alternatives.
 use clap::Parser;
-use misanthropic::{request::message::Role, Client, Request};
+use misanthropic::{prompt::message::Role, Client, Prompt};
 use std::io::{stdin, BufRead};
 
 /// Invent new words and provide their definitions based on user-provided
@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the box for building `Request`s, such as messages from a list of tuples
     // of `Role` and `String`.
     let message = client
-        .message(Request::default().messages([(Role::User, args.prompt)]))
+        .message(Prompt::default().messages([(Role::User, args.prompt)]))
         .await?;
 
     println!("{}", message);

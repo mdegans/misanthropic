@@ -70,7 +70,7 @@ println!("{}", message);
 - [x] Markdown formatting of messages, including images
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
-- [ ] Zero-copy serde - Coming soon!
+- [x] Zero-copy where possible
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
 

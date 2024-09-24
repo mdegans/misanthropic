@@ -1,8 +1,8 @@
-//! A [`request::Message`] and associated types. The API will return a
+//! A [`prompt::Message`] and associated types. The API will return a
 //! [`response::Message`] with the same type plus additional metadata.
 //!
 //! [`response::Message`]: crate::response::Message
-//! [`request::Message`]: crate::request::Message
+//! [`prompt::Message`]: crate::prompt::Message
 
 use std::borrow::Cow;
 
@@ -50,7 +50,7 @@ impl std::fmt::Display for Role {
 /// markdown images with embedded base64 data.
 ///
 /// [`Display`]: std::fmt::Display
-/// [`Request`]: crate::Request
+/// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
 /// [heading]: Message::HEADING
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,17 +61,17 @@ impl std::fmt::Display for Role {
     display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
 )]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub struct Message {
+pub struct Message<'a> {
     /// Who is the message from.
     pub role: Role,
     /// The [`Content`] of the message as [one] or [more] [`Block`]s.
     ///
     /// [one]: Content::SinglePart
     /// [more]: Content::MultiPart
-    pub content: Content,
+    pub content: Content<'a>,
 }
 
-impl Message {
+impl Message<'_> {
     /// Heading for the message when rendered as markdown using [`Display`].
     ///
     /// [`Display`]: std::fmt::Display
@@ -94,16 +94,34 @@ impl Message {
     pub fn len(&self) -> usize {
         self.content.len()
     }
+
+    /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
+    /// [`Block::ToolUse`].
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+        self.content.last()?.tool_use()
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Message<'static> {
+        Message {
+            role: self.role,
+            content: self.content.into_static(),
+        }
+    }
 }
 
-impl From<response::Message> for Message {
-    fn from(message: response::Message) -> Self {
+impl<'a> From<response::Message<'a>> for Message<'a> {
+    fn from(message: response::Message<'a>) -> Self {
         message.message
     }
 }
 
-impl From<(Role, String)> for Message {
-    fn from((role, content): (Role, String)) -> Self {
+impl<'a, T> From<(Role, T)> for Message<'a>
+where
+    T: Into<Content<'a>>,
+{
+    fn from((role, content): (Role, T)) -> Self {
         Self {
             role,
             content: content.into(),
@@ -111,26 +129,8 @@ impl From<(Role, String)> for Message {
     }
 }
 
-impl From<(Role, Cow<'static, str>)> for Message {
-    fn from((role, content): (Role, Cow<'static, str>)) -> Self {
-        Self {
-            role,
-            content: content.into(),
-        }
-    }
-}
-
-impl From<(Role, &'static str)> for Message {
-    fn from((role, content): (Role, &'static str)) -> Self {
-        Self {
-            role,
-            content: content.into(),
-        }
-    }
-}
-
-impl From<tool::Use> for Message {
-    fn from(call: tool::Use) -> Self {
+impl<'a> From<tool::Use<'a>> for Message<'a> {
+    fn from(call: tool::Use<'a>) -> Self {
         Message {
             role: Role::Assistant,
             content: call.into(),
@@ -138,8 +138,8 @@ impl From<tool::Use> for Message {
     }
 }
 
-impl From<tool::Result> for Message {
-    fn from(result: tool::Result) -> Self {
+impl<'a> From<tool::Result<'a>> for Message<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
         Message {
             role: Role::User,
             content: result.into(),
@@ -148,7 +148,7 @@ impl From<tool::Result> for Message {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Message {
+impl crate::markdown::ToMarkdown for Message<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
@@ -165,11 +165,22 @@ impl crate::markdown::ToMarkdown for Message {
             Some(Block::ToolResult {
                 result: tool::Result { is_error, .. },
             }) => {
+                if !options.tool_results {
+                    return Box::new(std::iter::empty());
+                }
+
                 if *is_error {
                     "Error"
                 } else {
                     "Tool"
                 }
+            }
+            Some(Block::ToolUse { .. }) => {
+                if !options.tool_use {
+                    return Box::new(std::iter::empty());
+                }
+
+                self.role.as_str()
             }
             _ => self.role.as_str(),
         };
@@ -184,7 +195,7 @@ impl crate::markdown::ToMarkdown for Message {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Message {
+impl std::fmt::Display for Message<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -204,14 +215,14 @@ impl std::fmt::Display for Message {
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub enum Content {
+pub enum Content<'a> {
     /// Single part text-only content.
-    SinglePart(Cow<'static, str>),
+    SinglePart(Cow<'a, str>),
     /// Multiple content [`Block`]s.
-    MultiPart(Vec<Block>),
+    MultiPart(Vec<Block<'a>>),
 }
 
-impl Content {
+impl<'a> Content<'a> {
     /// Const constructor for static text content.
     pub const fn text(text: &'static str) -> Self {
         Self::SinglePart(Cow::Borrowed(text))
@@ -238,7 +249,7 @@ impl Content {
     ///
     /// # Panics
     /// - If the content is [`MultiPart`].
-    pub fn unwrap_single_part(self) -> Block {
+    pub fn unwrap_single_part(self) -> Block<'a> {
         match self {
             #[cfg(feature = "prompt-caching")]
             Self::SinglePart(text) => Block::Text {
@@ -260,7 +271,7 @@ impl Content {
     /// [`MultiPart`]: Content::MultiPart
     pub fn push<P>(&mut self, part: P)
     where
-        P: Into<Block>,
+        P: Into<Block<'a>>,
     {
         // If there is a SinglePart message, convert it to a MultiPart message.
         if self.is_single_part() {
@@ -305,10 +316,46 @@ impl Content {
             Self::MultiPart(parts) => parts.last(),
         }
     }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Content<'static> {
+        match self {
+            Self::SinglePart(text) => {
+                Content::SinglePart(Cow::Owned(text.into_owned()))
+            }
+            Self::MultiPart(parts) => Content::MultiPart(
+                parts.into_iter().map(Block::into_static).collect(),
+            ),
+        }
+    }
+
+    /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
+    /// this will return a [`ContentMismatch`] error.
+    pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
+        let delta = delta.into();
+
+        match self {
+            Self::SinglePart(_) => {
+                let mut old = Content::MultiPart(vec![]);
+                std::mem::swap(self, &mut old);
+                self.push(old.unwrap_single_part());
+                self.push_delta(delta)?;
+            }
+            Self::MultiPart(parts) => {
+                parts
+                    .last_mut()
+                    .unwrap()
+                    .merge_deltas(std::iter::once(delta))?;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Content {
+impl crate::markdown::ToMarkdown for Content<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
@@ -336,7 +383,7 @@ impl crate::markdown::ToMarkdown for Content {
 }
 
 #[cfg(not(feature = "markdown"))]
-impl std::fmt::Display for Content {
+impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::SinglePart(string) => write!(f, "{}", string),
@@ -357,7 +404,7 @@ impl std::fmt::Display for Content {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Content {
+impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -365,39 +412,18 @@ impl std::fmt::Display for Content {
     }
 }
 
-impl Content {
+impl Content<'_> {
     /// Separator for multi-part content.
     #[cfg(not(feature = "markdown"))]
     pub const SEP: &'static str = "\n\n";
 }
 
-impl From<&'static str> for Content {
-    fn from(s: &'static str) -> Self {
-        Self::SinglePart(s.into())
-    }
-}
-
-impl From<String> for Content {
-    fn from(s: String) -> Self {
-        Self::SinglePart(s.into())
-    }
-}
-
-impl From<Block> for Content {
-    fn from(block: Block) -> Self {
-        Self::MultiPart(vec![block])
-    }
-}
-
-impl From<tool::Use> for Content {
-    fn from(call: tool::Use) -> Self {
-        Block::from(call).into()
-    }
-}
-
-impl From<tool::Result> for Content {
-    fn from(result: tool::Result) -> Self {
-        Block::from(result).into()
+impl<'a, T> From<T> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from(block: T) -> Self {
+        Self::MultiPart(vec![block.into()])
     }
 }
 
@@ -407,13 +433,13 @@ impl From<tool::Result> for Content {
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub enum Block {
+pub enum Block<'a> {
     /// Text content.
     #[serde(alias = "text_delta")]
     #[cfg_attr(not(feature = "markdown"), display("{text}"))]
     Text {
         /// The actual text content.
-        text: Cow<'static, str>,
+        text: Cow<'a, str>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -423,7 +449,7 @@ pub enum Block {
     Image {
         #[serde(rename = "source")]
         /// An base64 encoded image.
-        image: Image,
+        image: Image<'a>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -438,7 +464,7 @@ pub enum Block {
     ToolUse {
         /// Tool use input.
         #[serde(flatten)]
-        call: tool::Use,
+        call: tool::Use<'a>,
     },
     /// Result of a [`Tool`] call. This should only be used with the [`User`]
     /// role.
@@ -449,12 +475,12 @@ pub enum Block {
     ToolResult {
         /// Tool result
         #[serde(flatten)]
-        result: tool::Result,
+        result: tool::Result<'a>,
     },
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Block {
+impl std::fmt::Display for Block<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -462,9 +488,9 @@ impl std::fmt::Display for Block {
     }
 }
 
-impl Block {
-    /// Const constructor for static text content.
-    pub const fn new_text(text: &'static str) -> Self {
+impl<'a> Block<'a> {
+    /// Const constructor for text content.
+    pub const fn new_text(text: &'a str) -> Self {
         Self::Text {
             text: Cow::Borrowed(text),
             #[cfg(feature = "prompt-caching")]
@@ -476,7 +502,7 @@ impl Block {
     /// will return a [`ContentMismatch`] error.
     pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
     where
-        Ds: IntoIterator<Item = Delta>,
+        Ds: IntoIterator<Item = Delta<'a>>,
     {
         let mut it = deltas.into_iter();
 
@@ -524,11 +550,10 @@ impl Block {
         Ok(())
     }
 
-    /// Create a cache breakpoint at this block. For this to have any effect,
-    /// the full prefix before this point needs to be at least 1024 tokens for
-    /// [`Sonnet35`] and [`Opus30`] or 2048 tokens for [`Haiku30`].
+    /// Create a cache breakpoint at this block. See [`Prompt::cache`] for more
+    /// information.
     ///
-    /// Note: The caching feature is in beta, so this is likely to change.
+    /// [`Prompt::cache`]: crate::Prompt::cache
     #[cfg(feature = "prompt-caching")]
     pub fn cache(&mut self) {
         use crate::tool;
@@ -572,10 +597,41 @@ impl Block {
             _ => None,
         }
     }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Block<'static> {
+        match self {
+            Self::Text {
+                text,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            } => Block::Text {
+                text: Cow::Owned(text.into_owned()),
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+            Self::Image {
+                image,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            } => Block::Image {
+                image: image.into_static(),
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+            Self::ToolUse { call } => Block::ToolUse {
+                call: call.into_static(),
+            },
+            Self::ToolResult { result } => Block::ToolResult {
+                result: result.into_static(),
+            },
+        }
+    }
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Block {
+impl crate::markdown::ToMarkdown for Block<'_> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
@@ -642,17 +698,13 @@ impl crate::markdown::ToMarkdown for Block {
     }
 }
 
-impl From<&'static str> for Block {
-    fn from(text: &'static str) -> Self {
-        Self::Text {
-            text: text.into(),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        }
+impl<'a> From<&'a str> for Block<'a> {
+    fn from(text: &'a str) -> Self {
+        Self::new_text(text)
     }
 }
 
-impl From<String> for Block {
+impl From<String> for Block<'_> {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
@@ -662,8 +714,8 @@ impl From<String> for Block {
     }
 }
 
-impl From<Image> for Block {
-    fn from(image: Image) -> Self {
+impl<'a> From<Image<'a>> for Block<'a> {
+    fn from(image: Image<'a>) -> Self {
         Self::Image {
             image,
             #[cfg(feature = "prompt-caching")]
@@ -672,20 +724,20 @@ impl From<Image> for Block {
     }
 }
 
-impl From<tool::Use> for Block {
-    fn from(call: tool::Use) -> Self {
+impl<'a> From<tool::Use<'a>> for Block<'a> {
+    fn from(call: tool::Use<'a>) -> Self {
         Self::ToolUse { call }
     }
 }
 
-impl From<tool::Result> for Block {
-    fn from(result: tool::Result) -> Self {
+impl<'a> From<tool::Result<'a>> for Block<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
         Self::ToolResult { result }
     }
 }
 
 #[cfg(feature = "png")]
-impl From<image::RgbaImage> for Block {
+impl From<image::RgbaImage> for Block<'_> {
     fn from(image: image::RgbaImage) -> Self {
         Image::encode(MediaType::Png, image)
             // Unwrap can never panic unless the PNG encoding fails, which
@@ -700,7 +752,7 @@ impl From<image::RgbaImage> for Block {
 }
 
 #[cfg(feature = "png")]
-impl From<image::DynamicImage> for Block {
+impl From<image::DynamicImage> for Block<'_> {
     fn from(image: image::DynamicImage) -> Self {
         image.to_rgba8().into()
     }
@@ -711,6 +763,7 @@ impl From<image::DynamicImage> for Block {
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
+#[serde(rename_all = "snake_case")]
 pub enum CacheControl {
     /// Caches for 5 minutes.
     #[default]
@@ -724,7 +777,7 @@ pub enum CacheControl {
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
-pub enum Image {
+pub enum Image<'a> {
     /// Base64 encoded image data. When displayed, it will be rendered as a
     /// markdown image with embedded data.
     #[display("![Image](data:{media_type};base64,{data})")]
@@ -732,15 +785,18 @@ pub enum Image {
         /// Image encoding format.
         media_type: MediaType,
         /// Base64 encoded compressed image data.
-        data: String,
+        data: Cow<'a, str>,
     },
 }
 
-impl Image {
+impl Image<'_> {
     /// From raw parts. The data is expected to be base64 encoded compressed
     /// image data or the API will reject it.
     pub fn from_parts(media_type: MediaType, data: String) -> Self {
-        Self::Base64 { media_type, data }
+        Self::Base64 {
+            media_type,
+            data: data.into(),
+        }
     }
 
     /// Encode from compressed image data (not base64 encoded). This cannot fail
@@ -754,7 +810,7 @@ impl Image {
 
         Self::Base64 {
             media_type: format,
-            data: encoder.encode(data),
+            data: encoder.encode(data).into(),
         }
     }
 
@@ -782,9 +838,20 @@ impl Image {
     pub fn decode(&self) -> Result<image::RgbaImage, ImageDecodeError> {
         match self {
             Self::Base64 { data, .. } => {
-                let data = general_purpose::STANDARD.decode(data)?;
+                let data = general_purpose::STANDARD.decode(data.as_bytes())?;
                 Ok(image::load_from_memory(&data)?.to_rgba8())
             }
+        }
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Image<'static> {
+        match self {
+            Self::Base64 { media_type, data } => Image::Base64 {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
         }
     }
 }
@@ -802,7 +869,7 @@ pub enum ImageDecodeError {
 }
 
 #[cfg(feature = "image")]
-impl TryInto<image::RgbaImage> for Image {
+impl TryInto<image::RgbaImage> for Image<'_> {
     type Error = ImageDecodeError;
 
     /// An [`Image`] can be decoded into an [`image::RgbaImage`] if it is valid
@@ -944,10 +1011,10 @@ mod tests {
 
         let deltas = [
             Delta::Text {
-                text: ", how are you?".to_string(),
+                text: ", how are you?".into(),
             },
             Delta::Text {
-                text: " I'm fine.".to_string(),
+                text: " I'm fine.".into(),
             },
         ];
 
@@ -968,7 +1035,7 @@ mod tests {
 
         // partial json to apply to the input portion
         let deltas = [Delta::Json {
-            partial_json: r#"{"key": "value"}"#.to_string(),
+            partial_json: r#"{"key": "value"}"#.into(),
         }];
 
         block.merge_deltas(deltas).unwrap();
@@ -985,7 +1052,7 @@ mod tests {
 
         // content mismatch
         let deltas = [Delta::Json {
-            partial_json: "blabla".to_string(),
+            partial_json: "blabla".into(),
         }];
         let mut block = Block::Text {
             text: "Hello, world!".into(),
@@ -1087,7 +1154,7 @@ mod tests {
         let mut block: Block = "Hello, world!".into();
 
         let deltas = [Delta::Json {
-            partial_json: "blabla".to_string(),
+            partial_json: "blabla".into(),
         }];
 
         let err = block.merge_deltas(deltas).unwrap_err();
@@ -1190,6 +1257,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "png")]
     fn test_block_from_image() {
         let image = Image::from_parts(MediaType::Png, "data".to_string());
         let block: Block = image.into();

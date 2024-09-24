@@ -2,12 +2,12 @@
 //! associated types and errors only used when streaming.
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, pin::Pin};
+use std::{borrow::Cow, pin::Pin, task::Poll};
 
 #[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
     client::AnthropicError,
-    request::{
+    prompt::{
         self,
         message::{Block, Content},
     },
@@ -19,32 +19,36 @@ use crate::{
 /// [`stream::Error`]: Error
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Event {
+pub enum Event<'a> {
     /// Periodic ping.
     Ping,
     /// [`response::Message`] with empty content. [`MessageDelta`] and
     /// [`Content`] [`Delta`]s must be applied to this message.
     MessageStart {
         /// The message.
-        message: response::Message,
+        message: response::Message<'a>,
     },
     /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
+        // TODO: Indexing. Issue is the Content::SinglePart is a String and
+        // Content::MultiPart is a Vec of Block. This is for serialization
+        // purposes. We should probably just use a Vec for both and write a
+        // custom serializer for that field.
         index: usize,
         /// Empty content block.
-        content_block: Block,
+        content_block: Block<'a>,
     },
     /// Content block delta.
     ContentBlockDelta {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
         /// Delta to apply to the content block.
-        delta: Delta,
+        delta: Delta<'a>,
     },
     /// Content block end.
     ContentBlockStop {
-        /// Index of the [`Content`] [`Block`] in [`request::Message::content`].
+        /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
     },
     /// [`MessageDelta`]. Contains metadata, not [`Content`] [`Delta`]s. Apply
@@ -61,11 +65,11 @@ pub enum Event {
 /// the `Event` enum.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum ApiResult {
+enum ApiResult<'a> {
     /// Successful Event.
     Event {
         #[serde(flatten)]
-        event: Event,
+        event: Event<'a>,
     },
     /// Error Event.
     Error { error: AnthropicError },
@@ -78,14 +82,14 @@ enum ApiResult {
 /// [`Json`]: Delta::Json
 #[derive(Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Delta {
+pub enum Delta<'a> {
     /// Text delta for a [`Text`] [`Content`] [`Block`].
     ///
     /// [`Text`]: Block::Text
     #[serde(alias = "text_delta")]
     Text {
         /// The text content.
-        text: String,
+        text: Cow<'a, str>,
     },
     /// JSON delta for the input field of a [`ToolUse`] [`Content`] [`Block`].
     ///
@@ -93,7 +97,7 @@ pub enum Delta {
     #[serde(rename = "input_json_delta")]
     Json {
         /// The JSON delta.
-        partial_json: String,
+        partial_json: Cow<'a, str>,
     },
 }
 
@@ -101,9 +105,9 @@ pub enum Delta {
 /// not match.
 #[derive(Serialize, thiserror::Error, Debug)]
 #[error("`Delta::{from:?}` canot be applied to `{to}`.")]
-pub struct ContentMismatch {
+pub struct ContentMismatch<'a> {
     /// The content block that failed to apply.
-    pub from: Delta,
+    pub from: Delta<'a>,
     /// The target [`Content`].
     pub to: &'static str,
 }
@@ -122,9 +126,9 @@ pub struct OutOfBounds {
 /// Error when applying a [`Delta`].
 #[derive(Serialize, thiserror::Error, Debug, derive_more::From)]
 #[allow(missing_docs)]
-pub enum DeltaError {
+pub enum DeltaError<'a> {
     #[error("Cannot apply delta because: {error}")]
-    ContentMismatch { error: ContentMismatch },
+    ContentMismatch { error: ContentMismatch<'a> },
     #[error("Cannot apply delta because: {error}")]
     OutOfBounds { error: OutOfBounds },
     #[error(
@@ -133,12 +137,12 @@ pub enum DeltaError {
     Parse { error: String },
 }
 
-impl Delta {
+impl Delta<'_> {
     /// Merge another [`Delta`] onto the end of `self`.
     pub fn merge(mut self, delta: Delta) -> Result<Self, ContentMismatch> {
         match (&mut self, delta) {
             (Delta::Text { text }, Delta::Text { text: delta }) => {
-                text.push_str(&delta);
+                text.to_mut().push_str(&delta);
             }
             (
                 Delta::Json { partial_json },
@@ -146,7 +150,7 @@ impl Delta {
                     partial_json: delta,
                 },
             ) => {
-                partial_json.push_str(&delta);
+                partial_json.to_mut().push_str(&delta);
             }
             (to, from) => {
                 return Err(ContentMismatch {
@@ -207,11 +211,19 @@ pub enum Error {
 }
 
 /// Stream of [`Event`]s or [`Error`]s.
-pub struct Stream {
-    inner: Pin<Box<dyn futures::Stream<Item = Result<Event, Error>>>>,
+pub struct Stream<'a> {
+    inner: Pin<
+        Box<
+            dyn futures::Stream<Item = Result<Event<'a>, Error>>
+                + Send
+                + 'static,
+        >,
+    >,
 }
 
-impl Stream {
+static_assertions::assert_impl_all!(Stream<'_>: futures::Stream, Send);
+
+impl<'a> Stream<'a> {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
     /// similar stream of [`eventsource_stream::Event`]s.
     pub fn new<S>(stream: S) -> Self
@@ -221,7 +233,8 @@ impl Stream {
                     eventsource_stream::Event,
                     eventsource_stream::EventStreamError<reqwest::Error>,
                 >,
-            > + 'static,
+            > + Send
+            + 'static,
     {
         Self {
             inner: Box::pin(stream.map(|event| match event {
@@ -246,49 +259,6 @@ impl Stream {
         }
     }
 
-    /// Filter out rate limit and overload errors. Because the server sends
-    /// these events there isn't a need to retry or backoff. The stream will
-    /// continue when ready.
-    ///
-    /// This is recommended for most use cases.
-    pub fn filter_rate_limit(self) -> Self {
-        Self {
-            inner: Box::pin(self.inner.filter_map(|result| async move {
-                match result {
-                    Ok(event) => Some(Ok(event)),
-                    Err(Error::Anthropic {
-                        error:
-                            AnthropicError::Overloaded { .. }
-                            | AnthropicError::RateLimit { .. },
-                        ..
-                    }) => None,
-                    Err(error) => Some(Err(error)),
-                }
-            })),
-        }
-    }
-
-    /// Filter out everything but [`Event::ContentBlockDelta`]. This can include
-    /// text, JSON, and tool use.
-    pub fn deltas(self) -> impl futures::Stream<Item = Result<Delta, Error>> {
-        self.inner.filter_map(|result| async move {
-            match result {
-                Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
-                _ => None,
-            }
-        })
-    }
-
-    /// Filter out everything but text pieces.
-    pub fn text(self) -> impl futures::Stream<Item = Result<String, Error>> {
-        self.deltas().filter_map(|result| async move {
-            match result {
-                Ok(Delta::Text { text }) => Some(Ok(text)),
-                _ => None,
-            }
-        })
-    }
-
     // TODO: Figure out an ergonomic way to handle tool use when streaming. We
     // may need another wrapper stream to store json deltas until a full block
     // is received. This would allow us to merge json deltas and then emit a
@@ -300,20 +270,83 @@ impl Stream {
     // however necessary since we can't do anything useful with partial JSON.
 }
 
-impl futures::Stream for Stream {
-    type Item = Result<Event, Error>;
+impl<'a> futures::Stream for Stream<'a> {
+    type Item = Result<Event<'a>, Error>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
 
+/// Extension trait for our crate [`Event`] [`Stream`]s to filter out
+/// [`RateLimit`] and [`Overloaded`] [`AnthropicError`]s, as well as several
+/// other common use cases.
+///
+/// This is recommended for most use cases.
+///
+/// [`RateLimit`]: AnthropicError::RateLimit
+/// [`Overloaded`]: AnthropicError::Overloaded
+pub trait FilterExt<'a>:
+    futures::stream::Stream<Item = Result<Event<'a>, Error>> + Sized + Send
+{
+    /// Filter out rate limit and overload errors. Because the server sends
+    /// these events there isn't a need to retry or backoff. The stream will
+    /// continue when ready.
+    ///
+    /// This is recommended for most use cases.
+    fn filter_rate_limit(
+        self,
+    ) -> impl futures::Stream<Item = Result<Event<'a>, Error>> + Send {
+        self.filter_map(|result| async move {
+            match result {
+                Ok(event) => Some(Ok(event)),
+                Err(Error::Anthropic {
+                    error:
+                        AnthropicError::Overloaded { .. }
+                        | AnthropicError::RateLimit { .. },
+                    ..
+                }) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
+    }
+
+    /// Filter out everything but [`Event::ContentBlockDelta`]. This can include
+    /// text, JSON, and tool use.
+    fn deltas(
+        self,
+    ) -> impl futures::Stream<Item = Result<Delta<'a>, Error>> + Send {
+        self.filter_map(|result| async move {
+            match result {
+                Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
+                _ => None,
+            }
+        })
+    }
+
+    /// Filter out everything but text pieces.
+    fn text(
+        self,
+    ) -> impl futures::Stream<Item = Result<Cow<'a, str>, Error>> + Send {
+        self.deltas().filter_map(|result| async move {
+            match result {
+                Ok(Delta::Text { text }) => Some(Ok(text)),
+                _ => None,
+            }
+        })
+    }
+}
+
+impl<'a, S> FilterExt<'a> for S where
+    S: futures::Stream<Item = Result<Event<'a>, Error>> + Send
+{
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
-
     use futures::TryStreamExt;
 
     use super::*;

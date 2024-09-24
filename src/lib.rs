@@ -3,7 +3,7 @@
 //! Messages API].
 //!
 //! To get started, create a [`Client`] with your API key and use it to send
-//! [`Request`]s to the API. The API will return a [`Response`] with the
+//! [`Prompt`]s to the API. The API will return a [`Response`] with the
 //! [`response::Message`] or a [`Stream`] of [`stream::Event`]s.
 //!
 //! [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
@@ -20,8 +20,8 @@ pub use client::Client;
 pub mod model;
 pub use model::Model;
 
-pub mod request;
-pub use request::Request;
+pub mod prompt;
+pub use prompt::Prompt;
 
 pub mod stream;
 pub use stream::Stream;

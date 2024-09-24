@@ -1,138 +1,169 @@
-Certainly! I'll create a simple frontend for your Rust backend using HTML, CSS, and JavaScript. We'll use the Fetch API for sending requests and EventSource for handling Server-Sent Events (SSE). Here's a concise implementation:
+Certainly! I'd be happy to help you create a boilerplate for a chat server with streaming events using the Rust `rocket` crate. Here's a basic implementation that includes a server with SSE streaming and a minimal web frontend. This example doesn't include the actual inference logic, but it provides the structure for you to add that later.
+
+First, let's start with the Rust server code:
+
+```rust
+use rocket::{State, Shutdown};
+use rocket::fs::{FileServer, relative};
+use rocket::response::stream::{Event, EventStream};
+use rocket::serde::{Serialize, Deserialize, json::Json};
+use rocket::tokio::sync::broadcast::{channel, Sender, Receiver};
+use rocket::tokio::select;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+enum Message {
+    Full { content: String },
+    Delta { content: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatRequest {
+    message: String,
+}
+
+struct ChatState {
+    sender: Sender<Message>,
+}
+
+#[macro_use] extern crate rocket;
+
+#[post("/chat", data = "<request>")]
+async fn chat(request: Json<ChatRequest>, state: &State<ChatState>) -> &'static str {
+    let ChatRequest { message } = request.into_inner();
+
+    // Here you would typically process the message and generate a response
+    // For this example, we'll just echo the message back
+    let response = Message::Full { content: message };
+    let _ = state.sender.send(response);
+
+    "Message received"
+}
+
+#[get("/events")]
+async fn events(state: &State<ChatState>, mut shutdown: Shutdown) -> EventStream![] {
+    let mut rx = state.sender.subscribe();
+
+    EventStream! {
+        loop {
+            let msg = select! {
+                msg = rx.recv() => match msg {
+                    Ok(msg) => msg,
+                    Err(_) => break,
+                },
+                _ = &mut shutdown => break,
+            };
+
+            yield Event::json(&msg);
+        }
+    }
+}
+
+#[launch]
+fn rocket() -> _ {
+    let (sender, _) = channel::<Message>(1024);
+
+    rocket::build()
+        .manage(ChatState { sender })
+        .mount("/", routes![chat, events])
+        .mount("/", FileServer::from(relative!("static")))
+}
+```
+
+Now, let's create a minimal HTML frontend. Create a `static` folder in your project root and add an `index.html` file with the following content:
 
 ```html
 <!DOCTYPE html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Chat Application</title>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chat Server</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        #chat-container {
-            border: 1px solid #ccc;
-            height: 400px;
-            overflow-y: auto;
-            padding: 10px;
-            margin-bottom: 10px;
-        }
-        #message-input {
-            width: 70%;
-            padding: 5px;
-        }
-        button {
-            padding: 5px 10px;
-        }
+      #chat-box {
+        height: 300px;
+        border: 1px solid #ccc;
+        overflow-y: scroll;
+        padding: 10px;
+        margin-bottom: 10px;
+      }
     </style>
-</head>
-<body>
-    <h1>Chat Application</h1>
-    <div id="chat-container"></div>
-    <input type="text" id="message-input" placeholder="Type your message...">
+  </head>
+  <body>
+    <div id="chat-box"></div>
+    <input type="text" id="message-input" placeholder="Type your message..." />
     <button onclick="sendMessage()">Send</button>
-    <button onclick="logout()">Logout</button>
-    <button onclick="updatePreferences()">Update Preferences</button>
-    <button onclick="deleteChat()">Delete Chat</button>
 
     <script>
-        const chatContainer = document.getElementById('chat-container');
-        const messageInput = document.getElementById('message-input');
-        let currentChatId = '123'; // Example chat ID
+      const chatBox = document.getElementById("chat-box");
+      const messageInput = document.getElementById("message-input");
 
-        function appendMessage(message) {
-            const messageElement = document.createElement('p');
-            messageElement.textContent = message;
-            chatContainer.appendChild(messageElement);
-            chatContainer.scrollTop = chatContainer.scrollHeight;
+      const eventSource = new EventSource("/events");
+      eventSource.onmessage = function (event) {
+        const message = JSON.parse(event.data);
+        if (message.type === "Full") {
+          appendMessage(message.content);
+        } else if (message.type === "Delta") {
+          appendDelta(message.content);
         }
+      };
 
-        async function sendRequest(request) {
-            const response = await fetch('/api', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(request),
-            });
-            return response.json();
+      function appendMessage(content) {
+        const messageElement = document.createElement("p");
+        messageElement.textContent = content;
+        chatBox.appendChild(messageElement);
+        chatBox.scrollTop = chatBox.scrollHeight;
+      }
+
+      function appendDelta(content) {
+        const lastMessage = chatBox.lastElementChild;
+        if (lastMessage) {
+          lastMessage.textContent += content;
+        } else {
+          appendMessage(content);
         }
+        chatBox.scrollTop = chatBox.scrollHeight;
+      }
 
-        async function sendMessage() {
-            const content = messageInput.value.trim();
-            if (content) {
-                const request = {
-                    Message: [currentChatId, { content }]
-                };
-                await sendRequest(request);
-                messageInput.value = '';
-            }
+      function sendMessage() {
+        const message = messageInput.value;
+        if (message) {
+          fetch("/chat", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({ message }),
+          });
+          messageInput.value = "";
         }
-
-        async function logout() {
-            const request = { Logout: null };
-            await sendRequest(request);
-        }
-
-        async function updatePreferences() {
-            const preferences = { theme: 'dark', notifications: true };
-            const request = { UpdatePreferences: preferences };
-            await sendRequest(request);
-        }
-
-        async function deleteChat() {
-            const request = { DeleteChat: currentChatId };
-            await sendRequest(request);
-        }
-
-        const eventSource = new EventSource('/stream');
-
-        eventSource.onmessage = (event) => {
-            const response = JSON.parse(event.data);
-            handleResponse(response);
-        };
-
-        function handleResponse(response) {
-            if (response.Connected) {
-                appendMessage('Connected to server');
-            } else if (response.Logout) {
-                appendMessage('Logged out');
-                eventSource.close();
-            } else if (response.Preferences) {
-                appendMessage(`Preferences updated: ${JSON.stringify(response.Preferences)}`);
-            } else if (response.ChatDeleted) {
-                appendMessage(`Chat deleted: ${response.ChatDeleted}`);
-            } else if (response.Message) {
-                const [chatId, message] = response.Message;
-                appendMessage(`${chatId}: ${message.content}`);
-            }
-        }
+      }
     </script>
-</body>
+  </body>
 </html>
 ```
 
-This frontend implementation provides a simple chat interface with the following features:
+To use this boilerplate:
 
-1. A chat container to display messages
-2. An input field for typing messages
-3. Buttons for sending messages, logging out, updating preferences, and deleting chats
-4. Functions to send requests to the backend for each action
-5. An EventSource to handle Server-Sent Events from the `/stream` endpoint
-6. A response handler to process different types of responses
+1. Create a new Rust project: `cargo new chat_server`
+2. Replace the contents of `src/main.rs` with the Rust code provided above.
+3. Add the following dependencies to your `Cargo.toml`:
 
-The code is organized as follows:
+```toml
+[dependencies]
+rocket = { version = "0.5.0-rc.2", features = ["json"] }
+```
 
-- HTML structure for the chat interface
-- CSS for basic styling
-- JavaScript for handling user interactions and server communication
+4. Create a `static` folder in your project root and add the `index.html` file there.
 
-The `sendRequest` function is a generic function for sending POST requests to the `/api` endpoint. Each action (send message, logout, update preferences, delete chat) uses this function with the appropriate request structure.
+This boilerplate provides a basic structure for a chat server with SSE streaming. It includes:
 
-The `handleResponse` function processes the different types of responses from the server and updates the UI accordingly.
+- A `/chat` POST endpoint for sending messages
+- An `/events` GET endpoint for SSE streaming
+- A simple web frontend for sending messages and displaying responses
 
-This implementation provides a basic frontend that interacts with your Rust backend. You can expand on this foundation by adding more features, improving the UI, and handling errors as needed.
+You can now run the server with `cargo run` and access the chat interface at `http://localhost:8000`.
+
+Remember to add your inference logic in the `chat` function where the comment indicates. You'll also need to handle generating both full messages and deltas based on your specific requirements.
+
+I hope this helps you get started! Let me know if you need any further assistance or clarification.

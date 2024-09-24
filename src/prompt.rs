@@ -1,4 +1,5 @@
-//! [Anthropic Messages API] [`Request`] types.
+//! [Anthropic Messages API] `Request` type. We call it [`Prompt`] since in
+//! actual usage this makes the code more readable.
 //!
 //! [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 
@@ -16,19 +17,19 @@ pub use message::Message;
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
-pub struct Request {
+pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
     pub model: Model,
-    /// Input [`request::Message`]s. If this ends with an [`Assistant`]
+    /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
     ///
     /// See [Anthropic docs] for more information.
     ///
-    /// [`Assistant`]: crate::request::message::Role::Assistant
-    /// [`request::Message`]: crate::request::Message
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    /// [`prompt::message`]: crate::prompt::message
     /// [Anthropic docs]: <https://docs.anthropic.com/en/api/messages>
-    pub messages: Vec<Message>,
+    pub messages: Vec<Message<'a>>,
     /// Max tokens to generate. See Anthropic [docs] for the maximum number of
     /// tokens for each model.
     ///
@@ -43,7 +44,7 @@ pub struct Request {
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_sequences: Option<Vec<Cow<'static, str>>>,
+    pub stop_sequences: Option<Vec<Cow<'a, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the
     /// response will be a single [`response::Message`].
     ///
@@ -57,7 +58,7 @@ pub struct Request {
     /// [`MultiPart`]: message::Content::MultiPart
     /// [`Content`]: message::Content
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<message::Content>,
+    pub system: Option<message::Content<'a>>,
     /// Temperature for sampling. Must be between 0 and 1. Higher values mean
     /// more randomness. Note that 0.0 is not fully deterministic.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -67,7 +68,7 @@ pub struct Request {
     pub tool_choice: Option<tool::Choice>,
     /// Tool definitions for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Tool>>,
+    pub tools: Option<Vec<Tool<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -81,7 +82,7 @@ pub struct Request {
     pub top_p: Option<f32>,
 }
 
-impl Default for Request {
+impl Default for Prompt<'_> {
     fn default() -> Self {
         Self {
             model: Default::default(),
@@ -100,7 +101,7 @@ impl Default for Request {
     }
 }
 
-impl Request {
+impl<'a> Prompt<'a> {
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -127,18 +128,18 @@ impl Request {
 
     /// Set the [`model`] to a [`Model`].
     ///
-    /// [`model`]: Request::model
+    /// [`model`]: Prompt::model
     pub fn model(mut self, model: Model) -> Self {
         self.model = model;
         self
     }
 
-    /// Set the [`messages`] from an iterable.
+    /// Set the [`messages`] from an iterable of [`Message`]s.
     ///
-    /// [`messages`]: Request::messages
+    /// [`messages`]: Prompt::messages
     pub fn messages<M, Ms>(mut self, messages: Ms) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages = messages.into_iter().map(Into::into).collect();
@@ -147,10 +148,10 @@ impl Request {
 
     /// Add a [`Message`] to [`messages`].
     ///
-    /// [`messages`]: Request::messages
+    /// [`messages`]: Prompt::messages
     pub fn add_message<M>(mut self, message: M) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
     {
         self.messages.push(message.into());
         self
@@ -158,10 +159,10 @@ impl Request {
 
     /// Extend the [`messages`] from an iterable.
     ///
-    /// [`messages`]: Request::messages
+    /// [`messages`]: Prompt::messages
     pub fn extend_messages<M, Ms>(mut self, messages: Ms) -> Self
     where
-        M: Into<Message>,
+        M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages.extend(messages.into_iter().map(Into::into));
@@ -171,7 +172,7 @@ impl Request {
     /// Set the [`max_tokens`]. If this is reached, the [`StopReason`] will be
     /// [`MaxTokens`] in the [`response::Message::stop_reason`].
     ///
-    /// [`max_tokens`]: Request::max_tokens
+    /// [`max_tokens`]: Prompt::max_tokens
     /// [`StopReason`]: crate::response::StopReason
     /// [`MaxTokens`]: crate::response::StopReason::MaxTokens
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
@@ -188,7 +189,8 @@ impl Request {
     ///
     /// See [`try_metadata`] for a fallible version.
     ///
-    /// [`metadata`]: Request::metadata
+    /// [`metadata`]: Prompt::metadata
+    /// [`try_metadata`]: Prompt::try_metadata
     pub fn metadata<S, V, Vs>(mut self, metadata: Vs) -> Self
     where
         S: Into<String>,
@@ -205,7 +207,7 @@ impl Request {
     /// Set the [`metadata`] from an iterable of key-value pairs.
     /// The values must be serializable to JSON.
     ///
-    /// [`metadata`]: Request::metadata
+    /// [`metadata`]: Prompt::metadata
     pub fn try_metadata<S, V, Vs>(
         mut self,
         metadata: Vs,
@@ -246,7 +248,7 @@ impl Request {
     /// stop with [`StopReason::StopSequence`] in the
     /// [`response::Message::stop_reason`].
     ///
-    /// [`stop_sequences`]: Request::stop_sequences
+    /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     pub fn stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
@@ -263,7 +265,7 @@ impl Request {
     /// completion will stop with [`StopReason::StopSequence`] in the
     /// [`response::Message::stop_reason`].
     ///
-    /// [`stop_sequences`]: Request::stop_sequences
+    /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     pub fn stop_sequence<S>(mut self, stop_sequence: S) -> Self
@@ -280,12 +282,12 @@ impl Request {
     /// completion will stop with [`StopReason::StopSequence`] in the
     /// [`response::Message::stop_reason`].
     ///
-    /// [`stop_sequences`]: Request::stop_sequences
+    /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     pub fn extend_stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
     where
-        S: Into<Cow<'static, str>>,
+        S: Into<Cow<'a, str>>,
         Ss: IntoIterator<Item = S>,
     {
         self.stop_sequences
@@ -297,10 +299,10 @@ impl Request {
     /// Set the [`system`] prompt [`Content`]. This is content that the model
     /// will give special attention to. Instructions should be placed here.
     ///
-    /// [`system`]: Request::system
+    /// [`system`]: Prompt::system
     pub fn system<S>(mut self, system: S) -> Self
     where
-        S: Into<message::Content>,
+        S: Into<message::Content<'a>>,
     {
         self.system = Some(system.into());
         self
@@ -322,12 +324,12 @@ impl Request {
     /// For other image formats, see the [`message::Image::encode`] method,
     /// the [`MediaType`] enum, and the image codec feature flags.
     ///
-    /// [`system`]: Request::system
+    /// [`system`]: Prompt::system
     /// [`Block`]: message::Block
     /// [`MediaType`]: message::MediaType
-    pub fn add_system_block<B>(mut self, block: B) -> Self
+    pub fn add_system<B>(mut self, block: B) -> Self
     where
-        B: Into<message::Block>,
+        B: Into<message::Block<'a>>,
     {
         match self.system {
             Some(mut content) => {
@@ -344,7 +346,7 @@ impl Request {
 
     /// Set the [`temperature`] to `Some(value)` or [`None`] to use the default.
     ///
-    /// [`temperature`]: Request::temperature
+    /// [`temperature`]: Prompt::temperature
     pub fn temperature(mut self, temperature: Option<f32>) -> Self {
         self.temperature = temperature;
         self
@@ -361,31 +363,28 @@ impl Request {
     /// Set the available [`tools`]. When the [`Model`] uses a [`Tool`], the
     /// [`StopReason`] will be [`ToolUse`] in the
     /// [`response::Message::stop_reason`] and the final [`Content`] [`Block`]
-    /// will be [`Block::ToolUse`] with a unique [`id`].
+    /// will be [`Block::ToolUse`] with a unique [`tool::Use::id`].
     ///
     /// The response may then be provided in a [`Message`] with a [`Role`] of
-    /// [`User`] and [`Content`] [`Block`] of [`ToolResult`] with matching
-    /// [`tool_use_id`] to the [`ToolUse::id`].
+    /// [`User`] and [`Content`] [`Block`] of [`tool::Result`] with matching
+    /// [`tool_use_id`] to the [`tool::Use::id`].
     ///
     /// For a fallible version, see [`try_tools`].
     ///
-    /// [`tools`]: Request::tools
+    /// [`tools`]: Prompt::tools
     /// [`Tool`]: crate::Tool
     /// [`StopReason`]: crate::response::StopReason
     /// [`ToolUse`]: crate::response::StopReason::ToolUse
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
-    /// [`Block::ToolUse`]: crate::request::message::Block::ToolUse
-    /// [`id`]: crate::request::message::Block::ToolUse::id
-    /// [`Role`]: crate::request::message::Role
-    /// [`User`]: crate::request::message::Role::User
-    /// [`Block`]: crate::request::message::Block
-    /// [`ToolResult`]: crate::request::message::Block::ToolResult
-    /// [`tool_use_id`]: crate::request::message::Block::ToolResult::tool_use_id
-    /// [`ToolUse::id`]: crate::request::message::Block::ToolUse::id
-    /// [`try_tools`]: Request::try_tools
+    /// [`Block::ToolUse`]: crate::prompt::message::Block::ToolUse
+    /// [`Role`]: crate::prompt::message::Role
+    /// [`User`]: crate::prompt::message::Role::User
+    /// [`Block`]: crate::prompt::message::Block
+    /// [`tool_use_id`]: tool::Result::tool_use_id
+    /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<Tool>,
+        T: Into<Tool<'a>>,
         Ts: IntoIterator<Item = T>,
     {
         self.tools = Some(tools.into_iter().map(Into::into).collect());
@@ -395,28 +394,27 @@ impl Request {
     /// Try to set the [`tools`]. When the [`Model`] uses a [`Tool`], the
     /// [`StopReason`] will be [`ToolUse`] in the
     /// [`response::Message::stop_reason`] and the final [`Content`] [`Block`]
-    /// will be [`Block::ToolUse`] with a unique [`id`].
+    /// will be [`Block::ToolUse`] with a unique [`tool::Use::id`].
     ///
     /// The response may then be provided in a [`Message`] with a [`Role`] of
-    /// [`User`] and [`Content`] [`Block`] of [`ToolResult`] with matching
-    /// [`tool_use_id`] to the [`ToolUse::id`].
+    /// [`User`] and [`Content`] [`Block`] of [`tool::Result`] with matching
+    /// [`tool_use_id`] to the [`tool::Use::id`].
     ///
-    /// [`tools`]: Request::tools
+    /// [`tools`]: Prompt::tools
     /// [`Tool`]: crate::Tool
     /// [`StopReason`]: crate::response::StopReason
     /// [`ToolUse`]: crate::response::StopReason::ToolUse
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
-    /// [`Block::ToolUse`]: crate::request::message::Block::ToolUse
-    /// [`id`]: crate::request::message::Block::ToolUse::id
-    /// [`Role`]: crate::request::message::Role
-    /// [`User`]: crate::request::message::Role::User
-    /// [`Block`]: crate::request::message::Block
-    /// [`ToolResult`]: crate::request::message::Block::ToolResult
-    /// [`tool_use_id`]: crate::request::message::Block::ToolResult::tool_use_id
-    /// [`ToolUse::id`]: crate::request::message::Block::ToolUse::id
+    /// [`Block::ToolUse`]: message::Block::ToolUse
+    /// [`id`]: tool::use::id
+    /// [`Role`]: message::Role
+    /// [`User`]: message::Role::User
+    /// [`Block`]: message::Block
+    /// [`ToolResult`]: message::Block::ToolResult
+    /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<Tool, Error = E>,
+        T: TryInto<Tool<'a>, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
         self.tools = Some(
@@ -431,7 +429,7 @@ impl Request {
     /// Add a tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<Tool>,
+        T: Into<Tool<'a>>,
     {
         self.tools
             .get_or_insert_with(Default::default)
@@ -443,7 +441,7 @@ impl Request {
     /// be converted into a [`Tool`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<Tool, Error = E>,
+        T: TryInto<Tool<'a>, Error = E>,
     {
         self.tools
             .get_or_insert_with(Default::default)
@@ -481,6 +479,13 @@ impl Request {
     ///   is 2048 tokens.
     /// * Since this is a beta feature, the API may change in the future, likely
     ///   to include another form of `cache_control`.
+    ///
+    /// [`tools`]: Prompt::tools
+    /// [`system`]: Prompt::system
+    /// [`messages`]: Prompt::messages
+    /// [`Sonnet35`]: crate::Model::Sonnet35
+    /// [`Opus30`]: crate::Model::Opus30
+    /// [`Haiku30`]: crate::Model::Haiku30
     #[cfg(feature = "prompt-caching")]
     pub fn cache(mut self) -> Self {
         // If there are messages, add a cache breakpoint to the last one.
@@ -510,9 +515,9 @@ impl Request {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Request {
-    /// Format the [`Request`] chat as markdown in OpenAI style. H3 headings are
-    /// used for "System", "Tool", "User", and "Assistant" messages even though
+impl crate::markdown::ToMarkdown for Prompt<'_> {
+    /// Format the [`Prompt`] as markdown in OpenAI style. H3 headings are used
+    /// for "System", "Tool", "User", and "Assistant" messages even though
     /// technically there are only [`User`] and [`Assistant`] [`Role`]s.
     ///
     /// [`User`]: message::Role::User
@@ -569,7 +574,7 @@ mod tests {
     use serde_json::json;
     use std::num::NonZeroU16;
 
-    use crate::request::message::Role;
+    use crate::prompt::message::Role;
 
     const MESSAGE: Message = Message {
         role: Role::User,
@@ -589,7 +594,7 @@ mod tests {
 
     #[test]
     fn test_default_request() {
-        let request = Request::default();
+        let request = Prompt::default();
         assert_eq!(request.model, Model::default());
         assert!(request.messages.is_empty());
         assert_eq!(request.max_tokens, NonZeroU16::new(4096).unwrap());
@@ -606,32 +611,32 @@ mod tests {
 
     #[test]
     fn test_stream_on() {
-        let request = Request::default().stream();
+        let request = Prompt::default().stream();
         assert_eq!(request.stream, Some(true));
     }
 
     #[test]
     fn test_stream_off() {
-        let request = Request::default().no_stream();
+        let request = Prompt::default().no_stream();
         assert_eq!(request.stream, Some(false));
     }
 
     #[test]
     fn test_set_model() {
         let model = Model::default();
-        let request = Request::default().model(model); // Model is Copy
+        let request = Prompt::default().model(model); // Model is Copy
         assert_eq!(request.model, model);
     }
 
     #[test]
     fn test_set_messages() {
-        let request = Request::default().messages(MESSAGES);
+        let request = Prompt::default().messages(MESSAGES);
         assert_eq!(request.messages, MESSAGES);
     }
 
     #[test]
     fn test_add_message() {
-        let mut request = Request::default();
+        let mut request = Prompt::default();
         request = request.add_message(MESSAGE).add_message(MESSAGE2);
         assert_eq!(request.messages.len(), 2);
         assert_eq!(request.messages[0], MESSAGE);
@@ -640,7 +645,7 @@ mod tests {
 
     #[test]
     fn test_extend_messages() {
-        let mut request = Request::default();
+        let mut request = Prompt::default();
         request = request.extend_messages(MESSAGES);
         assert_eq!(request.messages, MESSAGES);
     }
@@ -648,20 +653,20 @@ mod tests {
     #[test]
     fn test_set_max_tokens() {
         let max_tokens = NonZeroU16::new(1024).unwrap();
-        let request = Request::default().max_tokens(max_tokens);
+        let request = Prompt::default().max_tokens(max_tokens);
         assert_eq!(request.max_tokens, max_tokens);
     }
 
     #[test]
     fn test_set_metadata() {
         let metadata = vec![("key".to_string(), json!("value"))];
-        let request = Request::default().metadata(metadata);
+        let request = Prompt::default().metadata(metadata);
         assert_eq!(request.metadata.get("key").unwrap(), "value");
     }
 
     #[test]
     fn test_try_metadata() {
-        let request = Request::default()
+        let request = Prompt::default()
             .try_metadata([("key", "value"), ("key2", "value2")])
             .unwrap();
         assert_eq!(request.metadata.get("key").unwrap(), "value");
@@ -671,19 +676,19 @@ mod tests {
     #[test]
     fn test_insert_metadata() {
         let request =
-            Request::default().insert_metadata("key", "value").unwrap();
+            Prompt::default().insert_metadata("key", "value").unwrap();
         assert_eq!(request.metadata.get("key").unwrap(), "value");
     }
 
     #[test]
     fn test_set_stop_sequences() {
-        let request = Request::default().stop_sequences(STOP_SEQUENCES);
+        let request = Prompt::default().stop_sequences(STOP_SEQUENCES);
         assert_eq!(request.stop_sequences.unwrap(), STOP_SEQUENCES);
     }
 
     #[test]
     fn test_add_stop_sequence() {
-        let mut request = Request::default();
+        let mut request = Prompt::default();
         request = request.stop_sequence(STOP_SEQUENCES[0]);
         assert_eq!(request.stop_sequences.as_ref().unwrap().len(), 1);
         assert_eq!(request.stop_sequences.unwrap()[0], STOP_SEQUENCES[0]);
@@ -691,14 +696,14 @@ mod tests {
 
     #[test]
     fn test_extend_stop_sequences() {
-        let mut request = Request::default();
+        let mut request = Prompt::default();
         request = request.extend_stop_sequences(STOP_SEQUENCES);
         assert_eq!(request.stop_sequences.unwrap().len(), 2);
     }
 
     #[test]
     fn test_set_system() {
-        let request = Request::default().system("system");
+        let request = Prompt::default().system("system");
         assert_eq!(request.system.unwrap().to_string(), "system");
     }
 
@@ -708,9 +713,9 @@ mod tests {
     fn test_add_system_block() {
         // Test with a system prompt. The call to cache should affect the final
         // Block in the system prompt.
-        let request = Request::default()
-            .add_system_block("Do this.") // Will add a system Content block
-            .add_system_block("And then do this.");
+        let request = Prompt::default()
+            .add_system("Do this.") // Will add a system Content block
+            .add_system("And then do this.");
 
         assert_eq!(
             request.system.as_ref().unwrap().to_string(),
@@ -722,12 +727,12 @@ mod tests {
     #[cfg(feature = "prompt-caching")]
     fn test_cache() {
         // Test with nothing to cache. This should be a no-op.
-        let request = Request::default().cache();
-        assert!(request == Request::default());
+        let request = Prompt::default().cache();
+        assert!(request == Prompt::default());
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Request::default().add_tool(Tool {
+        let request = Prompt::default().add_tool(Tool {
             name: "ping".into(),
             description: "Ping a server.".into(),
             input_schema: json!({}),
@@ -754,8 +759,8 @@ mod tests {
         // Test with a system prompt. The call to cache should affect the final
         // Block in the system prompt.
         let request = request
-            .add_system_block("Do this.") // Will add a system Content block
-            .add_system_block("And then do this.")
+            .add_system("Do this.") // Will add a system Content block
+            .add_system("And then do this.")
             .cache();
 
         assert!(request.system.as_ref().unwrap().last().unwrap().is_cached());
@@ -821,7 +826,7 @@ mod tests {
             cache_control: None,
         };
 
-        let request = Request::default()
+        let request = Prompt::default()
             .tools([tool])
             .try_add_tool(json_tool)
             .unwrap();
@@ -855,14 +860,14 @@ mod tests {
                 "required": ["host"]
             }
         });
-        let err = Request::default().try_add_tool(invalid.clone());
+        let err = Prompt::default().try_add_tool(invalid.clone());
         if let Err(e) = err {
             assert_eq!(e.to_string(), "missing field `name`");
         } else {
             panic!("Expected an error.");
         }
 
-        let err = Request::default().try_tools([invalid]);
+        let err = Prompt::default().try_tools([invalid]);
         if let Err(e) = err {
             assert_eq!(e.to_string(), "missing field `name`");
         } else {
@@ -872,7 +877,7 @@ mod tests {
 
     #[test]
     fn test_temperature() {
-        let request = Request::default().temperature(Some(0.5));
+        let request = Prompt::default().temperature(Some(0.5));
         assert_eq!(request.temperature, Some(0.5));
     }
 
@@ -880,20 +885,20 @@ mod tests {
     #[allow(unused_variables)] // because the compiler is silly sometimes
     fn test_tool_choice() {
         let choice = tool::Choice::Any;
-        let request = Request::default().tool_choice(choice);
+        let request = Prompt::default().tool_choice(choice);
         assert!(matches!(request.tool_choice, Some(choice)));
     }
 
     #[test]
     fn test_top_k() {
         let request =
-            Request::default().top_k(Some(NonZeroU16::new(5).unwrap()));
+            Prompt::default().top_k(Some(NonZeroU16::new(5).unwrap()));
         assert_eq!(request.top_k, Some(NonZeroU16::new(5).unwrap()));
     }
 
     #[test]
     fn test_top_p() {
-        let request = Request::default().top_p(Some(0.5));
+        let request = Prompt::default().top_p(Some(0.5));
         assert_eq!(request.top_p, Some(0.5));
     }
 
@@ -902,7 +907,7 @@ mod tests {
     fn test_markdown() {
         use crate::markdown::{Markdown, ToMarkdown};
 
-        let request = Request::default()
+        let request = Prompt::default()
             .tools([Tool {
                 name: "ping".into(),
                 description: "Ping a server.".into(),
@@ -956,10 +961,7 @@ mod tests {
                 },
             ]);
 
-        let opts = crate::markdown::Options::default()
-            .with_system()
-            .with_tool_use()
-            .with_tool_results();
+        let opts = crate::markdown::Options::verbose();
 
         let markdown: Markdown = request.markdown_custom(&opts);
 
@@ -967,7 +969,7 @@ mod tests {
         // we generate markdown like this because it's easier to read. The user
         // does not submit a tool result, so it's confusing if the header is
         // "User".
-        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":\"Pinging example.com.\",\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
+        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":[{\"type\":\"text\",\"text\":\"Pinging example.com.\"}],\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
 
         assert_eq!(markdown.as_ref(), expected);
     }
