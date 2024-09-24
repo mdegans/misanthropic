@@ -42,7 +42,7 @@ struct Args {
     sonnet: bool,
 }
 
-/// Prompt the user if they want to run the Python script.
+/// Returns true if the user wants to run the Python script.
 fn prompt_user(script: &str) -> bool {
     // There is no sandboxing in this example for simplicity's sake so we ask
     // the user instead.
@@ -73,11 +73,9 @@ pub fn handle_tool_call(
     }
 
     if let Some(script) = call.input["script"].as_str() {
-        // FIXME: Before 0.3.0, we should provide more concise constructors for
-        // `tool::Result` and `tool::Use`. It could cut this code in half and
-        // remove the need for conditional compilation.
-
         if !prompt_user(script) {
+            // User declined to run the Python script. Inform the Assistant.
+
             return Err(tool::Result {
                 tool_use_id: call.id.to_string().into(),
                 content: "User declined to run the Python script. Do you really need Python for this?".into(),
@@ -107,13 +105,14 @@ pub fn handle_tool_call(
         if let Ok(Some(status)) = p.wait_timeout(Duration::from_secs(5)) {
             // Read the output to a string.
             let mut output = String::new();
-            p.stdout
-                .as_ref()
-                .unwrap()
-                .read_to_string(&mut output)
-                .unwrap();
-
             if status.success() {
+                // Send stdout to the Assistant.
+                p.stdout
+                    .as_ref()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+
                 return Ok(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
@@ -123,6 +122,13 @@ pub fn handle_tool_call(
                 }
                 .into());
             } else {
+                // Send stderr to the Assistant (the exception).
+                p.stderr
+                    .as_ref()
+                    .unwrap()
+                    .read_to_string(&mut output)
+                    .unwrap();
+
                 return Err(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
@@ -133,6 +139,7 @@ pub fn handle_tool_call(
                 .into());
             }
         } else {
+            // The Python script timed out.
             return Ok(tool::Result {
                 tool_use_id: call.id.to_string().into(),
                 content: "Python script timed out.".into(),
@@ -143,6 +150,7 @@ pub fn handle_tool_call(
             .into());
         }
     } else {
+        // The Assistant did not use the `script` key. This should never happen.
         Err(tool::Result {
             tool_use_id: call.id.to_string().into(),
             content: "Invalid input.".into(),
@@ -166,6 +174,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a client. `key` will be consumed and zeroized.
     let client = Client::new(key)?;
 
+    // Get the Python version so the Assistant can write code for the correct
+    // version.
     let python_version: String = Exec::cmd("python3")
         .arg("--version")
         .stdout(Redirection::Pipe)
@@ -175,10 +185,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .trim()
         .to_string();
 
-    // Craft our chat request, providing a Tool definition to call `python`. In
-    // the future this will be derivable from the function signature and
-    // docstring. Like many things in our API, `Tool` is also convertable from a
-    // `serde_json::Value`.
+    // Craft our `Prompt`, providing a Tool definition to call `python`. In the
+    // future this will be derivable from the function signature and docstring.
+    // Like many things in our API, `Tool` is also convertable from a
+    // `serde_json::Value` so the `json!` macro can be used instead as an
+    // argument to `add_tool`.
     let mut chat = Prompt::default()
         .model(if args.sonnet {
             Model::Sonnet35
@@ -204,12 +215,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Inform the assistant about their limitations.
         .system(include_str!("python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", python_version))
-        // The example has one for python use and one without. If this is not
-        // included the Assistant may do things like write the haiku *in*
-        // Python which is interesting but not what the user asked for. This
-        // example uses Haiku, not Sonnet, so more guidance is needed. More
-        // example could be added to refine the Assistant's understanding,
-        // however this is a simple example.
+        // The example has some examples of the Assistant using Python and some
+        // without to help guide the assistant to use Python when necessary and
+        // not when it isn't. The more examples here, with more varied prompts,
+        // the better the Assistant will be at this.
         .messages([
             Message {
                 role: Role::User,
