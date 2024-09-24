@@ -23,8 +23,7 @@ use misanthropic::{
     tool, Client, Model, Prompt, Tool,
 };
 
-/// Count the number of letters in a word (or any string). An example of tool
-/// use and tool results.
+/// Use Python to answer the user's questions.
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
