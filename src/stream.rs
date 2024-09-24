@@ -2,7 +2,7 @@
 //! associated types and errors only used when streaming.
 use futures::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, pin::Pin};
+use std::{borrow::Cow, pin::Pin, task::Poll};
 
 #[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
@@ -212,8 +212,16 @@ pub enum Error {
 
 /// Stream of [`Event`]s or [`Error`]s.
 pub struct Stream<'a> {
-    inner: Pin<Box<dyn futures::Stream<Item = Result<Event<'a>, Error>>>>,
+    inner: Pin<
+        Box<
+            dyn futures::Stream<Item = Result<Event<'a>, Error>>
+                + Send
+                + 'static,
+        >,
+    >,
 }
+
+static_assertions::assert_impl_all!(Stream<'_>: futures::Stream, Send);
 
 impl<'a> Stream<'a> {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
@@ -225,7 +233,8 @@ impl<'a> Stream<'a> {
                     eventsource_stream::Event,
                     eventsource_stream::EventStreamError<reqwest::Error>,
                 >,
-            > + 'static,
+            > + Send
+            + 'static,
     {
         Self {
             inner: Box::pin(stream.map(|event| match event {
@@ -267,7 +276,7 @@ impl<'a> futures::Stream for Stream<'a> {
     fn poll_next(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context,
-    ) -> std::task::Poll<Option<Self::Item>> {
+    ) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
     }
 }
