@@ -196,8 +196,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
-            // Inform the assistant about their limitations.
         })
+        // Inform the assistant about their limitations.
         .system(include_str!("python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", python_version))
         // The example has one for python use and one without. If this is not
@@ -319,8 +319,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             break;
         }
     }
-
-    // Generate the message with the correct tool use.
 
     println!(
         "{}",
