@@ -14,7 +14,7 @@ Is an unofficial simple, ergonomic, client for the Anthropic Messages API.
 // When requests are made, the key header is marked as sensitive.
 let client = Client::new(key)?;
 
-// Request a stream of events or errors. `json!` can be used, the `Request`
+// Request a stream of events or errors. `json!` can be used, the `Prompt`
 // builder pattern (shown in the `Single Message` example below), or anything
 // serializable.
 let stream = client
@@ -51,10 +51,10 @@ let content: String = stream
 let client = Client::new(key)?;
 
 // Many common usage patterns are supported out of the box for building
-// `Request`s, such as messages from an iterable of tuples of `Role` and
+// `Prompt`s, such as messages from an iterable of tuples of `Role` and
 // `String`.
 let message = client
-    .message(Request::default().messages([(Role::User, args.prompt)]))
+    .message(Prompt::default().messages([(Role::User, args.prompt)]))
     .await?;
 
 println!("{}", message);
