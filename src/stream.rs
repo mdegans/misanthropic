@@ -290,7 +290,7 @@ impl<'a> futures::Stream for Stream<'a> {
 /// [`RateLimit`]: AnthropicError::RateLimit
 /// [`Overloaded`]: AnthropicError::Overloaded
 pub trait FilterExt<'a>:
-    futures::stream::Stream<Item = Result<Event<'a>, Error>> + Sized
+    futures::stream::Stream<Item = Result<Event<'a>, Error>> + Sized + Send
 {
     /// Filter out rate limit and overload errors. Because the server sends
     /// these events there isn't a need to retry or backoff. The stream will
@@ -299,7 +299,7 @@ pub trait FilterExt<'a>:
     /// This is recommended for most use cases.
     fn filter_rate_limit(
         self,
-    ) -> impl futures::Stream<Item = Result<Event<'a>, Error>> {
+    ) -> impl futures::Stream<Item = Result<Event<'a>, Error>> + Send {
         self.filter_map(|result| async move {
             match result {
                 Ok(event) => Some(Ok(event)),
@@ -316,7 +316,9 @@ pub trait FilterExt<'a>:
 
     /// Filter out everything but [`Event::ContentBlockDelta`]. This can include
     /// text, JSON, and tool use.
-    fn deltas(self) -> impl futures::Stream<Item = Result<Delta<'a>, Error>> {
+    fn deltas(
+        self,
+    ) -> impl futures::Stream<Item = Result<Delta<'a>, Error>> + Send {
         self.filter_map(|result| async move {
             match result {
                 Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
@@ -326,7 +328,9 @@ pub trait FilterExt<'a>:
     }
 
     /// Filter out everything but text pieces.
-    fn text(self) -> impl futures::Stream<Item = Result<Cow<'a, str>, Error>> {
+    fn text(
+        self,
+    ) -> impl futures::Stream<Item = Result<Cow<'a, str>, Error>> + Send {
         self.deltas().filter_map(|result| async move {
             match result {
                 Ok(Delta::Text { text }) => Some(Ok(text)),
@@ -337,7 +341,7 @@ pub trait FilterExt<'a>:
 }
 
 impl<'a, S> FilterExt<'a> for S where
-    S: futures::Stream<Item = Result<Event<'a>, Error>>
+    S: futures::Stream<Item = Result<Event<'a>, Error>> + Send
 {
 }
 
