@@ -17,6 +17,7 @@ pub use message::Message;
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
     pub model: Model,
@@ -37,7 +38,7 @@ pub struct Prompt<'a> {
     pub max_tokens: NonZeroU16,
     /// Optional info about the request, for example, `user_id` to help
     /// Anthropic detect and prevent abuse. Do not use PII here (email, phone).
-    #[serde(skip_serializing_if = "serde_json::Map::is_empty")]
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub metadata: serde_json::Map<String, serde_json::Value>,
     /// Optional stop sequences. If the model generates any of these sequences,
     /// the completion will stop with [`StopReason::StopSequence`].
@@ -792,6 +793,20 @@ mod tests {
             .last()
             .unwrap()
             .is_cached());
+    }
+
+    #[test]
+    fn test_serde() {
+        // Test default deserialization.
+        const JSON: &str = r#"{}"#;
+
+        let defaults = serde_json::from_str::<Prompt>(JSON).unwrap();
+
+        // Another round trip to ensure serialization works.
+        let json = serde_json::to_string(&defaults).unwrap();
+        let _ = serde_json::from_str::<Prompt>(&json).unwrap();
+
+        // TODO: impl Default and PartialEq when `cfg(test)`
     }
 
     #[test]
