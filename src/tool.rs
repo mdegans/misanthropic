@@ -255,6 +255,20 @@ impl<'a> Tool<'a> {
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
+
+    /// Try to convert from a serializable value to a [`Tool`].
+    // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
+    // would conflict with the blanket impl for TryFrom<Value> where Value:
+    // Serialize. This is a bit of a hack but it works.
+    pub fn from_serializable<T>(
+        value: T,
+    ) -> std::result::Result<Self, serde_json::Error>
+    where
+        T: Serialize,
+    {
+        let value = serde_json::to_value(value)?;
+        value.try_into()
+    }
 }
 
 impl TryFrom<serde_json::Value> for Tool<'_> {
