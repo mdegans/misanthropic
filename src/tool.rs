@@ -260,7 +260,9 @@ impl<'a> Tool<'a> {
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
     // Serialize. This is a bit of a hack but it works.
-    pub fn parse<T>(value: T) -> std::result::Result<Self, serde_json::Error>
+    pub fn from_serializable<T>(
+        value: T,
+    ) -> std::result::Result<Self, serde_json::Error>
     where
         T: Serialize,
     {
