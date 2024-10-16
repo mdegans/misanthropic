@@ -577,18 +577,6 @@ mod tests {
 
     use crate::prompt::message::Role;
 
-    const MESSAGE: Message = Message {
-        role: Role::User,
-        content: Content::text("Hello"),
-    };
-
-    const MESSAGE2: Message = Message {
-        role: Role::Assistant,
-        content: Content::text("Hi"),
-    };
-
-    const MESSAGES: [Message; 2] = [MESSAGE, MESSAGE2];
-
     const STOP_SEQUENCES: [&'static str; 2] = ["stop1", "stop2"];
 
     // Credit to GitHub Copilot for the following tests.
@@ -629,26 +617,41 @@ mod tests {
         assert_eq!(request.model, model);
     }
 
+    fn create_test_messages() -> [Message<'static>; 2] {
+        let message = Message {
+            role: Role::User,
+            content: Content::text("Hello"),
+        };
+
+        let message2 = Message {
+            role: Role::Assistant,
+            content: Content::text("Hi"),
+        };
+
+        [message, message2]
+    }
+
     #[test]
     fn test_set_messages() {
-        let request = Prompt::default().messages(MESSAGES);
-        assert_eq!(request.messages, MESSAGES);
+        let request = Prompt::default().messages(create_test_messages());
+        assert_eq!(request.messages, create_test_messages());
     }
 
     #[test]
     fn test_add_message() {
-        let mut request = Prompt::default();
-        request = request.add_message(MESSAGE).add_message(MESSAGE2);
-        assert_eq!(request.messages.len(), 2);
-        assert_eq!(request.messages[0], MESSAGE);
-        assert_eq!(request.messages[1], MESSAGE2);
+        let prompt = Prompt::default()
+            .add_message((Role::User, "Hello"))
+            .add_message((Role::Assistant, "Hi"));
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[0], (Role::User, "Hello").into());
+        assert_eq!(prompt.messages[1], (Role::Assistant, "Hi").into());
     }
 
     #[test]
     fn test_extend_messages() {
         let mut request = Prompt::default();
-        request = request.extend_messages(MESSAGES);
-        assert_eq!(request.messages, MESSAGES);
+        request = request.extend_messages(create_test_messages());
+        assert_eq!(request.messages, create_test_messages());
     }
 
     #[test]

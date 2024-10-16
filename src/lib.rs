@@ -36,6 +36,11 @@ pub use response::Response;
 /// Markdown utilities for parsing and rendering.
 pub mod markdown;
 
+#[cfg(not(feature = "langsan"))]
+pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
+#[cfg(feature = "langsan")]
+pub(crate) type CowStr<'a> = langsan::CowStr<'a>;
+
 /// Re-exports of commonly used crates to avoid version conflicts and reduce
 /// dependency bloat.
 pub mod exports {
@@ -44,6 +49,8 @@ pub mod exports {
     pub use futures;
     #[cfg(feature = "image")]
     pub use image;
+    #[cfg(feature = "langsan")]
+    pub use langsan;
     #[cfg(feature = "log")]
     pub use log;
     pub use memsecurity;

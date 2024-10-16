@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
@@ -37,6 +37,15 @@ thiserror = "1"
 pulldown-cmark = { version = "0.12", optional = true }
 pulldown-cmark-to-cmark = { version = "17", optional = true }
 static_assertions = "1"
+langsan = { version = "0", features = [
+    "english",
+    "french",
+    "german",
+    "italian",
+    "serde",
+    "emoji",
+    "verbose",
+], optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -51,7 +60,7 @@ tempfile = "3.12"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls"]
+default = ["rustls-tls", "langsan"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself. This is mostly for interop with
 # the `image` crate.
@@ -78,6 +87,8 @@ rustls-tls = ["reqwest/rustls-tls"]
 markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
 # Derive PartialEq for all structs and enums.
 partialeq = []
+# Input and output sanitization
+langsan = ["dep:langsan"]
 
 [[example]]
 name = "strawberry"
