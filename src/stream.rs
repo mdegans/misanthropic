@@ -396,14 +396,14 @@ pub(crate) mod tests {
                     cache_control,
                 } = content_block
                 {
-                    assert_eq!(text, "");
+                    assert_eq!(text.as_ref(), "");
                     assert!(cache_control.is_none());
                 } else {
                     panic!("Unexpected content block: {:?}", content_block);
                 }
                 #[cfg(not(feature = "prompt-caching"))]
                 if let Block::Text { text } = content_block {
-                    assert_eq!(text, "");
+                    assert_eq!(text.as_ref(), "");
                 } else {
                     panic!("Unexpected content block: {:?}", content_block);
                 }

@@ -4,8 +4,6 @@
 //! [`response::Message`]: crate::response::Message
 //! [`prompt::Message`]: crate::prompt::Message
 
-use std::borrow::Cow;
-
 use base64::engine::{general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 
@@ -217,15 +215,25 @@ impl std::fmt::Display for Message<'_> {
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
 pub enum Content<'a> {
     /// Single part text-only content.
-    SinglePart(Cow<'a, str>),
+    SinglePart(crate::CowStr<'a>),
     /// Multiple content [`Block`]s.
     MultiPart(Vec<Block<'a>>),
 }
 
 impl<'a> Content<'a> {
-    /// Const constructor for static text content.
-    pub const fn text(text: &'static str) -> Self {
-        Self::SinglePart(Cow::Borrowed(text))
+    /// Const constructor for static text content. Not available with the
+    /// `langsan` feature.
+    #[cfg(not(feature = "langsan"))]
+    pub const fn const_text(text: &'static str) -> Self {
+        Self::SinglePart(std::borrow::Cow::Borrowed(text))
+    }
+
+    /// Text content.
+    pub fn text<T>(text: T) -> Self
+    where
+        T: Into<crate::CowStr<'a>>,
+    {
+        Self::SinglePart(text.into())
     }
 
     /// Returns the number of [`Block`]s in `self`.
@@ -322,7 +330,16 @@ impl<'a> Content<'a> {
     pub fn into_static(self) -> Content<'static> {
         match self {
             Self::SinglePart(text) => {
-                Content::SinglePart(Cow::Owned(text.into_owned()))
+                #[cfg(not(feature = "langsan"))]
+                {
+                    Content::SinglePart(std::borrow::Cow::Owned(
+                        text.into_owned(),
+                    ))
+                }
+                #[cfg(feature = "langsan")]
+                {
+                    Content::SinglePart(text.into_static())
+                }
             }
             Self::MultiPart(parts) => Content::MultiPart(
                 parts.into_iter().map(Block::into_static).collect(),
@@ -439,7 +456,7 @@ pub enum Block<'a> {
     #[cfg_attr(not(feature = "markdown"), display("{text}"))]
     Text {
         /// The actual text content.
-        text: Cow<'a, str>,
+        text: crate::CowStr<'a>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -489,10 +506,26 @@ impl std::fmt::Display for Block<'_> {
 }
 
 impl<'a> Block<'a> {
-    /// Const constructor for text content.
-    pub const fn new_text(text: &'a str) -> Self {
+    /// Const constructor for text content. Only available without the `langsan`
+    /// feature.
+    // TODO: rename this to `text` which is more consistent with the other
+    // constructors? Or the other way around?
+    #[cfg(not(feature = "langsan"))]
+    pub const fn const_text(text: &'a str) -> Self {
         Self::Text {
-            text: Cow::Borrowed(text),
+            text: std::borrow::Cow::Borrowed(text),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+
+    /// Text content.
+    pub fn text<T>(text: T) -> Self
+    where
+        T: Into<crate::CowStr<'a>>,
+    {
+        Self::Text {
+            text: text.into(),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -520,7 +553,14 @@ impl<'a> Block<'a> {
         // Apply the merged delta to the block.
         match (self, acc) {
             (Block::Text { text, .. }, Delta::Text { text: delta }) => {
-                text.to_mut().push_str(&delta);
+                #[cfg(not(feature = "langsan"))]
+                {
+                    text.to_mut().push_str(&delta);
+                }
+                #[cfg(feature = "langsan")]
+                {
+                    text.push_str(&delta);
+                }
             }
             (
                 Block::ToolUse {
@@ -607,7 +647,10 @@ impl<'a> Block<'a> {
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             } => Block::Text {
-                text: Cow::Owned(text.into_owned()),
+                #[cfg(not(feature = "langsan"))]
+                text: std::borrow::Cow::Owned(text.into_owned()),
+                #[cfg(feature = "langsan")]
+                text: text.into_static(),
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
@@ -700,7 +743,7 @@ impl crate::markdown::ToMarkdown for Block<'_> {
 
 impl<'a> From<&'a str> for Block<'a> {
     fn from(text: &'a str) -> Self {
-        Self::new_text(text)
+        Self::text(text)
     }
 }
 
@@ -785,7 +828,7 @@ pub enum Image<'a> {
         /// Image encoding format.
         media_type: MediaType,
         /// Base64 encoded compressed image data.
-        data: Cow<'a, str>,
+        data: crate::CowStr<'a>,
     },
 }
 
@@ -850,7 +893,10 @@ impl Image<'_> {
         match self {
             Self::Base64 { media_type, data } => Image::Base64 {
                 media_type,
-                data: Cow::Owned(data.into_owned()),
+                #[cfg(not(feature = "langsan"))]
+                data: std::borrow::Cow::Owned(data.into_owned()),
+                #[cfg(feature = "langsan")]
+                data: data.into_static(),
             },
         }
     }
@@ -1102,7 +1148,7 @@ mod tests {
 
     #[test]
     fn test_from_role_cow() {
-        let text: Cow<'static, str> = "Hello, world!".into();
+        let text: crate::CowStr<'static> = "Hello, world!".into();
         let message: Message = (Role::User, text).into();
 
         assert_eq!(message.to_string(), "### User\n\nHello, world!");
@@ -1145,7 +1191,7 @@ mod tests {
 
     #[test]
     fn test_content_from_block() {
-        let content: Content = Block::new_text("Hello, world!").into();
+        let content: Content = Block::text("Hello, world!").into();
         assert_eq!(content.to_string(), "Hello, world!");
     }
 

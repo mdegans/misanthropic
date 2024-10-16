@@ -536,6 +536,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(msg.contains("🙏"));
+        assert_eq!(msg, "🙏");
     }
 }

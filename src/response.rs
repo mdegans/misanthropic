@@ -125,28 +125,30 @@ mod tests {
 
     const CONTENT: &str = "Hello, world!";
 
-    const RESPONSE: Response = Response::Message {
-        message: Message {
-            id: Cow::Borrowed(TEST_ID),
-            message: prompt::Message {
-                role: prompt::message::Role::User,
-                content: prompt::message::Content::SinglePart(Cow::Borrowed(
-                    CONTENT,
-                )),
+    fn create_response() -> Response<'static> {
+        Response::Message {
+            message: Message {
+                id: TEST_ID.into(),
+                message: prompt::Message {
+                    role: prompt::message::Role::User,
+                    content: prompt::message::Content::SinglePart(
+                        CONTENT.into(),
+                    ),
+                },
+                model: crate::Model::Sonnet35,
+                stop_reason: None,
+                stop_sequence: None,
+                usage: Usage {
+                    input_tokens: 1,
+                    #[cfg(feature = "prompt-caching")]
+                    cache_creation_input_tokens: Some(2),
+                    #[cfg(feature = "prompt-caching")]
+                    cache_read_input_tokens: Some(3),
+                    output_tokens: 4,
+                },
             },
-            model: crate::Model::Sonnet35,
-            stop_reason: None,
-            stop_sequence: None,
-            usage: Usage {
-                input_tokens: 1,
-                #[cfg(feature = "prompt-caching")]
-                cache_creation_input_tokens: Some(2),
-                #[cfg(feature = "prompt-caching")]
-                cache_read_input_tokens: Some(3),
-                output_tokens: 4,
-            },
-        },
-    };
+        }
+    }
 
     #[test]
     fn test_into_stream() {
@@ -159,7 +161,7 @@ mod tests {
         };
 
         assert!(response.into_stream().is_some());
-        assert!(RESPONSE.into_stream().is_none());
+        assert!(create_response().into_stream().is_none());
     }
 
     #[test]
@@ -178,13 +180,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn test_unwrap_stream_panics() {
-        let _panic = RESPONSE.unwrap_stream();
+        let _panic = create_response().unwrap_stream();
     }
 
     #[test]
     fn test_unwrap_message() {
         assert_eq!(
-            RESPONSE.unwrap_message().content.to_string(),
+            create_response().unwrap_message().content.to_string(),
             "Hello, world!"
         );
     }
@@ -206,7 +208,7 @@ mod tests {
     #[test]
     fn test_message() {
         assert_eq!(
-            RESPONSE.message().unwrap().content.to_string(),
+            create_response().message().unwrap().content.to_string(),
             "Hello, world!"
         );
 
@@ -224,7 +226,11 @@ mod tests {
     #[test]
     fn test_into_message() {
         assert_eq!(
-            RESPONSE.into_message().unwrap().content.to_string(),
+            create_response()
+                .into_message()
+                .unwrap()
+                .content
+                .to_string(),
             "Hello, world!"
         );
 
@@ -242,7 +248,7 @@ mod tests {
     #[test]
     fn test_into_response_message() {
         assert_eq!(
-            RESPONSE
+            create_response()
                 .into_response_message()
                 .unwrap()
                 .message
@@ -265,7 +271,7 @@ mod tests {
     #[test]
     fn test_response_message() {
         assert_eq!(
-            RESPONSE
+            create_response()
                 .response_message()
                 .unwrap()
                 .message
@@ -288,7 +294,7 @@ mod tests {
     #[test]
     fn test_unwrap_response_message() {
         assert_eq!(
-            RESPONSE
+            create_response()
                 .unwrap_response_message()
                 .message
                 .content
