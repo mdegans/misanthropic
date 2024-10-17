@@ -202,14 +202,7 @@ impl std::fmt::Display for Message<'_> {
 }
 
 /// Content of a [`Message`].
-#[derive(
-    Clone,
-    Debug,
-    Serialize,
-    Deserialize,
-    derive_more::From,
-    derive_more::IsVariant,
-)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
@@ -441,6 +434,37 @@ where
 {
     fn from(block: T) -> Self {
         Self::MultiPart(vec![block.into()])
+    }
+}
+
+// I would love to have a conversion method form IntoIterator<Item = T> but
+// that conflicts for str because in the future str might implement IntoIterator
+// and Iterator. This is a workaround for now.
+
+// I don't really like this because the generics mean a new function for every
+// array size. But in most cases the array size is between 1 and 3 so it's not
+// a big deal.
+impl<'a, T, const N: usize> From<[T; N]> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from(blocks: [T; N]) -> Self {
+        Self::MultiPart(blocks.into_iter().map(|t| t.into()).collect())
+    }
+}
+
+impl<'a> From<&'a [&'a str]> for Content<'a> {
+    fn from(text: &'a [&'a str]) -> Self {
+        Self::MultiPart(text.iter().map(|t| (*t).into()).collect())
+    }
+}
+
+impl<'a, T> From<Vec<T>> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from(blocks: Vec<T>) -> Self {
+        Self::MultiPart(blocks.into_iter().map(Into::into).collect())
     }
 }
 
@@ -757,6 +781,16 @@ impl From<String> for Block<'_> {
     }
 }
 
+impl<'a> From<crate::CowStr<'a>> for Block<'a> {
+    fn from(text: crate::CowStr<'a>) -> Self {
+        Self::Text {
+            text,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+}
+
 impl<'a> From<Image<'a>> for Block<'a> {
     fn from(image: Image<'a>) -> Self {
         Self::Image {
@@ -1005,6 +1039,8 @@ impl TryFrom<image::ImageFormat> for MediaType {
 
 #[cfg(test)]
 mod tests {
+    use std::vec;
+
     use super::*;
 
     pub const CONTENT_SINGLE: &str = "\"Hello, world!\"";
@@ -1043,6 +1079,18 @@ mod tests {
     fn test_message_from_role_string_tuple() {
         let message: Message = (Role::User, "Hello, world!".to_string()).into();
         assert_eq!(message.to_string(), "### User\n\nHello, world!");
+    }
+
+    #[test]
+    fn test_message_from_role_multi_part() {
+        let message: Message = (Role::User, ["Hello, world!"]).into();
+        assert_eq!(message.to_string(), "### User\n\nHello, world!");
+        let content = vec!["Hello, world!", "How are you?"];
+        let message: Message = (Role::User, content).into();
+        assert_eq!(
+            message.to_string(),
+            "### User\n\nHello, world!\n\nHow are you?"
+        );
     }
 
     #[test]
