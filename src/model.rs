@@ -37,12 +37,11 @@ pub enum Model {
     Sonnet30,
     /// Haiku 3.0 (latest) This is the default model.
     #[default]
-    #[serde(rename = "claude-3-haiku-latest")]
+    // The `latest` alias is not enabled yet, but (very likely) will be in the
+    // future. If not we will manually update this.
+    #[serde(rename = "claude-3-haiku-20240307")]
     Haiku30,
     /// Haiku 3.0 2024-03-07
     #[serde(rename = "claude-3-haiku-20240307")]
     Haiku30_20240307,
-    /// Haiku 3.5 (latest)
-    #[serde(rename = "claude-3-5-haiku-latest")]
-    Haiku35,
 }
