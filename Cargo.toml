@@ -86,7 +86,7 @@ rustls-tls = ["reqwest/rustls-tls"]
 # converting to CommonMark.
 markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
 # Derive PartialEq for all structs and enums.
-partialeq = []
+partial_eq = []
 # Input and output sanitization
 langsan = ["dep:langsan"]
 
