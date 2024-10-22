@@ -141,7 +141,7 @@ mod tests {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
         assert_eq!(message.message.content.len(), 1);
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(message.model, crate::Model::Sonnet35);
+        assert_eq!(message.model, crate::Model::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
         assert_eq!(message.stop_sequence, None);
         assert_eq!(message.usage.input_tokens, 2095);
