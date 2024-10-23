@@ -16,18 +16,32 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Model {
-    /// Sonnet 3.5.
-    #[serde(rename = "claude-3-5-sonnet-20240620")]
+    /// Sonnet 3.5 (latest)
+    #[serde(rename = "claude-3-5-sonnet-latest")]
     Sonnet35,
-    /// Opus 3.0.
-    #[serde(rename = "claude-3-opus-20240229")]
+    /// Sonnet 3.5 2024-06-20
+    #[serde(rename = "claude-3-5-sonnet-20240620")]
+    Sonnet35_20240620,
+    /// Sonnet 3.0 2024-10-22
+    #[serde(rename = "claude-3-sonnet-20241022")]
+    Sonnet30_20241022,
+    /// Opus 3.0 (latest)
+    #[serde(rename = "claude-3-opus-latest")]
     Opus30,
+    /// Opus 3.0 2024-02-29
+    #[serde(rename = "claude-3-opus-20240229")]
+    Opus30_20240229,
     /// Sonnet 3.0
     #[cfg(not(feature = "prompt-caching"))]
     #[serde(rename = "claude-3-sonnet-20240229")]
     Sonnet30,
-    /// Haiku 3.0. This is the default model.
+    /// Haiku 3.0 (latest) This is the default model.
     #[default]
+    // The `latest` alias is not enabled yet, but (very likely) will be in the
+    // future. If not we will manually update this.
     #[serde(rename = "claude-3-haiku-20240307")]
     Haiku30,
+    /// Haiku 3.0 2024-03-07
+    #[serde(rename = "claude-3-haiku-20240307")]
+    Haiku30_20240307,
 }

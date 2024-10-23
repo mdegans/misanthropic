@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
@@ -86,7 +86,7 @@ rustls-tls = ["reqwest/rustls-tls"]
 # converting to CommonMark.
 markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
 # Derive PartialEq for all structs and enums.
-partialeq = []
+partial_eq = []
 # Input and output sanitization
 langsan = ["dep:langsan"]
 

@@ -119,8 +119,6 @@ impl<'a> Response<'a> {
 mod tests {
     use super::*;
 
-    use std::borrow::Cow;
-
     const TEST_ID: &str = "test_id";
 
     const CONTENT: &str = "Hello, world!";
