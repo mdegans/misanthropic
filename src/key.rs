@@ -5,7 +5,7 @@ use zeroize::{ZeroizeOnDrop, Zeroizing};
 pub const LEN: usize = 108;
 
 /// Type alias for an Anthropic API key.
-pub type Arr = [u8; LEN];
+type Arr = [u8; LEN];
 
 /// Error for when a key is not the correct [`key::LEN`].
 ///

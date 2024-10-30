@@ -8,9 +8,6 @@ use memsecurity::zeroize::Zeroizing;
 /// The length of an Anthropic API key in bytes.
 pub const LEN: usize = 108;
 
-/// Type alias for an Anthropic API key.
-pub type Arr = [u8; LEN];
-
 /// Error for when a key is not the correct [`key::LEN`].
 ///
 /// [`key::LEN`]: LEN
