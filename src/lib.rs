@@ -12,7 +12,13 @@
 //! See the `examples` directory for more detailed usage.
 // Because I can't get the example scraping to work. TODO: Fix this.
 
+#[cfg(feature = "memsecurity")]
+pub mod key_memsecurity;
+#[cfg(feature = "memsecurity")]
+pub use key_memsecurity as key;
+#[cfg(not(feature = "memsecurity"))]
 pub mod key;
+
 pub use key::Key;
 
 pub mod client;
@@ -54,6 +60,7 @@ pub mod exports {
     pub use langsan;
     #[cfg(feature = "log")]
     pub use log;
+    #[cfg(feature = "memsecurity")]
     pub use memsecurity;
     #[cfg(feature = "markdown")]
     pub use pulldown_cmark;

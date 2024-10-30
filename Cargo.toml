@@ -27,7 +27,8 @@ eventsource-stream = "0.2"
 futures = "0.3"
 image = { version = "0.25", optional = true }
 log = { version = "0.4", optional = true }
-memsecurity = "3.5"
+memsecurity = { version = "3.5", optional = true }
+zeroize = { version = "1", features = ["derive"] }
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
@@ -89,6 +90,10 @@ markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
 partial_eq = []
 # Input and output sanitization
 langsan = ["dep:langsan"]
+# Encrypted key in memory. Without this the key is still zeroed on drop, but is
+# not encrypted. This is a more secure option for the paranoid. Does not build
+# on wasm32.
+memsecurity = ["dep:memsecurity"]
 
 [[example]]
 name = "strawberry"
