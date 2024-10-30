@@ -17,6 +17,9 @@ categories = [
 ]
 license = "MIT"
 
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
 [lints.rust]
 unsafe_code = "forbid"
 
@@ -98,7 +101,17 @@ memsecurity = ["dep:memsecurity"]
 [[example]]
 name = "strawberry"
 required-features = ["markdown"]
+doc-scrape-examples = true
 
 [[example]]
 name = "python"
 required-features = ["markdown", "prompt-caching"]
+doc-scrape-examples = true
+
+[[example]]
+name = "website_wizard"
+doc-scrape-examples = true
+
+[[example]]
+name = "neologism"
+doc-scrape-examples = true

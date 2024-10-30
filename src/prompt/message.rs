@@ -43,14 +43,13 @@ impl std::fmt::Display for Role {
 /// A message in a [`Request`]. See [`response::Message`] for the version with
 /// additional metadata.
 ///
-/// A message is [`Display`]ed as markdown with a [heading] indicating the
+/// A message is [`Display`]ed as markdown with a heading indicating the
 /// [`Role`] of the author. [`Image`]s are supported and will be rendered as
 /// markdown images with embedded base64 data.
 ///
 /// [`Display`]: std::fmt::Display
 /// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
-/// [heading]: Message::HEADING
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(
@@ -89,6 +88,8 @@ impl Message<'_> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Message<'static> {
         Message {
             role: self.role,
@@ -319,6 +320,8 @@ impl<'a> Content<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Content<'static> {
         match self {
             Self::SinglePart(text) => {
@@ -663,6 +666,8 @@ impl<'a> Block<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Block<'static> {
         match self {
             Self::Text {
@@ -922,6 +927,8 @@ impl Image<'_> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Image<'static> {
         match self {
             Self::Base64 { media_type, data } => Image::Base64 {
