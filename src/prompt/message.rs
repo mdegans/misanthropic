@@ -75,18 +75,6 @@ impl Message<'_> {
     /// [`Display`]: std::fmt::Display
     #[cfg(not(feature = "markdown"))]
     pub const HEADING: &'static str = "### ";
-    /// Heading for the message when rendered as markdown using markdown methods
-    /// as well as [`Display`].
-    ///
-    /// [`Display`]: std::fmt::Display
-    #[cfg(feature = "markdown")]
-    pub const HEADING: pulldown_cmark::Tag<'static> =
-        pulldown_cmark::Tag::Heading {
-            level: pulldown_cmark::HeadingLevel::H3,
-            id: None,
-            classes: vec![],
-            attrs: vec![],
-        };
 
     /// Returns the number of [`Content`] [`Block`]s in the message.
     pub fn len(&self) -> usize {
@@ -154,9 +142,9 @@ impl crate::markdown::ToMarkdown for Message<'_> {
     /// [`Options`]: crate::markdown::Options
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        use pulldown_cmark::Event;
+        use pulldown_cmark::{Event, HeadingLevel::H3, Tag};
 
         let content = self.content.markdown_events_custom(options);
         let role = match self.content.last() {
@@ -182,10 +170,21 @@ impl crate::markdown::ToMarkdown for Message<'_> {
             }
             _ => self.role.as_str(),
         };
+        let heading_tag = Tag::Heading {
+            level: options.heading_level.unwrap_or(H3),
+            id: None,
+            classes: vec![],
+            attrs: if options.attrs {
+                vec![("role".into(), Some(role.to_lowercase().into()))]
+            } else {
+                vec![]
+            },
+        };
+        let heading_end = heading_tag.to_end();
         let heading = [
-            Event::Start(Self::HEADING),
+            Event::Start(heading_tag),
             Event::Text(role.into()),
-            Event::End(Self::HEADING.to_end()),
+            Event::End(heading_end),
         ];
 
         Box::new(heading.into_iter().chain(content))
@@ -373,7 +372,7 @@ impl crate::markdown::ToMarkdown for Content<'_> {
     #[cfg(feature = "markdown")]
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::Event;
 
@@ -706,7 +705,7 @@ impl crate::markdown::ToMarkdown for Block<'_> {
     #[cfg(feature = "markdown")]
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
@@ -1137,7 +1136,7 @@ mod tests {
         // by default tool use is hidden
         let opts = crate::markdown::Options::default().with_tool_use();
 
-        let markdown = block.markdown_custom(&opts);
+        let markdown = block.markdown_custom(opts);
 
         assert_eq!(
             markdown.as_ref(),
@@ -1272,7 +1271,7 @@ mod tests {
             .with_tool_results();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### User\n\nHello, world!"
         );
 
@@ -1286,7 +1285,7 @@ mod tests {
         };
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Assistant\n\nHello, world!\n\nHow are you?"
         );
 
@@ -1301,7 +1300,7 @@ mod tests {
         .into();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":false}\n````"
         );
 
@@ -1316,7 +1315,7 @@ mod tests {
         .into();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Error\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":true}\n````"
         );
     }

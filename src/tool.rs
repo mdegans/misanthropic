@@ -341,7 +341,7 @@ impl TryFrom<serde_json::Value> for Use<'_> {
 impl crate::markdown::ToMarkdown for Use<'_> {
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 

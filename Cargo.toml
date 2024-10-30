@@ -34,7 +34,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 # markdown support
-pulldown-cmark = { version = "0.12", optional = true }
+pulldown-cmark = { version = "0.12", optional = true, features = ["serde"] }
 pulldown-cmark-to-cmark = { version = "17", optional = true }
 static_assertions = "1"
 langsan = { version = "0", features = [
@@ -84,7 +84,7 @@ log = ["dep:log"]
 rustls-tls = ["reqwest/rustls-tls"]
 # Use `pulldown-cmark` for markdown parsing and `pulldown-cmark-to-cmark` for
 # converting to CommonMark.
-markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
+markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
 # Derive PartialEq for all structs and enums.
 partial_eq = []
 # Input and output sanitization

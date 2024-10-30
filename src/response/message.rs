@@ -104,7 +104,7 @@ pub struct Usage {
 impl crate::markdown::ToMarkdown for Message<'_> {
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         self.message.markdown_events_custom(options)
     }
