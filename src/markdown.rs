@@ -185,7 +185,14 @@ impl PartialEq<str> for Markdown {
     }
 }
 
-/// A trait for types that can be converted to [`Markdown`].
+/// A trait for types that can be converted to [`Markdown`]
+///
+/// # Note
+///
+/// - Any of these methods returning an iterator of [`pulldown_cmark::Event`]s
+/// can be used to render to html using [`pulldown_cmark::html::push_html`] and
+/// other similar functions.
+/// - Implementers should guarantee tags are properly closed and nested.
 pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with [`DEFAULT_OPTIONS`].
     fn markdown(&self) -> Markdown {
