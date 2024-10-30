@@ -8,9 +8,7 @@ use memsecurity::zeroize::Zeroizing;
 /// The length of an Anthropic API key in bytes.
 pub const LEN: usize = 108;
 
-/// Error for when a key is not the correct [`key::LEN`].
-///
-/// [`key::LEN`]: LEN
+/// Error for when a key is not 108 bytes.
 #[derive(Debug, thiserror::Error)]
 #[error("Invalid key length: {actual} (expected {LEN})")]
 pub struct InvalidKeyLength {

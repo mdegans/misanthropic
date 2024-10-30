@@ -505,7 +505,7 @@ impl<'a> Prompt<'a> {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.tools.as_mut().map(|tools| tools.last_mut()).flatten()
+            self.tools.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache();
             return self;

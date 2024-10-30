@@ -7,9 +7,7 @@ pub const LEN: usize = 108;
 /// Type alias for an Anthropic API key.
 type Arr = [u8; LEN];
 
-/// Error for when a key is not the correct [`key::LEN`].
-///
-/// [`key::LEN`]: LEN
+/// Error for when a key is not 108 bytes.
 #[derive(Debug, thiserror::Error)]
 #[error("Invalid key length: {actual} (expected {LEN})")]
 pub struct InvalidKeyLength {

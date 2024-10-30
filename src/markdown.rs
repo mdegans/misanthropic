@@ -24,10 +24,10 @@ pub const VERBOSE_OPTIONS: Options = Options {
 };
 
 /// A static reference to the default [`Options`].
-pub static DEFAULT_OPTIONS_REF: &'static Options = &DEFAULT_OPTIONS;
+pub static DEFAULT_OPTIONS_REF: &Options = &DEFAULT_OPTIONS;
 
 /// A static reference to the verbose [`Options`].
-pub static VERBOSE_OPTIONS_REF: &'static Options = &VERBOSE_OPTIONS;
+pub static VERBOSE_OPTIONS_REF: &Options = &VERBOSE_OPTIONS;
 
 mod serde_inner {
     use super::*;
@@ -137,15 +137,15 @@ pub struct Markdown {
     text: String,
 }
 
-impl Into<String> for Markdown {
-    fn into(self) -> String {
-        self.text
+impl From<Markdown> for String {
+    fn from(markdown: Markdown) -> Self {
+        markdown.text
     }
 }
 
 impl AsRef<str> for Markdown {
     fn as_ref(&self) -> &str {
-        self.deref().as_ref()
+        self.deref()
     }
 }
 
@@ -190,8 +190,8 @@ impl PartialEq<str> for Markdown {
 /// # Note
 ///
 /// - Any of these methods returning an iterator of [`pulldown_cmark::Event`]s
-/// can be used to render to html using [`pulldown_cmark::html::push_html`] and
-/// other similar functions.
+///   can be used to render to html using [`pulldown_cmark::html::push_html`]
+///   and other similar functions.
 /// - Implementers should guarantee tags are properly closed and nested.
 pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with [`DEFAULT_OPTIONS`].

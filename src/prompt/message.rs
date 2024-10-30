@@ -80,6 +80,11 @@ impl Message<'_> {
         self.content.len()
     }
 
+    /// Returns true if the message is empty.
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
+    }
+
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ToolUse`].
     pub fn tool_use(&self) -> Option<&crate::tool::Use> {
@@ -345,8 +350,6 @@ impl<'a> Content<'a> {
     /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
     /// this will return a [`ContentMismatch`] error.
     pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
-        let delta = delta.into();
-
         match self {
             Self::SinglePart(_) => {
                 let mut old = Content::MultiPart(vec![]);
