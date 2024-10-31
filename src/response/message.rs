@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        assert_eq!(message.message.content.len(), 1);
+        assert_eq!(message.message.content.len(), 22);
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
         assert_eq!(message.model, crate::Model::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));

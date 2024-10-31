@@ -80,7 +80,7 @@ impl Message<'_> {
         self.content.len()
     }
 
-    /// Returns true if the message is empty.
+    /// Returns true if self has no parts.
     pub fn is_empty(&self) -> bool {
         self.content.is_empty()
     }
@@ -234,15 +234,16 @@ impl<'a> Content<'a> {
         Self::SinglePart(text.into())
     }
 
-    /// Returns the number of [`Block`]s in `self`.
+    /// Returns the number of bytes in self. Does not include tool use or other
+    /// metadata. Does include the base64 encoded image data length.
     pub fn len(&self) -> usize {
         match self {
-            Self::SinglePart(_) => 1,
-            Self::MultiPart(parts) => parts.len(),
+            Self::SinglePart(s) => s.as_bytes().len(),
+            Self::MultiPart(parts) => parts.iter().map(Block::len).sum(),
         }
     }
 
-    /// Returns true if the content is empty.
+    /// Returns true if `self` is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -702,6 +703,17 @@ impl<'a> Block<'a> {
             },
         }
     }
+
+    /// Returns the number of bytes in the block. Does not include tool use or
+    /// other metadata. Does include the base64 encoded image data length.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Text { text, .. } => text.as_bytes().len(),
+            Self::Image { image, .. } => image.len(),
+            Self::ToolUse { .. } => 0,
+            Self::ToolResult { .. } => 0,
+        }
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -943,6 +955,14 @@ impl Image<'_> {
             },
         }
     }
+
+    /// Returns the number of bytes in the image data (base64 encoded). Call
+    /// [`decode`] to get the actual image size.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Base64 { data, .. } => data.as_bytes().len(),
+        }
+    }
 }
 
 /// Errors that can occur when decoding an [`Image`].
@@ -1103,6 +1123,17 @@ mod tests {
     }
 
     #[test]
+    fn test_message_is_empty() {
+        let message: Message = (Role::User, "Hello, world!").into();
+        assert!(!message.is_empty());
+        let message: Message = Message {
+            role: Role::User,
+            content: Content::MultiPart(vec![]),
+        };
+        assert!(message.is_empty());
+    }
+
+    #[test]
     #[cfg(feature = "markdown")]
     fn test_merge_deltas() {
         use crate::markdown::ToMarkdown;
@@ -1177,11 +1208,11 @@ mod tests {
             content: Content::SinglePart("Hello, world!".into()),
         };
 
-        assert_eq!(message.len(), 1);
+        assert_eq!(message.len(), 13);
 
         message.content.push("How are you?");
 
-        assert_eq!(message.len(), 2);
+        assert_eq!(message.len(), 25);
     }
 
     #[test]
