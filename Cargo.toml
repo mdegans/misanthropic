@@ -95,6 +95,8 @@ rustls-tls = ["reqwest/rustls-tls"]
 # Use `pulldown-cmark` for markdown parsing and `pulldown-cmark-to-cmark` for
 # converting to CommonMark.
 markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
+# Utilities for converting prompts and messages to HTML. Enables `markdown`.
+html = ["markdown"]
 # Derive PartialEq for all structs and enums.
 partial_eq = []
 # Input and output sanitization

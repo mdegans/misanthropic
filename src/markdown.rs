@@ -23,12 +23,6 @@ pub const VERBOSE_OPTIONS: Options = Options {
     heading_level: None,
 };
 
-/// A static reference to the default [`Options`].
-pub static DEFAULT_OPTIONS_REF: &Options = &DEFAULT_OPTIONS;
-
-/// A static reference to the verbose [`Options`].
-pub static VERBOSE_OPTIONS_REF: &Options = &VERBOSE_OPTIONS;
-
 mod serde_inner {
     use super::*;
 
@@ -206,7 +200,7 @@ pub trait ToMarkdown {
 
     /// Render the type to a [`Markdown`] string with maximum verbosity.
     fn markdown_verbose(&self) -> Markdown {
-        self.markdown_custom(*VERBOSE_OPTIONS_REF)
+        self.markdown_custom(VERBOSE_OPTIONS)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
@@ -215,7 +209,7 @@ pub trait ToMarkdown {
         &self,
         writer: &mut dyn std::fmt::Write,
     ) -> std::fmt::Result {
-        self.write_markdown_custom(writer, *DEFAULT_OPTIONS_REF)
+        self.write_markdown_custom(writer, DEFAULT_OPTIONS)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
@@ -237,7 +231,7 @@ pub trait ToMarkdown {
     fn markdown_events<'a>(
         &'a self,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        self.markdown_events_custom(*DEFAULT_OPTIONS_REF)
+        self.markdown_events_custom(DEFAULT_OPTIONS)
     }
 
     /// Return an iterator of [`pulldown_cmark::Event`]s with custom
