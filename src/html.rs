@@ -108,6 +108,8 @@ impl<T> ToHtml for T where T: ToMarkdown {}
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Borrow;
+
     use serde_json::json;
 
     use crate::{
@@ -194,5 +196,99 @@ mod tests {
             prompt.html_verbose().as_ref(),
             "<h3 role=\"system\">System</h3>\n<p>Do stuff the user says.</p>\n<h3 role=\"user\">User</h3>\n<p>Run a hello world python program.</p>\n<h3 role=\"assistant\">Assistant</h3>\n<pre><code class=\"language-json\">{\"type\":\"tool_use\",\"id\":\"id\",\"name\":\"python\",\"input\":{\"script\":\"print('Hello, world!')\"}}</code></pre>\n<h3 role=\"tool\">Tool</h3>\n<pre><code class=\"language-json\">{\"type\":\"tool_result\",\"tool_use_id\":\"id\",\"content\":[{\"type\":\"text\",\"text\":\"{\\\"stdout\\\":\\\"Hello, world!\\\\n\\\"}\"}],\"is_error\":false}</code></pre>\n<h3 role=\"assistant\">Assistant</h3>\n<p>It is done!</p>\n",
         )
+    }
+
+    #[test]
+    fn test_html_from_events() {
+        let events = vec![
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph),
+            pulldown_cmark::Event::Text("Hello, world!".into()),
+            pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
+        ];
+
+        let html = Html::from_events(events.into_iter());
+        assert_eq!(html.as_ref(), "<p>Hello, world!</p>\n");
+    }
+
+    #[test]
+    fn test_html_extend() {
+        let mut html = Html {
+            inner: String::new(),
+        };
+
+        let events = vec![
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph),
+            pulldown_cmark::Event::Text("Hello, world!".into()),
+            pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
+        ];
+
+        html.extend(events.into_iter());
+        assert_eq!(html.as_ref(), "<p>Hello, world!</p>\n");
+    }
+
+    #[test]
+    fn test_html_from_iter() {
+        let events = vec![
+            pulldown_cmark::Event::Start(pulldown_cmark::Tag::Paragraph),
+            pulldown_cmark::Event::Text("Hello, world!".into()),
+            pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
+        ];
+
+        let html: Html = events.into_iter().collect();
+        assert_eq!(html.as_ref(), "<p>Hello, world!</p>\n");
+    }
+
+    #[test]
+    fn test_to_html() {
+        let message = Message {
+            role: Role::User,
+            content: "Hello, **world**!".into(),
+        };
+
+        assert_eq!(
+            message.html().as_ref(),
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+        );
+
+        assert_eq!(
+            message.html_verbose().as_ref(),
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+        );
+
+        assert_eq!(
+            message
+                .html_custom(Options {
+                    attrs: false,
+                    ..DEFAULT_OPTIONS
+                })
+                .as_ref(),
+            // `attrs` are always enabled for HTML rendering
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+     
+        );
+    }
+
+    #[test]
+    fn test_borrow() {
+        let message = Message {
+            role: Role::User,
+            content: "Hello, **world**!".into(),
+        };
+
+        let html: Html = message.html();
+        let borrowed: &str = html.borrow();
+        assert_eq!(borrowed, html.as_ref());
+    }
+
+    #[test]
+    fn test_into_string() {
+        let message = Message {
+            role: Role::User,
+            content: "Hello, **world**!".into(),
+        };
+
+        let html: Html = message.html();
+        let string: String = html.into();
+        assert_eq!(string, "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n");
     }
 }

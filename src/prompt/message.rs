@@ -1083,6 +1083,7 @@ impl TryFrom<image::ImageFormat> for MediaType {
 mod tests {
     use std::vec;
 
+    #[cfg(feature = "markdown")]
     use crate::markdown::ToMarkdown;
 
     use super::*;
@@ -1163,6 +1164,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "markdown")]
     // mostly for coverage
     fn test_into_static() {
         let content: Content = "Hello, world!".into();
@@ -1385,6 +1387,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "markdown")]
     fn test_merge_deltas_error() {
         let mut text_block: Block = "Hello, world!".into();
 

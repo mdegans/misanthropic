@@ -307,4 +307,10 @@ mod tests {
             "### User\n\nHello, **world**!"
         );
     }
+
+    #[test]
+    fn test_options_with_system() {
+        let options = Options::default().with_system();
+        assert!(options.system);
+    }
 }

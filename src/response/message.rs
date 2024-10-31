@@ -186,4 +186,53 @@ mod tests {
         });
         assert!(message.tool_use().is_some());
     }
+
+    #[test]
+    fn test_into_static() {
+        // Refers to json:
+        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        // Owns the `Cow` fields:
+        let static_message = message.into_static();
+
+        assert_eq!(static_message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
+        assert_eq!(static_message.model, crate::Model::Sonnet35_20240620);
+        assert!(matches!(
+            static_message.stop_reason,
+            Some(StopReason::EndTurn)
+        ));
+        assert_eq!(static_message.stop_sequence, None);
+        assert_eq!(static_message.usage.input_tokens, 2095);
+        assert_eq!(static_message.usage.output_tokens, 503);
+    }
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn test_markdown() {
+        use crate::markdown::ToMarkdown;
+
+        let message = Message {
+            id: "id".into(),
+            message: prompt::Message {
+                role: prompt::message::Role::User,
+                content: prompt::message::Content::SinglePart(
+                    "Hello, **world**!".into(),
+                ),
+            },
+            model: crate::Model::Sonnet35,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage {
+                input_tokens: 1,
+                #[cfg(feature = "prompt-caching")]
+                cache_creation_input_tokens: Some(2),
+                #[cfg(feature = "prompt-caching")]
+                cache_read_input_tokens: Some(3),
+                output_tokens: 4,
+            },
+        };
+
+        let expected = "### User\n\nHello, **world**!";
+        let markdown = message.markdown();
+        assert_eq!(markdown.as_ref(), expected);
+    }
 }
