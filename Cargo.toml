@@ -23,6 +23,12 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 [lints.rust]
 unsafe_code = "forbid"
 
+[profile.release]
+lto = true
+strip = true
+# There are (hopefully) no panics in this library. If there are, they are bugs.
+panic = "abort"
+
 [dependencies]
 base64 = "0.22"
 derive_more = { version = "1", features = ["from", "is_variant", "display"] }
