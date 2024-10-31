@@ -598,8 +598,21 @@ impl<'a> Block<'a> {
                 },
                 Delta::Json { partial_json },
             ) => {
-                *input = serde_json::from_str(&partial_json)
-                    .map_err(|e| e.to_string())?;
+                use serde_json::Value::Object;
+                // Parse the partial json as an object and merge it into the
+                // input.
+                let partial_json: serde_json::Value =
+                    serde_json::from_str(&partial_json).map_err(|e| {
+                        DeltaError::Parse {
+                            error: format!(
+                        "Could not merge partial json `{}` into `{}` because {}",
+                        partial_json, input, e
+                    ),
+                        }
+                    })?;
+                if let (Object(new), Object(old)) = (partial_json, input) {
+                    old.extend(new);
+                }
             }
             (this, acc) => {
                 let variant_name = match this {
@@ -1070,6 +1083,8 @@ impl TryFrom<image::ImageFormat> for MediaType {
 mod tests {
     use std::vec;
 
+    use crate::markdown::ToMarkdown;
+
     use super::*;
 
     pub const CONTENT_SINGLE: &str = "\"Hello, world!\"";
@@ -1134,6 +1149,76 @@ mod tests {
     }
 
     #[test]
+    fn test_message_tool_use() {
+        let tool_use: Message = tool::Use {
+            id: "tool_123".into(),
+            name: "tool".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
+
+        assert!(tool_use.tool_use().is_some());
+    }
+
+    #[test]
+    // mostly for coverage
+    fn test_into_static() {
+        let content: Content = "Hello, world!".into();
+        let content: Content<'static> = content.into_static();
+        assert_eq!(content.to_string(), "Hello, world!");
+
+        let content = Content::SinglePart("Hello, world!".into());
+        let content: Content<'static> = content.into_static();
+        assert_eq!(content.to_string(), "Hello, world!");
+
+        let block: Block = "Hello, world!".into();
+        let block: Block<'static> = block.into_static();
+        assert_eq!(block.to_string(), "Hello, world!");
+
+        let image: Image = Image::from_parts(MediaType::Png, String::new());
+        let image: Image<'static> = image.into_static();
+        assert_eq!(image.to_string(), "![Image](data:image/png;base64,)");
+
+        let tool_use: Block = tool::Use {
+            id: "tool_123".into(),
+            name: "tool".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
+        let tool_use: Block<'static> = tool_use.into_static();
+        assert_eq!(
+            tool_use.markdown_verbose().as_ref(),
+            "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{}}\n````"
+        );
+
+        let message: Message = (Role::User, "Hello, world!").into();
+        let _: Message<'static> = message.into_static();
+    }
+
+    #[test]
+    fn test_push_delta() {
+        let mut content = Content::SinglePart("Hello, world!".into());
+        content
+            .push_delta(Delta::Text {
+                text: " How are you?".into(),
+            })
+            .unwrap();
+
+        assert_eq!(content.to_string(), "Hello, world! How are you?");
+        assert!(content.is_multi_part());
+
+        // an incompatible delta
+        let err = content.push_delta(Delta::Json {
+            partial_json: "blabla".into(),
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
     #[cfg(feature = "markdown")]
     fn test_merge_deltas() {
         use crate::markdown::ToMarkdown;
@@ -1182,6 +1267,16 @@ mod tests {
         assert_eq!(
             markdown.as_ref(),
             "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{\"key\":\"value\"}}\n````"
+        );
+
+        // test junk json
+        let deltas = [Delta::Json {
+            partial_json: "blabla".into(),
+        }];
+        let err = block.merge_deltas(deltas).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Cannot apply delta because deserialization failed because: Could not merge partial json `blabla` into `{\"key\":\"value\"}` because expected value at line 1 column 1"
         );
 
         // content mismatch
@@ -1278,6 +1373,12 @@ mod tests {
     }
 
     #[test]
+    fn test_content_from_slice_of_str() {
+        let content: Content = ["Hello, world!"].into();
+        assert_eq!(content.to_string(), "Hello, world!");
+    }
+
+    #[test]
     fn test_content_from_block() {
         let content: Content = Block::text("Hello, world!").into();
         assert_eq!(content.to_string(), "Hello, world!");
@@ -1285,13 +1386,33 @@ mod tests {
 
     #[test]
     fn test_merge_deltas_error() {
-        let mut block: Block = "Hello, world!".into();
+        let mut text_block: Block = "Hello, world!".into();
 
-        let deltas = [Delta::Json {
-            partial_json: "blabla".into(),
+        let json_deltas = [Delta::Json {
+            partial_json: "{\"k\": \"v\"}".into(),
         }];
 
-        let err = block.merge_deltas(deltas).unwrap_err();
+        let err = text_block.merge_deltas(json_deltas).unwrap_err();
+
+        let mut json_block = Block::ToolUse {
+            call: tool::Use {
+                id: "tool_123".into(),
+                name: "tool".into(),
+                input: serde_json::json!({}),
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            },
+        };
+
+        let json_deltas = [Delta::Json {
+            partial_json: "{\"k\": \"v\"}".into(),
+        }];
+
+        json_block.merge_deltas(json_deltas).unwrap();
+        assert_eq!(
+            json_block.markdown_verbose().as_ref(),
+            "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{\"k\":\"v\"}}\n````"
+        );
 
         assert!(matches!(err, DeltaError::ContentMismatch { .. }));
     }
