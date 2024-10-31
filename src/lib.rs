@@ -12,14 +12,8 @@
 //! See the `examples` directory for more detailed usage.
 // Because I can't get the example scraping to work. TODO: Fix this.
 
-#[cfg(feature = "memsecurity")]
-pub(crate) mod key_memsecurity;
-#[cfg(feature = "memsecurity")]
-pub(crate) use key_memsecurity as key;
-#[cfg(not(feature = "memsecurity"))]
-pub(crate) mod key;
-
-pub use key::{InvalidKeyLength, Key};
+pub mod key;
+pub use key::Key;
 
 pub mod client;
 pub use client::Client;
