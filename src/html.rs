@@ -6,6 +6,7 @@ use crate::markdown::ToMarkdown;
 
 pub use crate::markdown::{Options, DEFAULT_OPTIONS, VERBOSE_OPTIONS};
 
+
 /// Immutable wrapper around a [`String`]. Guaranteed to be valid HTML.
 #[derive(derive_more::Display)]
 #[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
@@ -29,8 +30,64 @@ impl Html {
     ) where
         It: Iterator<Item = pulldown_cmark::Event<'a>>,
     {
-        let it: It = events.into_iter();
-        push_html(&mut self.inner, it);
+        use std::borrow::Cow;
+        use pulldown_cmark::{Event, Tag, TagEnd, CowStr};
+        use xml::escape::escape_str_pcdata;
+
+        let escape_pcdata = |cow_str: CowStr<'a>| -> CowStr<'a> {
+            // This is necessary because `escape_str_pcdata` does not have
+            // lifetime annotations, although it could since it doesn't copy the
+            // string and this is documented.
+            match escape_str_pcdata(cow_str.as_ref()) {
+                Cow::Borrowed(_) => cow_str.into(),
+                Cow::Owned(s) => s.into(),
+            }
+        };
+
+        let raw: It = events.into_iter();
+        let escaped = raw.map(|e| {
+            match e {
+                // We must escape the HTML to prevent XSS attacks. A frontend should
+                // take other measures as well, but we can at least provide some
+                // protection.
+                Event::Text(cow_str) => {
+                    Event::Text(escape_pcdata(cow_str))
+                },
+                // Without this the escaping test fails because the paragraph
+                // tags are missing because of how the markdown is parsed. We
+                // always want message content to be in paragraphs.
+                Event::Start(Tag::HtmlBlock) => {
+                    Event::Start(Tag::CodeBlock(pulldown_cmark::CodeBlockKind::Fenced("html".into())))
+                }
+                Event::End(TagEnd::HtmlBlock) => {
+                    Event::End(TagEnd::CodeBlock)
+                }
+                Event::Code(cow_str) => {
+                    Event::Code(escape_pcdata(cow_str))
+                },
+                Event::InlineMath(cow_str) => {
+                    Event::InlineMath(escape_pcdata(cow_str))
+                },
+                Event::DisplayMath(cow_str) => {
+                    Event::DisplayMath(escape_pcdata(cow_str))
+                },
+                Event::Html(cow_str) => {
+                    Event::Html(escape_pcdata(cow_str))
+                },
+                Event::InlineHtml(cow_str) => {
+                    Event::InlineHtml(escape_pcdata(cow_str))
+                },
+                Event::FootnoteReference(cow_str) => {
+                    Event::FootnoteReference(escape_pcdata(cow_str))
+                },
+                // No other events have text or attributes that need to be
+                // escaped. Heading attributes are already escaped by
+                // pulldown-cmark when rendering to HTML, so we don't need to
+                // escape them here or we double escape them.
+                e => e
+            }
+        });
+        push_html(&mut self.inner, escaped);
     }
 }
 
@@ -97,10 +154,7 @@ pub trait ToHtml: ToMarkdown {
     /// Render the type to an HTML string with custom [`Options`].
     fn html_custom(&self, mut options: Options) -> Html {
         options.attrs = true;
-        let events = self.markdown_events_custom(options);
-        let mut html = String::new();
-        push_html(&mut html, events);
-        Html { inner: html }
+        self.markdown_events_custom(options).collect()
     }
 }
 
@@ -290,5 +344,50 @@ mod tests {
         let html: Html = message.html();
         let string: String = html.into();
         assert_eq!(string, "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n");
+
+    }
+
+    #[test]
+    fn test_escaping() {
+        use pulldown_cmark::{Event, Tag, TagEnd, HeadingLevel::H3};
+
+        let message = Message {
+            role: Role::Assistant,
+            content: "bla bla<script>alert('XSS')</script>bla bla".into(),
+        };
+
+        assert_eq!(
+            message.html().as_ref(),
+            "<h3 role=\"assistant\">Assistant</h3>\n<p>bla bla&lt;script&gt;alert('XSS')&lt;/script&gt;bla bla</p>\n",
+        );
+
+        let message = Message {
+            role: Role::Assistant,
+            content: "<script>alert('XSS')</script>".into(),
+        };
+
+        assert_eq!(
+            message.html_verbose().as_ref(),
+            // In the case where a content block is entirely code, it is
+            // rendered as a code block. This is mostly done because of how
+            // markdown is parsed and we're lazy, but also it's nice behavior.
+            "<h3 role=\"assistant\">Assistant</h3>\n<pre><code class=\"language-html\">&lt;script&gt;alert('XSS')&lt;/script&gt;</code></pre>\n",
+        );
+
+        // Test escaping of attributes
+        let bad_attrs = vec![
+            Event::Start(Tag::Heading { level: H3, id: None, classes: vec![], attrs: vec![(r#"<p>badkey</p>"#.into(), Some(r#""sneaky"><script>badvalue</script>"#.into()))] }),
+            Event::Text("Hello, world!".into()),
+            Event::End(TagEnd::Heading(H3)),
+        ];
+
+        let html = Html::from_events(bad_attrs.into_iter());
+        // FIXME: This is not the correct behavior. pulldown_cmark is escaping
+        // the attributes, but not forward slashes in keys leading to a broken
+        // key. This is a bug in pulldown_cmark. Fixing this is a low priority
+        // since it only applies to cases where a third party is providing the
+        // trait and doing very silly things with attributes.
+        assert_eq!(html.as_ref(), r#"<h3 &lt;p&gt;badkey&lt;/p&gt;="&quot;sneaky&quot;&gt;&lt;script&gt;badvalue&lt;/script&gt;">Hello, world!</h3>
+"#);
     }
 }

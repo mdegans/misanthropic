@@ -56,6 +56,8 @@ langsan = { version = "0", features = [
     "emoji",
     "verbose",
 ], optional = true }
+# For HTML escaping
+xml-rs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -96,7 +98,7 @@ rustls-tls = ["reqwest/rustls-tls"]
 # converting to CommonMark.
 markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
 # Utilities for converting prompts and messages to HTML. Enables `markdown`.
-html = ["markdown"]
+html = ["markdown", "xml-rs"]
 # Derive PartialEq for all structs and enums.
 partial_eq = []
 # Input and output sanitization
