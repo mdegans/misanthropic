@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// [`prompt::message`]: crate::prompt::message
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[cfg_attr(test, derive(Debug))]
 pub enum Choice {
     /// Model chooses which tool to use, or no tool at all.
@@ -29,7 +29,7 @@ pub enum Choice {
 /// A tool a model can use while completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Serialize, Deserialize)]
 #[serde(try_from = "ToolBuilder<'a>")]
 pub struct Tool<'a> {
@@ -349,7 +349,7 @@ impl TryFrom<serde_json::Value> for Tool<'static> {
     derive(derive_more::Display),
     display("\n````json\n{}\n````\n", serde_json::to_string_pretty(self).unwrap())
 )]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Use<'a> {
     /// Unique Id for this tool call.
@@ -437,7 +437,7 @@ impl std::fmt::Display for Use<'_> {
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Message`]: crate::prompt::message
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 // On the one hand this can clash with the `Result` type from the standard
 // library, but on the other hand it's what the API uses, and I'm trying to
 // be as faithful to the API as possible.

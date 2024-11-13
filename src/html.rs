@@ -9,7 +9,7 @@ pub use crate::markdown::{Options, DEFAULT_OPTIONS, VERBOSE_OPTIONS};
 
 /// Immutable wrapper around a [`String`]. Guaranteed to be valid HTML.
 #[derive(derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{inner}")]
 pub struct Html {
     inner: String,

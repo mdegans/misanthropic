@@ -49,7 +49,7 @@ mod serde_inner {
 
 /// Options for parsing, generating, and rendering [`Markdown`].
 #[derive(Clone, Copy, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Options {
     /// Inner [`pulldown_cmark::Options`].
@@ -125,7 +125,7 @@ impl From<pulldown_cmark::Options> for Options {
 ///
 /// [`Display`]: std::fmt::Display
 #[derive(derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{text}")]
 pub struct Markdown {
     text: String,
@@ -172,7 +172,7 @@ where
     }
 }
 
-#[cfg(any(test, feature = "partial_eq"))]
+#[cfg(any(test, feature = "partial-eq"))]
 impl PartialEq<str> for Markdown {
     fn eq(&self, other: &str) -> bool {
         self.text == other

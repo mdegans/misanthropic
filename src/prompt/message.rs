@@ -16,7 +16,7 @@ use crate::{
 /// Role of the [`Message`] author.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Role {
     /// From the user.
     User,
@@ -57,7 +57,7 @@ impl std::fmt::Display for Role {
     derive(derive_more::Display),
     display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
 )]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Message<'a> {
     /// Who is the message from.
     pub role: Role,
@@ -210,7 +210,7 @@ impl std::fmt::Display for Message<'_> {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Content<'a> {
     /// Single part text-only content.
     SinglePart(crate::CowStr<'a>),
@@ -479,7 +479,7 @@ where
 #[cfg_attr(not(feature = "markdown"), derive(derive_more::Display))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Block<'a> {
     /// Text content.
     #[serde(alias = "text_delta")]
@@ -493,6 +493,7 @@ pub enum Block<'a> {
         cache_control: Option<CacheControl>,
     },
     /// Image content.
+    #[cfg_attr(not(feature = "markdown"), display("{}", image))]
     Image {
         #[serde(rename = "source")]
         /// An base64 encoded image.
@@ -848,6 +849,7 @@ impl<'a> From<tool::Result<'a>> for Block<'a> {
 #[cfg(feature = "png")]
 impl From<image::RgbaImage> for Block<'_> {
     fn from(image: image::RgbaImage) -> Self {
+        #[allow(unused_variables)] // for the `e` variable
         Image::encode(MediaType::Png, image)
             // Unwrap can never panic unless the PNG encoding fails, which
             // should really never happen, but no matter what we don't panic.
@@ -870,7 +872,7 @@ impl From<image::DynamicImage> for Block<'_> {
 /// Cache control for prompt caching.
 #[cfg(feature = "prompt-caching")]
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum CacheControl {
@@ -883,7 +885,7 @@ pub enum CacheControl {
 ///
 /// [`MultiPart`]: Content::MultiPart
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 pub enum Image<'a> {
@@ -1003,20 +1005,16 @@ impl TryInto<image::RgbaImage> for Image<'_> {
 
 /// Encoding format for [`Image`]s.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum MediaType {
-    #[cfg(feature = "jpeg")]
     #[serde(rename = "image/jpeg")]
     Jpeg,
-    #[cfg(feature = "png")]
     #[serde(rename = "image/png")]
     Png,
-    #[cfg(feature = "gif")]
     #[serde(rename = "image/gif")]
     Gif,
-    #[cfg(feature = "webp")]
     #[serde(rename = "image/webp")]
     Webp,
 }
@@ -1037,13 +1035,9 @@ impl From<MediaType> for image::ImageFormat {
     /// A [`MediaType`] can always be converted into an [`image::ImageFormat`].
     fn from(value: MediaType) -> image::ImageFormat {
         match value {
-            #[cfg(feature = "jpeg")]
             MediaType::Jpeg => image::ImageFormat::Jpeg,
-            #[cfg(feature = "png")]
             MediaType::Png => image::ImageFormat::Png,
-            #[cfg(feature = "gif")]
             MediaType::Gif => image::ImageFormat::Gif,
-            #[cfg(feature = "webp")]
             MediaType::Webp => image::ImageFormat::WebP,
         }
     }
@@ -1066,13 +1060,9 @@ impl TryFrom<image::ImageFormat> for MediaType {
     /// [`UnsupportedImageFormat`] error.
     fn try_from(value: image::ImageFormat) -> Result<Self, Self::Error> {
         match value {
-            #[cfg(feature = "jpeg")]
             image::ImageFormat::Jpeg => Ok(Self::Jpeg),
-            #[cfg(feature = "png")]
             image::ImageFormat::Png => Ok(Self::Png),
-            #[cfg(feature = "gif")]
             image::ImageFormat::Gif => Ok(Self::Gif),
-            #[cfg(feature = "webp")]
             image::ImageFormat::WebP => Ok(Self::Webp),
             _ => Err(UnsupportedImageFormat(value)),
         }

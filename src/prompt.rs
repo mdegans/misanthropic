@@ -16,7 +16,7 @@ pub use message::Message;
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
@@ -968,6 +968,7 @@ mod tests {
                     input: json!({
                         "host": "example.com"
                     }),
+                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),

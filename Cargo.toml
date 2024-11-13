@@ -100,7 +100,7 @@ markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
 # Utilities for converting prompts and messages to HTML. Enables `markdown`.
 html = ["markdown", "xml-rs"]
 # Derive PartialEq for all structs and enums.
-partial_eq = []
+partial-eq = []
 # Input and output sanitization
 langsan = ["dep:langsan"]
 # Encrypted key in memory. Without this the key is still zeroed on drop, but is
