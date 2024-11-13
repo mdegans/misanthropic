@@ -152,8 +152,7 @@ pub trait ToHtml: ToMarkdown {
     }
 
     /// Render the type to an HTML string with custom [`Options`].
-    fn html_custom(&self, mut options: Options) -> Html {
-        options.attrs = true;
+    fn html_custom(&self, options: Options) -> Html {
         self.markdown_events_custom(options).collect()
     }
 }
@@ -182,6 +181,16 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
+            "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+        );
+
+        let opts = Options {
+            attrs: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            message.html_custom(opts).as_ref(),
             "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
         );
     }
@@ -243,6 +252,16 @@ mod tests {
 
         assert_eq!(
             prompt.html().as_ref(),
+            "<h3>User</h3>\n<p>Run a hello world python program.</p>\n<h3>Assistant</h3>\n<p>It is done!</p>\n",
+        );
+
+        let opts = Options {
+            attrs: true,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            prompt.html_custom(opts).as_ref(),
             "<h3 role=\"user\">User</h3>\n<p>Run a hello world python program.</p>\n<h3 role=\"assistant\">Assistant</h3>\n<p>It is done!</p>\n",
         );
 
@@ -301,7 +320,7 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
-            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+            "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
         );
 
         assert_eq!(
@@ -312,8 +331,8 @@ mod tests {
         assert_eq!(
             message
                 .html_custom(Options {
-                    attrs: false,
-                    ..DEFAULT_OPTIONS
+                    attrs: true,
+                    ..Default::default()
                 })
                 .as_ref(),
             // `attrs` are always enabled for HTML rendering
@@ -343,7 +362,7 @@ mod tests {
 
         let html: Html = message.html();
         let string: String = html.into();
-        assert_eq!(string, "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n");
+        assert_eq!(string, "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n");
 
     }
 
@@ -358,7 +377,7 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
-            "<h3 role=\"assistant\">Assistant</h3>\n<p>bla bla&lt;script&gt;alert('XSS')&lt;/script&gt;bla bla</p>\n",
+            "<h3>Assistant</h3>\n<p>bla bla&lt;script&gt;alert('XSS')&lt;/script&gt;bla bla</p>\n",
         );
 
         let message = Message {
