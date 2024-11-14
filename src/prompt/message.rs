@@ -720,6 +720,7 @@ impl<'a> Block<'a> {
 
     /// Returns the number of bytes in the block. Does not include tool use or
     /// other metadata. Does include the base64 encoded image data length.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
             Self::Text { text, .. } => text.as_bytes().len(),
@@ -973,6 +974,7 @@ impl Image<'_> {
 
     /// Returns the number of bytes in the image data (base64 encoded). Call
     /// [`decode`] to get the actual image size.
+    #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
             Self::Base64 { data, .. } => data.as_bytes().len(),

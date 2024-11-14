@@ -39,7 +39,7 @@ impl Html {
             // lifetime annotations, although it could since it doesn't copy the
             // string and this is documented.
             match escape_str_pcdata(cow_str.as_ref()) {
-                Cow::Borrowed(_) => cow_str.into(),
+                Cow::Borrowed(_) => cow_str,
                 Cow::Owned(s) => s.into(),
             }
         };
