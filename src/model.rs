@@ -32,16 +32,22 @@ pub enum Model {
     #[serde(rename = "claude-3-opus-20240229")]
     Opus30_20240229,
     /// Sonnet 3.0
-    #[cfg(not(feature = "prompt-caching"))]
     #[serde(rename = "claude-3-sonnet-20240229")]
     Sonnet30,
+    /// Haiku 3.5 (latest)
+    #[serde(rename = "claude-3-5-haiku-latest")]
+    Haiku35,
+    /// Haiku 3.5 2024-10-22
+    #[serde(rename = "claude-3-5-haiku-20241022")]
+    Haiku35_20241022,
     /// Haiku 3.0 (latest) This is the default model.
+    // Note: The `latest` tag is not yet supported by the API for Haiku 3.0, so
+    // in the future this might point to a separate model. We can't use the same
+    // serde tag for both, so there's only one option here for now.
     #[default]
-    // The `latest` alias is not enabled yet, but (very likely) will be in the
-    // future. If not we will manually update this.
-    #[serde(rename = "claude-3-haiku-20240307")]
+    #[serde(
+        rename = "claude-3-haiku-20240307",
+        alias = "claude-3-haiku-latest"
+    )]
     Haiku30,
-    /// Haiku 3.0 2024-03-07
-    #[serde(rename = "claude-3-haiku-20240307")]
-    Haiku30_20240307,
 }
