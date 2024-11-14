@@ -120,6 +120,8 @@ impl Client {
             log::debug!("{} request to {}", method, url.as_str());
         }
 
+        #[allow(clippy::useless_asref)]
+        // because with memsecurity feature it's not useless
         let mut val =
             reqwest::header::HeaderValue::from_bytes(self.key.read().as_ref())
                 .unwrap();

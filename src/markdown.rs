@@ -1,5 +1,6 @@
 use std::ops::Deref;
 
+use pulldown_cmark::HeadingLevel;
 use serde::{Deserialize, Serialize};
 
 /// Default [`Options`]
@@ -8,6 +9,8 @@ pub const DEFAULT_OPTIONS: Options = Options {
     tool_use: false,
     tool_results: false,
     system: false,
+    attrs: false,
+    heading_level: None,
 };
 
 /// Verbose [`Options`]
@@ -16,13 +19,9 @@ pub const VERBOSE_OPTIONS: Options = Options {
     tool_use: true,
     tool_results: true,
     system: true,
+    attrs: true,
+    heading_level: None,
 };
-
-/// A static reference to the default [`Options`].
-pub static DEFAULT_OPTIONS_REF: &'static Options = &DEFAULT_OPTIONS;
-
-/// A static reference to the verbose [`Options`].
-pub static VERBOSE_OPTIONS_REF: &'static Options = &VERBOSE_OPTIONS;
 
 mod serde_inner {
     use super::*;
@@ -49,21 +48,35 @@ mod serde_inner {
 }
 
 /// Options for parsing, generating, and rendering [`Markdown`].
-#[derive(Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
 pub struct Options {
     /// Inner [`pulldown_cmark::Options`].
     #[serde(with = "serde_inner")]
     pub inner: pulldown_cmark::Options,
     /// Whether to include the system prompt
-    #[serde(default)]
     pub system: bool,
     /// Whether to include tool uses.
-    #[serde(default)]
     pub tool_use: bool,
     /// Whether to include tool results.
-    #[serde(default)]
     pub tool_results: bool,
+    /// Whether to include attributes. Useful when converting to HTML.
+    ///
+    /// This adds:
+    /// - `role` attribute to the [`Prompt`] and [`Message`]s. Possible values
+    ///   are:
+    ///   - `system` - for the system prompt
+    ///   - `assistant` - for generated messages
+    ///   - `tool` - for tool results
+    ///   - `user` - for user messages
+    ///   - `error` - for errors
+    ///
+    /// [`Prompt`]: crate::prompt::Prompt
+    /// [`Message`]: crate::prompt::Message
+    pub attrs: bool,
+    /// Heading level to begin at (optional)
+    pub heading_level: Option<HeadingLevel>,
 }
 
 impl Options {
@@ -112,21 +125,21 @@ impl From<pulldown_cmark::Options> for Options {
 ///
 /// [`Display`]: std::fmt::Display
 #[derive(derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{text}")]
 pub struct Markdown {
     text: String,
 }
 
-impl Into<String> for Markdown {
-    fn into(self) -> String {
-        self.text
+impl From<Markdown> for String {
+    fn from(markdown: Markdown) -> Self {
+        markdown.text
     }
 }
 
 impl AsRef<str> for Markdown {
     fn as_ref(&self) -> &str {
-        self.deref().as_ref()
+        self.deref()
     }
 }
 
@@ -159,14 +172,21 @@ where
     }
 }
 
-#[cfg(any(test, feature = "partial_eq"))]
+#[cfg(any(test, feature = "partial-eq"))]
 impl PartialEq<str> for Markdown {
     fn eq(&self, other: &str) -> bool {
         self.text == other
     }
 }
 
-/// A trait for types that can be converted to [`Markdown`].
+/// A trait for types that can be converted to [`Markdown`]
+///
+/// # Note
+///
+/// - Any of these methods returning an iterator of [`pulldown_cmark::Event`]s
+///   can be used to render to html using [`pulldown_cmark::html::push_html`]
+///   and other similar functions.
+/// - Implementers should guarantee tags are properly closed and nested.
 pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with [`DEFAULT_OPTIONS`].
     fn markdown(&self) -> Markdown {
@@ -174,13 +194,13 @@ pub trait ToMarkdown {
     }
 
     /// Render the type to a [`Markdown`] string with custom [`Options`].
-    fn markdown_custom(&self, options: &Options) -> Markdown {
+    fn markdown_custom(&self, options: Options) -> Markdown {
         self.markdown_events_custom(options).into()
     }
 
     /// Render the type to a [`Markdown`] string with maximum verbosity.
     fn markdown_verbose(&self) -> Markdown {
-        self.markdown_custom(VERBOSE_OPTIONS_REF)
+        self.markdown_custom(VERBOSE_OPTIONS)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
@@ -189,7 +209,7 @@ pub trait ToMarkdown {
         &self,
         writer: &mut dyn std::fmt::Write,
     ) -> std::fmt::Result {
-        self.write_markdown_custom(writer, DEFAULT_OPTIONS_REF)
+        self.write_markdown_custom(writer, DEFAULT_OPTIONS)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
@@ -197,7 +217,7 @@ pub trait ToMarkdown {
     fn write_markdown_custom(
         &self,
         writer: &mut dyn std::fmt::Write,
-        options: &Options,
+        options: Options,
     ) -> std::fmt::Result {
         use pulldown_cmark_to_cmark::cmark;
 
@@ -211,14 +231,14 @@ pub trait ToMarkdown {
     fn markdown_events<'a>(
         &'a self,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        self.markdown_events_custom(DEFAULT_OPTIONS_REF)
+        self.markdown_events_custom(DEFAULT_OPTIONS)
     }
 
     /// Return an iterator of [`pulldown_cmark::Event`]s with custom
     /// [`Options`].
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a Options,
+        options: Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a>;
 }
 
@@ -286,5 +306,11 @@ mod tests {
             message.markdown().as_ref(),
             "### User\n\nHello, **world**!"
         );
+    }
+
+    #[test]
+    fn test_options_with_system() {
+        let options = Options::default().with_system();
+        assert!(options.system);
     }
 }

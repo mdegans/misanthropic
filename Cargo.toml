@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "0.4.2"
+version = "0.5.0"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
@@ -17,8 +17,17 @@ categories = [
 ]
 license = "MIT"
 
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+
 [lints.rust]
 unsafe_code = "forbid"
+
+[profile.release]
+lto = true
+strip = true
+# There are (hopefully) no panics in this library. If there are, they are bugs.
+panic = "abort"
 
 [dependencies]
 base64 = "0.22"
@@ -27,14 +36,15 @@ eventsource-stream = "0.2"
 futures = "0.3"
 image = { version = "0.25", optional = true }
 log = { version = "0.4", optional = true }
-memsecurity = "3.5"
+memsecurity = { version = "3.5", optional = true }
+zeroize = { version = "1", features = ["derive"] }
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"
 # markdown support
-pulldown-cmark = { version = "0.12", optional = true }
+pulldown-cmark = { version = "0.12", optional = true, features = ["serde"] }
 pulldown-cmark-to-cmark = { version = "17", optional = true }
 static_assertions = "1"
 langsan = { version = "0", features = [
@@ -46,6 +56,8 @@ langsan = { version = "0", features = [
     "emoji",
     "verbose",
 ], optional = true }
+# For HTML escaping
+xml-rs = { version = "0.8", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -84,16 +96,32 @@ log = ["dep:log"]
 rustls-tls = ["reqwest/rustls-tls"]
 # Use `pulldown-cmark` for markdown parsing and `pulldown-cmark-to-cmark` for
 # converting to CommonMark.
-markdown = ["dep:pulldown-cmark", "dep:pulldown-cmark-to-cmark"]
+markdown = ["pulldown-cmark/serde", "dep:pulldown-cmark-to-cmark"]
+# Utilities for converting prompts and messages to HTML. Enables `markdown`.
+html = ["markdown", "xml-rs"]
 # Derive PartialEq for all structs and enums.
-partial_eq = []
+partial-eq = []
 # Input and output sanitization
 langsan = ["dep:langsan"]
+# Encrypted key in memory. Without this the key is still zeroed on drop, but is
+# not encrypted. This is a more secure option for the paranoid. Does not build
+# on wasm32.
+memsecurity = ["dep:memsecurity"]
 
 [[example]]
 name = "strawberry"
 required-features = ["markdown"]
+doc-scrape-examples = true
 
 [[example]]
 name = "python"
 required-features = ["markdown", "prompt-caching"]
+doc-scrape-examples = true
+
+[[example]]
+name = "website_wizard"
+doc-scrape-examples = true
+
+[[example]]
+name = "neologism"
+doc-scrape-examples = true

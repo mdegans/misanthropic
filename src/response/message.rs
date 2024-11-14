@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 /// A [`prompt::message`] with additional response metadata.
 #[derive(Debug, Serialize, Deserialize, derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{}", message)]
 pub struct Message<'a> {
     /// Unique `id` for the message.
@@ -70,7 +70,7 @@ impl Message<'_> {
 
 /// Reason the model stopped generating tokens.
 #[derive(Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model reached a natural stopping point.
@@ -86,7 +86,7 @@ pub enum StopReason {
 /// Usage statistics from the API. This is used in multiple contexts, not just
 /// for messages.
 #[derive(Debug, Serialize, Deserialize, Default)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Usage {
     /// Number of input tokens used.
     pub input_tokens: u64,
@@ -104,7 +104,7 @@ pub struct Usage {
 impl crate::markdown::ToMarkdown for Message<'_> {
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         self.message.markdown_events_custom(options)
     }
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        assert_eq!(message.message.content.len(), 1);
+        assert_eq!(message.message.content.len(), 22);
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
         assert_eq!(message.model, crate::Model::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
@@ -185,5 +185,54 @@ mod tests {
             cache_control: None,
         });
         assert!(message.tool_use().is_some());
+    }
+
+    #[test]
+    fn test_into_static() {
+        // Refers to json:
+        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        // Owns the `Cow` fields:
+        let static_message = message.into_static();
+
+        assert_eq!(static_message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
+        assert_eq!(static_message.model, crate::Model::Sonnet35_20240620);
+        assert!(matches!(
+            static_message.stop_reason,
+            Some(StopReason::EndTurn)
+        ));
+        assert_eq!(static_message.stop_sequence, None);
+        assert_eq!(static_message.usage.input_tokens, 2095);
+        assert_eq!(static_message.usage.output_tokens, 503);
+    }
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    fn test_markdown() {
+        use crate::markdown::ToMarkdown;
+
+        let message = Message {
+            id: "id".into(),
+            message: prompt::Message {
+                role: prompt::message::Role::User,
+                content: prompt::message::Content::SinglePart(
+                    "Hello, **world**!".into(),
+                ),
+            },
+            model: crate::Model::Sonnet35,
+            stop_reason: None,
+            stop_sequence: None,
+            usage: Usage {
+                input_tokens: 1,
+                #[cfg(feature = "prompt-caching")]
+                cache_creation_input_tokens: Some(2),
+                #[cfg(feature = "prompt-caching")]
+                cache_read_input_tokens: Some(3),
+                output_tokens: 4,
+            },
+        };
+
+        let expected = "### User\n\nHello, **world**!";
+        let markdown = message.markdown();
+        assert_eq!(markdown.as_ref(), expected);
     }
 }

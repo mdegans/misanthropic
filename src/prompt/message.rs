@@ -16,7 +16,7 @@ use crate::{
 /// Role of the [`Message`] author.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Role {
     /// From the user.
     User,
@@ -43,14 +43,13 @@ impl std::fmt::Display for Role {
 /// A message in a [`Request`]. See [`response::Message`] for the version with
 /// additional metadata.
 ///
-/// A message is [`Display`]ed as markdown with a [heading] indicating the
+/// A message is [`Display`]ed as markdown with a heading indicating the
 /// [`Role`] of the author. [`Image`]s are supported and will be rendered as
 /// markdown images with embedded base64 data.
 ///
 /// [`Display`]: std::fmt::Display
 /// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
-/// [heading]: Message::HEADING
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(
@@ -58,7 +57,7 @@ impl std::fmt::Display for Role {
     derive(derive_more::Display),
     display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
 )]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Message<'a> {
     /// Who is the message from.
     pub role: Role,
@@ -75,22 +74,15 @@ impl Message<'_> {
     /// [`Display`]: std::fmt::Display
     #[cfg(not(feature = "markdown"))]
     pub const HEADING: &'static str = "### ";
-    /// Heading for the message when rendered as markdown using markdown methods
-    /// as well as [`Display`].
-    ///
-    /// [`Display`]: std::fmt::Display
-    #[cfg(feature = "markdown")]
-    pub const HEADING: pulldown_cmark::Tag<'static> =
-        pulldown_cmark::Tag::Heading {
-            level: pulldown_cmark::HeadingLevel::H3,
-            id: None,
-            classes: vec![],
-            attrs: vec![],
-        };
 
     /// Returns the number of [`Content`] [`Block`]s in the message.
     pub fn len(&self) -> usize {
         self.content.len()
+    }
+
+    /// Returns true if self has no parts.
+    pub fn is_empty(&self) -> bool {
+        self.content.is_empty()
     }
 
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
@@ -101,6 +93,8 @@ impl Message<'_> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Message<'static> {
         Message {
             role: self.role,
@@ -154,9 +148,9 @@ impl crate::markdown::ToMarkdown for Message<'_> {
     /// [`Options`]: crate::markdown::Options
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        use pulldown_cmark::Event;
+        use pulldown_cmark::{Event, HeadingLevel::H3, Tag};
 
         let content = self.content.markdown_events_custom(options);
         let role = match self.content.last() {
@@ -182,10 +176,21 @@ impl crate::markdown::ToMarkdown for Message<'_> {
             }
             _ => self.role.as_str(),
         };
+        let heading_tag = Tag::Heading {
+            level: options.heading_level.unwrap_or(H3),
+            id: None,
+            classes: vec![],
+            attrs: if options.attrs {
+                vec![("role".into(), Some(role.to_lowercase().into()))]
+            } else {
+                vec![]
+            },
+        };
+        let heading_end = heading_tag.to_end();
         let heading = [
-            Event::Start(Self::HEADING),
+            Event::Start(heading_tag),
             Event::Text(role.into()),
-            Event::End(Self::HEADING.to_end()),
+            Event::End(heading_end),
         ];
 
         Box::new(heading.into_iter().chain(content))
@@ -205,7 +210,7 @@ impl std::fmt::Display for Message<'_> {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Content<'a> {
     /// Single part text-only content.
     SinglePart(crate::CowStr<'a>),
@@ -229,15 +234,16 @@ impl<'a> Content<'a> {
         Self::SinglePart(text.into())
     }
 
-    /// Returns the number of [`Block`]s in `self`.
+    /// Returns the number of bytes in self. Does not include tool use or other
+    /// metadata. Does include the base64 encoded image data length.
     pub fn len(&self) -> usize {
         match self {
-            Self::SinglePart(_) => 1,
-            Self::MultiPart(parts) => parts.len(),
+            Self::SinglePart(s) => s.as_bytes().len(),
+            Self::MultiPart(parts) => parts.iter().map(Block::len).sum(),
         }
     }
 
-    /// Returns true if the content is empty.
+    /// Returns true if `self` is empty.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -320,6 +326,8 @@ impl<'a> Content<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Content<'static> {
         match self {
             Self::SinglePart(text) => {
@@ -343,8 +351,6 @@ impl<'a> Content<'a> {
     /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
     /// this will return a [`ContentMismatch`] error.
     pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
-        let delta = delta.into();
-
         match self {
             Self::SinglePart(_) => {
                 let mut old = Content::MultiPart(vec![]);
@@ -373,7 +379,7 @@ impl crate::markdown::ToMarkdown for Content<'_> {
     #[cfg(feature = "markdown")]
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::Event;
 
@@ -473,7 +479,7 @@ where
 #[cfg_attr(not(feature = "markdown"), derive(derive_more::Display))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Block<'a> {
     /// Text content.
     #[serde(alias = "text_delta")]
@@ -487,6 +493,7 @@ pub enum Block<'a> {
         cache_control: Option<CacheControl>,
     },
     /// Image content.
+    #[cfg_attr(not(feature = "markdown"), display("{}", image))]
     Image {
         #[serde(rename = "source")]
         /// An base64 encoded image.
@@ -592,8 +599,21 @@ impl<'a> Block<'a> {
                 },
                 Delta::Json { partial_json },
             ) => {
-                *input = serde_json::from_str(&partial_json)
-                    .map_err(|e| e.to_string())?;
+                use serde_json::Value::Object;
+                // Parse the partial json as an object and merge it into the
+                // input.
+                let partial_json: serde_json::Value =
+                    serde_json::from_str(&partial_json).map_err(|e| {
+                        DeltaError::Parse {
+                            error: format!(
+                        "Could not merge partial json `{}` into `{}` because {}",
+                        partial_json, input, e
+                    ),
+                        }
+                    })?;
+                if let (Object(new), Object(old)) = (partial_json, input) {
+                    old.extend(new);
+                }
             }
             (this, acc) => {
                 let variant_name = match this {
@@ -664,6 +684,8 @@ impl<'a> Block<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Block<'static> {
         match self {
             Self::Text {
@@ -695,6 +717,18 @@ impl<'a> Block<'a> {
             },
         }
     }
+
+    /// Returns the number of bytes in the block. Does not include tool use or
+    /// other metadata. Does include the base64 encoded image data length.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Text { text, .. } => text.as_bytes().len(),
+            Self::Image { image, .. } => image.len(),
+            Self::ToolUse { .. } => 0,
+            Self::ToolResult { .. } => 0,
+        }
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -706,7 +740,7 @@ impl crate::markdown::ToMarkdown for Block<'_> {
     #[cfg(feature = "markdown")]
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
@@ -816,6 +850,7 @@ impl<'a> From<tool::Result<'a>> for Block<'a> {
 #[cfg(feature = "png")]
 impl From<image::RgbaImage> for Block<'_> {
     fn from(image: image::RgbaImage) -> Self {
+        #[allow(unused_variables)] // for the `e` variable
         Image::encode(MediaType::Png, image)
             // Unwrap can never panic unless the PNG encoding fails, which
             // should really never happen, but no matter what we don't panic.
@@ -838,7 +873,7 @@ impl From<image::DynamicImage> for Block<'_> {
 /// Cache control for prompt caching.
 #[cfg(feature = "prompt-caching")]
 #[derive(Clone, Default, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum CacheControl {
@@ -851,7 +886,7 @@ pub enum CacheControl {
 ///
 /// [`MultiPart`]: Content::MultiPart
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 pub enum Image<'a> {
@@ -923,6 +958,8 @@ impl Image<'_> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
+    ///
+    /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Image<'static> {
         match self {
             Self::Base64 { media_type, data } => Image::Base64 {
@@ -932,6 +969,15 @@ impl Image<'_> {
                 #[cfg(feature = "langsan")]
                 data: data.into_static(),
             },
+        }
+    }
+
+    /// Returns the number of bytes in the image data (base64 encoded). Call
+    /// [`decode`] to get the actual image size.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Base64 { data, .. } => data.as_bytes().len(),
         }
     }
 }
@@ -961,20 +1007,16 @@ impl TryInto<image::RgbaImage> for Image<'_> {
 
 /// Encoding format for [`Image`]s.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
 pub enum MediaType {
-    #[cfg(feature = "jpeg")]
     #[serde(rename = "image/jpeg")]
     Jpeg,
-    #[cfg(feature = "png")]
     #[serde(rename = "image/png")]
     Png,
-    #[cfg(feature = "gif")]
     #[serde(rename = "image/gif")]
     Gif,
-    #[cfg(feature = "webp")]
     #[serde(rename = "image/webp")]
     Webp,
 }
@@ -995,13 +1037,9 @@ impl From<MediaType> for image::ImageFormat {
     /// A [`MediaType`] can always be converted into an [`image::ImageFormat`].
     fn from(value: MediaType) -> image::ImageFormat {
         match value {
-            #[cfg(feature = "jpeg")]
             MediaType::Jpeg => image::ImageFormat::Jpeg,
-            #[cfg(feature = "png")]
             MediaType::Png => image::ImageFormat::Png,
-            #[cfg(feature = "gif")]
             MediaType::Gif => image::ImageFormat::Gif,
-            #[cfg(feature = "webp")]
             MediaType::Webp => image::ImageFormat::WebP,
         }
     }
@@ -1024,13 +1062,9 @@ impl TryFrom<image::ImageFormat> for MediaType {
     /// [`UnsupportedImageFormat`] error.
     fn try_from(value: image::ImageFormat) -> Result<Self, Self::Error> {
         match value {
-            #[cfg(feature = "jpeg")]
             image::ImageFormat::Jpeg => Ok(Self::Jpeg),
-            #[cfg(feature = "png")]
             image::ImageFormat::Png => Ok(Self::Png),
-            #[cfg(feature = "gif")]
             image::ImageFormat::Gif => Ok(Self::Gif),
-            #[cfg(feature = "webp")]
             image::ImageFormat::WebP => Ok(Self::Webp),
             _ => Err(UnsupportedImageFormat(value)),
         }
@@ -1040,6 +1074,9 @@ impl TryFrom<image::ImageFormat> for MediaType {
 #[cfg(test)]
 mod tests {
     use std::vec;
+
+    #[cfg(feature = "markdown")]
+    use crate::markdown::ToMarkdown;
 
     use super::*;
 
@@ -1094,6 +1131,88 @@ mod tests {
     }
 
     #[test]
+    fn test_message_is_empty() {
+        let message: Message = (Role::User, "Hello, world!").into();
+        assert!(!message.is_empty());
+        let message: Message = Message {
+            role: Role::User,
+            content: Content::MultiPart(vec![]),
+        };
+        assert!(message.is_empty());
+    }
+
+    #[test]
+    fn test_message_tool_use() {
+        let tool_use: Message = tool::Use {
+            id: "tool_123".into(),
+            name: "tool".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
+
+        assert!(tool_use.tool_use().is_some());
+    }
+
+    #[test]
+    #[cfg(feature = "markdown")]
+    // mostly for coverage
+    fn test_into_static() {
+        let content: Content = "Hello, world!".into();
+        let content: Content<'static> = content.into_static();
+        assert_eq!(content.to_string(), "Hello, world!");
+
+        let content = Content::SinglePart("Hello, world!".into());
+        let content: Content<'static> = content.into_static();
+        assert_eq!(content.to_string(), "Hello, world!");
+
+        let block: Block = "Hello, world!".into();
+        let block: Block<'static> = block.into_static();
+        assert_eq!(block.to_string(), "Hello, world!");
+
+        let image: Image = Image::from_parts(MediaType::Png, String::new());
+        let image: Image<'static> = image.into_static();
+        assert_eq!(image.to_string(), "![Image](data:image/png;base64,)");
+
+        let tool_use: Block = tool::Use {
+            id: "tool_123".into(),
+            name: "tool".into(),
+            input: serde_json::json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+        .into();
+        let tool_use: Block<'static> = tool_use.into_static();
+        assert_eq!(
+            tool_use.markdown_verbose().as_ref(),
+            "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{}}\n````"
+        );
+
+        let message: Message = (Role::User, "Hello, world!").into();
+        let _: Message<'static> = message.into_static();
+    }
+
+    #[test]
+    fn test_push_delta() {
+        let mut content = Content::SinglePart("Hello, world!".into());
+        content
+            .push_delta(Delta::Text {
+                text: " How are you?".into(),
+            })
+            .unwrap();
+
+        assert_eq!(content.to_string(), "Hello, world! How are you?");
+        assert!(content.is_multi_part());
+
+        // an incompatible delta
+        let err = content.push_delta(Delta::Json {
+            partial_json: "blabla".into(),
+        });
+        assert!(err.is_err());
+    }
+
+    #[test]
     #[cfg(feature = "markdown")]
     fn test_merge_deltas() {
         use crate::markdown::ToMarkdown;
@@ -1137,11 +1256,21 @@ mod tests {
         // by default tool use is hidden
         let opts = crate::markdown::Options::default().with_tool_use();
 
-        let markdown = block.markdown_custom(&opts);
+        let markdown = block.markdown_custom(opts);
 
         assert_eq!(
             markdown.as_ref(),
             "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{\"key\":\"value\"}}\n````"
+        );
+
+        // test junk json
+        let deltas = [Delta::Json {
+            partial_json: "blabla".into(),
+        }];
+        let err = block.merge_deltas(deltas).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Cannot apply delta because deserialization failed because: Could not merge partial json `blabla` into `{\"key\":\"value\"}` because expected value at line 1 column 1"
         );
 
         // content mismatch
@@ -1168,11 +1297,11 @@ mod tests {
             content: Content::SinglePart("Hello, world!".into()),
         };
 
-        assert_eq!(message.len(), 1);
+        assert_eq!(message.len(), 13);
 
         message.content.push("How are you?");
 
-        assert_eq!(message.len(), 2);
+        assert_eq!(message.len(), 25);
     }
 
     #[test]
@@ -1238,20 +1367,47 @@ mod tests {
     }
 
     #[test]
+    fn test_content_from_slice_of_str() {
+        let content: Content = ["Hello, world!"].into();
+        assert_eq!(content.to_string(), "Hello, world!");
+    }
+
+    #[test]
     fn test_content_from_block() {
         let content: Content = Block::text("Hello, world!").into();
         assert_eq!(content.to_string(), "Hello, world!");
     }
 
     #[test]
+    #[cfg(feature = "markdown")]
     fn test_merge_deltas_error() {
-        let mut block: Block = "Hello, world!".into();
+        let mut text_block: Block = "Hello, world!".into();
 
-        let deltas = [Delta::Json {
-            partial_json: "blabla".into(),
+        let json_deltas = [Delta::Json {
+            partial_json: "{\"k\": \"v\"}".into(),
         }];
 
-        let err = block.merge_deltas(deltas).unwrap_err();
+        let err = text_block.merge_deltas(json_deltas).unwrap_err();
+
+        let mut json_block = Block::ToolUse {
+            call: tool::Use {
+                id: "tool_123".into(),
+                name: "tool".into(),
+                input: serde_json::json!({}),
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            },
+        };
+
+        let json_deltas = [Delta::Json {
+            partial_json: "{\"k\": \"v\"}".into(),
+        }];
+
+        json_block.merge_deltas(json_deltas).unwrap();
+        assert_eq!(
+            json_block.markdown_verbose().as_ref(),
+            "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{\"k\":\"v\"}}\n````"
+        );
 
         assert!(matches!(err, DeltaError::ContentMismatch { .. }));
     }
@@ -1272,7 +1428,7 @@ mod tests {
             .with_tool_results();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### User\n\nHello, world!"
         );
 
@@ -1286,7 +1442,7 @@ mod tests {
         };
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Assistant\n\nHello, world!\n\nHow are you?"
         );
 
@@ -1301,7 +1457,7 @@ mod tests {
         .into();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":false}\n````"
         );
 
@@ -1316,7 +1472,7 @@ mod tests {
         .into();
 
         assert_eq!(
-            message.markdown_custom(&opts).to_string(),
+            message.markdown_custom(opts).to_string(),
             "### Error\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":true}\n````"
         );
     }

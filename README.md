@@ -68,12 +68,15 @@ println!("{}", message);
 - [x] Message responses
 - [x] Image support with or without the `image` crate
 - [x] Markdown formatting of messages, including images
+- [x] HTML formatting of messages\*.
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
 - [x] Zero-copy where possible
 - [x] [Sanitization](https://crates.io/crates/langsan) of input and output to mitigate [injection attacks](https://arstechnica.com/security/2024/10/ai-chatbots-can-read-and-write-invisible-text-creating-an-ideal-covert-channel/)
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
+
+\* _Base64 encoded images are currently not implemented for HTML but this is a planned feature._
 
 [reqwest]: https://docs.rs/reqwest
 

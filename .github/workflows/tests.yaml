@@ -26,8 +26,50 @@ jobs:
       - name: Build
         run: cargo build --all-features --verbose
 
-      - name: Test
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-features
+
+      - name: Test Without Default Features
+        run: cargo test --all-features --verbose --no-default-features
+
+      - name: Test With all Features
         run: cargo test --all-features --verbose
+
+      - name: Test With Image Feature
+        run: cargo test --features image --verbose
+
+      - name: Test with JPEG Feature
+        run: cargo test --features jpeg --verbose
+
+      - name: Test with PNG Feature
+        run: cargo test --features png --verbose
+
+      - name: Test with GIF Feature
+        run: cargo test --features gif --verbose
+
+      - name: Test with WEBP Feature
+        run: cargo test --features webp --verbose
+
+      - name: Test with Prompt Caching Feature
+        run: cargo test --features prompt-caching --verbose
+
+      - name: Test with Log Feature
+        run: cargo test --features log --verbose
+
+      - name: Test with Markdown Feature
+        run: cargo test --features markdown --verbose
+
+      - name: Test with PartialEq Feature
+        run: cargo test --features partial-eq --verbose
+
+      - name: Test with Langsan feature
+        run: cargo test --features langsan --verbose
+
+      - name: Test with Memsecurity feature
+        run: cargo test --features memsecurity --verbose
 
       # This should only happen on push to main. PRs should not upload coverage.
       - name: Install llvm-cov

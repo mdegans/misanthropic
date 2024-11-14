@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 /// [`prompt::message`]: crate::prompt::message
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(test, derive(Debug))]
 pub enum Choice {
     /// Model chooses which tool to use, or no tool at all.
     Auto,
@@ -28,8 +29,9 @@ pub enum Choice {
 /// A tool a model can use while completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Serialize, Deserialize)]
+#[serde(try_from = "ToolBuilder<'a>")]
 pub struct Tool<'a> {
     /// Name of the tool.
     pub name: Cow<'a, str>,
@@ -50,10 +52,60 @@ pub struct Tool<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
+impl<'a> TryFrom<ToolBuilder<'a>> for Tool<'a> {
+    type Error = ToolBuildError;
+
+    fn try_from(
+        builder: ToolBuilder<'a>,
+    ) -> std::result::Result<Self, Self::Error> {
+        builder.build()
+    }
+}
+
 /// A builder for creating a [`Tool`] with some basic validation. See
 /// [`Tool::builder`] to create a new builder.
 pub struct ToolBuilder<'a> {
     tool: Tool<'a>,
+}
+
+// ToolBuilder must implement Deserialize but we can't derive it because it
+// would recursively require Tool to implement Deserialize, so we have to
+// implement it manually. This is a bit ugly, but it works and ensures that
+// a Tool is always valid when deserialized.
+impl<'de> Deserialize<'de> for ToolBuilder<'_> {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct Foreign {
+            name: Cow<'static, str>,
+            description: Cow<'static, str>,
+            input_schema: serde_json::Value,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: Option<crate::prompt::message::CacheControl>,
+        }
+
+        let foreign = Foreign::deserialize(deserializer)?;
+
+        let Foreign {
+            name,
+            description,
+            input_schema,
+            #[cfg(feature = "prompt-caching")]
+            cache_control,
+        } = foreign;
+
+        Ok(ToolBuilder {
+            tool: Tool {
+                name,
+                description,
+                input_schema,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+        })
+    }
 }
 
 impl<'a> ToolBuilder<'a> {
@@ -122,6 +174,10 @@ impl<'a> ToolBuilder<'a> {
         schema: &serde_json::Value,
     ) -> std::result::Result<(), Cow<'static, str>> {
         let obj = if let Some(obj) = schema.as_object() {
+            if obj.is_empty() {
+                return Err("Input `schema` is an empty object.".into());
+            }
+
             obj
         } else {
             return Err(format!(
@@ -262,7 +318,7 @@ impl<'a> Tool<'a> {
     // Serialize. This is a bit of a hack but it works.
     pub fn from_serializable<T>(
         value: T,
-    ) -> std::result::Result<Self, serde_json::Error>
+    ) -> std::result::Result<Tool<'a>, serde_json::Error>
     where
         T: Serialize,
     {
@@ -271,13 +327,16 @@ impl<'a> Tool<'a> {
     }
 }
 
-impl TryFrom<serde_json::Value> for Tool<'_> {
+impl TryFrom<serde_json::Value> for Tool<'static> {
     type Error = serde_json::Error;
 
     fn try_from(
         value: serde_json::Value,
     ) -> std::result::Result<Self, Self::Error> {
-        serde_json::from_value(value)
+        let builder: ToolBuilder<'static> = serde_json::from_value(value)?;
+        builder
+            .build()
+            .map_err(|e| serde::de::Error::custom(e.to_string()))
     }
 }
 
@@ -290,7 +349,7 @@ impl TryFrom<serde_json::Value> for Tool<'_> {
     derive(derive_more::Display),
     display("\n````json\n{}\n````\n", serde_json::to_string_pretty(self).unwrap())
 )]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Use<'a> {
     /// Unique Id for this tool call.
@@ -341,7 +400,7 @@ impl TryFrom<serde_json::Value> for Use<'_> {
 impl crate::markdown::ToMarkdown for Use<'_> {
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
@@ -378,7 +437,7 @@ impl std::fmt::Display for Use<'_> {
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Message`]: crate::prompt::message
 #[derive(Clone, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 // On the one hand this can clash with the `Result` type from the standard
 // library, but on the other hand it's what the API uses, and I'm trying to
 // be as faithful to the API as possible.
@@ -464,5 +523,387 @@ mod tests {
         // return an empty &str but this is more consistent with the rest of the
         // crate.
         assert_eq!(use_.to_string(), "");
+    }
+
+    #[test]
+    fn test_tool_schema_validation() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "letter": {
+                    "type": "string",
+                    "description": "The letter to count",
+                },
+                "string": {
+                    "type": "string",
+                    "description": "The string to count letters in",
+                },
+            },
+            "required": ["letter", "string"],
+        });
+
+        assert!(ToolBuilder::is_valid_input_schema(&schema).is_ok());
+
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "letter": {
+                    "type": "string",
+                    "description": "The letter to count",
+                },
+                "string": {
+                    "type": "string",
+                    "description": "The string to count letters in",
+                },
+            },
+            "required": "letter",
+        });
+
+        assert!(ToolBuilder::is_valid_input_schema(&schema).is_err());
+    }
+
+    #[test]
+    fn test_build() {
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            }))
+            .build()
+            .unwrap();
+
+        assert_eq!(tool.name, "test_name");
+        assert_eq!(tool.description, "test_description");
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            })
+        );
+
+        // Test error cases
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": "letter",
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // input schema not an object
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::Value::String("blah".into()))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // Properties not an object
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": "blah",
+                "required": ["letter", "string"],
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // Schema does not have properties
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "required": ["letter", "string"],
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // Schema does not have `required` keys (empty array allowed, but it
+        // must be present)
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // required keys not found in properties
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string", "foo"],
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // required keys not strings
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": [1, 2],
+            }))
+            .build();
+
+        assert!(matches!(
+            tool,
+            Err(ToolBuildError::InvalidInputSchema { .. })
+        ));
+
+        // missing schema
+        let tool = Tool::builder("test_name")
+            .description("test_description")
+            .build();
+
+        assert!(matches!(tool, Err(ToolBuildError::EmptyInputSchema)));
+
+        // with missing names and descriptions
+        let tool = Tool::builder("")
+            .description("foo")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            }))
+            .build();
+
+        assert!(matches!(tool, Err(ToolBuildError::EmptyName)));
+
+        let tool = Tool::builder("foo")
+            .description("")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            }))
+            .build();
+
+        assert!(matches!(tool, Err(ToolBuildError::EmptyDescription)));
+    }
+
+    #[test]
+    fn test_choice_serde() {
+        let choice = Choice::Auto;
+        let json = serde_json::to_string(&choice).unwrap();
+        let choice2: Choice = serde_json::from_str(&json).unwrap();
+        assert_eq!(choice, choice2);
+
+        let choice = Choice::Any;
+        let json = serde_json::to_string(&choice).unwrap();
+        let choice2: Choice = serde_json::from_str(&json).unwrap();
+        assert_eq!(choice, choice2);
+
+        let choice = Choice::Tool {
+            name: "test_name".into(),
+        };
+        let json = serde_json::to_string(&choice).unwrap();
+        let choice2: Choice = serde_json::from_str(&json).unwrap();
+        assert_eq!(choice, choice2);
+    }
+
+    #[test]
+    fn test_result_serde() {
+        let result = Result {
+            tool_use_id: "test_id".into(),
+            content: "test_content".into(),
+            is_error: false,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        let result2: Result = serde_json::from_str(&json).unwrap();
+        assert_eq!(result, result2);
+    }
+
+    #[test]
+    fn test_result_into_static() {
+        let result = Result {
+            tool_use_id: "test_id".into(),
+            content: "test_content".into(),
+            is_error: false,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = result.into_static();
+
+        assert_eq!(result.tool_use_id, "test_id");
+        assert_eq!(result.content.to_string(), "test_content");
+        assert_eq!(result.is_error, false);
+    }
+
+    #[test]
+    fn test_tool_from_serializable() {
+        let tool = Tool::from_serializable(serde_json::json!({
+            "name": "test_name",
+            "description": "test_description",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            },
+        }))
+        .unwrap();
+
+        assert_eq!(tool.name, "test_name");
+        assert_eq!(tool.description, "test_description");
+        assert_eq!(
+            tool.input_schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                "required": ["letter", "string"],
+            })
+        );
+
+        // Test invalid schema. Comprehensive testing of this is in the builder
+        // tests. This just makes sure that the error is propagated.
+        let tool = Tool::from_serializable(serde_json::json!({
+            "name": "test_name",
+            "description": "test_description",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "letter": {
+                        "type": "string",
+                        "description": "The letter to count",
+                    },
+                    "string": {
+                        "type": "string",
+                        "description": "The string to count letters in",
+                    },
+                },
+                // should be an array
+                "required": "letter",
+            },
+        }));
+
+        assert!(tool.is_err());
     }
 }

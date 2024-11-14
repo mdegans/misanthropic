@@ -37,6 +37,10 @@ pub use response::Response;
 /// Markdown utilities for parsing and rendering.
 pub mod markdown;
 
+#[cfg(feature = "html")]
+/// Converts prompts and messages to HTML.
+pub mod html;
+
 #[cfg(not(feature = "langsan"))]
 pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
 #[cfg(feature = "langsan")]
@@ -54,6 +58,7 @@ pub mod exports {
     pub use langsan;
     #[cfg(feature = "log")]
     pub use log;
+    #[cfg(feature = "memsecurity")]
     pub use memsecurity;
     #[cfg(feature = "markdown")]
     pub use pulldown_cmark;

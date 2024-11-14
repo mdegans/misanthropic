@@ -16,7 +16,7 @@ pub use message::Message;
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial_eq", test), derive(PartialEq))]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
@@ -505,7 +505,7 @@ impl<'a> Prompt<'a> {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.tools.as_mut().map(|tools| tools.last_mut()).flatten()
+            self.tools.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache();
             return self;
@@ -526,9 +526,9 @@ impl crate::markdown::ToMarkdown for Prompt<'_> {
     /// [`Role`]: message::Role
     fn markdown_events_custom<'a>(
         &'a self,
-        options: &'a crate::markdown::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        use pulldown_cmark::{Event, HeadingLevel, Tag, TagEnd};
+        use pulldown_cmark::{Event, HeadingLevel::H3, Tag, TagEnd};
 
         // TODO: Add the title if there is metadata for it. Also add a metadata
         // option to Options to include arbitrary metadata. In my use case I am
@@ -541,15 +541,21 @@ impl crate::markdown::ToMarkdown for Prompt<'_> {
                 .map(|s| s.markdown_events_custom(options))
         {
             if options.system {
+                let heading_level = options.heading_level.unwrap_or(H3);
+
                 let header = [
                     Event::Start(Tag::Heading {
-                        level: HeadingLevel::H3,
+                        level: heading_level,
                         id: None,
                         classes: vec![],
-                        attrs: vec![],
+                        attrs: if options.attrs {
+                            vec![("role".into(), Some("system".into()))]
+                        } else {
+                            vec![]
+                        },
                     }),
                     Event::Text("System".into()),
-                    Event::End(TagEnd::Heading(HeadingLevel::H3)),
+                    Event::End(TagEnd::Heading(heading_level)),
                 ];
 
                 Box::new(header.into_iter().chain(system))
@@ -962,6 +968,7 @@ mod tests {
                     input: json!({
                         "host": "example.com"
                     }),
+                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),
@@ -979,15 +986,13 @@ mod tests {
                 },
             ]);
 
-        let opts = crate::markdown::Options::verbose();
-
-        let markdown: Markdown = request.markdown_custom(&opts);
+        let markdown: Markdown = request.markdown_verbose();
 
         // OpenAI format. Anthropic doesn't have a "system" or "tool" role but
         // we generate markdown like this because it's easier to read. The user
         // does not submit a tool result, so it's confusing if the header is
         // "User".
-        let expected = "### System\n\nYou are a very succinct assistant.\n\n### User\n\nHello\n\n### Assistant\n\nHi\n\n### User\n\nCall a tool.\n\n### Assistant\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":[{\"type\":\"text\",\"text\":\"Pinging example.com.\"}],\"is_error\":false}\n````\n\n### Assistant\n\nDone.";
+        let expected = "### System { role=system }\n\nYou are a very succinct assistant.\n\n### User { role=user }\n\nHello\n\n### Assistant { role=assistant }\n\nHi\n\n### User { role=user }\n\nCall a tool.\n\n### Assistant { role=assistant }\n\n````json\n{\"type\":\"tool_use\",\"id\":\"abc123\",\"name\":\"ping\",\"input\":{\"host\":\"example.com\"}}\n````\n\n### Tool { role=tool }\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"abc123\",\"content\":[{\"type\":\"text\",\"text\":\"Pinging example.com.\"}],\"is_error\":false}\n````\n\n### Assistant { role=assistant }\n\nDone.";
 
         assert_eq!(markdown.as_ref(), expected);
     }
