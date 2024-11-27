@@ -17,11 +17,14 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Model {
     /// Sonnet 3.5 (latest)
-    #[serde(rename = "claude-3-5-sonnet-latest")]
-    Sonnet35,
+    #[serde(rename = "claude-3-5-sonnet-latest")] 
+    Sonnet35, 
     /// Sonnet 3.5 2024-06-20
     #[serde(rename = "claude-3-5-sonnet-20240620")]
     Sonnet35_20240620,
+    /// Sonnet 3.5 2024-10-22
+    #[serde(rename = "claude-3-5-sonnet-20241022")] 
+    Sonnet35_20241022, 
     /// Sonnet 3.0 2024-10-22
     #[serde(rename = "claude-3-sonnet-20241022")]
     Sonnet30_20241022,
