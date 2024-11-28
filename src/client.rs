@@ -218,17 +218,8 @@ impl Client {
             })
         } else {
             // Get a single response message.
-
-            
-            let text = response.text().await?;
-
-             #[cfg(feature = "log")]
-            if !text.is_empty() {
-
-                log::debug!("received response:\n{}", text);
-            }
             Ok(crate::Response::Message {
-                message: serde_json::from_str(&text)?,
+                message: response.json().await?,
             })
         }
     }
