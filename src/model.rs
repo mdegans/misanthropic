@@ -117,11 +117,12 @@ mod tests {
         for &model in Model::ALL {
             prompt.model = model;
 
-            // We don't actually care about the response, just that the API
-            // doesn't error out.
+            // If this fails (because a new model was added), it should be added
+            // to the list of models above and the `latest` aliases should be
+            // updated.
             let response = client.message(&prompt).await.unwrap();
 
-            // if the mode is not a latest tag, we want to check it matches
+            // If the mode is not a latest tag, we want to check it matches
             // the model we set.
             if !serde_json::to_string(&model).unwrap().contains("latest") {
                 assert_eq!(response.model, model);
