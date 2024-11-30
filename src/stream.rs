@@ -223,7 +223,7 @@ pub struct Stream<'a> {
 
 static_assertions::assert_impl_all!(Stream<'_>: futures::Stream, Send);
 
-impl<'a> Stream<'a> {
+impl Stream<'_> {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
     /// similar stream of [`eventsource_stream::Event`]s.
     pub fn new<S>(stream: S) -> Self
@@ -359,7 +359,7 @@ pub(crate) mod tests {
     /// Creates a mock stream from a string (likely `include_str!`). The string
     /// should be a series of `event`, `data`, and empty lines (a SSE stream).
     /// Anthropic provides such example data in the API documentation.
-    pub fn mock_stream(text: &'static str) -> Stream {
+    pub fn mock_stream(text: &'static str) -> Stream<'static> {
         use itertools::Itertools;
 
         // TODO: one of every possible variants, even if it doesn't make sense.
