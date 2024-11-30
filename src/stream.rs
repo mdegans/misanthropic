@@ -223,7 +223,7 @@ pub struct Stream<'a> {
 
 static_assertions::assert_impl_all!(Stream<'_>: futures::Stream, Send);
 
-impl<'a> Stream<'a> {
+impl Stream<'_> {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
     /// similar stream of [`eventsource_stream::Event`]s.
     pub fn new<S>(stream: S) -> Self
