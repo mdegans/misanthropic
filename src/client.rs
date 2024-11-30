@@ -217,9 +217,12 @@ impl Client {
                 ),
             })
         } else {
+            // Get body as JSON.
+            let body = response.bytes().await?;
+
             // Get a single response message.
             Ok(crate::Response::Message {
-                message: response.json().await?,
+                message: serde_json::from_slice(&body)?,
             })
         }
     }
