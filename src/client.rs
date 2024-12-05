@@ -64,7 +64,7 @@ impl Client {
     pub fn from_key(key: Key) -> Self {
         #[cfg(feature = "log")]
         {
-            log::info!(concat!(
+            log::debug!(concat!(
                 "Creating ",
                 env!("CARGO_PKG_NAME", " client...")
             ));
@@ -117,11 +117,13 @@ impl Client {
     {
         #[cfg(feature = "log")]
         {
-            log::debug!("{} request to {}", method, url.as_str());
+            if !matches!(method, reqwest::Method::POST) {
+                // We log in the post method for POST requests.
+                log::debug!("{}({})", method, url.as_str());
+            }
         }
 
         #[allow(clippy::useless_asref)]
-        // because with memsecurity feature it's not useless
         let mut val =
             reqwest::header::HeaderValue::from_bytes(self.key.read().as_ref())
                 .unwrap();
@@ -135,6 +137,11 @@ impl Client {
     where
         U: reqwest::IntoUrl,
     {
+        #[cfg(feature = "log")]
+        {
+            log::debug!("GET:{}", url.as_str());
+        }
+
         self.request_raw(reqwest::Method::GET, url).send().await
     }
 
@@ -148,16 +155,18 @@ impl Client {
         U: reqwest::IntoUrl,
         B: serde::Serialize,
     {
-        let req = self.request_raw(reqwest::Method::POST, url);
+        let url: reqwest::Url = url.into_url()?;
 
         #[cfg(feature = "log")]
         {
             if let Ok(json) = serde_json::to_string_pretty(&body) {
-                log::debug!("Sending body:\n{}", json);
+                log::debug!("POST({}):{}", &url, json);
             } else {
                 log::warn!("Could not serialize body. Request will fail.");
             }
         }
+
+        let req = self.request_raw(reqwest::Method::POST, url);
 
         req.json(&body).send().await
     }
@@ -199,7 +208,6 @@ impl Client {
     {
         let json = serde_json::to_value(prompt)?;
         let streaming = json["stream"].as_bool().unwrap_or(false);
-
         let response: reqwest::Response = self.post(url, json).await?;
 
         if response.status() != reqwest::StatusCode::OK {
@@ -210,6 +218,11 @@ impl Client {
         }
 
         if streaming {
+            #[cfg(feature = "log")]
+            {
+                log::debug!("RECV:Stream");
+            }
+
             // Get a stream and wrap it in our stream type.
             Ok(crate::Response::Stream {
                 stream: crate::Stream::new(
@@ -222,7 +235,31 @@ impl Client {
 
             // Get a single response message.
             Ok(crate::Response::Message {
-                message: serde_json::from_slice(&body)?,
+                message: match serde_json::from_slice(&body) {
+                    Ok(msg) => {
+                        #[cfg(feature = "log")]
+                        {
+                            log::debug!(
+                                "RECV:{}",
+                                serde_json::to_string_pretty(&msg).unwrap()
+                            );
+                        }
+
+                        msg
+                    }
+                    Err(e) => {
+                        #[cfg(feature = "log")]
+                        {
+                            log::error!(
+                                "ERROR:Could not parse {} from JSON: {:#?}",
+                                stringify!(response::Message),
+                                body
+                            );
+                        }
+
+                        return Err(e.into());
+                    }
+                },
             })
         }
     }
@@ -246,9 +283,17 @@ impl Client {
             // This should never really happen. If it does the server is
             // misbehaving. However as a policy we don't panic in this crate
             // except in `unwrap` functions like `unwrap_message`.
-            Err(Error::UnexpectedResponse {
+
+            let error = Error::UnexpectedResponse {
                 message: "Expected a message, got a stream.",
-            })
+            };
+
+            #[cfg(feature = "log")]
+            {
+                log::error!("{}", error);
+            }
+
+            Err(error)
         }
     }
 
@@ -266,6 +311,11 @@ impl Client {
         if let crate::Response::Stream { stream } = self.request(json).await? {
             Ok(stream)
         } else {
+            #[cfg(feature = "log")]
+            {
+                log::error!("Expected a stream, got a message.");
+            }
+
             Err(Error::UnexpectedResponse {
                 message: "Expected a stream, got a message.",
             })
@@ -492,8 +542,20 @@ mod tests {
         Some(key.trim().to_string())
     }
 
+    #[cfg(feature = "log")]
+    fn init_log() {
+        let mut log_builder = env_logger::Builder::from_default_env();
+        log_builder
+            .filter(None, log::LevelFilter::Debug)
+            .try_init()
+            .ok();
+    }
+
     #[test]
     fn test_client_new() {
+        #[cfg(feature = "log")]
+        init_log();
+
         let client = Client::new(FAKE_API_KEY.to_string()).unwrap();
         assert_eq!(client.key.to_string(), FAKE_API_KEY);
 
@@ -505,6 +567,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_client_message() {
+        #[cfg(feature = "log")]
+        init_log();
+
         let key = load_api_key().expect(NO_API_KEY);
         let client = Client::new(key).unwrap();
 
@@ -523,6 +588,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_client_stream() {
+        #[cfg(feature = "log")]
+        init_log();
+
         let key = load_api_key().expect(NO_API_KEY);
         let client = Client::new(key).unwrap();
 

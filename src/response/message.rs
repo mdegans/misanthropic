@@ -14,7 +14,7 @@ pub struct Message<'a> {
     #[serde(flatten)]
     pub message: prompt::Message<'a>,
     /// [`Model`] that generated the message.
-    pub model: Model,
+    pub model: Model<'a>,
     /// The reason the model stopped generating tokens.
     pub stop_reason: Option<StopReason>,
     /// If the [`StopReason`] was [`StopSequence`], this is the sequence that
@@ -58,7 +58,7 @@ impl Message<'_> {
         Message {
             id: Cow::Owned(self.id.into_owned()),
             message: self.message.into_static(),
-            model: self.model,
+            model: self.model.into_static(),
             stop_reason: self.stop_reason,
             stop_sequence: self
                 .stop_sequence
@@ -141,7 +141,7 @@ mod tests {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
         assert_eq!(message.message.content.len(), 22);
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(message.model, crate::Model::Sonnet35_20240620);
+        assert_eq!(message.model, crate::AnthropicModel::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
         assert_eq!(message.stop_sequence, None);
         assert_eq!(message.usage.input_tokens, 2095);
@@ -195,7 +195,10 @@ mod tests {
         let static_message = message.into_static();
 
         assert_eq!(static_message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(static_message.model, crate::Model::Sonnet35_20240620);
+        assert_eq!(
+            static_message.model,
+            crate::AnthropicModel::Sonnet35_20240620
+        );
         assert!(matches!(
             static_message.stop_reason,
             Some(StopReason::EndTurn)
@@ -218,7 +221,7 @@ mod tests {
                     "Hello, **world**!".into(),
                 ),
             },
-            model: crate::Model::Sonnet35,
+            model: crate::AnthropicModel::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
             usage: Usage {

@@ -19,7 +19,7 @@ pub mod client;
 pub use client::Client;
 
 pub mod model;
-pub use model::Model;
+pub use model::{AnthropicModel, Model};
 
 pub mod prompt;
 pub use prompt::Prompt;

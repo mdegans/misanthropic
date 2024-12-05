@@ -20,7 +20,7 @@ pub use message::Message;
 #[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
-    pub model: Model,
+    pub model: Model<'a>,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
@@ -130,8 +130,11 @@ impl<'a> Prompt<'a> {
     /// Set the [`model`] to a [`Model`].
     ///
     /// [`model`]: Prompt::model
-    pub fn model(mut self, model: Model) -> Self {
-        self.model = model;
+    pub fn model<M>(mut self, model: M) -> Self
+    where
+        M: Into<Model<'a>>,
+    {
+        self.model = model.into();
         self
     }
 
@@ -581,7 +584,7 @@ mod tests {
     use serde_json::json;
     use std::num::NonZeroU16;
 
-    use crate::prompt::message::Role;
+    use crate::{prompt::message::Role, AnthropicModel};
 
     const STOP_SEQUENCES: [&'static str; 2] = ["stop1", "stop2"];
 
@@ -618,9 +621,9 @@ mod tests {
 
     #[test]
     fn test_set_model() {
-        let model = Model::default();
-        let request = Prompt::default().model(model); // Model is Copy
-        assert_eq!(request.model, model);
+        let model = AnthropicModel::default();
+        let request = Prompt::default().model(model); // AnthropicModel is Copy
+        assert_eq!(request.model, Model::default());
     }
 
     fn create_test_messages() -> [Message<'static>; 2] {

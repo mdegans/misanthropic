@@ -7,9 +7,7 @@
 
 use clap::Parser;
 use futures::TryStreamExt;
-use misanthropic::{
-    json, prompt::message::Role, stream::FilterExt, Client, Model,
-};
+use misanthropic::{json, prompt::message::Role, stream::FilterExt, Client};
 use std::{
     io::{stdin, BufRead},
     path::PathBuf,
@@ -58,11 +56,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new(key)?;
 
     // Request a streaming completion. `json!` can be used, the concrete type,
-    // `Request` or a combination of strings and concrete types like `Model`.
+    // `Request` or a combination of strings and other serializable types.
     // Client request methods accept anything serializable.
     let stream = client
         .stream(json!({
-          "model": Model::Sonnet35,
+          "model": "claude-3-5-sonnet-latest",
           "max_tokens": args.max_tokens,
           "temperature": 0,
           "system": args.system,

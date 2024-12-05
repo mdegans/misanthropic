@@ -1312,7 +1312,7 @@ mod tests {
                 content: Content::text("Hello, world!"),
             },
             id: "msg_123".into(),
-            model: crate::Model::Sonnet35,
+            model: crate::AnthropicModel::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
             usage: Default::default(),

@@ -20,7 +20,7 @@ use misanthropic::{
         message::{Content, Role},
         Message,
     },
-    tool, Client, Model, Prompt, Tool,
+    tool, Client, AnthropicModel, Prompt, Tool,
 };
 
 /// Use Python to answer the user's questions.
@@ -192,9 +192,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // argument to `add_tool`.
     let mut chat = Prompt::default()
         .model(if args.sonnet {
-            Model::Sonnet35
+            AnthropicModel::Sonnet35
         } else {
-            Model::Haiku30
+            AnthropicModel::Haiku30
         })
         .add_tool(Tool {
             name: "python".into(),
