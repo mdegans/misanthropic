@@ -58,6 +58,8 @@ langsan = { version = "0", features = [
 ], optional = true }
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
+# Rate limiting
+governor = { version = "0.7", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -72,7 +74,7 @@ tempfile = "3.12"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls", "langsan"]
+default = ["rustls-tls", "langsan", "rate-limiting"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself. This is mostly for interop with
 # the `image` crate.
@@ -107,6 +109,8 @@ langsan = ["dep:langsan"]
 # not encrypted. This is a more secure option for the paranoid. Does not build
 # on wasm32.
 memsecurity = ["dep:memsecurity"]
+# Enable client-side rate limiting. This is enabled by default.
+rate-limiting = ["dep:governor"]
 
 [[example]]
 name = "strawberry"
