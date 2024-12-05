@@ -10,8 +10,6 @@ Is an unofficial simple, ergonomic, client for the Anthropic Messages API.
 ### Streaming
 
 ```rust
-// Create a client. The key is encrypted in memory and source string is zeroed.
-// When requests are made, the key header is marked as sensitive.
 let client = Client::new(key)?;
 
 // Request a stream of events or errors. `json!` can be used, the `Prompt`
@@ -92,6 +90,6 @@ println!("{}", message);
   headers, etc.
 - **Has this crate been audited?** No, but auditing is welcome. A best effort
   has been made to ensure security and privacy. The API key is encrypted in
-  memory using the `memsecurity` crate and any headers containing copies marked
-  as sensitive. `rustls` is an optional feature and is recommended for security.
-  It is on by default.
+  memory when using the `memsecurity` feature and any headers containing copies
+  marked as sensitive. `rustls` is an optional feature and is recommended for
+  security. It is on by default.
