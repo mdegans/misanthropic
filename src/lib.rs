@@ -1,5 +1,6 @@
 #![deny(warnings)]
 #![warn(missing_docs)]
+#![forbid(unsafe_code)]
 //! `misanthropic` is a crate providing ergonomic access to the [Anthropic
 //! Messages API].
 //!
