@@ -18,7 +18,7 @@ let client = Client::new(key)?;
 let stream = client
     // Forces `stream=true` in the request.
     .stream(json!({
-      "model": Model::Sonnet35,
+      "model": "claude-3-5-sonnet-latest",
       "max_tokens": args.max_tokens,
       "temperature": 0,
       "system": args.system,
