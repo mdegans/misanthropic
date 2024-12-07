@@ -42,6 +42,9 @@ pub mod markdown;
 /// Converts prompts and messages to HTML.
 pub mod html;
 
+#[cfg(feature = "cot")]
+pub mod cot;
+
 #[cfg(not(feature = "langsan"))]
 pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
 #[cfg(feature = "langsan")]

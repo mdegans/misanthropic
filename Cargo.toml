@@ -31,7 +31,12 @@ panic = "abort"
 
 [dependencies]
 base64 = "0.22"
-derive_more = { version = "1", features = ["from", "is_variant", "display"] }
+derive_more = { version = "1", features = [
+    "from",
+    "is_variant",
+    "display",
+    "deref",
+] }
 eventsource-stream = "0.2"
 futures = "0.3"
 image = { version = "0.25", optional = true }
@@ -111,6 +116,8 @@ langsan = ["dep:langsan"]
 memsecurity = ["dep:memsecurity"]
 # Enable client-side rate limiting. This is enabled by default.
 rate-limiting = ["dep:governor"]
+# Support for parsing chain of thought XML tags.
+cot = []
 
 [[example]]
 name = "strawberry"
