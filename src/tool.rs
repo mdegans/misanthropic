@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Choice of [`Tool`] for a specific [`prompt::message`].
 ///
 /// [`prompt::message`]: crate::prompt::message
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[cfg_attr(test, derive(Debug))]
@@ -30,7 +30,7 @@ pub enum Choice {
 ///
 /// [`prompt::Message`]: crate::prompt::Message
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(try_from = "ToolBuilder<'a>")]
 pub struct Tool<'a> {
     /// Name of the tool.

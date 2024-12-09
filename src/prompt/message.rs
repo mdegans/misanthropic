@@ -50,7 +50,7 @@ impl std::fmt::Display for Role {
 /// [`Display`]: std::fmt::Display
 /// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(
     not(feature = "markdown"),
