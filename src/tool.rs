@@ -3,8 +3,10 @@ use std::borrow::Cow;
 
 use crate::prompt::message::Content;
 #[allow(unused_imports)]
-use crate::Prompt; // without this rustdoc doesn't link to Prompt, even with the
-                   // full path and all features enabled. Rustdoc bug?
+use crate::Prompt;
+use derive_more::derive;
+// without this rustdoc doesn't link to Prompt, even with the
+// full path and all features enabled. Rustdoc bug?
 use serde::{Deserialize, Serialize};
 
 /// Choice of [`Tool`] for a specific [`prompt::message`].
@@ -436,11 +438,12 @@ impl std::fmt::Display for Use<'_> {
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Message`]: crate::prompt::message
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 // On the one hand this can clash with the `Result` type from the standard
 // library, but on the other hand it's what the API uses, and I'm trying to
 // be as faithful to the API as possible.
+#[display("{}", self.content)]
 pub struct Result<'a> {
     /// Unique Id for this tool call.
     pub tool_use_id: Cow<'a, str>,
