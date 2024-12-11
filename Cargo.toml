@@ -50,7 +50,7 @@ serde_json = "1"
 thiserror = "1"
 # markdown support
 pulldown-cmark = { version = "0.12", optional = true, features = ["serde"] }
-pulldown-cmark-to-cmark = { version = "17", optional = true }
+pulldown-cmark-to-cmark = { version = "19", optional = true }
 static_assertions = "1"
 langsan = { version = "0", features = [
     "english",
