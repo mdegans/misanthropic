@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Inform the assistant about their limitations.
     }).system("You are a helpful assistant. You cannot count letters in a word by yourself because you see in tokens, not letters. Use the `count_letters` tool to overcome this limitation.")
     // Add user input.
-    .add_message((Role::User, args.prompt));
+    .add_message((Role::User, args.prompt))?;
 
     // Generate the next message in the chat.
     let message = client.message(&chat).await?;

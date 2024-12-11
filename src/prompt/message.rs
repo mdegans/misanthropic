@@ -14,9 +14,8 @@ use crate::{
 };
 
 /// Role of the [`Message`] author.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
-#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Role {
     /// From the user.
     User,

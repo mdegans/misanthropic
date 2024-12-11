@@ -270,7 +270,8 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let mut prompt = Prompt::default()
-            .add_message((Role::User, "Emit just the \"🙏\" emoji, please."));
+            .add_message((Role::User, "Emit just the \"🙏\" emoji, please."))
+            .unwrap();
 
         for &model in AnthropicModel::ALL {
             prompt.model = model.into();

@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the box for building `Request`s, such as messages from a list of tuples
     // of `Role` and `String`.
     let message = client
-        .message(Prompt::default().messages([(Role::User, args.prompt)]))
+        .message(Prompt::default().set_messages([(Role::User, args.prompt)]))
         .await?;
 
     println!("{}", message);

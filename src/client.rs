@@ -646,7 +646,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let message = client
-            .message(Prompt::default().messages([(
+            .message(Prompt::default().set_messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))
@@ -667,7 +667,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let stream = client
-            .stream(Prompt::default().messages([(
+            .stream(Prompt::default().set_messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))

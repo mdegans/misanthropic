@@ -102,6 +102,17 @@ impl Default for Prompt<'_> {
     }
 }
 
+/// Message turn order is incorrect.
+#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+#[error("The message turn order must alternate between User and Assistant. The first message is {first:?} and the second message is {second:?}.")]
+pub struct TurnOrderError {
+    /// First message in the pair of duplicate roles.
+    pub first: Message<'static>,
+    /// Second message in the pair of duplicate roles.
+    pub second: Message<'static>,
+}
+static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
+
 impl<'a> Prompt<'a> {
     /// Turn streaming on.
     ///
@@ -140,37 +151,130 @@ impl<'a> Prompt<'a> {
 
     /// Set the [`messages`] from an iterable of [`Message`]s.
     ///
+    /// # Errors
+    /// - If the turn order is incorrect.
+    ///
     /// [`messages`]: Prompt::messages
-    pub fn messages<M, Ms>(mut self, messages: Ms) -> Self
+    pub fn set_messages<M, Ms>(
+        mut self,
+        messages: Ms,
+    ) -> Result<Self, TurnOrderError>
     where
         M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages = messages.into_iter().map(Into::into).collect();
-        self
+        self.check_turn_order()?;
+        Ok(self)
     }
 
-    /// Add a [`Message`] to [`messages`].
+    /// Check the turn order of [`messages`]. Returns the **first** pair of
+    /// messages that are the same role.
+    pub fn check_turn_order(&self) -> Result<(), TurnOrderError> {
+        for pair in self.messages.windows(2) {
+            if pair[0].role == pair[1].role {
+                return Err(TurnOrderError {
+                    first: pair[0].clone().into_static(),
+                    second: pair[1].clone().into_static(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
+    /// [`add_messages`] or [`push_messages`] for better performance.
+    ///
+    /// # Errors
+    /// - If the turn order is incorrect.
     ///
     /// [`messages`]: Prompt::messages
-    pub fn add_message<M>(mut self, message: M) -> Self
+    /// [`add_messages`]: Prompt::add_messages
+    /// [`push_messages`]: Prompt::push_messages
+    pub fn add_message<M>(mut self, message: M) -> Result<Self, TurnOrderError>
     where
         M: Into<Message<'a>>,
     {
-        self.messages.push(message.into());
-        self
+        let message: Message<'a> = message.into();
+        self.push_message(message)?;
+        Ok(self)
     }
 
-    /// Extend the [`messages`] from an iterable.
+    /// Push a [`Message`] to [`messages`]. Like [`add_message`] but in place.
+    /// When adding multiple messages, use [`push_messages`] or [`add_messages`]
+    /// for better performance.
+    ///
+    /// # Errors
+    /// - If the turn order is incorrect.
+    ///
+    /// [`add_message`]: Prompt::add_message
+    pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
+    where
+        M: Into<Message<'a>>,
+    {
+        let message: Message<'a> = message.into();
+        if let Some(last) = self.messages.last() {
+            if last.role == message.role {
+                return Err(TurnOrderError {
+                    first: last.clone().into_static(),
+                    second: message.clone().into_static(),
+                });
+            }
+        }
+        self.messages.push(message);
+        Ok(())
+    }
+
+    /// Extend the [`messages`] from an iterable. For an in-place version, see
+    /// [`push_messages`].
+    ///
+    /// # Errors
+    /// - If the turn order is incorrect.
     ///
     /// [`messages`]: Prompt::messages
-    pub fn extend_messages<M, Ms>(mut self, messages: Ms) -> Self
+    /// [`push_messages`]: Prompt::push_messages
+    pub fn add_messages<M, Ms>(
+        mut self,
+        messages: Ms,
+    ) -> Result<Self, TurnOrderError>
     where
         M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages.extend(messages.into_iter().map(Into::into));
-        self
+        self.check_turn_order()?;
+        Ok(self)
+    }
+
+    /// Push many [`Message`]s to [`messages`]. Like [`add_messages`] but in
+    /// place.
+    ///
+    /// # Errors
+    /// - If the turn order is incorrect (and leaves self unmodified).
+    ///
+    /// [`add_messages`]: Prompt::add_messages
+    /// [`messages`]: Prompt::messages
+    pub fn push_messages<M, Ms>(
+        &mut self,
+        messages: Ms,
+    ) -> Result<(), TurnOrderError>
+    where
+        M: Into<Message<'a>>,
+        Ms: IntoIterator<Item = M>,
+    {
+        let mut count = 0;
+        self.messages.extend(messages.into_iter().map(|m| {
+            count += 1;
+            m.into()
+        }));
+        if let Err(e) = self.check_turn_order() {
+            // Undo our changes.
+            self.messages.truncate(self.messages.len() - count);
+
+            Err(e)
+        } else {
+            Ok(())
+        }
     }
 
     /// Set the [`max_tokens`]. If this is reached, the [`StopReason`] will be
@@ -642,7 +746,9 @@ mod tests {
 
     #[test]
     fn test_set_messages() {
-        let request = Prompt::default().messages(create_test_messages());
+        let request = Prompt::default()
+            .set_messages(create_test_messages())
+            .unwrap();
         assert_eq!(request.messages, create_test_messages());
     }
 
@@ -650,16 +756,69 @@ mod tests {
     fn test_add_message() {
         let prompt = Prompt::default()
             .add_message((Role::User, "Hello"))
-            .add_message((Role::Assistant, "Hi"));
+            .unwrap()
+            .add_message((Role::Assistant, "Hi"))
+            .unwrap();
         assert_eq!(prompt.messages.len(), 2);
         assert_eq!(prompt.messages[0], (Role::User, "Hello").into());
         assert_eq!(prompt.messages[1], (Role::Assistant, "Hi").into());
     }
 
     #[test]
-    fn test_extend_messages() {
+    #[should_panic]
+    fn test_add_message_turn_order() {
+        let prompt = Prompt::default()
+            .add_message((Role::User, "Hello"))
+            .unwrap();
+        prompt.add_message((Role::User, "Hi")).unwrap();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_add_messages_turn_order() {
+        Prompt::default()
+            .add_messages([(Role::User, "Hello"), (Role::User, "And boom!")])
+            .unwrap();
+    }
+
+    #[test]
+    fn test_push_message() {
+        let mut prompt = Prompt::default();
+        prompt.push_message((Role::User, "Hello")).unwrap();
+        prompt.push_message((Role::Assistant, "Hi")).unwrap();
+        assert_eq!(prompt.messages.len(), 2);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_push_message_turn_order() {
+        let mut prompt = Prompt::default();
+        prompt.push_message((Role::User, "Hello")).unwrap();
+        prompt.push_message((Role::User, "Hi")).unwrap();
+    }
+
+    #[test]
+    fn test_push_messages() {
+        let mut prompt = Prompt::default();
+        prompt
+            .push_messages([(Role::User, "Hello"), (Role::Assistant, "Hi")])
+            .unwrap();
+        assert_eq!(prompt.messages.len(), 2);
+    }
+
+    #[test]
+    fn test_push_messages_turn_order() {
+        let mut prompt = Prompt::default();
+        let result =
+            prompt.push_messages([(Role::User, "Hello"), (Role::User, "Hi")]);
+        assert!(result.is_err());
+        assert!(prompt.messages.is_empty());
+    }
+
+    #[test]
+    fn test_add_messages() {
         let mut request = Prompt::default();
-        request = request.extend_messages(create_test_messages());
+        request = request.add_messages(create_test_messages()).unwrap();
         assert_eq!(request.messages, create_test_messages());
     }
 
@@ -786,10 +945,12 @@ mod tests {
                 role: Role::User,
                 content: Content::text("Hello"),
             })
+            .unwrap()
             .add_message(Message {
                 role: Role::Assistant,
                 content: Content::text("Hi"),
             })
+            .unwrap()
             .cache();
 
         // The first message should still be a single part string.
@@ -952,7 +1113,7 @@ mod tests {
                 cache_control: None,
             }])
             .system("You are a very succinct assistant.")
-            .messages([
+            .set_messages([
                 Message {
                     role: Role::User,
                     content: Content::text("Hello"),
@@ -987,7 +1148,8 @@ mod tests {
                     role: Role::Assistant,
                     content: Content::text("Done."),
                 },
-            ]);
+            ])
+            .unwrap();
 
         let markdown: Markdown = request.markdown_verbose();
 

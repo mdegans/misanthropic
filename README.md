@@ -53,7 +53,7 @@ let client = Client::new(key)?;
 // `Prompt`s, such as messages from an iterable of tuples of `Role` and
 // `String`.
 let message = client
-    .message(Prompt::default().messages([(Role::User, args.prompt)]))
+    .message(Prompt::default().add_messages([(Role::User, args.prompt)])?)
     .await?;
 
 println!("{}", message);

@@ -4,7 +4,6 @@ use std::borrow::Cow;
 use crate::prompt::message::Content;
 #[allow(unused_imports)]
 use crate::Prompt;
-use derive_more::derive;
 // without this rustdoc doesn't link to Prompt, even with the
 // full path and all features enabled. Rustdoc bug?
 use serde::{Deserialize, Serialize};

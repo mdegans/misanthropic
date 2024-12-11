@@ -20,7 +20,7 @@ use misanthropic::{
         message::{Content, Role},
         Message,
     },
-    tool, Client, AnthropicModel, Prompt, Tool,
+    tool, AnthropicModel, Client, Prompt, Tool,
 };
 
 /// Use Python to answer the user's questions.
@@ -219,7 +219,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // without to help guide the assistant to use Python when necessary and
         // not when it isn't. The more examples here, with more varied prompts,
         // the better the Assistant will be at this.
-        .messages([
+        .set_messages([
             Message {
                 role: Role::User,
                 content: "Write a haiku about Python.".into(),
@@ -280,13 +280,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (Role::Assistant, "Paris.").into(),
             (Role::User, "Thanks for all your help. I have to go now.").into(),
             (Role::Assistant, "You're welcome. Have a great day!<narrator>A new user enters the chat</narrator>").into(),
-        ])
+        ])?
         // Insert cache breakpoint. It won't do anything in this example, but if
         // the system prompt and examples are very long, it can be useful to
         // cache everything up to the user input.
         .cache()
         // Add user input.
-        .add_message((Role::User, args.prompt));
+        .add_message((Role::User, args.prompt))?;
 
     // Call the tool and retry up to 3 times.
     for retry in 0..3 {
