@@ -213,7 +213,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             cache_control: None,
         })
         // Inform the assistant about their limitations.
-        .system(include_str!("python_system.md"))
+        .set_system(include_str!("python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", python_version))
         // The example has some examples of the Assistant using Python and some
         // without to help guide the assistant to use Python when necessary and

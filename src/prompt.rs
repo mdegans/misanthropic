@@ -185,6 +185,27 @@ impl<'a> Prompt<'a> {
     /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
     /// [`add_messages`] or [`push_messages`] for better performance.
     ///
+    /// # Panics
+    /// - If the turn order is incorrect.
+    ///
+    /// [`messages`]: Prompt::messages
+    /// [`add_messages`]: Prompt::add_messages
+    /// [`push_messages`]: Prompt::push_messages
+    // So we don't break the API, but in version 1.0.0 this will be removed.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `add_message` or `push_message` instead."
+    )]
+    pub fn message<M>(self, message: M) -> Self
+    where
+        M: Into<Message<'a>>,
+    {
+        self.add_message(message).unwrap()
+    }
+
+    /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
+    /// [`add_messages`] or [`push_messages`] for better performance.
+    ///
     /// # Errors
     /// - If the turn order is incorrect.
     ///
@@ -226,6 +247,27 @@ impl<'a> Prompt<'a> {
     }
 
     /// Extend the [`messages`] from an iterable. For an in-place version, see
+    /// [`push_messages`]. For a fallible version, see [`add_messages`].
+    ///
+    /// # Panics
+    /// - If the turn order is incorrect.
+    ///
+    /// [`messages`]: Prompt::messages
+    /// [`push_messages`]: Prompt::push_messages
+    // So we don't break the API, but in version 1.0.0 this will be removed.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `add_message` or `push_message` instead."
+    )]
+    pub fn messages<M, Ms>(self, messages: Ms) -> Self
+    where
+        M: Into<Message<'a>>,
+        Ms: IntoIterator<Item = M>,
+    {
+        self.add_messages(messages).unwrap()
+    }
+
+    /// Extend the [`messages`] from an iterable. For an in-place version, see
     /// [`push_messages`].
     ///
     /// # Errors
@@ -241,8 +283,7 @@ impl<'a> Prompt<'a> {
         M: Into<Message<'a>>,
         Ms: IntoIterator<Item = M>,
     {
-        self.messages.extend(messages.into_iter().map(Into::into));
-        self.check_turn_order()?;
+        self.push_messages(messages)?;
         Ok(self)
     }
 
@@ -408,7 +449,24 @@ impl<'a> Prompt<'a> {
     /// will give special attention to. Instructions should be placed here.
     ///
     /// [`system`]: Prompt::system
+    // So we don't break the API, but in version 1.0.0 this will be removed.
+    #[deprecated(
+        since = "0.6.0",
+        note = "Use `set_system` or `add_system` instead."
+    )]
     pub fn system<S>(mut self, system: S) -> Self
+    where
+        S: Into<message::Content<'a>>,
+    {
+        self.system = Some(system.into());
+        self
+    }
+
+    /// Set the [`system`] prompt [`Content`]. This is content that the model
+    /// will give special attention to. Instructions should be placed here.
+    ///
+    /// [`system`]: Prompt::system
+    pub fn set_system<S>(mut self, system: S) -> Self
     where
         S: Into<message::Content<'a>>,
     {
@@ -875,7 +933,7 @@ mod tests {
 
     #[test]
     fn test_set_system() {
-        let request = Prompt::default().system("system");
+        let request = Prompt::default().set_system("system");
         assert_eq!(request.system.unwrap().to_string(), "system");
     }
 
@@ -1112,7 +1170,7 @@ mod tests {
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }])
-            .system("You are a very succinct assistant.")
+            .set_system("You are a very succinct assistant.")
             .set_messages([
                 Message {
                     role: Role::User,
