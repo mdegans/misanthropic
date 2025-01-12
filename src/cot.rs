@@ -341,21 +341,32 @@ impl ToMarkdown for ThoughtOrSpeech<'_> {
                 Event::Start(Tag::Heading {
                     level: h,
                     id: None,
-                    classes: vec![variant_name.into()],
+                    classes: if options.attrs {
+                        vec![variant_name.into()]
+                    } else {
+                        vec![]
+                    },
                     attrs: vec![],
                 }),
                 Event::Text(variant_name_capitalized.into()),
                 Event::End(TagEnd::Heading(h)),
+                Event::Start(Tag::Paragraph),
             ]
             .into_iter(),
         );
 
-        Box::new(header.chain(markdown_parsed_text))
+        Box::new(
+            header
+                .chain(markdown_parsed_text)
+                .chain([Event::End(TagEnd::Paragraph)].into_iter()),
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fmt::Write;
+
     use crate::{
         html::ToHtml,
         prompt::{self, message::Role},
@@ -472,26 +483,29 @@ mod tests {
     fn test_thoughts_and_speech_to_markdown() {
         test_thoughts_and_speech_to_markdown_helper(
             "<thinking>Oh dear, it's this schmuck again :/</thinking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.</thinking>Such a treat!",
-            "##### Thought { .thought }\n\nOh dear, it's this schmuck again :/##### Speech { .speech }\n\nIt's a pleasure to hear from you again, dear user!##### Thought { .thought }\n\nThat was sarcasm.##### Speech { .speech }\n\nSuch a treat!",
+            "##### Thought\n\nOh dear, it's this schmuck again :/\n\n##### Speech\n\nIt's a pleasure to hear from you again, dear user!\n\n##### Thought\n\nThat was sarcasm.\n\n##### Speech\n\nSuch a treat!",
         );
 
         test_thoughts_and_speech_to_markdown_helper(
             "<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
-            "##### Speech { .speech }\n\n<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
+            "##### Speech\n\n<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
         );
 
         test_thoughts_and_speech_to_markdown_helper(
             "Welcome to customer support at Amazon!<thinking>Oh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
-            "##### Speech { .speech }\n\nWelcome to customer support at Amazon!##### Thought { .thought }\n\nOh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
+            "##### Speech\n\nWelcome to customer support at Amazon!\n\n##### Thought\n\nOh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
         );
     }
 
     fn test_thoughts_and_speech_to_html_helper(text: &str, expected: &str) {
         let message: prompt::Message = (Role::Assistant, text).into();
-        let mut actual = String::new();
 
+        // TODO: Make this work, but it's not a priority.
+        // assert_eq!(message.thoughts_and_speech().html().as_ref(), expected);
+
+        let mut actual = String::new();
         for thought_or_speech in message.thoughts_and_speech() {
-            actual.push_str(thought_or_speech.html().as_ref());
+            actual.write_str(&thought_or_speech.html()).unwrap();
         }
 
         assert_eq!(actual, expected);
