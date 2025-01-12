@@ -33,6 +33,9 @@ impl Html {
         use std::borrow::Cow;
         use xml::escape::escape_str_pcdata;
 
+        // We must escape the HTML to prevent XSS attacks and other issues
+        // related to rendering untrusted HTML. We escape all text and code
+        // blocks.
         let escape_pcdata = |cow_str: CowStr<'a>| -> CowStr<'a> {
             // This is necessary because `escape_str_pcdata` does not have
             // lifetime annotations, although it could since it doesn't copy the
@@ -46,9 +49,7 @@ impl Html {
         let raw: It = events.into_iter();
         let escaped = raw.map(|e| {
             match e {
-                // We must escape the HTML to prevent XSS attacks. A frontend should
-                // take other measures as well, but we can at least provide some
-                // protection.
+
                 Event::Text(cow_str) => Event::Text(escape_pcdata(cow_str)),
                 // Without this the escaping test fails because the paragraph
                 // tags are missing because of how the markdown is parsed. We

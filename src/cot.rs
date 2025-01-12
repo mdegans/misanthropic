@@ -1,10 +1,16 @@
 //! Basic support for parsing chain of thought within XML tags. Nested tags are
-//! not supported.
+//! not supported. Bring the [`Thinkable`] trait into scope to use the methods
+//! provided by this module.
+use std::vec;
+
 use derive_more::derive::Deref;
 
-use crate::prompt::{
-    message::{Block, Content},
-    Message,
+use crate::{
+    markdown::ToMarkdown,
+    prompt::{
+        message::{Block, Content},
+        Message,
+    },
 };
 
 /// Supported start tags for [`Thought`]s.
@@ -15,17 +21,39 @@ pub const DEFAULT_END_TAGS: &[&str] =
     &["</thinking>", "</inner-voice>", "</thought>"];
 
 /// Contents of a `<thinking>` element.
-#[derive(Debug, Clone, Deref)]
+#[derive(Debug, Clone, Deref, derive_more::Display)]
+#[display("{text}")]
 pub struct Thought<'a> {
     /// The text inside a thinking element.
     pub text: &'a str,
 }
 
+#[cfg(feature = "markdown")]
+impl ToMarkdown for Thought<'_> {
+    fn markdown_events_custom<'a>(
+        &'a self,
+        options: crate::html::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        Box::new(pulldown_cmark::Parser::new_ext(self.text, options.inner))
+    }
+}
+
 /// Content outside thinking elements.
-#[derive(Debug, Clone, Deref)]
+#[derive(Debug, Clone, Deref, derive_more::Display)]
+#[display("{text}")]
 pub struct Speech<'a> {
     /// The text outside thinking elements.
     pub text: &'a str,
+}
+
+#[cfg(feature = "markdown")]
+impl ToMarkdown for Speech<'_> {
+    fn markdown_events_custom<'a>(
+        &'a self,
+        options: crate::html::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        Box::new(pulldown_cmark::Parser::new_ext(self.text, options.inner))
+    }
 }
 
 /// Either a [`Thought`] or [`Speech`].
@@ -49,7 +77,7 @@ impl<'a> ThoughtOrSpeech<'a> {
 
     /// Consumes the [`ThoughtOrSpeech`] and returns the [`Speech`] if it is a
     /// [`Speech`].
-    pub fn get_speech(self) -> Option<Speech<'a>> {
+    pub fn into_speech(self) -> Option<Speech<'a>> {
         match self {
             ThoughtOrSpeech::Speech(speech) => Some(speech),
             _ => None,
@@ -209,7 +237,7 @@ pub trait Thinkable<'a> {
     /// Return an iterator of [`Speech`]es with default start and end tags.
     fn speech(&'a self) -> impl Iterator<Item = Speech<'a>> + 'a {
         self.thoughts_and_speech()
-            .filter_map(ThoughtOrSpeech::get_speech)
+            .filter_map(ThoughtOrSpeech::into_speech)
     }
 
     /// Return an iterator of [`Speech`]es with custom start and end tags.
@@ -219,7 +247,7 @@ pub trait Thinkable<'a> {
         end_tags: &'static [&'static str],
     ) -> impl Iterator<Item = Speech<'a>> + 'a {
         self.thoughts_and_speech_custom(start_tags, end_tags)
-            .filter_map(ThoughtOrSpeech::get_speech)
+            .filter_map(ThoughtOrSpeech::into_speech)
     }
 }
 
@@ -283,9 +311,55 @@ impl<'a> Thinkable<'a> for Message<'a> {
     }
 }
 
+impl ToMarkdown for ThoughtOrSpeech<'_> {
+    fn markdown_events_custom<'a>(
+        &'a self,
+        options: crate::html::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        use pulldown_cmark::{Event, HeadingLevel::H5, Tag, TagEnd};
+
+        let h = options.heading_level.unwrap_or(H5);
+        let variant_name = match self {
+            ThoughtOrSpeech::Thought(_) => "thought",
+            ThoughtOrSpeech::Speech(_) => "speech",
+        };
+        let variant_name_capitalized = match self {
+            ThoughtOrSpeech::Thought(_) => stringify!(Thought),
+            ThoughtOrSpeech::Speech(_) => stringify!(Speech),
+        };
+        let markdown_parsed_text: Box<dyn Iterator<Item = Event> + 'a> =
+            match self {
+                ThoughtOrSpeech::Speech(speech) => {
+                    speech.markdown_events_custom(options)
+                }
+                ThoughtOrSpeech::Thought(thought) => {
+                    thought.markdown_events_custom(options)
+                }
+            };
+        let header: Box<dyn Iterator<Item = Event> + 'a> = Box::new(
+            [
+                Event::Start(Tag::Heading {
+                    level: h,
+                    id: None,
+                    classes: vec![variant_name.into()],
+                    attrs: vec![],
+                }),
+                Event::Text(variant_name_capitalized.into()),
+                Event::End(TagEnd::Heading(h)),
+            ]
+            .into_iter(),
+        );
+
+        Box::new(header.chain(markdown_parsed_text))
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::prompt::{self, message::Role};
+    use crate::{
+        html::ToHtml,
+        prompt::{self, message::Role},
+    };
 
     use super::*;
 
@@ -378,6 +452,56 @@ mod tests {
         assert_eq!(
             thoughts[0].text,
             "Oh dear, it's this schmuck again :/</snrak>It's a pleasure to hear from you again, dear user!"
+        );
+    }
+
+    fn test_thoughts_and_speech_to_markdown_helper(text: &str, expected: &str) {
+        use crate::markdown::ToMarkdown;
+
+        let message: prompt::Message = (Role::Assistant, text).into();
+        let mut actual = String::new();
+
+        for thought_or_speech in message.thoughts_and_speech() {
+            thought_or_speech.write_markdown(&mut actual).unwrap();
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_thoughts_and_speech_to_markdown() {
+        test_thoughts_and_speech_to_markdown_helper(
+            "<thinking>Oh dear, it's this schmuck again :/</thinking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.</thinking>Such a treat!",
+            "##### Thought { .thought }\n\nOh dear, it's this schmuck again :/##### Speech { .speech }\n\nIt's a pleasure to hear from you again, dear user!##### Thought { .thought }\n\nThat was sarcasm.##### Speech { .speech }\n\nSuch a treat!",
+        );
+
+        test_thoughts_and_speech_to_markdown_helper(
+            "<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
+            "##### Speech { .speech }\n\n<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
+        );
+
+        test_thoughts_and_speech_to_markdown_helper(
+            "Welcome to customer support at Amazon!<thinking>Oh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
+            "##### Speech { .speech }\n\nWelcome to customer support at Amazon!##### Thought { .thought }\n\nOh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
+        );
+    }
+
+    fn test_thoughts_and_speech_to_html_helper(text: &str, expected: &str) {
+        let message: prompt::Message = (Role::Assistant, text).into();
+        let mut actual = String::new();
+
+        for thought_or_speech in message.thoughts_and_speech() {
+            actual.push_str(thought_or_speech.html().as_ref());
+        }
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_thoughts_and_speech_to_html() {
+        test_thoughts_and_speech_to_html_helper(
+            "<thinking>Oh dear, it's this schmuck again :/</thinking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.</thinking>Such a treat!",
+            "<h5 class=\"thought\">Thought</h5>\n<p>Oh dear, it's this schmuck again :/</p>\n<h5 class=\"speech\">Speech</h5>\n<p>It's a pleasure to hear from you again, dear user!</p>\n<h5 class=\"thought\">Thought</h5>\n<p>That was sarcasm.</p>\n<h5 class=\"speech\">Speech</h5>\n<p>Such a treat!</p>\n"
         );
     }
 }
