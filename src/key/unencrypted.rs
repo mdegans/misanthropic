@@ -26,6 +26,9 @@ pub struct Key {
 }
 
 impl Key {
+    /// The length of an Anthropic API key in bytes.
+    pub const LEN: usize = LEN;
+
     /// Read the key. The key is zeroized on drop.
     // We can't return a &str becuase the other implementation of Key::read
     // returns a memsecurity::ZeroizeBytes, and we can't return a reference to

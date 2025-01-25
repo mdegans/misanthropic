@@ -32,6 +32,9 @@ pub struct Key {
 }
 
 impl Key {
+    /// The length of an Anthropic API key in bytes.
+    pub const LEN: usize = LEN;
+
     /// Read the key. The key is zeroized on drop.
     pub fn read(&self) -> memsecurity::ZeroizeBytes {
         self.mem.decrypt().unwrap()
