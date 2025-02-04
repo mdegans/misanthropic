@@ -15,6 +15,13 @@ pub struct InvalidKeyLength {
     pub actual: usize,
 }
 
+#[cfg(feature = "shuttle")]
+impl From<InvalidKeyLength> for shuttle_runtime::Error {
+    fn from(e: InvalidKeyLength) -> Self {
+        shuttle_runtime::Error::Custom(e.into())
+    }
+}
+
 /// Stores an Anthropic API key securely. The object features a [`Display`]
 /// implementation that can be used to write out the key. **Be sure to zeroize
 /// whatever you write it to**. The key is zeroized on drop.

@@ -4,6 +4,7 @@ use std::{env, num::NonZeroU16, sync::Arc};
 
 use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 
 use crate::{key, response, Key};
 
@@ -395,6 +396,12 @@ impl Client {
     }
 }
 
+impl From<Key> for Client {
+    fn from(key: Key) -> Self {
+        Self::from_key(key)
+    }
+}
+
 /// [`Client`] error type.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -413,6 +420,36 @@ pub enum Error {
     #[error("Unexpected response: {message}")]
     #[allow(missing_docs)]
     UnexpectedResponse { message: &'static str },
+}
+
+/// Some of the errors don't implment `Serialize` so we need to do it manually.
+impl Serialize for Error {
+    fn serialize<S>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::HTTP(e) => {
+                json!({ "type": "http", "message": e.to_string() })
+                    .serialize(serializer)
+            }
+            Self::Parse(e) => {
+                json!({ "type": "parse", "message": e.to_string() })
+                    .serialize(serializer)
+            }
+            Self::Anthropic(e) => {
+                // With the `AnthropicError` we can serialize it directly, yay!
+                json!({ "type": "anthropic", "message": e.to_string(), "error": e,  }).serialize(serializer)
+            }
+            Self::UnexpectedResponse { message } => {
+                json!({ "type": "unexpected_response", "message": message })
+                    .serialize(serializer)
+            }
+        }
+    }
 }
 
 /// Anthropic error type.

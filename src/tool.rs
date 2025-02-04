@@ -839,7 +839,7 @@ mod tests {
 
         assert_eq!(result.tool_use_id, "test_id");
         assert_eq!(result.content.to_string(), "test_content");
-        assert_eq!(result.is_error, false);
+        assert!(!result.is_error);
     }
 
     #[test]

@@ -748,7 +748,7 @@ mod tests {
 
     use crate::{prompt::message::Role, AnthropicModel};
 
-    const STOP_SEQUENCES: [&'static str; 2] = ["stop1", "stop2"];
+    const STOP_SEQUENCES: [&str; 2] = ["stop1", "stop2"];
 
     // Credit to GitHub Copilot for the following tests.
 

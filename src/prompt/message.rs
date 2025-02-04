@@ -4,6 +4,8 @@
 //! [`response::Message`]: crate::response::Message
 //! [`prompt::Message`]: crate::prompt::Message
 
+use std::borrow::Cow;
+
 use base64::engine::{general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 
@@ -205,6 +207,120 @@ impl std::fmt::Display for Message<'_> {
     }
 }
 
+/// A message guaranteed to be from the assistant.
+#[derive(Debug, Serialize, Clone, derive_more::Deref, Deserialize)]
+#[serde(try_from = "Message<'_>")]
+pub struct AssisstantMessage<'a> {
+    inner: Message<'a>,
+}
+
+impl AssisstantMessage<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Self {
+        Self {
+            inner: self.inner.into_static(),
+        }
+    }
+}
+
+impl<'a> From<Content<'a>> for AssisstantMessage<'a> {
+    fn from(content: Content<'a>) -> Self {
+        Self {
+            inner: Message {
+                role: Role::Assistant,
+                content,
+            },
+        }
+    }
+}
+
+impl<'a> From<AssisstantMessage<'a>> for Content<'a> {
+    fn from(val: AssisstantMessage<'a>) -> Self {
+        val.inner.content
+    }
+}
+
+impl<'a> TryFrom<Message<'a>> for AssisstantMessage<'a> {
+    type Error = NotTheAssistant;
+
+    fn try_from(message: Message<'a>) -> Result<Self, Self::Error> {
+        if message.role == Role::Assistant {
+            Ok(Self { inner: message })
+        } else {
+            Err(NotTheAssistant)
+        }
+    }
+}
+
+/// Error message when conversion to [`AgentMessage`] fails.
+#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
+#[error("Message is not from the assistant.")]
+pub struct NotTheAssistant;
+
+/// A message guaranteed to be from the user.
+#[derive(Debug, Serialize, Clone, derive_more::Deref, Deserialize)]
+#[serde(try_from = "Message<'_>")]
+pub struct UserMessage<'a> {
+    inner: Message<'a>,
+}
+
+impl UserMessage<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Self {
+        Self {
+            inner: self.inner.into_static(),
+        }
+    }
+}
+
+impl<'a> From<Content<'a>> for UserMessage<'a> {
+    fn from(content: Content<'a>) -> Self {
+        Self {
+            inner: Message {
+                role: Role::User,
+                content,
+            },
+        }
+    }
+}
+
+impl<'a> From<UserMessage<'a>> for Content<'a> {
+    fn from(message: UserMessage<'a>) -> Self {
+        message.inner.content
+    }
+}
+
+impl<'a> TryFrom<Message<'a>> for UserMessage<'a> {
+    type Error = NotTheUser;
+
+    fn try_from(message: Message<'a>) -> Result<Self, Self::Error> {
+        if message.role == Role::User {
+            Ok(Self { inner: message })
+        } else {
+            Err(NotTheUser)
+        }
+    }
+}
+
+impl<'a> From<UserMessage<'a>> for Message<'a> {
+    fn from(message: UserMessage<'a>) -> Self {
+        message.inner
+    }
+}
+
+/// Error message when conversion to [`UserMessage`] fails.
+#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
+#[error("Message is not from the user.")]
+pub struct NotTheUser;
+
+impl From<NotTheUser> for Cow<'static, str> {
+    fn from(_: NotTheUser) -> Self {
+        "Message is not from the user.".into()
+    }
+}
+
 /// Content of a [`Message`].
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case")]
@@ -233,12 +349,11 @@ impl<'a> Content<'a> {
         Self::SinglePart(text.into())
     }
 
-    /// Returns the number of bytes in self. Does not include tool use or other
-    /// metadata. Does include the base64 encoded image data length.
+    /// Returns the number of [`Block`]s in self.
     pub fn len(&self) -> usize {
         match self {
-            Self::SinglePart(s) => s.as_bytes().len(),
-            Self::MultiPart(parts) => parts.iter().map(Block::len).sum(),
+            Self::SinglePart(_) => 1,
+            Self::MultiPart(parts) => parts.len(),
         }
     }
 
@@ -1296,11 +1411,11 @@ mod tests {
             content: Content::SinglePart("Hello, world!".into()),
         };
 
-        assert_eq!(message.len(), 13);
+        assert_eq!(message.len(), 1); // single part
 
         message.content.push("How are you?");
 
-        assert_eq!(message.len(), 25);
+        assert_eq!(message.len(), 2); // blocks
     }
 
     #[test]

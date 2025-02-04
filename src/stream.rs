@@ -1,9 +1,6 @@
 //! [`Event`] [`Stream`] for streaming responses from the API as well as
 //! associated types and errors only used when streaming.
-use futures::StreamExt;
-use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, pin::Pin, task::Poll};
-
+use crate::tool;
 #[allow(unused_imports)] // `Content`, `request` Used in docs.
 use crate::{
     client::AnthropicError,
@@ -13,20 +10,24 @@ use crate::{
     },
     response::{self, StopReason, Usage},
 };
+use futures::{pin_mut, StreamExt};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::{borrow::Cow, pin::Pin, task::Poll};
 
 /// Sucessful Event from the API. See [`stream::Error`] for errors.
 ///
 /// [`stream::Error`]: Error
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Event<'a> {
+pub enum Event {
     /// Periodic ping.
     Ping,
     /// [`response::Message`] with empty content. [`MessageDelta`] and
     /// [`Content`] [`Delta`]s must be applied to this message.
     MessageStart {
         /// The message.
-        message: response::Message<'a>,
+        message: response::Message<'static>,
     },
     /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
@@ -37,14 +38,14 @@ pub enum Event<'a> {
         // custom serializer for that field.
         index: usize,
         /// Empty content block.
-        content_block: Block<'a>,
+        content_block: Block<'static>,
     },
     /// Content block delta.
     ContentBlockDelta {
         /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
         /// Delta to apply to the content block.
-        delta: Delta<'a>,
+        delta: Delta<'static>,
     },
     /// Content block end.
     ContentBlockStop {
@@ -59,17 +60,27 @@ pub enum Event<'a> {
     },
     /// Message end.
     MessageStop,
+    /// Complete message. Provided by [`StreamExt::with_message`], not the API.
+    Message {
+        /// The message.
+        message: response::Message<'static>,
+    },
+    /// Tool use. Provided by [`StreamExt::with_tool_use`], not the API.
+    ToolUse {
+        /// The tool use.
+        tool_use: tool::Use<'static>,
+    },
 }
 
 /// Internal enum for the API result so we don't have to add an error variant to
 /// the `Event` enum.
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
-enum ApiResult<'a> {
+enum ApiResult {
     /// Successful Event.
     Event {
         #[serde(flatten)]
-        event: Event<'a>,
+        event: Event,
     },
     /// Error Event.
     Error { error: AnthropicError },
@@ -80,7 +91,7 @@ enum ApiResult<'a> {
 ///
 /// [`Text`]: Delta::Text
 /// [`Json`]: Delta::Json
-#[derive(Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Delta<'a> {
     /// Text delta for a [`Text`] [`Content`] [`Block`].
@@ -99,6 +110,21 @@ pub enum Delta<'a> {
         /// The JSON delta.
         partial_json: Cow<'a, str>,
     },
+}
+
+impl Delta<'_> {
+    /// Convert to a static lifetime. This is useful for when the delta is
+    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
+    pub fn into_static(self) -> Delta<'static> {
+        match self {
+            Delta::Text { text } => Delta::Text {
+                text: text.into_owned().into(),
+            },
+            Delta::Json { partial_json } => Delta::Json {
+                partial_json: partial_json.into_owned().into(),
+            },
+        }
+    }
 }
 
 /// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the types do
@@ -169,7 +195,7 @@ impl Delta<'_> {
 
 /// Metadata about a message in progress. This does not contain actual text
 /// deltas. That's the [`Delta`] in [`Event::ContentBlockDelta`].
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MessageDelta {
     /// Stop reason.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -208,22 +234,72 @@ pub enum Error {
         /// [`eventsource_stream::Event`] containing the error.
         event: eventsource_stream::Event,
     },
+    /// Message assembly error (delta application, etc).
+    #[error("Message assembly error: {message}")]
+    MessageAssembly {
+        /// Error message.
+        message: Cow<'static, str>,
+        /// Any delta that failed to apply.
+        delta: Option<Delta<'static>>,
+    },
+}
+
+// Some of the error types do not implement `Serialize` so we do it manually.
+impl Serialize for Error {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let message = self.to_string();
+        match self {
+            Error::Stream { .. } => json!({
+                "type": "stream",
+                "message": message,
+            })
+            .serialize(serializer),
+            Error::Parse { event, .. } => json!({
+                "type": "parse",
+                "message": message,
+                "event": {
+                    "event": event.event,
+                    "data": event.data,
+                    "id": event.id,
+                    "retry": event.retry,
+                },
+            })
+            .serialize(serializer),
+            Error::Anthropic { error, event } => json!({
+                "type": "anthropic",
+                "message": message,
+                "error": error,
+                "event": {
+                    "event": event.event,
+                    "data": event.data,
+                    "id": event.id,
+                    "retry": event.retry,
+                },
+            })
+            .serialize(serializer),
+            Error::MessageAssembly { delta, .. } => json!({
+                "type": "message_assembly",
+                "message": message,
+                "delta": delta,
+            })
+            .serialize(serializer),
+        }
+    }
 }
 
 /// Stream of [`Event`]s or [`Error`]s.
-pub struct Stream<'a> {
+pub struct Stream {
     inner: Pin<
-        Box<
-            dyn futures::Stream<Item = Result<Event<'a>, Error>>
-                + Send
-                + 'static,
-        >,
+        Box<dyn futures::Stream<Item = Result<Event, Error>> + Send + 'static>,
     >,
 }
 
-static_assertions::assert_impl_all!(Stream<'_>: futures::Stream, Send);
+static_assertions::assert_impl_all!(Stream: futures::Stream, Send);
 
-impl Stream<'_> {
+impl Stream {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
     /// similar stream of [`eventsource_stream::Event`]s.
     pub fn new<S>(stream: S) -> Self
@@ -270,8 +346,8 @@ impl Stream<'_> {
     // however necessary since we can't do anything useful with partial JSON.
 }
 
-impl<'a> futures::Stream for Stream<'a> {
-    type Item = Result<Event<'a>, Error>;
+impl futures::Stream for Stream {
+    type Item = Result<Event, Error>;
 
     fn poll_next(
         mut self: Pin<&mut Self>,
@@ -289,8 +365,8 @@ impl<'a> futures::Stream for Stream<'a> {
 ///
 /// [`RateLimit`]: AnthropicError::RateLimit
 /// [`Overloaded`]: AnthropicError::Overloaded
-pub trait FilterExt<'a>:
-    futures::stream::Stream<Item = Result<Event<'a>, Error>> + Sized + Send
+pub trait FilterExt:
+    futures::stream::Stream<Item = Result<Event, Error>> + Sized + Send
 {
     /// Filter out rate limit and overload errors. Because the server sends
     /// these events there isn't a need to retry or backoff. The stream will
@@ -299,7 +375,7 @@ pub trait FilterExt<'a>:
     /// This is recommended for most use cases.
     fn filter_rate_limit(
         self,
-    ) -> impl futures::Stream<Item = Result<Event<'a>, Error>> + Send {
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         self.filter_map(|result| async move {
             match result {
                 Ok(event) => Some(Ok(event)),
@@ -318,7 +394,7 @@ pub trait FilterExt<'a>:
     /// text, JSON, and tool use.
     fn deltas(
         self,
-    ) -> impl futures::Stream<Item = Result<Delta<'a>, Error>> + Send {
+    ) -> impl futures::Stream<Item = Result<Delta<'static>, Error>> + Send {
         self.filter_map(|result| async move {
             match result {
                 Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
@@ -328,20 +404,211 @@ pub trait FilterExt<'a>:
     }
 
     /// Filter out everything but text pieces.
-    fn text(
-        self,
-    ) -> impl futures::Stream<Item = Result<Cow<'a, str>, Error>> + Send {
+    fn text(self) -> impl futures::Stream<Item = Result<String, Error>> + Send {
         self.deltas().filter_map(|result| async move {
             match result {
-                Ok(Delta::Text { text }) => Some(Ok(text)),
+                Ok(Delta::Text { text }) => Some(Ok(text.into_owned())),
                 _ => None,
             }
         })
     }
+
+    /// Adds [`Event::Message`] to the stream by assembling a message from the
+    /// stream in place. This is useful for when you want to assemble a message
+    /// as well as use the deltas and interrupt the stream, taking any
+    /// partiallly assembled message with you. If the stream is allowed to
+    /// complete, the `message` supplied will be `None` and the complete message
+    /// yielded as with [`with_message`].
+    fn with_message_ip(
+        self,
+        message: &mut Option<response::Message<'static>>,
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
+        async_stream::stream! {
+            let stream = self;
+
+            pin_mut!(stream);
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(Event::MessageStart { message: msg }) => {
+                        // Beginning of stream, Anthropic sends an empty message
+                        *message = Some(msg.clone());
+
+                        yield Ok(Event::MessageStart { message: message.clone().unwrap() });
+                    }
+                    Ok(Event::ContentBlockStart { index, content_block }) => {
+                        if let Some(message) = message {
+                            if index == message.message.content.len() {
+                                // Most common case, append to the end.
+                                message.message.content.push(content_block.clone());
+                            } else if index == 0 {
+                                // Insert at the beginning.
+                                message.message.content = Content::MultiPart(
+                                    vec![content_block.clone()]
+                                );
+                            } else {
+                                yield Err(Error::MessageAssembly {
+                                    message: format!("Index {} out of bounds. Max index is {}.", index, message.message.content.len()).into(),
+                                    delta: None,
+                                });
+                            }
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Content block start without message start.".into(),
+                                delta: None,
+                            });
+                        }
+
+                        yield Ok(Event::ContentBlockStart { index, content_block });
+                    }
+                    Ok(Event::ContentBlockDelta { index, delta }) => {
+                        if let Some(message) = message {
+                            if index != message.message.content.len() - 1 {
+                                // A message delta appends to an existing index,
+                                // so the index should not be the len.
+                                yield Err(Error::MessageAssembly {
+                                    message: format!("Unexpected index for delta. Got `{}`, expected `{}`.", index, message.message.content.len() - 1).into(),
+                                    delta: Some(delta.clone()),
+                                });
+                            }
+
+                            if let Err(err) = message.message.content.push_delta(delta.clone()) {
+                                yield Err(Error::MessageAssembly {
+                                    message: err.to_string().into(),
+                                    delta: Some(delta.clone()),
+                                });
+                            }
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Content block delta without message start.".into(),
+                                delta: Some(delta.clone()),
+                            });
+                        }
+
+                        yield Ok(Event::ContentBlockDelta { index, delta });
+                    }
+                    Ok(Event::ContentBlockStop { index }) => {
+                        if let Some(message) = message {
+                            if index != message.message.content.len() - 1 {
+                                yield Err(Error::MessageAssembly {
+                                    message: format!("Unexpected index for stop. Got `{}`, expected `{}`.", index, message.message.content.len() - 1).into(),
+                                    delta: None,
+                                });
+                            }
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Content block stop without message start.".into(),
+                                delta: None,
+                            });
+                        }
+
+                        yield Ok(Event::ContentBlockStop { index });
+                    }
+                    Ok(Event::MessageDelta { delta }) => {
+                        if let Some(message) = message {
+                            message.apply_delta(delta.clone())
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: format!("Message metadata delta without start: {:?}", delta).into(),
+                                delta: None,
+                            });
+                        }
+
+                        yield Ok(Event::MessageDelta { delta });
+                    }
+                    Ok(Event::MessageStop) => {
+                        if let Some(message) = message.take() {
+                            yield Ok(Event::Message { message });
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Message stop without start.".into(),
+                                delta: None,
+                            });
+                        }
+
+                        yield Ok(Event::MessageStop);
+                    }
+                    event => yield event,
+                }
+            }
+        }
+    }
+
+    /// Adds [`Event::Message`] to the stream by assembling a message from
+    /// the stream. If you need to interrupt the stream and take the partially
+    /// assembled message with you, use [`with_message_ip`].
+    fn with_message(
+        self,
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
+        async_stream::stream! {
+            let mut message = None;
+
+            let stream = self.with_message_ip(&mut message);
+
+            pin_mut!(stream);
+
+            while let Some(result) = stream.next().await {
+                yield result;
+            }
+        }
+    }
+
+    /// Adds [`Event::ToolUse`] to the stream. This is useful for when you don't
+    /// want to bother with assembling tool use from pieces of JSON deltas. In
+    /// the case a tool::Use fails to deserialize, the JSON will be included in
+    /// the [`Error::MessageAssembly`] error.
+    fn with_tool_use(
+        self,
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
+        async_stream::stream! {
+            let stream = self;
+            let mut json_buf = String::new();
+
+            pin_mut!(stream);
+
+            while let Some(result) = stream.next().await {
+                match result {
+                    Ok(Event::ContentBlockStart { index, content_block }) => {
+                        // New block, clear the buffer.
+                        json_buf.clear();
+                        yield Ok(Event::ContentBlockStart { index, content_block });
+                    }
+                    Ok(Event::ContentBlockDelta { index, delta }) => {
+                        // Content delta, if it's JSON, append to the buffer.
+                        if let Delta::Json { partial_json } = &delta {
+                            json_buf.push_str(partial_json);
+                        }
+
+                        yield Ok(Event::ContentBlockDelta { index, delta });
+                    }
+                    Ok(Event::ContentBlockStop { index }) => {
+
+                        if !json_buf.is_empty() {
+                            let tool_use = match serde_json::from_str(&json_buf) {
+                                Ok(tool_use) => tool_use,
+                                Err(error) => {
+                                    yield Err(Error::MessageAssembly {
+                                        message: error.to_string().into(),
+                                        delta: Some(Delta::Json { partial_json: json_buf.clone().into() }),
+                                    });
+                                    continue;
+                                }
+                            };
+
+                            yield Ok(Event::ToolUse { tool_use });
+                        }
+
+                        yield Ok(Event::ContentBlockStop { index });
+                    }
+                    event => yield event,
+                }
+            }
+        }
+    }
 }
 
-impl<'a, S> FilterExt<'a> for S where
-    S: futures::Stream<Item = Result<Event<'a>, Error>> + Send
+impl<S> FilterExt for S where
+    S: futures::Stream<Item = Result<Event, Error>> + Send
 {
 }
 
@@ -359,7 +626,7 @@ pub(crate) mod tests {
     /// Creates a mock stream from a string (likely `include_str!`). The string
     /// should be a series of `event`, `data`, and empty lines (a SSE stream).
     /// Anthropic provides such example data in the API documentation.
-    pub fn mock_stream(text: &'static str) -> Stream<'static> {
+    pub fn mock_stream(text: &'static str) -> Stream {
         use itertools::Itertools;
 
         // TODO: one of every possible variants, even if it doesn't make sense.

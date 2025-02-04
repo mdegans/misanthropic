@@ -36,6 +36,7 @@ derive_more = { version = "1", features = [
     "is_variant",
     "display",
     "deref",
+    "as_ref",
 ] }
 eventsource-stream = "0.2"
 futures = "0.3"
@@ -63,8 +64,12 @@ langsan = { version = "0", features = [
 ], optional = true }
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
+# For shuttle-runtime support
+shuttle-runtime = { version = "0.51", optional = true }
 # Rate limiting
 governor = { version = "0.7", optional = true }
+# async/await
+async-stream = "0.3"
 
 [dev-dependencies]
 # for all examples
@@ -74,6 +79,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # for the strawberry example
 itertools = "0.13"
 # for the python example
+
 subprocess = "0.2"
 tempfile = "3.12"
 
@@ -118,6 +124,8 @@ memsecurity = ["dep:memsecurity"]
 rate-limiting = ["dep:governor"]
 # Support for parsing chain of thought XML tags.
 cot = []
+# Support for shuttle-runtime crate.
+shuttle = ["dep:shuttle-runtime"]
 
 [[example]]
 name = "strawberry"

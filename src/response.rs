@@ -27,13 +27,13 @@ pub enum Response<'a> {
     /// [`Event`]: crate::stream::Event
     Stream {
         #[allow(missing_docs)]
-        stream: crate::Stream<'a>,
+        stream: crate::Stream,
     },
 }
 
 impl<'a> Response<'a> {
     /// Convert a [`Response::Stream`] variant into a [`crate::Stream`].
-    pub fn into_stream(self) -> Option<crate::Stream<'a>> {
+    pub fn into_stream(self) -> Option<crate::Stream> {
         match self {
             Self::Stream { stream } => Some(stream),
             _ => None,
@@ -44,7 +44,7 @@ impl<'a> Response<'a> {
     ///
     /// # Panics
     /// - If the variant is not a [`Response::Stream`].
-    pub fn unwrap_stream(self) -> crate::Stream<'a> {
+    pub fn unwrap_stream(self) -> crate::Stream {
         self.into_stream()
             .expect("`Response` is not a `Stream` variant.")
     }

@@ -49,7 +49,6 @@ impl Html {
         let raw: It = events.into_iter();
         let escaped = raw.map(|e| {
             match e {
-
                 Event::Text(cow_str) => Event::Text(escape_pcdata(cow_str)),
                 // Without this the escaping test fails because the paragraph
                 // tags are missing because of how the markdown is parsed. We
