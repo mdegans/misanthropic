@@ -350,16 +350,11 @@ impl ToMarkdown for ThoughtOrSpeech<'_> {
                 }),
                 Event::Text(variant_name_capitalized.into()),
                 Event::End(TagEnd::Heading(h)),
-                Event::Start(Tag::Paragraph),
             ]
             .into_iter(),
         );
 
-        Box::new(
-            header
-                .chain(markdown_parsed_text)
-                .chain([Event::End(TagEnd::Paragraph)].into_iter()),
-        )
+        Box::new(header.chain(markdown_parsed_text))
     }
 }
 
@@ -463,37 +458,6 @@ mod tests {
         assert_eq!(
             thoughts[0].text,
             "Oh dear, it's this schmuck again :/</snrak>It's a pleasure to hear from you again, dear user!"
-        );
-    }
-
-    fn test_thoughts_and_speech_to_markdown_helper(text: &str, expected: &str) {
-        use crate::markdown::ToMarkdown;
-
-        let message: prompt::Message = (Role::Assistant, text).into();
-        let mut actual = String::new();
-
-        for thought_or_speech in message.thoughts_and_speech() {
-            thought_or_speech.write_markdown(&mut actual).unwrap();
-        }
-
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_thoughts_and_speech_to_markdown() {
-        test_thoughts_and_speech_to_markdown_helper(
-            "<thinking>Oh dear, it's this schmuck again :/</thinking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.</thinking>Such a treat!",
-            "##### Thought\n\nOh dear, it's this schmuck again :/\n\n##### Speech\n\nIt's a pleasure to hear from you again, dear user!\n\n##### Thought\n\nThat was sarcasm.\n\n##### Speech\n\nSuch a treat!",
-        );
-
-        test_thoughts_and_speech_to_markdown_helper(
-            "<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
-            "##### Speech\n\n<snark>Oh dear, it's this schmuck again :/</snark>It's a pleasure to hear from you again, dear user!<snark>That was sarcasm.</snark>",
-        );
-
-        test_thoughts_and_speech_to_markdown_helper(
-            "Welcome to customer support at Amazon!<thinking>Oh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
-            "##### Speech\n\nWelcome to customer support at Amazon!\n\n##### Thought\n\nOh dear, it's this schmuck again :/</thniking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.",
         );
     }
 

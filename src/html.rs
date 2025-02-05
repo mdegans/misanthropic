@@ -134,7 +134,7 @@ pub trait ToHtml: ToMarkdown {
     fn html(&self) -> Html {
         let mut opts = DEFAULT_OPTIONS;
         opts.attrs = true;
-        self.html_custom(DEFAULT_OPTIONS)
+        self.html_custom(opts)
     }
 
     /// Render the type to an HTML string with maximum verbosity.
@@ -172,7 +172,7 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
-            "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
         );
 
         let opts = Options {
@@ -243,7 +243,7 @@ mod tests {
 
         assert_eq!(
             prompt.html().as_ref(),
-            "<h3>User</h3>\n<p>Run a hello world python program.</p>\n<h3>Assistant</h3>\n<p>It is done!</p>\n",
+            "<h3 role=\"user\">User</h3>\n<p>Run a hello world python program.</p>\n<h3 role=\"assistant\">Assistant</h3>\n<p>It is done!</p>\n",
         );
 
         let opts = Options {
@@ -311,7 +311,7 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
-            "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
         );
 
         assert_eq!(
@@ -354,7 +354,7 @@ mod tests {
         let string: String = html.into();
         assert_eq!(
             string,
-            "<h3>User</h3>\n<p>Hello, <strong>world</strong>!</p>\n"
+            "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n"
         );
     }
 
@@ -369,7 +369,7 @@ mod tests {
 
         assert_eq!(
             message.html().as_ref(),
-            "<h3>Assistant</h3>\n<p>bla bla&lt;script&gt;alert('XSS')&lt;/script&gt;bla bla</p>\n",
+            "<h3 role=\"assistant\">Assistant</h3>\n<p>bla bla&lt;script&gt;alert('XSS')&lt;/script&gt;bla bla</p>\n",
         );
 
         let message = Message {
