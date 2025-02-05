@@ -38,13 +38,11 @@ pub async fn events_stream(
         // Take the prompt so we can update it with new messages.
         prompt
     } else {
-        let err_stream =
-            futures::stream::once(async { Err("Chat in progress.".into()) })
-                .boxed();
+        let err_stream = futures::stream::once(async { Err("Chat in progress.".into()) }).boxed();
 
         return Sse::new(err_stream);
     };
     // We
 
-    Sse::new(stream)
+    todo!("Update the prompt with new messages and stream them.")
 }
