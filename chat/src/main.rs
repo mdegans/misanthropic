@@ -6,7 +6,7 @@ use shuttle_runtime::SecretStore;
 use std::sync::Arc;
 use tokio::sync::{
     mpsc::{Receiver, Sender},
-    Mutex, RwLock,
+    Mutex,
 };
 
 pub mod endpoints;
@@ -22,8 +22,7 @@ pub struct AppState {
     to_events: Sender<UserMessage>,
     from_user: Arc<Mutex<Receiver<UserMessage>>>,
     client: misanthropic::Client,
-    // We take the prompt when we need it
-    prompt: Arc<RwLock<Option<Prompt>>>,
+    prompt: Arc<Mutex<Prompt>>,
 }
 
 pub enum State {
@@ -48,7 +47,7 @@ pub fn create_router(secrets: SecretStore) -> Router {
         // Single consumer, so owned so, Arc.
         from_user: Arc::new(Mutex::new(from_user)),
         client,
-        prompt: Arc::new(RwLock::new(Some(prompt))),
+        prompt: Arc::new(Mutex::new(prompt)),
     };
 
     Router::new()
