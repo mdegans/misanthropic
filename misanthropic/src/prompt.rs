@@ -5,7 +5,7 @@
 
 use std::{borrow::Cow, num::NonZeroU16, vec};
 
-use crate::{tool, Model, Tool};
+use crate::{tool, Id, Tool};
 use message::Content;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ pub use message::Message;
 #[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
-    pub model: Model<'a>,
+    pub model: Id<'a>,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
@@ -143,7 +143,7 @@ impl<'a> Prompt<'a> {
     /// [`model`]: Prompt::model
     pub fn model<M>(mut self, model: M) -> Self
     where
-        M: Into<Model<'a>>,
+        M: Into<Id<'a>>,
     {
         self.model = model.into();
         self
@@ -755,7 +755,7 @@ mod tests {
     #[test]
     fn test_default_request() {
         let request = Prompt::default();
-        assert_eq!(request.model, Model::default());
+        assert_eq!(request.model, Id::default());
         assert!(request.messages.is_empty());
         assert_eq!(request.max_tokens, NonZeroU16::new(4096).unwrap());
         assert!(request.metadata.is_empty());
@@ -785,7 +785,7 @@ mod tests {
     fn test_set_model() {
         let model = AnthropicModel::default();
         let request = Prompt::default().model(model); // AnthropicModel is Copy
-        assert_eq!(request.model, Model::default());
+        assert_eq!(request.model, Id::default());
     }
 
     fn create_test_messages() -> [Message<'static>; 2] {
@@ -1038,6 +1038,22 @@ mod tests {
         let _ = serde_json::from_str::<Prompt>(&json).unwrap();
 
         // TODO: impl Default and PartialEq when `cfg(test)`
+    }
+
+    #[test]
+    fn test_serde_json_fields() {
+        let default = Prompt::default();
+        let json = dbg!(serde_json::to_string_pretty(&default).unwrap());
+        let value = serde_json::from_str::<serde_json::Value>(&json).unwrap();
+
+        if let serde_json::Value::Object(map) = value {
+            assert_eq!(map.len(), 3);
+            assert!(map.contains_key("model"));
+            assert!(map.contains_key("max_tokens"));
+            assert!(map.contains_key("messages"));
+        } else {
+            panic!("Expected an object.");
+        }
     }
 
     #[test]

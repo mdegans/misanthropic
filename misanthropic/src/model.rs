@@ -1,26 +1,46 @@
 //! [`Model`] to use for inference.
 use std::borrow::Cow;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-/// Model to use for inference, either a built-in Anthropic model or a custom
-/// model.
+/// All available models.
+#[derive(Debug, Serialize, Deserialize, derive_more::Deref)]
+#[serde(rename_all = "snake_case")]
+pub struct Models<'a> {
+    /// List of available models.
+    data: Vec<Model<'a>>,
+}
+
+/// Model information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct Model<'a> {
+    /// Model ID.
+    pub id: Id<'a>,
+    /// Display name.
+    pub display_name: Cow<'a, str>,
+    /// Created at.
+    pub created_at: DateTime<Utc>,
+}
+
+/// Model ID.
 #[derive(
     Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
 )]
 #[serde(rename_all = "snake_case", untagged)]
-pub enum Model<'a> {
+pub enum Id<'a> {
     /// Anthropic model.
     Anthropic(AnthropicModel),
-    /// Custom model.
+    /// Custom model id.
     Custom(Cow<'a, str>),
 }
 
-impl<'a> Model<'a> {
+impl<'a> Id<'a> {
     /// Get the name of the model.
     pub fn name(&'a self) -> &'a str {
         match self {
-            Model::Anthropic(model) => match model {
+            Id::Anthropic(model) => match model {
                 AnthropicModel::Sonnet35 => "claude-3-5-sonnet-latest",
                 AnthropicModel::Sonnet35_20240620 => {
                     "claude-3-5-sonnet-20240620"
@@ -35,20 +55,20 @@ impl<'a> Model<'a> {
                 AnthropicModel::Haiku35_20241022 => "claude-3-5-haiku-20241022",
                 AnthropicModel::Haiku30 => "claude-3-haiku-20240307",
             },
-            Model::Custom(name) => name,
+            Id::Custom(name) => name,
         }
     }
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    pub fn into_static(self) -> Model<'static> {
+    pub fn into_static(self) -> Id<'static> {
         match self {
-            Model::Anthropic(model) => Model::Anthropic(model),
-            Model::Custom(name) => Model::Custom(Cow::Owned(name.into_owned())),
+            Id::Anthropic(model) => Id::Anthropic(model),
+            Id::Custom(name) => Id::Custom(Cow::Owned(name.into_owned())),
         }
     }
 }
 
-impl<'a, T> From<T> for Model<'a>
+impl<'a, T> From<T> for Id<'a>
 where
     T: Into<Cow<'a, str>>,
 {
@@ -58,36 +78,36 @@ where
     }
 }
 
-impl From<AnthropicModel> for Model<'_> {
+impl From<AnthropicModel> for Id<'_> {
     fn from(value: AnthropicModel) -> Self {
-        Model::Anthropic(value)
+        Id::Anthropic(value)
     }
 }
 
-impl PartialEq<AnthropicModel> for Model<'_> {
+impl PartialEq<AnthropicModel> for Id<'_> {
     fn eq(&self, other: &AnthropicModel) -> bool {
         match self {
-            Model::Anthropic(model) => model == other,
-            Model::Custom(s) => s.as_ref() == other.name(),
+            Id::Anthropic(model) => model == other,
+            Id::Custom(s) => s.as_ref() == other.name(),
         }
     }
 }
 
-impl<S> PartialEq<S> for Model<'_>
+impl<S> PartialEq<S> for Id<'_>
 where
     S: AsRef<str>,
 {
     fn eq(&self, other: &S) -> bool {
         match self {
-            Model::Anthropic(model) => model.name() == other.as_ref(),
-            Model::Custom(s) => s.as_ref() == other.as_ref(),
+            Id::Anthropic(model) => model.name() == other.as_ref(),
+            Id::Custom(s) => s.as_ref() == other.as_ref(),
         }
     }
 }
 
-impl Default for Model<'_> {
+impl Default for Id<'_> {
     fn default() -> Self {
-        Model::Anthropic(AnthropicModel::Haiku30)
+        Id::Anthropic(AnthropicModel::Haiku30)
     }
 }
 
@@ -212,7 +232,14 @@ mod tests {
     }
 
     #[test]
-    fn test_model_name() {
+    fn test_model_deserialize() {
+        const JSON:&[u8] = b"{\"data\":[{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20241022\",\"display_name\":\"Claude 3.5 Sonnet (New)\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-haiku-20241022\",\"display_name\":\"Claude 3.5 Haiku\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20240620\",\"display_name\":\"Claude 3.5 Sonnet (Old)\",\"created_at\":\"2024-06-20T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-haiku-20240307\",\"display_name\":\"Claude 3 Haiku\",\"created_at\":\"2024-03-07T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-opus-20240229\",\"display_name\":\"Claude 3 Opus\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-sonnet-20240229\",\"display_name\":\"Claude 3 Sonnet\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.1\",\"display_name\":\"Claude 2.1\",\"created_at\":\"2023-11-21T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.0\",\"display_name\":\"Claude 2.0\",\"created_at\":\"2023-07-11T00:00:00Z\"}],\"has_more\":false,\"first_id\":\"claude-3-5-sonnet-20241022\",\"last_id\":\"claude-2.0\"}";
+        let models = serde_json::from_slice::<Models>(JSON).unwrap();
+        assert_eq!(models.len(), 8);
+    }
+
+    #[test]
+    fn test_id_name() {
         assert_eq!(AnthropicModel::Sonnet35.name(), "sonnet-3.5-latest");
         assert_eq!(
             AnthropicModel::Sonnet35_20240620.name(),
@@ -232,7 +259,7 @@ mod tests {
         );
         assert_eq!(AnthropicModel::Haiku30.name(), "haiku-3.0-20240307");
 
-        let model: Model = "custom_model".into();
+        let model: Id = "custom_model".into();
         assert_eq!(model.name(), "custom_model");
         assert_eq!(model, "custom_model");
     }
@@ -240,32 +267,32 @@ mod tests {
     // Some of these overlap, but it's fine.
 
     #[test]
-    fn test_model_into_static() {
-        let model: Model = "custom_model".into();
+    fn test_id_into_static() {
+        let model: Id = "custom_model".into();
         let model = model.into_static();
         assert_eq!(model, "custom_model");
     }
 
     #[test]
-    fn test_model_conversion_from_model() {
-        let model: Model = AnthropicModel::Sonnet35.into();
+    fn test_id_conversion_from_anthropic_model() {
+        let model: Id = AnthropicModel::Sonnet35.into();
         assert_eq!(model, AnthropicModel::Sonnet35);
     }
 
     #[test]
-    fn test_model_conversion_from_str() {
+    fn test_id_conversion_from_str() {
         // custom model
-        let model: Model = "custom_model".into();
+        let model: Id = "custom_model".into();
         assert_eq!(model, "custom_model");
 
         // known model
-        let model: Model = "claude-3-5-sonnet-latest".into();
+        let model: Id = "claude-3-5-sonnet-latest".into();
         assert_eq!(model, AnthropicModel::Sonnet35);
     }
 
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
-    async fn test_models_are_valid() {
+    async fn test_ids_are_valid() {
         let key = load_api_key().expect("API key not found");
         let client = Client::new(key).unwrap();
 

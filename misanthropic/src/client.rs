@@ -6,7 +6,7 @@ use eventsource_stream::Eventsource;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{key, response, Key};
+use crate::{key, model::Models, response, Key};
 
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
@@ -60,8 +60,11 @@ impl Client {
     pub const USER_AGENT: &'static str =
         concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
     /// Default URL for the Messages API.
-    pub const DEFAULT_URL: &'static str =
+    pub const MESSAGES_URL: &'static str =
         "https://api.anthropic.com/v1/messages";
+    /// Default URL for the Models API.
+    pub const MODELS_URL: &'static str =
+        "https://api.anthropic.com/v1/models?limit=1000";
     /// Default jitter in milliseconds for rate limiting (max).
     #[cfg(feature = "rate-limiting")]
     pub const DEFAULT_JITTER_MS: u64 = 20;
@@ -171,7 +174,7 @@ impl Client {
             }
         }
 
-        #[allow(clippy::useless_asref)]
+        #[allow(clippy::useless_asref)] // because conditional compilation
         let mut val =
             reqwest::header::HeaderValue::from_bytes(self.key.read().as_ref())
                 .unwrap();
@@ -244,6 +247,49 @@ impl Client {
         req.json(&body).send().await
     }
 
+    /// Get all available [`Models`] from the API. [`Models`] is a thin wrapper
+    /// around a `Vec` of [`Model`]s and derefs to it.
+    ///
+    /// [`Model``]: misanthropic::model::Model
+    pub async fn models(&self) -> Result<Models> {
+        let response = self.get(Self::MODELS_URL).await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            let error: AnthropicErrorWrapper = response.json().await?;
+
+            // Error was sucessfully parsed from the API.
+            return Err(error.error.into());
+        }
+
+        let body = response.bytes().await?;
+
+        match serde_json::from_slice(&body) {
+            Ok(models) => {
+                #[cfg(feature = "log")]
+                {
+                    log::debug!(
+                        "RECV:{}",
+                        serde_json::to_string_pretty(&models).unwrap()
+                    );
+                }
+
+                Ok(models)
+            }
+            Err(e) => {
+                #[cfg(feature = "log")]
+                {
+                    log::error!(
+                        "ERROR:Could not parse {} from JSON: {:#?}",
+                        stringify!(response::Model),
+                        body
+                    );
+                }
+
+                Err(e.into())
+            }
+        }
+    }
+
     /// Post a request to the Messages API.
     ///
     /// `prompt` can be a [`Request`] (as an example) or anything that can be
@@ -263,7 +309,7 @@ impl Client {
     where
         P: Serialize,
     {
-        self.request_custom(prompt, Self::DEFAULT_URL).await
+        self.request_custom(prompt, Self::MESSAGES_URL).await
     }
 
     /// Post a [`request`] to a custom URL. This is useful for testing or for
@@ -719,5 +765,22 @@ mod tests {
             .unwrap();
 
         assert_eq!(msg, "🙏");
+    }
+
+    #[tokio::test]
+    #[ignore = "This test requires a real API key."]
+    async fn test_client_models() {
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().expect(NO_API_KEY);
+        let client = Client::new(key).unwrap();
+
+        let models = client.models().await.unwrap();
+        assert!(!models.is_empty());
+        for model in models.iter() {
+            dbg!(&model);
+            assert!(!model.display_name.is_empty());
+        }
     }
 }
