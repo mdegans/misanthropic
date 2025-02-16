@@ -1,12 +1,18 @@
 //! [`Client`] for the Anthropic Messages API and related types.
 
-use std::{env, num::NonZeroU16, sync::Arc};
+use std::{collections::HashMap, env, num::NonZeroU16, sync::Arc};
 
 use eventsource_stream::Eventsource;
+use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{key, model::Models, response, Key};
+use crate::{
+    batch::{self, IdentifiedBatchResult, Prompts},
+    key,
+    model::Models,
+    response, Key, Prompt,
+};
 
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
@@ -46,6 +52,12 @@ pub struct Client {
     /// Rate limit jitter. Defaults to [`Self::DEFAULT_JITTER_MS`].
     #[cfg(feature = "rate-limiting")]
     pub jitter: Option<governor::Jitter>,
+    /// Custom endpoint for the Messages API. Defaults to [`Self::MESSAGES_URL`].
+    pub messages_url: Arc<Url>,
+    /// Custom endpoint for the Batch API. Defaults to [`Self::BATCH_URL`].
+    pub batch_url: Arc<Url>,
+    /// Custom endpoint for the Models API. Defaults to [`Self::MODELS_URL`].
+    pub models_url: Arc<Url>,
 }
 
 /// Claude client. Uses the Messages API and the prompt caching beta.
@@ -62,6 +74,9 @@ impl Client {
     /// Default URL for the Messages API.
     pub const MESSAGES_URL: &'static str =
         "https://api.anthropic.com/v1/messages";
+    /// Default URL for the Batch API.
+    pub const BATCH_URL: &'static str =
+        "https://api.anthropic.com/v1/messages/batches/";
     /// Default URL for the Models API.
     pub const MODELS_URL: &'static str =
         "https://api.anthropic.com/v1/models?limit=1000";
@@ -69,11 +84,8 @@ impl Client {
     #[cfg(feature = "rate-limiting")]
     pub const DEFAULT_JITTER_MS: u64 = 20;
 
-    /// Create a new client from any type that can be converted into a [`Key`].
-    ///
-    /// ## Note:
-    /// - It's safest to use a [`String`]. If you use a [`&str`] you must
-    ///   zeroize it after creating the client.
+    /// Create a new [`Client`] from any type that can be converted into a
+    /// [`Key`], like a [`String`] or a [`Vec`], but not a `&str`.
     // misanthropic/src/client.rs
     pub fn new<K>(key: K) -> std::result::Result<Self, key::InvalidKeyLength>
     where
@@ -82,13 +94,14 @@ impl Client {
         Ok(Self::from_key(key.try_into()?))
     }
 
-    /// Create a new client with the given key.
+    /// Create a new [`Client`] with the given [`Key`].
     pub fn from_key(key: Key) -> Self {
         #[cfg(feature = "log")]
         {
             log::debug!(concat!(
                 "Creating ",
-                env!("CARGO_PKG_NAME", " client...")
+                env!("CARGO_PKG_NAME"),
+                " client..."
             ));
             log::debug!(concat!("Crate version: ", env!("CARGO_PKG_VERSION")));
             log::debug!("Anthropic version: {}", Self::ANTHROPIC_VERSION);
@@ -134,6 +147,9 @@ impl Client {
             jitter: Some(governor::Jitter::up_to(
                 std::time::Duration::from_millis(Self::DEFAULT_JITTER_MS),
             )),
+            messages_url: Arc::new(Url::parse(Self::MESSAGES_URL).unwrap()),
+            batch_url: Arc::new(Url::parse(Self::BATCH_URL).unwrap()),
+            models_url: Arc::new(Url::parse(Self::MODELS_URL).unwrap()),
         }
     }
 
@@ -199,7 +215,8 @@ impl Client {
     }
 
     /// Send a GET request with the API key set as a sensitive header value.
-    pub async fn get<U>(&self, url: U) -> reqwest::Result<reqwest::Response>
+    /// Returns a [`reqwest::Result`] for maximum flexibility.
+    pub async fn get_raw<U>(&self, url: U) -> reqwest::Result<reqwest::Response>
     where
         U: reqwest::IntoUrl,
     {
@@ -216,8 +233,27 @@ impl Client {
         self.request_raw(reqwest::Method::GET, url).send().await
     }
 
+    /// Same as [`Self::get_raw`] but returns a crate [`Result`] instead of a
+    /// [`reqwest`] result. Parses [`AnthropicError`]s.s
+    async fn get<U>(&self, url: U) -> Result<reqwest::Response>
+    where
+        U: reqwest::IntoUrl,
+    {
+        let response = self.get_raw(url).await?;
+
+        if response.status() != reqwest::StatusCode::OK {
+            let error: AnthropicErrorWrapper = response.json().await?;
+
+            // Error was sucessfully parsed from the API.
+            return Err(error.error.into());
+        }
+
+        Ok(response)
+    }
+
     /// Send a POST request with the API key set as a sensitive header value.
-    pub async fn post<U, B>(
+    /// Returns a [`reqwest::Result`] for maximum flexibility.
+    pub async fn post_raw<U, B>(
         &self,
         url: U,
         body: B,
@@ -247,12 +283,14 @@ impl Client {
         req.json(&body).send().await
     }
 
-    /// Get all available [`Models`] from the API. [`Models`] is a thin wrapper
-    /// around a `Vec` of [`Model`]s and derefs to it.
-    ///
-    /// [`Model``]: misanthropic::model::Model
-    pub async fn models(&self) -> Result<Models> {
-        let response = self.get(Self::MODELS_URL).await?;
+    /// Same as [`Self::post_raw`] but returns a crate [`Result`] instead of a
+    /// [`reqwest`] result. Parses [`AnthropicError`]s.
+    pub async fn post<U, B>(&self, url: U, body: B) -> Result<reqwest::Response>
+    where
+        U: reqwest::IntoUrl,
+        B: serde::Serialize,
+    {
+        let response = self.post_raw(url, body).await?;
 
         if response.status() != reqwest::StatusCode::OK {
             let error: AnthropicErrorWrapper = response.json().await?;
@@ -261,16 +299,22 @@ impl Client {
             return Err(error.error.into());
         }
 
-        let body = response.bytes().await?;
+        Ok(response)
+    }
 
-        match serde_json::from_slice(&body) {
+    /// Get all available [`Models`] from the API. [`Models`] is a thin wrapper
+    /// around a `Vec` of [`Model`]s and derefs to it.
+    ///
+    /// [`Model``]: misanthropic::model::Model
+    pub async fn models(&self) -> Result<Models> {
+        let response = self.get(self.models_url.as_str()).await?;
+        let body = response.text().await?;
+
+        match serde_json::from_str(&body) {
             Ok(models) => {
                 #[cfg(feature = "log")]
                 {
-                    log::debug!(
-                        "RECV:{}",
-                        serde_json::to_string_pretty(&models).unwrap()
-                    );
+                    log::debug!("RECV:{}", body);
                 }
 
                 Ok(models)
@@ -309,7 +353,8 @@ impl Client {
     where
         P: Serialize,
     {
-        self.request_custom(prompt, Self::MESSAGES_URL).await
+        self.request_custom(prompt, self.messages_url.as_str())
+            .await
     }
 
     /// Post a [`request`] to a custom URL. This is useful for testing or for
@@ -328,13 +373,6 @@ impl Client {
         let json = serde_json::to_value(prompt)?;
         let streaming = json["stream"].as_bool().unwrap_or(false);
         let response: reqwest::Response = self.post(url, json).await?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            let error: AnthropicErrorWrapper = response.json().await?;
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
-        }
 
         if streaming {
             #[cfg(feature = "log")]
@@ -440,6 +478,127 @@ impl Client {
             })
         }
     }
+
+    /// Make a batch request of [`Prompts`] to the Messages API. This allows
+    /// sending multiple prompts at once at lower cost. Batches take up to 24
+    /// hours to process.
+    ///
+    /// Unique [`batch::Id`]s are generated for each Prompt in the batch. These
+    /// can be used to track the progress of the batch.
+    ///
+    /// [`Prompts`]: crate::batch::Prompts
+    pub async fn batch<'a, P>(&self, prompts: P) -> Result<batch::Pending<'a>>
+    where
+        P: IntoIterator<Item = Prompt<'a>>,
+    {
+        let prompts: Prompts<'a> = prompts.into_iter().collect();
+        let meta = self
+            .post(self.batch_url.as_str(), &prompts)
+            .await?
+            .json()
+            .await?;
+
+        Ok(batch::Pending { prompts, meta })
+    }
+
+    /// Same as [`Self::batch`] but with user-supplied [`batch::Id`]s. Duplicate
+    /// [`batch::Id`]s will be overwritten in the order they are supplied.
+    pub async fn tagged_batch<'a, It, Id>(
+        &self,
+        prompts: It,
+    ) -> Result<batch::Pending<'a>>
+    where
+        It: IntoIterator<Item = (Id, Prompt<'a>)>,
+        Id: Into<batch::Id>,
+    {
+        let prompts: Prompts<'a> = prompts.into_iter().collect();
+        let meta = self
+            .post(self.batch_url.as_str(), &prompts)
+            .await?
+            .json()
+            .await?;
+
+        Ok(batch::Pending { prompts, meta })
+    }
+
+    /// Poll the status of a [`Pending`] batch request. This update the metadata
+    /// with the latest status of the [`Batch`]. If the batch is ready, the
+    /// results are downloaded and returned in a [`batch::Ready`] variant.
+    ///
+    /// [`Batch`]: batch::Batch
+    pub async fn batch_poll<'a>(
+        &self,
+        mut pending: batch::Pending<'a>,
+    ) -> Result<batch::Batch<'a>> {
+        use batch::{Batch, Ready};
+
+        // Craft the URL for the batch.
+        let url = Url::parse(self.batch_url.as_str())
+            .unwrap()
+            .join(pending.meta.id.as_str())
+            .unwrap();
+
+        // Update the metadata with the latest status.
+        pending.meta = self.get(url).await?.json().await?;
+
+        // Check if we're done.
+        if let Some(url) = pending.results_url() {
+            // Download the json lines file with `IdentifiedBatchResult`s.
+            let response = self.get(url.clone()).await?.text().await?;
+
+            // Create a new hashmap to store the results.
+            let mut results = HashMap::new();
+
+            for line in response.lines() {
+                match serde_json::from_str(line) {
+                    Ok(IdentifiedBatchResult { id, result }) => {
+                        // We do need to check for this to maintain the Ready
+                        // invariant that every result has a corresponding
+                        // prompt (or it will panic).
+                        if pending.prompts.contains_key(&id) {
+                            results.insert(id, result);
+                        } else {
+                            #[cfg(feature = "log")]
+                            {
+                                log::warn!(
+                                    "Received result for unknown ID `{}`: {}",
+                                    id,
+                                    serde_json::to_string_pretty(&result)
+                                        .unwrap()
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        // This should almost never happen. If it does
+                        // the server is likely misbehaving.
+                        #[cfg(feature = "log")]
+                        {
+                            log::error!(
+                                "Could not parse line from batch result `{}` because: {}",
+                                line,
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+
+            #[cfg(feature = "log")]
+            if results.len() != pending.prompts.len() {
+                log::warn!(
+                    "Expected {} results, got {}.",
+                    pending.prompts.len(),
+                    results.len()
+                );
+            }
+
+            // The batch is now ready.
+            return Ok(Batch::Ready(Ready { pending, results }));
+        }
+
+        Ok(Batch::Pending(pending))
+    }
 }
 
 impl From<Key> for Client {
@@ -510,6 +669,9 @@ pub enum AnthropicError {
     #[error("authentication (401): {message}")]
     #[serde(rename = "authentication_error")]
     Authentication { message: String },
+    #[error("billing: {message}")]
+    #[serde(rename = "billing_error")]
+    Billing { message: String },
     #[error("permission (403): {message}")]
     #[serde(rename = "permission_error")]
     Permission { message: String },
@@ -528,6 +690,9 @@ pub enum AnthropicError {
     #[error("overloaded (529): {message}")]
     #[serde(rename = "overloaded_error")]
     Overloaded { message: String },
+    #[error("timeout: {message}")]
+    #[serde(rename = "timeout_error")]
+    Timeout { message: String },
     // Anthropic's API specifies they can add more error codes in the future.
     #[error("unknown error ({code}): {message}")]
     Unknown { code: NonZeroU16, message: String },
@@ -535,17 +700,19 @@ pub enum AnthropicError {
 
 impl AnthropicError {
     /// Get the HTTP status code for the error.
-    pub fn status(&self) -> NonZeroU16 {
+    pub fn status(&self) -> Option<NonZeroU16> {
         match self {
-            Self::InvalidRequest { .. } => NonZeroU16::new(400).unwrap(),
-            Self::Authentication { .. } => NonZeroU16::new(401).unwrap(),
-            Self::Permission { .. } => NonZeroU16::new(403).unwrap(),
-            Self::NotFound { .. } => NonZeroU16::new(404).unwrap(),
-            Self::RequestTooLarge { .. } => NonZeroU16::new(413).unwrap(),
-            Self::RateLimit { .. } => NonZeroU16::new(429).unwrap(),
-            Self::API { .. } => NonZeroU16::new(500).unwrap(),
-            Self::Overloaded { .. } => NonZeroU16::new(529).unwrap(),
-            Self::Unknown { code, .. } => *code,
+            Self::InvalidRequest { .. } => Some(NonZeroU16::new(400).unwrap()),
+            Self::Authentication { .. } => Some(NonZeroU16::new(401).unwrap()),
+            Self::Billing { .. } => None,
+            Self::Permission { .. } => Some(NonZeroU16::new(403).unwrap()),
+            Self::NotFound { .. } => Some(NonZeroU16::new(404).unwrap()),
+            Self::RequestTooLarge { .. } => Some(NonZeroU16::new(413).unwrap()),
+            Self::RateLimit { .. } => Some(NonZeroU16::new(429).unwrap()),
+            Self::API { .. } => Some(NonZeroU16::new(500).unwrap()),
+            Self::Overloaded { .. } => Some(NonZeroU16::new(529).unwrap()),
+            Self::Unknown { code, .. } => Some(*code),
+            Self::Timeout { .. } => None,
         }
     }
 }

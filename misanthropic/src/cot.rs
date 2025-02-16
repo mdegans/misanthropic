@@ -126,6 +126,7 @@ impl<'a> ThoughtsAndSpeech<'a> {
 impl<'a> Iterator for ThoughtsAndSpeech<'a> {
     type Item = ThoughtOrSpeech<'a>;
 
+    #[allow(clippy::needless_return)] // becuase it's harder to read without it
     fn next(&mut self) -> Option<Self::Item> {
         if self.index >= self.text.len() {
             return None;

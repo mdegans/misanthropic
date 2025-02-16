@@ -19,6 +19,8 @@ pub use key::Key;
 pub mod client;
 pub use client::Client;
 
+pub mod batch;
+
 pub mod model;
 pub use model::{AnthropicModel, Id};
 

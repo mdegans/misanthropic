@@ -419,6 +419,9 @@ pub trait FilterExt:
     /// partiallly assembled message with you. If the stream is allowed to
     /// complete, the `message` supplied will be `None` and the complete message
     /// yielded as with [`with_message`].
+    ///
+    /// # Note:
+    /// Message is set to `None` at the beginning of the stream.
     fn with_message_ip(
         self,
         message: &mut Option<response::Message<'static>>,
@@ -427,6 +430,9 @@ pub trait FilterExt:
             let stream = self;
 
             pin_mut!(stream);
+
+            // reset the message if it's not already None.
+            *message = None;
 
             while let Some(result) = stream.next().await {
                 match result {

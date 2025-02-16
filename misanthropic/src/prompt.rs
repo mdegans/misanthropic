@@ -83,13 +83,36 @@ pub struct Prompt<'a> {
     pub top_p: Option<f32>,
 }
 
+impl std::fmt::Debug for Prompt<'_> {
+    /// For the sake of user privacy, the debug repr of a [`Prompt`] will hide
+    /// the user's chat history. Otherwise it's likely to end up in logs.
+    ///
+    /// Metadata is still shown, so don't put PII in there. If you do, somewhere
+    /// in your design you've made a mistake. Rethink your design.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prompt")
+            .field("metadata", &self.metadata)
+            .field("stop_sequences", &self.stop_sequences)
+            .field("stream", &self.stream)
+            .field("system", &self.system)
+            .field("temperature", &self.temperature)
+            .field("tool_choice", &self.tool_choice)
+            .field("tools", &self.tools)
+            .field("top_k", &self.top_k)
+            .field("...", &"...")
+            .finish()
+    }
+    // For all sorts of reasons like user privacy we are going to hide the
+    // contents of the prompt as in `Prompts`
+}
+
 impl Default for Prompt<'_> {
     fn default() -> Self {
         Self {
-            model: Default::default(),
-            messages: Default::default(),
             max_tokens: NonZeroU16::new(4096).unwrap(),
+            messages: Default::default(),
             metadata: Default::default(),
+            model: Default::default(),
             stop_sequences: Default::default(),
             stream: Default::default(),
             system: Default::default(),
@@ -678,6 +701,32 @@ impl<'a> Prompt<'a> {
 
         self
     }
+
+    /// Convert to static lifetime by taking ownership of the [`Cow`] fields.
+    pub fn into_static(self) -> Prompt<'static> {
+        Prompt {
+            model: self.model.into_static(),
+            messages: self
+                .messages
+                .into_iter()
+                .map(Message::into_static)
+                .collect(),
+            max_tokens: self.max_tokens,
+            metadata: self.metadata,
+            stop_sequences: self.stop_sequences.map(|s| {
+                s.into_iter().map(Cow::into_owned).map(Cow::Owned).collect()
+            }),
+            stream: self.stream,
+            system: self.system.map(Content::into_static),
+            temperature: self.temperature,
+            tool_choice: self.tool_choice,
+            tools: self
+                .tools
+                .map(|t| t.into_iter().map(Tool::into_static).collect()),
+            top_k: self.top_k,
+            top_p: self.top_p,
+        }
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -779,6 +828,13 @@ mod tests {
     fn test_stream_off() {
         let request = Prompt::default().no_stream();
         assert_eq!(request.stream, Some(false));
+    }
+
+    #[test]
+    fn test_prompt_debug_hides_messages() {
+        let request = Prompt::default().add_message((Role::User, "Hello"));
+        let debug = format!("{:?}", request);
+        assert!(!debug.contains("Hello"));
     }
 
     #[test]

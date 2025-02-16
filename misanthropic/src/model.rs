@@ -26,7 +26,7 @@ pub struct Model<'a> {
 
 /// Model ID.
 #[derive(
-    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
+    Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(rename_all = "snake_case", untagged)]
 pub enum Id<'a> {
@@ -113,16 +113,17 @@ impl Default for Id<'_> {
 
 /// Choice of Anthropic models.
 #[derive(
-    Debug,
-    Default,
     Clone,
     Copy,
-    Serialize,
+    Debug,
+    Default,
     Deserialize,
-    PartialEq,
     Eq,
-    PartialOrd,
+    Hash,
     Ord,
+    PartialEq,
+    PartialOrd,
+    Serialize,
 )]
 #[serde(rename_all = "snake_case")]
 // API reports; unknown variant `blabla`, expected one of
@@ -184,30 +185,30 @@ pub enum AnthropicModel {
 impl AnthropicModel {
     /// All available models.
     pub const ALL: &'static [AnthropicModel] = &[
-        AnthropicModel::Sonnet35,
+        AnthropicModel::Haiku30,
+        AnthropicModel::Haiku35_20241022,
+        AnthropicModel::Haiku35,
+        AnthropicModel::Opus30_20240229,
+        AnthropicModel::Opus30,
+        AnthropicModel::Sonnet30,
         AnthropicModel::Sonnet35_20240620,
         AnthropicModel::Sonnet35_20241022,
-        AnthropicModel::Opus30,
-        AnthropicModel::Opus30_20240229,
-        AnthropicModel::Sonnet30,
-        AnthropicModel::Haiku35,
-        AnthropicModel::Haiku35_20241022,
-        AnthropicModel::Haiku30,
+        AnthropicModel::Sonnet35,
     ];
 
     /// Get the name of the model (what it serializes to).
     pub fn name(self) -> &'static str {
         // I don't like duplication, but this is fine for now.
         match self {
-            AnthropicModel::Sonnet35 => "sonnet-3.5-latest",
-            AnthropicModel::Sonnet35_20240620 => "sonnet-3.5-20240620",
-            AnthropicModel::Sonnet35_20241022 => "sonnet-3.5-20241022",
+            AnthropicModel::Haiku30 => "haiku-3.0-20240307",
+            AnthropicModel::Haiku35 => "haiku-3.5-latest",
+            AnthropicModel::Haiku35_20241022 => "haiku-3.5-20241022",
             AnthropicModel::Opus30 => "opus-3.0-latest",
             AnthropicModel::Opus30_20240229 => "opus-3.0-20240229",
             AnthropicModel::Sonnet30 => "sonnet-3.0-20240229",
-            AnthropicModel::Haiku35 => "haiku-3.5-latest",
-            AnthropicModel::Haiku35_20241022 => "haiku-3.5-20241022",
-            AnthropicModel::Haiku30 => "haiku-3.0-20240307",
+            AnthropicModel::Sonnet35 => "sonnet-3.5-latest",
+            AnthropicModel::Sonnet35_20240620 => "sonnet-3.5-20240620",
+            AnthropicModel::Sonnet35_20241022 => "sonnet-3.5-20241022",
         }
     }
 }

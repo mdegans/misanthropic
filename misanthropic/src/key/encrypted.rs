@@ -53,9 +53,17 @@ impl TryFrom<String> for Key {
     /// Create a new key from a string securely. The string is zeroized after
     /// conversion.
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        // This just unwraps the internal Vec<u8> so the data can still be
-        // zeroized.
-        let v = Zeroizing::new(s.into_bytes());
+        Self::try_from(s.into_bytes())
+    }
+}
+
+impl TryFrom<Vec<u8>> for Key {
+    type Error = InvalidKeyLength;
+
+    /// Create a new key from a Vec<u8> securely. The Vec<u8> is zeroized after
+    /// conversion.
+    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
+        let v = Zeroizing::new(v);
         if v.len() != LEN {
             let actual = v.len();
             return Err(InvalidKeyLength { actual });

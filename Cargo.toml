@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["misanthropic", "chat"]
+members = ["misanthropic", "chat/backend", "chat/frontend"]
 
 [profile.release]
 lto = true

@@ -26,11 +26,12 @@ unsafe_code = "forbid"
 [dependencies]
 base64 = "0.22"
 derive_more = { version = "1", features = [
-    "from",
-    "is_variant",
-    "display",
-    "deref",
     "as_ref",
+    "deref",
+    "display",
+    "from",
+    "into",
+    "is_variant",
 ] }
 eventsource-stream = "0.2"
 futures = "0.3"
@@ -66,6 +67,8 @@ governor = { version = "0.7", optional = true }
 async-stream = "0.3"
 # for date and time parsing
 chrono = "0.4"
+# for request ids
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 # for all examples

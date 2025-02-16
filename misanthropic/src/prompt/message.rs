@@ -16,7 +16,7 @@ use crate::{
 };
 
 /// Role of the [`Message`] author.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// From the user.
@@ -986,7 +986,7 @@ impl From<image::DynamicImage> for Block<'_> {
 
 /// Cache control for prompt caching.
 #[cfg(feature = "prompt-caching")]
-#[derive(Clone, Default, Debug, Serialize, Deserialize)]
+#[derive(Clone, Default, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
@@ -999,7 +999,7 @@ pub enum CacheControl {
 /// Image content for [`MultiPart`] [`Message`]s.
 ///
 /// [`MultiPart`]: Content::MultiPart
-#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
@@ -1120,7 +1120,7 @@ impl TryInto<image::RgbaImage> for Image<'_> {
 }
 
 /// Encoding format for [`Image`]s.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]

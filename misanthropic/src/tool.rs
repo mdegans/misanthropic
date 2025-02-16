@@ -11,10 +11,9 @@ use serde::{Deserialize, Serialize};
 /// Choice of [`Tool`] for a specific [`prompt::message`].
 ///
 /// [`prompt::message`]: crate::prompt::message
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[cfg_attr(test, derive(Debug))]
 pub enum Choice {
     /// Model chooses which tool to use, or no tool at all.
     Auto,
@@ -31,7 +30,7 @@ pub enum Choice {
 ///
 /// [`prompt::Message`]: crate::prompt::Message
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "ToolBuilder<'a>")]
 pub struct Tool<'a> {
     /// Name of the tool.
@@ -260,6 +259,18 @@ impl<'a> ToolBuilder<'a> {
 
         Ok(self.tool)
     }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields. If they are already owned, this is a no-op.
+    pub fn into_static(self) -> Tool<'static> {
+        Tool {
+            name: Cow::Owned(self.tool.name.into_owned()),
+            description: Cow::Owned(self.tool.description.into_owned()),
+            input_schema: self.tool.input_schema,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: self.tool.cache_control,
+        }
+    }
 }
 
 /// Errors that can occur when building a [`Tool`] with a [`ToolBuilder`].
@@ -325,6 +336,18 @@ impl<'a> Tool<'a> {
     {
         let value = serde_json::to_value(value)?;
         value.try_into()
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
+    /// fields.
+    pub fn into_static(self) -> Tool<'static> {
+        Tool {
+            name: Cow::Owned(self.name.into_owned()),
+            description: Cow::Owned(self.description.into_owned()),
+            input_schema: self.input_schema,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: self.cache_control,
+        }
     }
 }
 

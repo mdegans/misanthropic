@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{ops::Deref, sync::Arc};
 
 use axum::{
     extract::State,
@@ -7,10 +7,14 @@ use axum::{
         sse::{Event, Sse},
         IntoResponse,
     },
-    BoxError, Json,
+    routing::{get, get_service, post},
+    BoxError, Json, Router,
 };
 use futures::{pin_mut, Stream, StreamExt};
 use serde_json::json;
+use shuttle_runtime::SecretStore;
+use tokio::sync::Mutex;
+use tower_http::services::ServeDir;
 
 use misanthropic::{prompt::message::Role, stream::FilterExt};
 
@@ -73,7 +77,10 @@ pub async fn events_stream(
             // Yield a copy of the prompt. In production, this would be a bad
             // idea because the prompt could be large and this struct includes
             // the system prompt. This is just for demonstration purposes and so
-            // the code is easier to understand.
+            // the code is easier to understand. If somehow the client is
+            // desynchronized, this will help us debug it. If the client needs
+            // to reconnect, it will get the full prompt to resynchronize. A
+            // fancier system could have a user event to request a full prompt.
             yield Event::default()
                 .json_data(json!({
                     "prompt": prompt.deref(),
@@ -83,7 +90,9 @@ pub async fn events_stream(
             if prompt.messages.last().is_none_or(|m| m.role == Role::Assistant) {
                 // If the last message is a user message, we don't want to await
                 // a new message from the user just yet, because we must
-                // maintain the turn order.
+                // maintain the turn order. It would be the assistant's turn to
+                // respond. We'll wait for the assistant to respond first before
+                // taking from the user message channel again.
                 let user_message = from_user.recv().await.unwrap();
                 // Unwrap can't panic because we just verified the turn order
                 // and we have exclusive access to the prompt.
@@ -92,17 +101,18 @@ pub async fn events_stream(
             // Agent's turn to respond. We have guaranteed that the last message
             // in the prompt is a user message because there are only two roles.
 
-            // This message will be assembled in place by the stream. We need a
-            // partial message if we are ever interrupted by the user.
-
-            // Get a streaming response from the Anthropic AI.
+            // Get a streaming response from the Anthropic AI. This will include
+            // full messages and tool use events.
             let stream = match state.client.stream(prompt.deref()).await {
                 Ok(stream) => stream
-                    .filter_rate_limit() // Anthropic is sending *us* messages
-                    // so this is not very important, however with many users
-                    // it might be useful to include rate limit errors.
-                    .with_message_ip(&mut assistant_message) // Add `Event::Message`
-                    .with_tool_use(), // Add `Event::ToolUse`
+                    // Anthropic is sending *us* messages so this is not very
+                    // important, however with many users it might be useful to
+                    // include rate limit errors.
+                    .filter_rate_limit()
+                    // Adds a full message event, `Event::Message`
+                    .with_message_ip(&mut assistant_message)
+                    // Adds a tool use event, `Event::ToolUse`
+                    .with_tool_use(),
                 Err(e) => {
                     // Something went wrong getting a stream from Anthropic. We
                     // should really handle the individual errors here, since
@@ -125,7 +135,7 @@ pub async fn events_stream(
                 // this with `stream.next()` but it's easier to understand this
                 // way. Very small latency difference since we must wait for the
                 // next event but there are many of these per second.
-                if let Some(user_message) = from_user.try_recv().ok() {
+                if let Ok(user_message) = from_user.try_recv() {
                     // We can't take the partial message here because the stream
                     // owns a mutable reference to it. We'll just store the user
                     // message here and handle it on the next iteration.
@@ -170,4 +180,30 @@ pub async fn events_stream(
     };
 
     Sse::new(stream)
+}
+
+pub fn create_router(secrets: SecretStore) -> Router {
+    let client = misanthropic::Client::new(
+        secrets
+            .get("ANTHROPIC_API_KEY")
+            .expect("ANTHROPIC_API_KEY must be set in a Secrets.toml file."),
+    )
+    .unwrap();
+    let prompt = crate::prompt::default();
+
+    let (to_events, from_user) = tokio::sync::mpsc::channel(10);
+
+    let state = AppState {
+        to_events,
+        // Single consumer, so owned so, Arc.
+        from_user: Arc::new(Mutex::new(from_user)),
+        client,
+        prompt: Arc::new(Mutex::new(prompt)),
+    };
+
+    Router::new()
+        .route("/events", get(events_stream))
+        .route("/message", post(message_post))
+        // frontend goes here
+        .with_state(state)
 }
