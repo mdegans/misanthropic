@@ -1,6 +1,29 @@
 [package]
-name = "chat-frontend"
+name = "frontend"
 version = "0.1.0"
+authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 edition = "2021"
 
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
 [dependencies]
+dioxus = { version = "0.6", features = ["router"] }
+eventsource-stream = "0.2"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+misanthropic = { path = "../../misanthropic", default-features = false, features = [
+    "html",
+] }
+uuid = { version = "0.8", features = ["v4"], default-features = false }
+getrandom = { version = "0.2", features = ["js"], default-features = false }
+log = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.4"
+wasm-bindgen = "0.2"
+thiserror = "1"
+js-sys = "0.3"
+
+[features]
+default = ["web"]
+web = ["dioxus/web"]
+desktop = ["dioxus/desktop"]
+mobile = ["dioxus/mobile"]

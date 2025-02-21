@@ -66,9 +66,9 @@ governor = { version = "0.7", optional = true }
 # async/await
 async-stream = "0.3"
 # for date and time parsing
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 # for request ids
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v4"], optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -84,7 +84,7 @@ tempfile = "3.12"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls", "langsan", "rate-limiting"]
+default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself. This is mostly for interop with
 # the `image` crate.
@@ -125,6 +125,11 @@ rate-limiting = ["dep:governor"]
 cot = []
 # Support for shuttle-runtime crate.
 shuttle = ["dep:shuttle-runtime"]
+# Batch support. By default this is on but it breaks wasm, FYI.
+batch = ["dep:uuid"]
+# Enable the actual client. This can be off for wasm becanse eventsource-stream
+# requires Sync on some things and that's not possible in wasm.
+client = []
 
 [[example]]
 name = "strawberry"

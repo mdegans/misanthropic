@@ -1,18 +1,20 @@
 //! [`Client`] for the Anthropic Messages API and related types.
 
+#[cfg_attr(not(feature = "client"), allow(unused_imports))]
 use std::{collections::HashMap, env, num::NonZeroU16, sync::Arc};
 
+#[cfg(feature = "client")]
 use eventsource_stream::Eventsource;
+#[cfg(feature = "client")]
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::{
-    batch::{self, IdentifiedBatchResult, Prompts},
-    key,
-    model::Models,
-    response, Key, Prompt,
-};
+#[cfg_attr(not(feature = "client"), allow(unused_imports))]
+use crate::{key, model::Models, response, Key, Prompt};
+
+#[cfg(all(feature = "batch", feature = "client"))]
+use crate::batch::{self, IdentifiedBatchResult, Prompts};
 
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
@@ -22,6 +24,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// See [`Self::new`] for creating a new client and [`Self::message`] and
 /// [`Self::stream`] to get started.
 #[derive(Clone)]
+#[cfg(feature = "client")]
 pub struct Client {
     /// Inner [`reqwest::Client`]. Be aware that setting this to a custom client
     /// without the appropriate headers (such as `anthropic-version`) will
@@ -61,6 +64,7 @@ pub struct Client {
 }
 
 /// Claude client. Uses the Messages API and the prompt caching beta.
+#[cfg(feature = "client")]
 impl Client {
     /// Version of the API. This is appended to the header as
     /// "anthropic-version".
@@ -601,6 +605,7 @@ impl Client {
     }
 }
 
+#[cfg(feature = "client")]
 impl From<Key> for Client {
     fn from(key: Key) -> Self {
         Self::from_key(key)
@@ -721,6 +726,7 @@ impl AnthropicError {
 // both fields with "type" *and* the enum itself so we must wrap it.
 #[derive(Deserialize)]
 #[serde(tag = "error")]
+#[cfg(feature = "client")]
 pub(crate) struct AnthropicErrorWrapper {
     pub(crate) error: AnthropicError,
 }

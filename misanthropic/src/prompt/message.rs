@@ -16,7 +16,16 @@ use crate::{
 };
 
 /// Role of the [`Message`] author.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Hash)]
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    Hash,
+    derive_more::IsVariant,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum Role {
     /// From the user.
@@ -31,6 +40,13 @@ impl Role {
         match self {
             Self::User => "User",
             Self::Assistant => "Assistant",
+        }
+    }
+    /// Toggle the role between [`Role::User`] and [`Role::Assistant`].
+    pub const fn toggle(&self) -> Self {
+        match self {
+            Self::User => Self::Assistant,
+            Self::Assistant => Self::User,
         }
     }
 }

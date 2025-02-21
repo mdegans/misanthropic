@@ -18,7 +18,7 @@ use std::{borrow::Cow, pin::Pin, task::Poll};
 /// Sucessful Event from the API. See [`stream::Error`] for errors.
 ///
 /// [`stream::Error`]: Error
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Event {
     /// Periodic ping.
@@ -60,12 +60,14 @@ pub enum Event {
     },
     /// Message end.
     MessageStop,
-    /// Complete message. Provided by [`StreamExt::with_message`], not the API.
+    /// Complete [`response::Message`]. Assembled by [`FilterExt::with_message`]
+    /// not the API.
     Message {
         /// The message.
         message: response::Message<'static>,
     },
-    /// Tool use. Provided by [`StreamExt::with_tool_use`], not the API.
+    /// Complete [`tool::Use`]. Assembled by [`FilterExt::with_tool_use`] not
+    /// the API.
     ToolUse {
         /// The tool use.
         tool_use: tool::Use<'static>,
@@ -138,6 +140,17 @@ pub struct ContentMismatch<'a> {
     pub to: &'static str,
 }
 
+impl ContentMismatch<'_> {
+    /// Convert to a static lifetime. This is useful for when the error is
+    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
+    pub fn into_static(self) -> ContentMismatch<'static> {
+        ContentMismatch {
+            from: self.from.into_static(),
+            to: self.to,
+        }
+    }
+}
+
 /// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the index is
 /// out of bounds.
 #[derive(Serialize, thiserror::Error, Debug)]
@@ -163,9 +176,30 @@ pub enum DeltaError<'a> {
     Parse { error: String },
 }
 
-impl Delta<'_> {
+impl DeltaError<'_> {
+    /// Convert to a static lifetime. This is useful for when the error is
+    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
+    pub fn into_static(self) -> DeltaError<'static> {
+        match self {
+            DeltaError::ContentMismatch { error } => {
+                DeltaError::ContentMismatch {
+                    error: error.into_static(),
+                }
+            }
+            DeltaError::OutOfBounds { error } => {
+                DeltaError::OutOfBounds { error }
+            }
+            DeltaError::Parse { error } => DeltaError::Parse { error },
+        }
+    }
+}
+
+impl<'a> Delta<'a> {
     /// Merge another [`Delta`] onto the end of `self`.
-    pub fn merge(mut self, delta: Delta) -> Result<Self, ContentMismatch> {
+    pub fn merge(
+        mut self,
+        delta: Delta<'a>,
+    ) -> Result<Self, ContentMismatch<'a>> {
         match (&mut self, delta) {
             (Delta::Text { text }, Delta::Text { text: delta }) => {
                 text.to_mut().push_str(&delta);

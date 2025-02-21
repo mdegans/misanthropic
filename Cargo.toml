@@ -7,3 +7,13 @@ lto = true
 strip = true
 # There are (hopefully) no panics in this library. If there are, they are bugs.
 panic = "abort"
+
+[profile.wasm-dev]
+inherits = "dev"
+opt-level = 1
+
+[profile.server-dev]
+inherits = "dev"
+
+[profile.android-dev]
+inherits = "dev"

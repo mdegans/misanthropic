@@ -72,6 +72,11 @@ println!("{}", message);
 - [x] Custom request and endpoint support
 - [x] Zero-copy where possible
 - [x] [Sanitization](https://crates.io/crates/langsan) of input and output to mitigate [injection attacks](https://arstechnica.com/security/2024/10/ai-chatbots-can-read-and-write-invisible-text-creating-an-ideal-covert-channel/)
+- [x] Wasm support (without the Client itself, just the data structures and stream types, extensions, and so on).
+
+  This is actually what you want because running the client itself in the frontend would require the user to expose their API key to the browser which is not a good thing to be teaching users to do.
+
+- [x] Batch API support. On Wasm this is not available.
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
 

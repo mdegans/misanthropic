@@ -1,4 +1,4 @@
-use crate::{Message, Prompt};
+use crate::Prompt;
 
 const DEFAULT_PROMPT_JSON: &str = include_str!("prompt/default.json");
 
@@ -12,17 +12,8 @@ lazy_static::lazy_static! {
     static ref DEFAULT: Prompt = load_default();
 }
 
-pub fn default_messages_len() -> usize {
-    DEFAULT.messages.len()
-}
-
 pub fn default() -> Prompt {
     DEFAULT.clone()
-}
-
-/// Get new messages from the prompt (excluding any in the default prompt).
-pub fn get_new_messages(p: &Prompt) -> &[Message] {
-    p.messages[default_messages_len()..].as_ref()
 }
 
 #[cfg(test)]

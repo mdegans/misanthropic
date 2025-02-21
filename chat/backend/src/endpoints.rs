@@ -7,14 +7,13 @@ use axum::{
         sse::{Event, Sse},
         IntoResponse,
     },
-    routing::{get, get_service, post},
+    routing::{get, post},
     BoxError, Json, Router,
 };
 use futures::{pin_mut, Stream, StreamExt};
 use serde_json::json;
 use shuttle_runtime::SecretStore;
 use tokio::sync::Mutex;
-use tower_http::services::ServeDir;
 
 use misanthropic::{prompt::message::Role, stream::FilterExt};
 
@@ -66,8 +65,8 @@ pub async fn events_stream(
                     yield Event::default()
                         .event("turn_order_error")
                         .json_data(json!({
-                            "message": e.to_string(),
-                            "error": e,
+                            "type": "turn_order_error",
+                            "data": e,
                         }))
                         .unwrap();
                     break;
@@ -83,7 +82,8 @@ pub async fn events_stream(
             // fancier system could have a user event to request a full prompt.
             yield Event::default()
                 .json_data(json!({
-                    "prompt": prompt.deref(),
+                    "type": "prompt",
+                    "data": prompt.deref(),
                 }))
                 .unwrap();
 
@@ -120,8 +120,8 @@ pub async fn events_stream(
                     yield Event::default()
                         .event("misanthropic_client_error")
                         .json_data(json!({
-                            "message": e.to_string(),
-                            "error": e,
+                            "type": "misanthropic_client_error",
+                            "data": e.to_string(),
                         }))
                         .unwrap();
                     break;
@@ -160,7 +160,11 @@ pub async fn events_stream(
                         // Any other event we'll just send to the user,
                         // including tool use.
                         yield Event::default()
-                            .json_data(event)
+                            .event("stream_event")
+                            .json_data(json!({
+                                "type": "stream_event",
+                                "data": event,
+                            }))
                             .unwrap();
                     }
                     Err(e) => {
@@ -168,12 +172,11 @@ pub async fn events_stream(
                         yield Event::default()
                             .event("stream_error")
                             .json_data(json!({
-                                "message": e.to_string(),
-                                "error": e,
+                                "type": "stream_error",
+                                "data": e.to_string(),
                             }))
                             .unwrap();
                     }
-
                 }
             }
         }

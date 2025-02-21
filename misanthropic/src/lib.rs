@@ -17,8 +17,10 @@ pub mod key;
 pub use key::Key;
 
 pub mod client;
+#[cfg(feature = "client")]
 pub use client::Client;
 
+#[cfg(feature = "batch")]
 pub mod batch;
 
 pub mod model;

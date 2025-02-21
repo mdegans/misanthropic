@@ -5,7 +5,10 @@
 
 use std::{borrow::Cow, num::NonZeroU16, vec};
 
-use crate::{tool, Id, Tool};
+use crate::{
+    stream::{self, DeltaError},
+    tool, Id, Tool,
+};
 use message::Content;
 use serde::{Deserialize, Serialize};
 
@@ -261,6 +264,14 @@ impl<'a> Prompt<'a> {
             if last.role == message.role {
                 return Err(TurnOrderError {
                     first: last.clone().into_static(),
+                    second: message.clone().into_static(),
+                });
+            }
+        } else {
+            // The first message must be a user message.
+            if message.role.is_assistant() {
+                return Err(TurnOrderError {
+                    first: message.clone().into_static(),
                     second: message.clone().into_static(),
                 });
             }
@@ -727,6 +738,206 @@ impl<'a> Prompt<'a> {
             top_p: self.top_p,
         }
     }
+
+    /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for
+    /// appending to a [`Prompt`] in a streaming context.
+    ///
+    /// # Note
+    /// - If the `partial-eq` feature is enabled, this will check for equality
+    ///   for `Event::Message` and `Event::ToolUse` events, checking for the
+    ///   consistency of the final message or tool use. Otherwise these messages
+    ///   are ignored.
+    pub fn handle_stream_event(
+        &mut self,
+        event: stream::Event,
+    ) -> Result<(), ApplyEventError> {
+        use stream::Event;
+
+        match event {
+            Event::ContentBlockDelta { index, delta } => {
+                if let Some(last) = self.messages.last_mut() {
+                    // There is a last message. Is it the correct index?
+                    if index == last.content.len() - 1 {
+                        // The last content block has the correct index.
+                        if let Err(e) = last.content.push_delta(delta) {
+                            return Err(e.into_static().into());
+                        }
+                    } else {
+                        return Err(ApplyEventError::UnexpectedIndex {
+                            event: Event::ContentBlockDelta { index, delta },
+                            actual: index,
+                            max: last.content.len() - 1,
+                        });
+                    }
+                } else {
+                    return Err(ApplyEventError::EmptyPrompt {
+                        event: Event::ContentBlockDelta { index, delta },
+                    });
+                }
+            }
+            stream::Event::MessageDelta { .. } => {
+                // We can't apply metadata delta to the prompt because it's
+                // messages are "request" messages, not "response" messages in
+                // Anthropic's terminology.
+                return Err(ApplyEventError::Unsupported { event });
+            }
+            stream::Event::MessageStart { message } => {
+                self.push_message(message)?;
+            }
+            stream::Event::ContentBlockStart {
+                index,
+                content_block,
+            } => {
+                if let Some(last) = self.messages.last_mut() {
+                    if index == last.content.len() {
+                        // The last content block has the correct index. It
+                        // belongs pushed onto the end of the last message.
+                        last.content.push(content_block);
+                    } else {
+                        return Err(ApplyEventError::UnexpectedIndex {
+                            event: Event::ContentBlockStart {
+                                index,
+                                content_block,
+                            },
+                            actual: index,
+                            max: last.content.len(),
+                        });
+                    }
+                }
+            }
+            stream::Event::ContentBlockStop { index } => {
+                if let Some(last) = self.messages.last_mut() {
+                    if index == last.content.len() {
+                        // The last content block has the correct index. There
+                        // is nothing to do here.
+                    } else {
+                        // Either anthropic screwed up or somebody mutated the
+                        // prompt in between events.
+                        return Err(ApplyEventError::UnexpectedIndex {
+                            event: Event::ContentBlockStop { index },
+                            actual: index,
+                            max: last.content.len(),
+                        });
+                    }
+                }
+            }
+            Event::MessageStop => {
+                // Nothing to do here.
+                return Err(ApplyEventError::Unsupported { event });
+            }
+            #[cfg_attr(not(feature = "partial-eq"), allow(unused_variables))]
+            Event::Message { message } => {
+                // The complete message should be identical to the last message
+                // or there is a logic error in the caller.
+                #[cfg(feature = "partial-eq")]
+                if let Some(last) = self.messages.last() {
+                    if last == &message.message {
+                        return Ok(());
+                    }
+
+                    return Err(ApplyEventError::UnexpectedMessage {
+                        event: Event::Message { message },
+                        last: last.clone().into_static(),
+                    });
+                } else {
+                    return Err(ApplyEventError::EmptyPrompt {
+                        event: Event::Message { message },
+                    });
+                }
+            }
+            #[cfg_attr(not(feature = "partial-eq"), allow(unused_variables))]
+            stream::Event::ToolUse { tool_use } => {
+                // The last content block of the last message should be a tool
+                // use. This is the final, assembled tool use.
+                #[cfg(feature = "partial-eq")]
+                if let Some(last) = self.messages.last() {
+                    if let Content::MultiPart(blocks) = &last.content {
+                        if let Some(message::Block::ToolUse { call }) =
+                            blocks.last()
+                        {
+                            if call == &tool_use {
+                                return Ok(());
+                            }
+                        }
+                    }
+
+                    return Err(ApplyEventError::UnexpectedMessage {
+                        event: Event::ToolUse { tool_use },
+                        last: last.clone().into_static(),
+                    });
+                } else {
+                    return Err(ApplyEventError::EmptyPrompt {
+                        event: Event::ToolUse { tool_use },
+                    });
+                }
+            }
+            stream::Event::Ping => {
+                return Err(ApplyEventError::Unsupported { event });
+            }
+        }
+
+        Ok(())
+    }
+}
+
+/// Reason for the error when applying a [`stream::Event`] to a [`Prompt`].
+#[derive(Debug, thiserror::Error, derive_more::IsVariant)]
+pub enum ApplyEventError {
+    /// The [`Event`] is not supported by the [`Prompt`]. It cannot logically be
+    /// applied to a [`Prompt`] at all (e.g. a [`Ping`] event).
+    ///
+    /// [`Event`]: stream::Event
+    /// [`Ping`]: stream::Event::Ping
+    #[error("This `Event` cannot be appended to a `Prompt`.")]
+    Unsupported {
+        /// The unsupported [`Event`].
+        event: stream::Event,
+    },
+    /// Turn Order is incorrect.
+    #[error(transparent)]
+    TurnOrderError {
+        /// The cause of the error.
+        #[from]
+        error: TurnOrderError,
+    },
+    /// Expected the last message to be an [`Assistant`]. Similar to
+    /// TurnOrderError but more specific and does not originate from
+    /// `push_message` or `add_message`.
+    #[error("`Role::Assistant` must be the final message role in the prompt to apply this `Event`.")]
+    ExpectedAssistant {
+        /// The [`Event`] that caused the error.
+        event: stream::Event,
+        /// The role of the last message.
+        last: message::Role,
+    },
+    /// Delta application error.
+    #[error(transparent)]
+    Delta(#[from] DeltaError<'static>),
+    /// Unexpected index. Not necessarily out of bounds, but applying this event
+    /// would be incorrect.
+    #[error("Index {actual} is unexpected.")]
+    UnexpectedIndex {
+        /// The [`Event`] that caused the error.
+        event: stream::Event,
+        /// The actual index.
+        actual: usize,
+        /// The maximum index.
+        max: usize,
+    },
+    /// Complete message did not match the last message.
+    #[error("The complete message did not match the last message.")]
+    UnexpectedMessage {
+        /// The complete message.
+        event: stream::Event,
+        /// The last message.
+        last: Message<'static>,
+    },
+    /// Event cannot be applied to an empty prompt.
+    #[error("The prompt is empty and cannot accept this `Event`.")]
+    EmptyPrompt {
+        /// The [`Event`] that caused the error.
+        event: stream::Event,
+    },
 }
 
 #[cfg(feature = "markdown")]
