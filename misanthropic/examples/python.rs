@@ -258,7 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             Message {
                 role: Role::Assistant,
                 content: Content::MultiPart(vec![
-                    r#"<thinking>This request is complex enough to need Python. I should use the itertools module for this..</thinking>"#.into(),
+                    r#"<thinking>This request is complex enough to need Python. I should use the itertools module for this.</thinking>"#.into(),
                     tool::Use {
                         id: "calibration_001".into(),
                         name: "python".into(),

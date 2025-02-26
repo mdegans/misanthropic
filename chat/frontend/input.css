@@ -1,3 +1,56 @@
+@config "./tailwind.config.js";
+
+/* @tailwind base; */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer components {
+  #main {
+    @apply flex flex-col w-full h-full p-4;
+  }
+  .system {
+    @apply max-w-2xl w-full flex p-4 mt-4 bg-violet-950 hover:bg-violet-800 rounded-2xl text-neutral-200 hover:text-white font-sans whitespace-pre-wrap transition-colors ease-in-out;
+  }
+  .message {
+    @apply max-w-2xl w-full flex flex-col overflow-hidden;
+  }
+  .text {
+    @apply text-neutral-200 font-sans;
+  }
+  .user {
+    @apply rounded-2xl p-4 border-neutral-800 border-2 hover:border-white transition-colors ease-in-out mt-4;
+  }
+  .assistant .speech {
+    @apply mt-4 pl-4 pr-4;
+  }
+  .multi-part {
+    @apply flex flex-col;
+  }
+  /* todo: animation for thought.placeholder */
+  .thought.show {
+    @apply text-neutral-200 hover:text-white italic transition-colors ease-in-out pr-4 pl-4 pt-4;
+  }
+  .tool-use {
+    @apply bg-black rounded-t-xl p-4 text-neutral-200 hover:text-white whitespace-pre overflow-x-scroll max-w-full border-t-2 border-l-2 border-r-2 border-neutral-800 mt-4 ml-4 mr-4;
+  }
+  /* The reason tool-result doesn't have a top margin is because it's always paired with a tool-use and we want them joined together */
+  .tool-result {
+    @apply p-4 rounded-b-xl text-neutral-200 whitespace-pre overflow-x-scroll max-w-full border-b-2 border-r-2 border-l-2 border-neutral-800 pl-4 pr-4 ml-4 mr-4;
+  }
+  .input-box {
+    @apply max-w-2xl w-full mt-4 bg-black rounded-2xl p-4 text-white border-2 border-neutral-800 hover:border-white font-sans transition-colors ease-in-out aspect-video;
+  }
+  .toggle {
+    @apply bg-black text-white rounded-2xl p-4 mt-3 text-center mr-4 border-2 border-neutral-800 hover:border-white transition-colors ease-in-out;
+  }
+  .active {
+    @apply bg-neutral-700 border-neutral-500 transition-colors ease-in-out;
+  }
+  .error {
+    @apply text-red-800 hover:text-red-600 transition-colors ease-in-out;
+  }
+  .ok {
+    @apply text-emerald-600 hover:text-emerald-400 transition-colors ease-in-out;
+  }
+}

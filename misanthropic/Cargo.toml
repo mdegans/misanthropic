@@ -69,6 +69,8 @@ async-stream = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 # for request ids
 uuid = { version = "1", features = ["v4"], optional = true }
+# Dioxus support
+dioxus = { version = "0.6", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -130,6 +132,8 @@ batch = ["dep:uuid"]
 # Enable the actual client. This can be off for wasm becanse eventsource-stream
 # requires Sync on some things and that's not possible in wasm.
 client = []
+# Enables some Dioxus support. This is not necessary for the client.
+dioxus = ["dep:dioxus"]
 
 [[example]]
 name = "strawberry"

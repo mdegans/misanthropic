@@ -1,7 +1,7 @@
 use eventsource_stream::Eventsource;
 use misanthropic::{
     exports::futures::{Stream, StreamExt},
-    prompt::TurnOrderError,
+    prompt::{message::UserMessage, TurnOrderError},
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::JsValue;
@@ -45,7 +45,7 @@ impl Client {
     ) -> Result<impl Stream<Item = Result<Event, Error>>, reqwest::Error> {
         let events = self
             .client
-            .get("http://localhost:8080/events")
+            .get("http://localhost:8079/events")
             .send()
             .await?
             .bytes_stream()
@@ -58,5 +58,19 @@ impl Client {
 
             Ok(event)
         }))
+    }
+
+    pub async fn send<'a, T>(&self, message: T) -> Result<(), reqwest::Error>
+    where
+        T: Into<UserMessage<'a>>,
+    {
+        let message: UserMessage<'a> = message.into();
+        self.client
+            .post("http://localhost:8079/message")
+            .json(&message)
+            .send()
+            .await?
+            .error_for_status()?;
+        Ok(())
     }
 }

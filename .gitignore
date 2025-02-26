@@ -4,3 +4,4 @@ Cargo.lock
 cobertura.xml
 api.key
 lcov.info
+node_modules/

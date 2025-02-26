@@ -101,8 +101,8 @@ pub struct Usage {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Message<'_> {
-    fn markdown_events_custom<'a>(
+impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {

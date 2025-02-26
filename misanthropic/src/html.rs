@@ -14,6 +14,19 @@ pub struct Html {
     inner: String,
 }
 
+impl<'a> FromIterator<&'a str> for Html {
+    fn from_iter<T: IntoIterator<Item = &'a str>>(iter: T) -> Self {
+        let mut html = Html {
+            inner: String::new(),
+        };
+        html.extend(
+            iter.into_iter()
+                .map(|s| pulldown_cmark::Event::Html(s.into())),
+        );
+        html
+    }
+}
+
 impl Html {
     /// Create a new `Html` from a stream of markdown events.
     pub fn from_events<'a>(
@@ -80,6 +93,11 @@ impl Html {
         });
         push_html(&mut self.inner, escaped);
     }
+
+    /// Convert into the inner [`String`].
+    pub fn into_inner(self) -> String {
+        self.inner
+    }
 }
 
 impl From<Html> for String {
@@ -129,26 +147,26 @@ impl<'a> FromIterator<pulldown_cmark::Event<'a>> for Html {
 ///   set on the [`MarkdownOptions`].
 ///
 /// [`MarkdownOptions`]: struct.MarkdownOptions.html
-pub trait ToHtml: ToMarkdown {
+pub trait ToHtml<'a>: ToMarkdown<'a> {
     /// Render the type to an HTML string.
-    fn html(&self) -> Html {
+    fn html(&'a self) -> Html {
         let mut opts = DEFAULT_OPTIONS;
         opts.attrs = true;
         self.html_custom(opts)
     }
 
     /// Render the type to an HTML string with maximum verbosity.
-    fn html_verbose(&self) -> Html {
+    fn html_verbose(&'a self) -> Html {
         self.html_custom(VERBOSE_OPTIONS)
     }
 
     /// Render the type to an HTML string with custom [`Options`].
-    fn html_custom(&self, options: Options) -> Html {
+    fn html_custom(&'a self, options: Options) -> Html {
         self.markdown_events_custom(options).collect()
     }
 }
 
-impl<T> ToHtml for T where T: ToMarkdown {}
+impl<'a, T> ToHtml<'a> for T where T: ToMarkdown<'a> {}
 
 #[cfg(test)]
 mod tests {

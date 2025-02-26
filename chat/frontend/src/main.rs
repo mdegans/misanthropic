@@ -5,6 +5,7 @@ use views::{Chat, Home};
 
 mod client;
 mod components;
+mod utils;
 mod views;
 
 #[derive(Debug, Clone, Routable, PartialEq)]
@@ -22,6 +23,8 @@ const MAIN_CSS: Asset = asset!("/assets/styling/main.css");
 const TAILWIND_CSS: Asset = asset!("/assets/tailwind.css");
 
 fn main() {
+    wasm_logger::init(wasm_logger::Config::default());
+
     dioxus::launch(App);
 }
 
@@ -30,8 +33,13 @@ fn App() -> Element {
     rsx! {
         // Global app resources
         document::Link { rel: "icon", href: FAVICON }
-        document::Link { rel: "stylesheet", href: MAIN_CSS }
-        document::Link { rel: "stylesheet", href: TAILWIND_CSS }
+        document::Stylesheet { href: MAIN_CSS }
+        document::Stylesheet { href: TAILWIND_CSS }
+
+        document::Meta {
+            name: "viewport",
+            content: "width=device-width, initial-scale=1.0",
+        }
 
         Router::<Route> {}
     }

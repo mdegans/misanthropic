@@ -374,7 +374,7 @@ impl TryFrom<serde_json::Value> for Tool<'static> {
     display("\n````json\n{}\n````\n", serde_json::to_string_pretty(self).unwrap())
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 pub struct Use<'a> {
     /// Unique Id for this tool call.
     ///
@@ -421,8 +421,8 @@ impl TryFrom<serde_json::Value> for Use<'_> {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Use<'_> {
-    fn markdown_events_custom<'a>(
+impl<'a> crate::markdown::ToMarkdown<'a> for Use<'a> {
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
@@ -434,7 +434,9 @@ impl crate::markdown::ToMarkdown for Use<'_> {
                     Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(
                         "json".into(),
                     ))),
-                    Event::Text(serde_json::to_string(self).unwrap().into()),
+                    Event::Text(
+                        serde_json::to_string_pretty(self).unwrap().into(),
+                    ),
                     Event::End(TagEnd::CodeBlock),
                 ]
                 .into_iter(),
@@ -460,7 +462,7 @@ impl std::fmt::Display for Use<'_> {
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Message`]: crate::prompt::message
-#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 // On the one hand this can clash with the `Result` type from the standard
 // library, but on the other hand it's what the API uses, and I'm trying to
@@ -491,6 +493,33 @@ impl Result<'_> {
             is_error: self.is_error,
             #[cfg(feature = "prompt-caching")]
             cache_control: self.cache_control,
+        }
+    }
+}
+
+#[cfg(feature = "markdown")]
+impl<'a> crate::markdown::ToMarkdown<'a> for Result<'a> {
+    fn markdown_events_custom(
+        &'a self,
+        options: crate::markdown::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+
+        if options.tool_results {
+            Box::new(
+                [
+                    Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(
+                        "json".into(),
+                    ))),
+                    Event::Text(
+                        serde_json::to_string_pretty(self).unwrap().into(),
+                    ),
+                    Event::End(TagEnd::CodeBlock),
+                ]
+                .into_iter(),
+            )
+        } else {
+            Box::new(std::iter::empty())
         }
     }
 }

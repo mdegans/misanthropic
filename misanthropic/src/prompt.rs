@@ -941,7 +941,7 @@ pub enum ApplyEventError {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Prompt<'_> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Prompt<'a> {
     /// Format the [`Prompt`] as markdown in OpenAI style. H3 headings are used
     /// for "System", "Tool", "User", and "Assistant" messages even though
     /// technically there are only [`User`] and [`Assistant`] [`Role`]s.
@@ -949,7 +949,7 @@ impl crate::markdown::ToMarkdown for Prompt<'_> {
     /// [`User`]: message::Role::User
     /// [`Assistant`]: message::Role::Assistant
     /// [`Role`]: message::Role
-    fn markdown_events_custom<'a>(
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {

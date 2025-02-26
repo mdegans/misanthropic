@@ -20,6 +20,9 @@ pub mod client;
 #[cfg(feature = "client")]
 pub use client::Client;
 
+#[cfg(feature = "dioxus")]
+pub mod dioxus;
+
 #[cfg(feature = "batch")]
 pub mod batch;
 

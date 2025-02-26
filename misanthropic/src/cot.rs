@@ -1,7 +1,7 @@
 //! Basic support for parsing chain of thought within XML tags. Nested tags are
 //! not supported. Bring the [`Thinkable`] trait into scope to use the methods
 //! provided by this module.
-use std::vec;
+use std::{borrow::Cow, vec};
 
 use derive_more::derive::Deref;
 
@@ -25,16 +25,19 @@ pub const DEFAULT_END_TAGS: &[&str] =
 #[display("{text}")]
 pub struct Thought<'a> {
     /// The text inside a thinking element.
-    pub text: &'a str,
+    pub text: Cow<'a, str>,
 }
 
 #[cfg(feature = "markdown")]
-impl ToMarkdown for Thought<'_> {
-    fn markdown_events_custom<'a>(
+impl<'a> ToMarkdown<'a> for Thought<'a> {
+    fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        Box::new(pulldown_cmark::Parser::new_ext(self.text, options.inner))
+        Box::new(pulldown_cmark::Parser::new_ext(
+            self.text.as_ref(),
+            options.inner,
+        ))
     }
 }
 
@@ -43,16 +46,19 @@ impl ToMarkdown for Thought<'_> {
 #[display("{text}")]
 pub struct Speech<'a> {
     /// The text outside thinking elements.
-    pub text: &'a str,
+    pub text: Cow<'a, str>,
 }
 
 #[cfg(feature = "markdown")]
-impl ToMarkdown for Speech<'_> {
-    fn markdown_events_custom<'a>(
+impl<'a> ToMarkdown<'a> for Speech<'a> {
+    fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        Box::new(pulldown_cmark::Parser::new_ext(self.text, options.inner))
+        Box::new(pulldown_cmark::Parser::new_ext(
+            self.text.as_ref(),
+            options.inner,
+        ))
     }
 }
 
@@ -146,7 +152,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
             if *start != 0 {
                 // There is speech before the start tag. Return it.
                 let speech = Some(ThoughtOrSpeech::Speech(Speech {
-                    text: &self.text[self.index..self.index + *start],
+                    text: self.text[self.index..self.index + *start].into(),
                 }));
                 self.index += start;
                 return speech;
@@ -160,7 +166,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 let thought_start = self.index + start + start_tag.len();
                 let thought_end = self.index + end;
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: &self.text[thought_start..thought_end],
+                    text: self.text[thought_start..thought_end].into(),
                 }));
 
                 // And then set the index to the end of the end tag.
@@ -174,7 +180,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 let thought_start = self.index + start + start_tag.len();
                 let thought_end = self.text.len();
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: &self.text[thought_start..thought_end],
+                    text: self.text[thought_start..thought_end].into(),
                 }));
 
                 self.index = thought_end;
@@ -184,7 +190,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 // We have an end tag, but no start tag. Everything up to the
                 // end tag is a thought (same rationale as above).
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: &self.text[self.index..self.index + end],
+                    text: self.text[self.index..self.index + end].into(),
                 }));
                 self.index += end + end_tag.len();
                 return thought;
@@ -192,7 +198,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
             (None, None) => {
                 // There are no tags. The entire text is speech.
                 let speech = Some(ThoughtOrSpeech::Speech(Speech {
-                    text: &self.text[self.index..],
+                    text: self.text[self.index..].into(),
                 }));
                 self.index = self.text.len();
                 return speech;
@@ -263,12 +269,12 @@ impl<'a> Thinkable<'a> for Block<'a> {
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
     ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a> {
-        Box::new(match self {
-            Block::Text { text, .. } => {
-                ThoughtsAndSpeech::new_custom(text, start_tags, end_tags)
-            }
-            _ => ThoughtsAndSpeech::new_custom("", start_tags, end_tags),
-        })
+        match self {
+            Block::Text { text, .. } => Box::new(Box::new(
+                ThoughtsAndSpeech::new_custom(text, start_tags, end_tags),
+            )),
+            _ => Box::new(std::iter::empty()),
+        }
     }
 }
 
@@ -312,8 +318,8 @@ impl<'a> Thinkable<'a> for Message<'a> {
     }
 }
 
-impl ToMarkdown for ThoughtOrSpeech<'_> {
-    fn markdown_events_custom<'a>(
+impl<'a> ToMarkdown<'a> for ThoughtOrSpeech<'a> {
+    fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {

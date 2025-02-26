@@ -8,7 +8,11 @@ axum = { version = "0.8.1", features = ["macros"] }
 shuttle-axum = "0.51.0"
 shuttle-runtime = "0.51.0"
 tokio = "1.28.2"
-misanthropic = { path = "../../misanthropic", features = ["shuttle", "log"] }
+misanthropic = { path = "../../misanthropic", features = [
+    "shuttle",
+    "log",
+    "cot",
+] }
 futures = "0.3"
 async-stream = "0.3"
 serde_json = "1"

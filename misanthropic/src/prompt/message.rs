@@ -42,6 +42,15 @@ impl Role {
             Self::Assistant => "Assistant",
         }
     }
+
+    /// Convenience method for lowercase role.
+    pub const fn as_lowercase(&self) -> &'static str {
+        match self {
+            Self::User => "user",
+            Self::Assistant => "assistant",
+        }
+    }
+
     /// Toggle the role between [`Role::User`] and [`Role::Assistant`].
     pub const fn toggle(&self) -> Self {
         match self {
@@ -108,6 +117,21 @@ impl Message<'_> {
         self.content.last()?.tool_use()
     }
 
+    /// Returns Some([`tool::Result`]) if the first [`Content`] [`Block`] is a
+    /// [`Block::ToolResult`].
+    pub fn tool_result(&self) -> Option<&crate::tool::Result> {
+        match &self.content {
+            Content::SinglePart(_) => None,
+            Content::MultiPart(parts) => {
+                if let Some(Block::ToolResult { result }) = parts.first() {
+                    Some(result)
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
     ///
@@ -157,13 +181,13 @@ impl<'a> From<tool::Result<'a>> for Message<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Message<'_> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
     ///
     /// [`Options`]: crate::markdown::Options
-    fn markdown_events_custom<'a>(
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
@@ -308,6 +332,53 @@ impl<'a> From<UserMessage<'a>> for Content<'a> {
     }
 }
 
+impl From<String> for UserMessage<'_> {
+    fn from(string: String) -> Self {
+        UserMessage {
+            inner: Message {
+                role: Role::User,
+                content: Content::text(string),
+            },
+        }
+    }
+}
+
+impl<'a> From<&'a str> for UserMessage<'a> {
+    fn from(string: &'a str) -> Self {
+        UserMessage {
+            inner: Message {
+                role: Role::User,
+                content: Content::text(string),
+            },
+        }
+    }
+}
+
+#[cfg(feature = "dioxus")]
+impl From<dioxus::events::FormEvent> for UserMessage<'_> {
+    fn from(event: dioxus::events::FormEvent) -> Self {
+        UserMessage {
+            inner: Message {
+                role: Role::User,
+                content: event.data().value().into(),
+            },
+        }
+    }
+}
+
+#[cfg(feature = "dioxus")]
+impl From<dioxus::html::FormData> for UserMessage<'_> {
+    fn from(data: dioxus::html::FormData) -> Self {
+        let content = data.into();
+        UserMessage {
+            inner: Message {
+                role: Role::User,
+                content,
+            },
+        }
+    }
+}
+
 impl<'a> TryFrom<Message<'a>> for UserMessage<'a> {
     type Error = NotTheUser;
 
@@ -338,7 +409,9 @@ impl From<NotTheUser> for Cow<'static, str> {
 }
 
 /// Content of a [`Message`].
-#[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
+#[derive(
+    Clone, Debug, Serialize, Deserialize, Hash, derive_more::IsVariant,
+)]
 #[serde(rename_all = "snake_case")]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -501,13 +574,13 @@ impl<'a> Content<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Content<'_> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
     /// [`Options`]: crate::markdown::Options
     #[cfg(feature = "markdown")]
-    fn markdown_events_custom<'a>(
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
@@ -545,6 +618,33 @@ impl std::fmt::Display for Content<'_> {
                 }
                 Ok(())
             }
+        }
+    }
+}
+
+#[cfg(feature = "dioxus")]
+impl From<dioxus::html::FormData> for Content<'_> {
+    fn from(data: dioxus::html::FormData) -> Self {
+        data.value().into()
+    }
+}
+
+impl<'a> IntoIterator for Content<'a> {
+    type Item = Block<'a>;
+    type IntoIter = std::vec::IntoIter<Block<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Content::SinglePart(text) => vec![Block::Text {
+                text,
+                cache_control: None,
+            }]
+            .into_iter(),
+            Content::MultiPart(parts) => parts
+                .into_iter()
+                .map(Block::into_static)
+                .collect::<Vec<_>>()
+                .into_iter(),
         }
     }
 }
@@ -605,7 +705,7 @@ where
 }
 
 /// A [`Content`] [`Block`] of a [`Message`].
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(not(feature = "markdown"), derive(derive_more::Display))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
@@ -862,13 +962,13 @@ impl<'a> Block<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Block<'_> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
     /// [`Options`]: crate::markdown::Options
     #[cfg(feature = "markdown")]
-    fn markdown_events_custom<'a>(
+    fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
