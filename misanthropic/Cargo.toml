@@ -35,6 +35,7 @@ derive_more = { version = "1", features = [
 ] }
 eventsource-stream = "0.2"
 futures = "0.3"
+async-trait = "0.1"
 image = { version = "0.25", optional = true }
 log = { version = "0.4", optional = true }
 memsecurity = { version = "3.5", optional = true }

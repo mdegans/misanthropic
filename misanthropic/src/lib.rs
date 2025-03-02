@@ -57,6 +57,9 @@ pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
 #[cfg(feature = "langsan")]
 pub(crate) type CowStr<'a> = langsan::CowStr<'a>;
 
+/// Small utility functions and types.
+pub(crate) mod utils;
+
 /// Re-exports of commonly used crates to avoid version conflicts and reduce
 /// dependency bloat.
 pub mod exports {

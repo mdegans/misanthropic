@@ -41,6 +41,10 @@ impl<'a> Id<'a> {
     pub fn name(&'a self) -> &'a str {
         match self {
             Id::Anthropic(model) => match model {
+                AnthropicModel::Sonnet37 => "claude-3-7-sonnet-latest",
+                AnthropicModel::Sonnet37_20250219 => {
+                    "claude-3-7-sonnet-20250219"
+                }
                 AnthropicModel::Sonnet35 => "claude-3-5-sonnet-latest",
                 AnthropicModel::Sonnet35_20240620 => {
                     "claude-3-5-sonnet-20240620"
@@ -146,6 +150,12 @@ impl Default for Id<'_> {
 // Anthropic(NotFound { message: "model: claude-3-haiku-latest" })
 // - mdegans
 pub enum AnthropicModel {
+    /// Sonnet 3.7 (latest)
+    #[serde(rename = "claude-3-7-sonnet-latest")]
+    Sonnet37,
+    /// Sonnet 3.7 2025-02-19
+    #[serde(rename = "claude-3-7-sonnet-20250219")]
+    Sonnet37_20250219,
     /// Sonnet 3.5 (latest)
     #[serde(rename = "claude-3-5-sonnet-latest")]
     Sonnet35,
@@ -209,6 +219,8 @@ impl AnthropicModel {
             AnthropicModel::Sonnet35 => "sonnet-3.5-latest",
             AnthropicModel::Sonnet35_20240620 => "sonnet-3.5-20240620",
             AnthropicModel::Sonnet35_20241022 => "sonnet-3.5-20241022",
+            AnthropicModel::Sonnet37 => "sonnet-3.7-latest",
+            AnthropicModel::Sonnet37_20250219 => "sonnet-3.7-20250219",
         }
     }
 }

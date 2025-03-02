@@ -326,6 +326,45 @@ impl IntoElement for &Block<'_> {
                     })
                 }
             }
+            Block::Thought {
+                thought: thinking,
+                signature,
+            } => match &opts.thought {
+                opts::Thought::Hidden => rsx!(),
+                opts::Thought::Placeholder { class } => {
+                    rsx!(div {
+                        key: key,
+                        id: signature.as_ref(),
+                        class: class.as_ref(),
+                    })
+                }
+                opts::Thought::Show { class } => {
+                    rsx!(div {
+                        key: key,
+                        id: signature.as_ref(),
+                        class: class.as_ref(),
+                        {thinking}
+                    })
+                }
+            },
+            Block::RedactedThought { signature } => match &opts.thought {
+                opts::Thought::Hidden => rsx!(),
+                opts::Thought::Placeholder { class } => {
+                    rsx!(div {
+                        key: key,
+                        id: signature.as_ref(),
+                        class: class.as_ref(),
+                    })
+                }
+                opts::Thought::Show { class } => {
+                    rsx!(div {
+                        key: key,
+                        id: signature.as_ref(),
+                        class: format!("{} redacted", class),
+                        "Anthropic redacted a thought."
+                    })
+                }
+            },
             Block::Image {
                 image,
                 cache_control,

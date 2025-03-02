@@ -23,6 +23,7 @@ pub struct Message<'a> {
     /// [`StopSequence`]: StopReason::StopSequence
     pub stop_sequence: Option<Cow<'a, str>>,
     /// Usage statistics for the message.
+    #[serde(default)]
     pub usage: Usage,
 }
 

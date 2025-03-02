@@ -569,7 +569,7 @@ mod tests {
 
         assert_eq!(
             markdown.as_ref(),
-            "\n````json\n{\"id\":\"test_id\",\"name\":\"test_name\",\"input\":{\"test_key\":\"test_value\"}}\n````"
+            "\n````json\n{\n  \"id\": \"test_id\",\n  \"name\": \"test_name\",\n  \"input\": {\n    \"test_key\": \"test_value\"\n  }\n}\n````"
         );
 
         // By default the tool use is not included in the markdown, however this

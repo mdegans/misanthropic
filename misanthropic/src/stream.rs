@@ -19,6 +19,7 @@ use std::{borrow::Cow, pin::Pin, task::Poll};
 ///
 /// [`stream::Error`]: Error
 #[derive(Debug, Serialize, Deserialize, derive_more::IsVariant)]
+#[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Event {
     /// Periodic ping.
@@ -112,6 +113,37 @@ pub enum Delta<'a> {
         /// The JSON delta.
         partial_json: Cow<'a, str>,
     },
+    /// Thinking delta. Availalble with Sonnet 3.7 and newer when
+    /// [`Prompt::thinking`] is set.
+    ///
+    /// [`Prompt::thinking`]: crate::prompt::Prompt::thinking
+    #[serde(rename = "thinking_delta")]
+    Thought {
+        /// The thinking delta.
+        thinking: Cow<'a, str>,
+        /// Signature, when the thinking is complete.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signature: Option<Cow<'a, str>>,
+    },
+    /// Redacted thinking delta. Availalble with Sonnet 3.7 and newer when
+    /// [`Prompt::thinking`] is set.
+    ///
+    /// [`Prompt::thinking`]: crate::prompt::Prompt::thinking
+    #[serde(rename = "redacted_thinking_delta")]
+    RedactedThought {
+        /// Complete signature of a redacted thought.
+        signature: Cow<'a, str>,
+    },
+    /// Signature delta. Availalble with Sonnet 3.7 and newer when
+    /// [`Prompt::thinking`] is set.
+    ///
+    /// [`Prompt::thinking`]: crate::prompt::Prompt::thinking
+    #[serde(rename = "signature_delta")]
+    Signature {
+        /// Signature of a complete thought. This should be merged with a
+        /// [`Delta::Thought`]` to complete the thought.
+        signature: Cow<'a, str>,
+    },
 }
 
 impl Delta<'_> {
@@ -125,12 +157,25 @@ impl Delta<'_> {
             Delta::Json { partial_json } => Delta::Json {
                 partial_json: partial_json.into_owned().into(),
             },
+            Delta::Thought {
+                thinking,
+                signature,
+            } => Delta::Thought {
+                thinking: thinking.into_owned().into(),
+                signature: signature.map(|s| s.into_owned().into()),
+            },
+            Delta::Signature { signature } => Delta::Signature {
+                signature: signature.into_owned().into(),
+            },
+            Delta::RedactedThought { signature } => Delta::RedactedThought {
+                signature: signature.into_owned().into(),
+            },
         }
     }
 }
 
 /// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the types do
-/// not match.
+/// not match. Also from [`Delta::merge`].
 #[derive(Serialize, thiserror::Error, Debug)]
 #[error("`Delta::{from:?}` canot be applied to `{to}`.")]
 pub struct ContentMismatch<'a> {
@@ -195,15 +240,30 @@ impl DeltaError<'_> {
 }
 
 impl<'a> Delta<'a> {
+    /// Return true if `self` is a [`Thought`] delta and `signature` is `Some`.
+    ///
+    /// [`Thought`]: Delta::Thinking
+    pub fn thought_complete(&self) -> bool {
+        matches!(
+            self,
+            Delta::Thought {
+                signature: Some(_),
+                ..
+            }
+        )
+    }
+
     /// Merge another [`Delta`] onto the end of `self`.
     pub fn merge(
         mut self,
         delta: Delta<'a>,
     ) -> Result<Self, ContentMismatch<'a>> {
         match (&mut self, delta) {
+            // Text incoming, text already here. Simply append.
             (Delta::Text { text }, Delta::Text { text: delta }) => {
                 text.to_mut().push_str(&delta);
             }
+            // Dittos for JSON.
             (
                 Delta::Json { partial_json },
                 Delta::Json {
@@ -212,12 +272,52 @@ impl<'a> Delta<'a> {
             ) => {
                 partial_json.to_mut().push_str(&delta);
             }
+            // Case where an incomplete thought is merged with an incomplete
+            // thought. This is valid. Simply append.
+            (
+                Delta::Thought {
+                    thinking,
+                    signature: None,
+                },
+                Delta::Thought {
+                    thinking: delta,
+                    // It is not valid to merge a complete thought with anything
+                    signature: None,
+                },
+            ) => {
+                thinking.to_mut().push_str(&delta);
+            }
+            // Case where an incomplete thought is merged with a signature to
+            // create a complete thought.
+            (
+                Delta::Thought { signature, .. },
+                Delta::Signature {
+                    signature: signature_delta,
+                },
+            ) => {
+                if signature.is_some() {
+                    return Err(ContentMismatch {
+                        from: Delta::Signature {
+                            signature: signature_delta,
+                        },
+                        to: stringify!(Delta::Thinking),
+                    });
+                }
+                signature.replace(signature_delta.into());
+            }
+            // Every other case is a mismatch.
             (to, from) => {
                 return Err(ContentMismatch {
                     from,
                     to: match to {
-                        Delta::Text { .. } => stringify!(Delta::Text),
-                        Delta::Json { .. } => stringify!(Delta::Json),
+                        Delta::Text { .. } => "Delta::Text",
+                        Delta::Json { .. } => "Delta::Json",
+                        Delta::Thought { .. } => "Delta::Thought",
+                        // Each delta below is a single event. Merge impossible.
+                        Delta::Signature { .. } => "Delta::Signature",
+                        Delta::RedactedThought { .. } => {
+                            "Delta::RedactedThought"
+                        }
                     },
                 });
             }
@@ -230,6 +330,7 @@ impl<'a> Delta<'a> {
 /// Metadata about a message in progress. This does not contain actual text
 /// deltas. That's the [`Delta`] in [`Event::ContentBlockDelta`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
 pub struct MessageDelta {
     /// Stop reason.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -656,6 +757,11 @@ impl<S> FilterExt for S where
 pub(crate) mod tests {
     use futures::TryStreamExt;
 
+    use crate::{
+        prompt::{message::Role, Message},
+        AnthropicModel, Prompt,
+    };
+
     use super::*;
 
     // Actual JSON from the API.
@@ -686,6 +792,31 @@ pub(crate) mod tests {
         );
 
         Stream::new(inner)
+    }
+
+    pub fn mock_stream_jsonl(
+        text: &'static str,
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
+        futures::stream::iter(text.lines().map(|line| {
+            let res: Result<Event, serde_json::Value> =
+                serde_json::from_str(line).unwrap();
+            match res {
+                Ok(event) => Ok(event),
+                Err(_) => Err(Error::Anthropic {
+                    error: AnthropicError::Unknown {
+                        code: 123.try_into().unwrap(),
+                        // every line in the file is Ok, so this is impossible.
+                        message: "impossible".into(),
+                    },
+                    event: eventsource_stream::Event {
+                        event: "impossible".into(),
+                        data: "impossible".into(),
+                        id: "impossible".into(),
+                        retry: None,
+                    },
+                }),
+            }
+        }))
     }
 
     #[test]
@@ -827,5 +958,197 @@ pub(crate) mod tests {
             text,
             "Okay, let's check the weather for San Francisco, CA:"
         );
+    }
+
+    #[tokio::test]
+    async fn test_thought_stream() {
+        // Test every message deserializes.
+        let mut stream =
+            mock_stream(include_str!("../test/data/thinking.sse.stream.txt"));
+
+        let mut errors = Vec::new();
+        while let Some(event) = stream.next().await {
+            match event {
+                Err(error) => errors.push(error),
+                Ok(_) => {}
+            }
+        }
+        if !errors.is_empty() {
+            panic!("Errors: {:#?}", errors);
+        }
+        // The stream has no error variants, so we parsed everything correctly.
+
+        let stream =
+            mock_stream(include_str!("../test/data/thinking.sse.stream.txt"));
+
+        // Test the text stream filters out the thinking delta.
+        let text: String = stream
+            .filter_rate_limit()
+            .text()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(text, "27 * 453 = 12,231");
+    }
+
+    #[tokio::test]
+    async fn test_thought_stream_exact() {
+        let mut stream =
+            mock_stream(include_str!("../test/data/thinking.sse.stream.txt"));
+
+        // Test prompt assembly from the stream.
+        let mut prompt = Prompt::default()
+            // This is a dummy message because the prompt must start with a user
+            // message. `handle_stream_event` checks turn order.
+            .add_message(Message {
+                role: Role::User,
+                content: Content::SinglePart("dummy message".into()),
+            })
+            .unwrap();
+
+        while let Some(event) = stream.next().await {
+            prompt.handle_stream_event(event.unwrap()).unwrap();
+        }
+
+        assert_eq!(prompt.messages.len(), 2);
+        let last = prompt.messages.pop().unwrap();
+        assert_eq!(
+            last,
+            prompt::Message {
+                role: Role::Assistant,
+                content: Content::MultiPart(vec![
+                    Block::Thought {
+                        thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
+                        signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()
+                    },
+                    Block::Text { text: "27 * 453 = 12,231".to_string().into(), cache_control: None }
+                ])
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_prompt_extend() {
+        let stream =
+            mock_stream(include_str!("../test/data/thinking.sse.stream.txt"));
+
+        // Test prompt assembly from the stream.
+        let mut prompt = Prompt::default()
+            // This is a dummy message because the prompt must start with a user
+            // message. `handle_stream_event` checks turn order.
+            .add_message(Message {
+                role: Role::User,
+                content: Content::SinglePart("dummy message".into()),
+            })
+            .unwrap();
+
+        // Extend a prompt with a stream. We can't implement actual `Extend`
+        // because it's not async and some of the type that implement
+        // `ExtendOntoPrompt` are async, like this one. So you can't collect
+        // but also you wouldn't be able to anyway because a Prompt must start
+        // with a user message and a stream is always from the assistant.
+        let prompt = prompt.extend(stream).await.unwrap();
+
+        assert_eq!(prompt.messages.len(), 2);
+        let last = prompt.messages.pop().unwrap();
+        assert_eq!(
+            last,
+            prompt::Message {
+                role: Role::Assistant,
+                content: Content::MultiPart(vec![
+                    Block::Thought {
+                        thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
+                        signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()
+                    },
+                    Block::Text { text: "27 * 453 = 12,231".to_string().into(), cache_control: None }
+                ])
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_redacted_thought_from_jsonl() {
+        const JSON: &str =
+            include_str!("../test/data/redacted_thought.sse.stream.jsonl");
+        let stream = mock_stream_jsonl(JSON);
+
+        // Test the text stream filters out the thinking delta.
+        let text: String = stream
+            .filter_rate_limit()
+            .text()
+            .try_collect()
+            .await
+            .unwrap();
+
+        assert_eq!(text, "I notice that you've included what appears to be a trigger phrase or command. I'm designed to communicate transparently and directly with you without any special backdoor commands or hidden modes.\n\nI'm here to have a helpful conversation! Could you let me know what you'd actually like assistance with today? I'm happy to help with information, answer questions, brainstorm ideas, or discuss various topics within my guidelines.");
+
+        let stream = mock_stream_jsonl(JSON);
+
+        pin_mut!(stream);
+
+        while let Some(event) = stream.next().await {
+            match event {
+                Ok(Event::ContentBlockStart { content_block, .. }) => {
+                    if let Block::RedactedThought { signature } = content_block
+                    {
+                        assert!(!signature.is_empty());
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Test from live API. If they break our client, we'll know.
+    #[tokio::test]
+    #[ignore]
+    async fn test_stream_redacted_thought() {
+        const TRIGGER: &str = "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB";
+        let api_key = crate::utils::load_api_key().await;
+        let client = crate::Client::new(api_key).unwrap();
+        let prompt = Prompt::default()
+            // Only sonnet 3.7 and newer will respond to the trigger.
+            .model(AnthropicModel::Sonnet37)
+            .thinking(prompt::Thinking {
+                budget_tokens: 1024.try_into().unwrap(),
+                kind: prompt::thinking::Kind::Enabled,
+            })
+            .add_message(Message {
+                role: Role::User,
+                content: TRIGGER.into(),
+            })
+            .unwrap();
+
+        // In a real app you could RwLock the prompt and pass a reference, and
+        // then append to the same prompt with `.write().await.extend(stream)`.
+        let stream = client
+            .stream(prompt.clone())
+            .await
+            .unwrap()
+            .filter_rate_limit();
+
+        pin_mut!(stream);
+
+        let mut redacted_seen = false;
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            match &event {
+                Ok(Event::ContentBlockStart { content_block, .. }) => {
+                    if let Block::RedactedThought { signature } = content_block
+                    {
+                        assert!(!signature.is_empty());
+                        redacted_seen = true;
+                    }
+
+                    events.push(event);
+                }
+                _ => {
+                    events.push(event);
+                }
+            }
+        }
+
+        assert!(redacted_seen);
     }
 }

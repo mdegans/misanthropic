@@ -1,0 +1,49 @@
+{"Ok":{"type":"message_start","message":{"id":"msg_01NgXwtUj289dqeUnf5Vrr8E","role":"assistant","content":[],"model":"claude-3-7-sonnet-20250219","stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":92,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":3}}}}
+{"Ok":{"type":"content_block_start","index":0,"content_block":{"type":"redacted_thinking","data":"ErMBCkYIARgCKkD0YVOclAZ/nwanJ40fkcbVBgCsFVNIjYdy/ijCUWaEOodDyKHicBi9QkndwvblOIqWOg0w/bj1jnzB4Hb2LDrWEgwV4fYvtrNbqyJf+ZAaDMJ8bQfaqi6uZYiKTCIwTyb4JUwdiaCC/yaqDgWDxO8ckmzhIY5qlJ4iJEz6kZfEfWqBbMi8EcTulCDXTtrKKhsbQqWxYDBEhEMBzStkAdQ1PqWAHWQcGlvxe4I="}}}
+{"Ok":{"type":"ping"}}
+{"Ok":{"type":"content_block_stop","index":0}}
+{"Ok":{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"EocCCkYIARgCKkASspiLy+v8Q6eOwWbN1E9Hqo6PUZP0gnck2BqWv8kd+vBXXhtxMI+G6zA42eAEguKsd7u20/pUUD5V7sTjZaufEgzdUcsFZKcsurry45UaDJBFS9Uwm/2PDV7vxyIwJwz3TwoYHD9hWKzmm0tWowkEbqjp1Qo6qJz0IVBnguT4UsXNZ3KP73SupO35CfBSKm845KHg5jE1gExdf8v1XwEwEhSP95F0iON/eBg275+6YlgTZlpbIJ3wOs/9Bhv1OXGSx2Ofb0a3FPSgKLpUTHtP9fl7ueCL07bzcBcyFaP+z0gdFo6sRZP18wAZH4GI/yMS0qfGkmOVO6c0csN8rdM="}}}
+{"Ok":{"type":"content_block_stop","index":1}}
+{"Ok":{"type":"content_block_start","index":2,"content_block":{"type":"redacted_thinking","data":"EtQBCkYIARgCKkCgD5hlfV6hFlVAOnB9RbRTDPwrXifHsqJCHOYTA37C4/jeVdwPXnPTXN8Zb7IbQUEGItTN2FbCg820eekk16S5EgxKbFZRDE3yuqEP9XUaDGyWmMKtSm7+80chDCIwaATc8NaUGbQTFFjD4mQ11aE6WUP1AhUvn0AwCq5eip28ytGtb9U1kb+h1QtsTw7EKjwTLAHSyvWnuOLavwcR4ZqSrK8mGDoYXQk7TdBF/RBh5quvhlMX3wT1zqcV4yxa+ZOrDW1y6OVWR7pabCw="}}}
+{"Ok":{"type":"content_block_stop","index":2}}
+{"Ok":{"type":"content_block_start","index":3,"content_block":{"type":"redacted_thinking","data":"EskBCkYIARgCKkBmbq1bpvpSQnhPlAJDP1kKH9Ca8Ykw+TbwOoBVlkdU1rMQMFnbYUE2G3f9lfOPAKVsfsORtMaD79bLteaXfofsEgxCgKQ35DksBobfvhQaDLudN8MT4ExFzhuvsiIwlVrvqY9Fel5YT6gfjqxEISkfmBfQ+C+dMZtGPNcJdKbd5rMmmnUwTet7UUqplNk3KjG8LKXhPUXj9nieagTyrJiLdRpMF0/EzKq9dpHZGlCX4TFyDYAkacuAmFYQmhUbmnwZ"}}}
+{"Ok":{"type":"content_block_stop","index":3}}
+{"Ok":{"type":"content_block_start","index":4,"content_block":{"type":"redacted_thinking","data":"EswBCkYIARgCKkBFKJNVZRK70HViDSmasUHipppKWZdY97ONhtkH9tsP/L20c2b6AHx8yoISw8nxjld7yGB+U1dxPlN5KVsOixwqEgwWRaW6EuNJ6uewIMkaDHFusxJt/N/IIgJsISIwQRnQyHfGLa43yr1TLZdN/49q6gcPTB9xXa57OhvOn8+MwZD4s7VPocaZKDDx7buiKjSOHxYzutkkfn0k30keDRge+B/lSGj/EJVUCGpR023WpN+MF9w7IK7OSFsW9sC6PebmPqBh"}}}
+{"Ok":{"type":"content_block_stop","index":4}}
+{"Ok":{"type":"content_block_start","index":5,"content_block":{"type":"redacted_thinking","data":"EskBCkYIARgCKkDDtPZKleQON0MSS158KSt6ENiXQ/RM36QkBAFOrpq0DWwuxAdO2kiWXa6At9lEp9a7MFYIPr70ih0oamQ0zHsuEgzrHMqWPOmm+mxkfjgaDLFRzE6Y8kNd9K54CiIwMoxOZcRr8hOCga8fOmpmDu8/7bS9wi2No3HlQ+vWbs5ZuL1yB5fanRbYLT/VKimMKjGRkbO6NKF5pFH7O2gU1znRfQ5kpOGABopfOeSGtibCVts8X57ByiW6MrFNW+1lqE5v"}}}
+{"Ok":{"type":"content_block_stop","index":5}}
+{"Ok":{"type":"content_block_start","index":6,"content_block":{"type":"redacted_thinking","data":"EtgBCkYIARgCKkCRyEnUSIVBXimmhcZs7mHv0f9Qv8UHmnh5Z8QpKi6mOuohz0qybtetBRXb97ZBrQYUGKOFD0ILnjU4HqviN7V0EgyNaiiU+J3bLUPlDJwaDG2EBWQmxn9m0jwQSyIwVd8BBql8+ChYNYY9BLzBDvOcjmlzcmcZ8ugo/B+gHAOiP4pDAzajqhtHtCU1rHNnKkBltFlz9b+orLe6tUXRzqK7Z+eEzhQ1ih25xWZo/LTy/03WKHPI13J2a8D7dX4hqTXzJ4Bhnic50KyRK87m20Iw"}}}
+{"Ok":{"type":"content_block_stop","index":6}}
+{"Ok":{"type":"content_block_start","index":7,"content_block":{"type":"redacted_thinking","data":"EtgBCkYIARgCKkDtfXOC2IVA81Hmzff0UBZ5hWjUeUAvup0HI0r+dcMSsET29gKGNjD8xqIBr+nzDr+b0cGEbjAxVC8uqGGpFa6UEgxFzhw1FRbRB0cTMZIaDHBnuaXUDhHZsoQiySIwIVlImm22RHq2w2YxHIclL5O71cva4WJaPwpT4zsmQk2wSQF9o8pb1yowMgmHtj/9KkCsjdg2SzknBz8R9xCJXxxYkWIBOheGTr8IBE2kknjNPKYZNE0u0zvIjtB2Xbes3LfaCFbg7cmqnOaEpU5z1JO8"}}}
+{"Ok":{"type":"content_block_stop","index":7}}
+{"Ok":{"type":"content_block_start","index":8,"content_block":{"type":"redacted_thinking","data":"EsEBCkYIARgCKkAbxHtQv14PpXa/J1N3OB6q118RJcAzbJpCOFqaTialSQ1hdZF75WxQCU+N/cY1ZXL9ThdFJobjDe/YFrSnVlEpEgx2Od0Pns7XMzeAZboaDIFU1iTNqEpKz2FlhCIw7PKvT4EeUTnBDd4k9zVlqsMcw/pjup2hFB0yClfhJTk28SSsxT6prZiZnCIOvHPhKimbmq8LnKpxswyj7OvzytkTJv5sGTfm2OB2MGSar/Iwqw4H9A+dUC4jkQ=="}}}
+{"Ok":{"type":"content_block_stop","index":8}}
+{"Ok":{"type":"content_block_start","index":9,"content_block":{"type":"redacted_thinking","data":"EsABCkYIARgCKkDM+OJRXdG9X2hpzAVXHGMswnGClq/im1MpVbDf9vI+uteg3PHfnVAtn6yohl1v52wuZOEGDaa/zEL3IwbOJv6ZEgybkLtXii1Kav2W+V8aDCqjAlo7hLSUrGd4ACIwEsr9pzaNghXrMA0ZtWCjMDcxAmrOQ3EtzaHYAPpekuUGUM/YzRk2VCpqK3gHGhDZKij+uLA+0wccC5l0LzwByVLK+rn1bmSAB15NbZLAbOZORUi0RFOpipL+"}}}
+{"Ok":{"type":"content_block_stop","index":9}}
+{"Ok":{"type":"content_block_start","index":10,"content_block":{"type":"redacted_thinking","data":"EtcBCkYIARgCKkAsO3XSe7tL4XnckaEiSbLX0EKLbuSW7/FL7vigHgNUEyCpaiwClh+kUhpJSbmsZiolC5bj0JYXzWSIZjBUf0FkEgwLsy8mTU6y/MEVY9QaDHTsxnmWyNU4irRdYCIwB/ufOUXdz3U44ugNTiX28VcK1W5I81UyWWNApBQqnuXHbBPsUF/sYCGK3Lgk7QMJKj/lxzZy659F7p/4nT4QjTnFO2HwmENczYBm3I+1/Bpy0a9hms+NFpZfzcx1YxX7uas2M/UORCBvp0hNkcGmwdg="}}}
+{"Ok":{"type":"content_block_stop","index":10}}
+{"Ok":{"type":"content_block_start","index":11,"content_block":{"type":"redacted_thinking","data":"ErwBCkYIARgCKkB8TM06EWs7p8dwSwJQM15aupsMVjhQq37CvU2J7rrgKiKhAlkJNEnr3LmF/W/XsZc9FjityulUfKmfSD8oRlsxEgwi0tdPfp4LWG9LK3EaDKgE1IkCCTaSUhS1lyIwCKmpoS7IY0cH3f2ei570EzCKsTpmSyUpeZIL6XBCZoTG/lrysT70tFS85qECUy+3KiR5Jeiz5cVgEMqrG8YjwjyhlhZFiBDHuaLo3Slpqyc/Vi7Kq7k="}}}
+{"Ok":{"type":"content_block_stop","index":11}}
+{"Ok":{"type":"content_block_start","index":12,"content_block":{"type":"redacted_thinking","data":"EssBCkYIARgCKkClbnkwuzUIJtVGw/qmLZqjpGuCECPgr5mmX3gMqkr1mxTtzU2zJhcIECGWQIFzmQFbiGq5OYUxw0Wt/lhTFc+1Egyh7SbdtkBaSWBfRxkaDCArNGlaEltj8+A4sSIwDekPg+rmOCXqUE//ZuT6aIddg5bn9r8tdbfRpqkiJEnDYhYCd3yVBMswcp8gDHwzKjMV+j7TZRsUDfc615Fbs44Z10ECphUdYXBrPnlX06K7F5ZxUX8GGLuz1gy7asZnn82Ec2o="}}}
+{"Ok":{"type":"content_block_stop","index":12}}
+{"Ok":{"type":"content_block_start","index":13,"content_block":{"type":"redacted_thinking","data":"EsgBCkYIARgCKkA06b4oN3pPOjJ6ZVy2FHEis1+Hs5rTjDr79Q3UaXJo4Bc2uwQGcT+Tpsa8Flsx5d9+EBvZ+nlBgox9RMCXD0yxEgxIXI66rQiSUKAU2eQaDNBPUtVSptrAzmkQASIw6mbZG5AedL9+fKjTlO+fc8qO2vNZZhurQkHkiALoPIb6NqonezZLlmcnsrGd2GmbKjBRQynizntSZuB9EsMDlz0MTZRTvoYmxT64vynH1t5LuvE1nbbDljvjaJJgqa8/Txs="}}}
+{"Ok":{"type":"content_block_stop","index":13}}
+{"Ok":{"type":"content_block_start","index":14,"content_block":{"type":"redacted_thinking","data":"EtkBCkYIARgCKkBXypFF62MdNm2zRUY9ONJvBb/UB3Pqow0vL2VRSXolJy1Ngwfb1p6VC6IPXhvT7f38VvFReqyFVVNEe4OUsNFWEgyfkK9Crsdn+qujIbEaDMtiBkfWQCw1JnNJYyIwXN2EguBIf/EcEtEg57h14SL+3NdgYAscYsws+4quG2s2aLiU98+gLdoAYxb/FA7XKkEoMZKpdo4YZBSYqRPynpiFYBU09Yzz0Gioj6TrJiCqFMdbPdC8BhxxFCzGgoFg0LTYYiycq+cUerHlPm4KhwOr5g=="}}}
+{"Ok":{"type":"content_block_stop","index":14}}
+{"Ok":{"type":"content_block_start","index":15,"content_block":{"type":"redacted_thinking","data":"ErEBCkYIARgCKkDPCekol7ZTFOJtU9luYWMxElqLenO32pRBKK2ASGvHSD0gOS7i6rttKutyR6nAmVfsga5yQq/ihaKDJgeyTVRpEgzqp9uej1u4U1qba/YaDPJ6ETpDlzYsUn7UMyIwKbgxRnsqWxkK+oixpujZLb0/tuJw3oaVQK/nMF3vx0MfMxbjH2+edTl4l8qs+nymKhnwi28gRsK6TAa7IMhro/w3USbi06jAnMfA"}}}
+{"Ok":{"type":"content_block_stop","index":15}}
+{"Ok":{"type":"content_block_start","index":16,"content_block":{"type":"text","text":""}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":"I notice that you've included what"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" appears to be a trigger phrase"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" or command. I'm designed to communicate"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" transparently and directly with you without"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" any special backdoor commands or hidden modes"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":".\n\nI'm here to have a helpful conversation!"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" Could you let me know what you'"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":"d actually like assistance with today? I'm"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" happy to help with information,"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" answer questions, brainstorm ideas, or"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" discuss various topics within my guidelines."}}}
+{"Ok":{"type":"content_block_stop","index":16}}
+{"Ok":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}
+{"Ok":{"type":"message_stop"}}

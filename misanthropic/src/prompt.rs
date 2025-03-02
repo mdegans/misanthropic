@@ -10,10 +10,15 @@ use crate::{
     tool, Id, Tool,
 };
 use message::Content;
+
+use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
 pub mod message;
 pub use message::Message;
+
+pub mod thinking;
+pub use thinking::Thinking;
 
 /// Request for the [Anthropic Messages API].
 ///
@@ -84,6 +89,12 @@ pub struct Prompt<'a> {
     /// randomness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
+    /// Thinking support. Note that this is only required for using Anthropic's
+    /// built-in COT support with Sonnet 3.7 and later models. The `cot` feature
+    /// can be used with all models, provided the system prompt instructs the
+    /// Assistant to use `<thiking>` tags.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub thinking: Option<Thinking>,
 }
 
 impl std::fmt::Debug for Prompt<'_> {
@@ -124,6 +135,7 @@ impl Default for Prompt<'_> {
             tools: Default::default(),
             top_k: Default::default(),
             top_p: Default::default(),
+            thinking: Default::default(),
         }
     }
 }
@@ -666,6 +678,12 @@ impl<'a> Prompt<'a> {
         self
     }
 
+    /// Set the [`Thinking`] support.
+    pub fn thinking(mut self, thinking: Thinking) -> Self {
+        self.thinking = Some(thinking);
+        self
+    }
+
     /// Add a cache breakpoint to the end of the prompt, setting `cache_control`
     /// to `Ephemeral`.
     ///
@@ -736,6 +754,7 @@ impl<'a> Prompt<'a> {
                 .map(|t| t.into_iter().map(Tool::into_static).collect()),
             top_k: self.top_k,
             top_p: self.top_p,
+            thinking: self.thinking,
         }
     }
 
@@ -775,12 +794,6 @@ impl<'a> Prompt<'a> {
                     });
                 }
             }
-            stream::Event::MessageDelta { .. } => {
-                // We can't apply metadata delta to the prompt because it's
-                // messages are "request" messages, not "response" messages in
-                // Anthropic's terminology.
-                return Err(ApplyEventError::Unsupported { event });
-            }
             stream::Event::MessageStart { message } => {
                 self.push_message(message)?;
             }
@@ -807,11 +820,11 @@ impl<'a> Prompt<'a> {
             }
             stream::Event::ContentBlockStop { index } => {
                 if let Some(last) = self.messages.last_mut() {
-                    if index == last.content.len() {
+                    if index == last.content.len() - 1 {
                         // The last content block has the correct index. There
                         // is nothing to do here.
                     } else {
-                        // Either anthropic screwed up or somebody mutated the
+                        // Either Anthropic screwed up or somebody mutated the
                         // prompt in between events.
                         return Err(ApplyEventError::UnexpectedIndex {
                             event: Event::ContentBlockStop { index },
@@ -871,12 +884,116 @@ impl<'a> Prompt<'a> {
                     });
                 }
             }
-            stream::Event::Ping => {
-                return Err(ApplyEventError::Unsupported { event });
+            stream::Event::Ping | stream::Event::MessageDelta { .. } => {
+                // Can't merge MessageDelta because a prompt contains
+                // `prompt::Message` not `response::Message` which contains
+                // `Usage`. But also I don't like throwing this away since it's
+                // useful for debugging. Adding a field on the Prompt would be
+                // messy because it's not part of the API. We'd need to test to
+                // see if the API rejects it. I'm not writing two serialization
+                // functions for this.
             }
         }
 
         Ok(())
+    }
+
+    /// Extend a prompt with an [`Extendable`] object. This also functions as a
+    /// append. This is useful for streaming prompts. This is async because some
+    /// of the extendables, like [`stream::FilterExt`], are async.
+    ///
+    /// # Errors
+    /// - If the turn order is incorrect.
+    /// - If the stream of events cannot be applied to the prompt.
+    pub async fn extend<E>(
+        &'a mut self,
+        extendable: E,
+    ) -> Result<&'a mut Self, ExtendError>
+    where
+        E: ExtendOntoPrompt<'a>,
+    {
+        extendable.extend_onto(self).await
+    }
+
+    /// Helper for the above.
+    pub async fn extend_stream<T>(
+        &'a mut self,
+        mut stream: std::pin::Pin<Box<T>>,
+    ) -> Result<&'a mut Self, ExtendError>
+    where
+        T: futures::stream::Stream<Item = Result<stream::Event, stream::Error>>
+            + Sized
+            + Send,
+    {
+        loop {
+            match stream.try_next().await? {
+                Some(event) => self.handle_stream_event(event)?,
+                None => break Ok(self),
+            }
+        }
+    }
+}
+
+/// Error when [`extend`]ing a [`Prompt`].
+///
+/// [`extend`]: Prompt::extend
+#[derive(Debug, thiserror::Error)]
+#[error(transparent)]
+pub enum ExtendError {
+    /// Turn Order is incorrect.
+    TurnOrder(#[from] TurnOrderError),
+    /// Error when applying a stream event to a prompt.
+    ApplyEvent(#[from] ApplyEventError),
+    /// Stream error.
+    Stream(#[from] stream::Error),
+    /// Other error.
+    Other(Box<dyn std::error::Error + Send + Sync>),
+}
+
+/// Object that can be appended to a [`Prompt`].
+#[async_trait::async_trait]
+pub trait ExtendOntoPrompt<'a> {
+    /// Extend the prompt with the extendable object.
+    async fn extend_onto(
+        self,
+        prompt: &'a mut Prompt<'a>,
+    ) -> Result<&'a mut Prompt<'a>, ExtendError>;
+}
+
+#[async_trait::async_trait]
+impl<'a> ExtendOntoPrompt<'a> for Message<'a> {
+    async fn extend_onto(
+        self,
+        prompt: &'a mut Prompt<'a>,
+    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt.push_message(self).map_err(ExtendError::TurnOrder)?;
+        Ok(prompt)
+    }
+}
+
+#[async_trait::async_trait]
+impl<'a> ExtendOntoPrompt<'a> for stream::Event {
+    async fn extend_onto(
+        self,
+        prompt: &'a mut Prompt<'a>,
+    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt.handle_stream_event(self)?;
+        Ok(prompt)
+    }
+}
+
+#[async_trait::async_trait]
+impl<'a, T> ExtendOntoPrompt<'a> for T
+where
+    T: futures::stream::Stream<Item = Result<stream::Event, stream::Error>>
+        + Sized
+        + Send,
+{
+    async fn extend_onto(
+        self,
+        prompt: &'a mut Prompt<'a>,
+    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt.extend_stream(Box::pin(self)).await
     }
 }
 

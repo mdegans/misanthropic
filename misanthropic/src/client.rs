@@ -847,28 +847,12 @@ mod tests {
 
     use crate::{prompt::message::Role, stream::FilterExt, Prompt};
 
-    const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
-
     // Note: This is a real key but it's been disabled. As is warned in the
     // docs above, do not use a string literal for a real key. There is no
     // TryFrom<&'static str> for Key for this reason.
     const FAKE_API_KEY: &str = "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";
 
-    // Error message for when the API key is not found.
-    const NO_API_KEY: &str = "API key not found. Create a file named `api.key` in the crate root with your API key.";
-
-    // Load the API key from the `api.key` file in the crate root.
-    fn load_api_key() -> Option<String> {
-        use std::fs::File;
-        use std::io::Read;
-        use std::path::Path;
-
-        let mut file =
-            File::open(Path::new(CRATE_ROOT).join("api.key")).ok()?;
-        let mut key = String::new();
-        file.read_to_string(&mut key).unwrap();
-        Some(key.trim().to_string())
-    }
+    use crate::utils::load_api_key;
 
     #[cfg(feature = "log")]
     fn init_log() {
@@ -898,7 +882,7 @@ mod tests {
         #[cfg(feature = "log")]
         init_log();
 
-        let key = load_api_key().expect(NO_API_KEY);
+        let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
         let message = client
@@ -919,7 +903,7 @@ mod tests {
         #[cfg(feature = "log")]
         init_log();
 
-        let key = load_api_key().expect(NO_API_KEY);
+        let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
         let stream = client
@@ -946,7 +930,7 @@ mod tests {
         #[cfg(feature = "log")]
         init_log();
 
-        let key = load_api_key().expect(NO_API_KEY);
+        let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
         let models = client.models().await.unwrap();

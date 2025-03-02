@@ -13,6 +13,7 @@ use crate::{
     response,
     stream::{ContentMismatch, Delta, DeltaError},
     tool,
+    utils::cold_path,
 };
 
 /// Role of the [`Message`] author.
@@ -722,6 +723,41 @@ pub enum Block<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// Thinking content. Only the Assistant can send this. Should be submitted
+    /// with each request but does not count against the token budget uness the
+    /// Assistant refers to a past thought.
+    #[serde(rename = "thinking")]
+    #[cfg_attr(not(feature = "markdown"), display("{}", thinking))]
+    Thought {
+        /// Complete Thought.
+        ///
+        /// # Security
+        ///
+        /// The `langsan` feature is not available for this field. This is
+        /// because if we sanitize the thought and it is resubmitted the
+        /// signature will not match and the API will reject the request. So it
+        /// is up to the caller to handle user facing thought sanitization, the
+        /// easiest solution to which is just not to show the thought to the
+        /// user. This is only for the developer and the Assistant. If there is
+        /// a need to show the thought, a Cow<'a, str> is convertable to a
+        /// `langsan::CowStr`.
+        #[serde(rename = "thinking")]
+        thought: Cow<'a, str>,
+        /// Signature. Guarantees thought was not tampered with. It's up to the
+        /// caller to not mix up the thought signatures. Anthropic will reject
+        /// the request if the signature is invalid.
+        #[serde(default)]
+        signature: Cow<'a, str>,
+    },
+    /// Redacted thinking. Sometimes the system will redact the thinking content
+    /// for safety reasons. The Assistant can still see the redacted content.
+    #[cfg_attr(not(feature = "markdown"), display("[REDACTED]"))]
+    #[serde(rename = "redacted_thinking")]
+    RedactedThought {
+        /// Allows the Assistant to see the redacted thought if it is provided.
+        #[serde(rename = "data")]
+        signature: Cow<'a, str>,
+    },
     /// Image content.
     #[cfg_attr(not(feature = "markdown"), display("{}", image))]
     Image {
@@ -792,6 +828,13 @@ impl<'a> Block<'a> {
         }
     }
 
+    /// Is a [`Thought`] and also complete (signature is not empty).
+    ///
+    /// [`Thought`]: Block::Thought
+    pub fn is_complete_thought(&self) -> bool {
+        matches!(self, Self::Thought { signature, .. } if !signature.is_empty())
+    }
+
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
     /// will return a [`ContentMismatch`] error.
     pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
@@ -845,9 +888,76 @@ impl<'a> Block<'a> {
                     old.extend(new);
                 }
             }
+            (
+                Block::Thought { thought, signature },
+                Delta::Thought {
+                    thinking: delta_thinking,
+                    signature: delta_signature,
+                },
+            ) => {
+                if let Some(delta_signature) = delta_signature {
+                    cold_path();
+                    // This is legal because it's possible to merge a bunch of
+                    // deltas outside this function in which case this would be
+                    // considered a complete thought. So we re-assign.
+                    *thought = delta_thinking.into();
+                    *signature = delta_signature.into();
+                } else {
+                    // Normal case, partial thought. Simple append.
+                    thought.to_mut().push_str(&delta_thinking);
+                }
+            }
+            (
+                Block::RedactedThought { signature },
+                Delta::RedactedThought {
+                    signature: signature_delta,
+                },
+            ) => {
+                if !signature.is_empty() {
+                    // It is not possible to merge signatures because every
+                    // signature is already complete. However there is a case
+                    // where a block is just created and is empty.
+                    return Err(ContentMismatch {
+                        from: Delta::RedactedThought {
+                            signature: signature_delta,
+                        },
+                        to: "RedactedThought",
+                    }
+                    .into());
+                }
+
+                // Lhs is empty, so we just assign.
+                *signature = signature_delta;
+            }
+            (
+                Block::Thought { signature, .. },
+                Delta::Signature {
+                    signature: delta_signature,
+                },
+            ) => {
+                if !signature.is_empty() {
+                    // It is not possible to merge signatures because every
+                    // signature is already complete. However there is a case
+                    // where a block is just created and is empty.
+                    return Err(ContentMismatch {
+                        from: Delta::Signature {
+                            signature: delta_signature,
+                        },
+                        to: "Thought",
+                    }
+                    .into());
+                }
+
+                // Lhs is empty, so we just assign. Thought is now complete.
+                *signature = delta_signature;
+            }
             (this, acc) => {
                 let variant_name = match this {
                     Block::Text { .. } => stringify!(Block::Text),
+                    Block::Thought { .. } => stringify!(Block::Thinking),
+                    Block::RedactedThought { .. } => {
+                        stringify!(Block::RedactedThinking)
+                    }
                     Block::ToolUse { .. } => stringify!(Block::ToolUse),
                     Block::ToolResult { .. } => stringify!(Block::ToolResult),
                     Block::Image { .. } => stringify!(Block::Image),
@@ -865,11 +975,12 @@ impl<'a> Block<'a> {
     }
 
     /// Create a cache breakpoint at this block. See [`Prompt::cache`] for more
-    /// information.
+    /// information. Returns true if the block was cached. This alwasy succeeds,
+    /// however some blocks are automatically cached and will return false.
     ///
     /// [`Prompt::cache`]: crate::Prompt::cache
     #[cfg(feature = "prompt-caching")]
-    pub fn cache(&mut self) {
+    pub fn cache(&mut self) -> bool {
         use crate::tool;
 
         match self {
@@ -882,7 +993,12 @@ impl<'a> Block<'a> {
                 result: tool::Result { cache_control, .. },
             } => {
                 *cache_control = Some(CacheControl::Ephemeral);
+
+                true
             }
+            // These are automatically cached.
+            // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
+            Self::Thought { .. } | Self::RedactedThought { .. } => false,
         }
     }
 
@@ -900,6 +1016,7 @@ impl<'a> Block<'a> {
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
             } => cache_control.is_some(),
+            Self::Thought { .. } | Self::RedactedThought { .. } => false,
         }
     }
 
@@ -930,6 +1047,13 @@ impl<'a> Block<'a> {
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
+            Self::Thought { thought, signature } => Block::Thought {
+                thought: thought.into_owned().into(),
+                signature: signature.into_owned().into(),
+            },
+            Self::RedactedThought { signature } => Block::RedactedThought {
+                signature: signature.into_owned().into(),
+            },
             Self::Image {
                 image,
                 #[cfg(feature = "prompt-caching")]
@@ -954,9 +1078,13 @@ impl<'a> Block<'a> {
     pub fn len(&self) -> usize {
         match self {
             Self::Text { text, .. } => text.as_bytes().len(),
+            Self::Thought {
+                thought: thinking, ..
+            } => thinking.len(),
             Self::Image { image, .. } => image.len(),
-            Self::ToolUse { .. } => 0,
-            Self::ToolResult { .. } => 0,
+            Self::RedactedThought { .. }
+            | Self::ToolUse { .. }
+            | Self::ToolResult { .. } => 0,
         }
     }
 }
@@ -979,13 +1107,10 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
                 // We'll parse the inner text as markdown.
                 Box::new(pulldown_cmark::Parser::new_ext(text, options.inner))
             }
-
             Block::Image { image, .. } => {
                 // We use Event::Text for images because they are rendered as
                 // markdown images with embedded base64 data.
-                Box::new(
-                    Some(Event::Text(image.to_string().into())).into_iter(),
-                )
+                Box::new([Event::Text(image.to_string().into())].into_iter())
             }
             Block::ToolUse { .. } => {
                 if options.tool_use {
@@ -1005,6 +1130,15 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
                     Box::new(std::iter::empty())
                 }
             }
+            Block::Thought {
+                thought: thinking, ..
+            } => Box::new(Box::new(pulldown_cmark::Parser::new_ext(
+                thinking,
+                options.inner,
+            ))),
+            // Anthropic says to be transparent with the user but I think this
+            // is naive. Users do not need to know if a thought was redacted.
+            Block::RedactedThought { .. } => Box::new(std::iter::empty()),
             Block::ToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
