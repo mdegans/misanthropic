@@ -7,19 +7,19 @@
 
 @layer components {
   #main {
-    @apply flex flex-col w-full h-full p-4;
+    @apply flex flex-col w-full h-full p-4 bg-neutral-900;
+  }
+  .div#navbar {
+    @apply text-white;
   }
   .system {
-    @apply max-w-2xl w-full flex p-4 mt-4 bg-violet-950 hover:bg-violet-800 rounded-2xl text-neutral-200 hover:text-white font-sans whitespace-pre-wrap transition-colors ease-in-out;
+    @apply max-w-2xl shadow-2xl shadow-purple-950 hover:shadow-purple-600 w-full flex p-4 mt-4 bg-violet-950 border-2 border-violet-800 hover:border-violet-400 hover:bg-violet-800 rounded-2xl text-violet-200 hover:text-white font-sans whitespace-pre-wrap transition-all ease-in-out;
   }
   .message {
     @apply max-w-2xl w-full flex flex-col overflow-hidden;
   }
-  .text {
-    @apply text-neutral-200 font-sans;
-  }
   .user {
-    @apply rounded-2xl p-4 border-neutral-800 border-2 hover:border-white transition-colors ease-in-out mt-4;
+    @apply bg-black rounded-2xl shadow-2xl shadow-black hover:shadow-neutral-700 p-4 border-neutral-800 border-2 hover:border-white transition-all ease-in-out mt-4;
   }
   .assistant .speech {
     @apply mt-4 pl-4 pr-4;
@@ -29,28 +29,37 @@
   }
   /* todo: animation for thought.placeholder */
   .thought.show {
-    @apply text-neutral-200 hover:text-white italic transition-colors ease-in-out pr-4 pl-4 pt-4;
+    @apply text-neutral-200 hover:text-white italic transition-all ease-in-out pr-4 pl-4 pt-4;
   }
   .tool-use {
-    @apply bg-black rounded-t-xl p-4 text-neutral-200 hover:text-white whitespace-pre overflow-x-scroll max-w-full border-t-2 border-l-2 border-r-2 border-neutral-800 mt-4 ml-4 mr-4;
+    @apply bg-black rounded-t-lg p-4 text-neutral-200 hover:text-white whitespace-pre overflow-x-scroll max-w-full mt-4 ml-4 mr-4;
   }
   /* The reason tool-result doesn't have a top margin is because it's always paired with a tool-use and we want them joined together */
   .tool-result {
-    @apply p-4 rounded-b-xl text-neutral-200 whitespace-pre overflow-x-scroll max-w-full border-b-2 border-r-2 border-l-2 border-neutral-800 pl-4 pr-4 ml-4 mr-4;
+    @apply bg-black p-4 rounded-b-lg text-neutral-200 hover:text-white whitespace-pre overflow-x-scroll max-w-full pl-4 pr-4 ml-4 mr-4;
   }
   .input-box {
-    @apply max-w-2xl w-full mt-4 bg-black rounded-2xl p-4 text-white border-2 border-neutral-800 hover:border-white font-sans transition-colors ease-in-out aspect-video;
+    @apply shadow-2xl shadow-black hover:shadow-neutral-700 max-w-2xl w-full mt-4 bg-black rounded-2xl p-4 text-white border-2 border-neutral-800 hover:border-white font-sans transition-all ease-in-out aspect-video;
+  }
+  .input-box:focus {
+    @apply shadow-2xl shadow-neutral-700 border-2 border-white;
   }
   .toggle {
-    @apply bg-black text-white rounded-2xl p-4 mt-3 text-center mr-4 border-2 border-neutral-800 hover:border-white transition-colors ease-in-out;
+    @apply shadow-2xl shadow-black hover:shadow-neutral-700 bg-black hover:bg-neutral-800 text-white rounded-full p-4 mt-3 text-center mr-4 border-2 border-neutral-800 hover:border-white transition-all ease-in-out;
   }
   .active {
-    @apply bg-neutral-700 border-neutral-500 transition-colors ease-in-out;
+    @apply bg-neutral-700 border-white shadow-xl shadow-neutral-700 transition-all ease-in-out;
+  }
+  .active.toggle {
+    @apply bg-neutral-700;
+  }
+  .active > .text {
+    @apply shadow-md shadow-black hover:shadow-neutral-700 transition-shadow ease-in-out;
   }
   .error {
-    @apply text-red-800 hover:text-red-600 transition-colors ease-in-out;
+    @apply text-red-600 hover:text-red-400 transition-all ease-in-out;
   }
   .ok {
-    @apply text-emerald-600 hover:text-emerald-400 transition-colors ease-in-out;
+    @apply text-emerald-400 hover:text-emerald-200 transition-all ease-in-out;
   }
 }

@@ -22,12 +22,13 @@ static SHOW_THOUGHT: GlobalSignal<bool> = GlobalSignal::new(|| false);
 static SHOW_TOOL_USE: GlobalSignal<bool> = GlobalSignal::new(|| false);
 static SHOW_SYSTEM: GlobalSignal<bool> = GlobalSignal::new(|| false);
 
+/// A test prompt for testing the chat view.
 #[cfg(debug_assertions)]
 fn make_prompt() -> Prompt<'static> {
     use misanthropic::{
         json,
         prompt::{
-            message::{Content, Role},
+            message::{Block, Content, Role},
             Message,
         },
         tool, AnthropicModel, Tool,
@@ -74,6 +75,8 @@ fn make_prompt() -> Prompt<'static> {
             Message {
                 role: Role::Assistant,
                 content: Content::MultiPart(vec![
+                    // Regular, plain old, legacy thinking block. When displayed
+                    // with `ThoughtsOrSpeech`, it will be styled as a thought.
                     r#"<thinking>I can't do that myself, but I can run a Python script to count the number of r's in "strawberry". The user did not specify case sensitivity so I will default to case insensitive.</thinking>"#.into(),
                     tool::Use {
                         id: "calibration_000".into(),
@@ -96,7 +99,17 @@ fn make_prompt() -> Prompt<'static> {
             Message {
                 role: Role::Assistant,
                 content: Content::MultiPart(vec![
-                    r#"<thinking>This request is complex enough to need Python. I should use the itertools module for this..</thinking>"#.into(),
+                    // Anthropic provided `Thought` blocks should have the same
+                    // exact styling as the Assistant's thoughts. So now "old"
+                    // models have feature parity with the new ones, at least
+                    // visually. However it is possible to *not* use Anthropic's
+                    // `Thought` blocks even with new models, writing your own
+                    // system prompt, giving your own `<thinking>` instructions.
+                    //
+                    // There may or may not be a performance hit for this,
+                    // depending on your prompt and application. The option is
+                    // here for flexibility.
+                    Block::Thought { thought: "This request is complex enough to need Python. I should use the itertools module for this...".into(), signature: "...".into() },
                     tool::Use {
                         id: "calibration_001".into(),
                         name: "python".into(),
@@ -123,6 +136,12 @@ fn make_prompt() -> Prompt<'static> {
         // the system prompt and examples are very long, it can be useful to
         // cache everything up to the user input.
         .cache()
+}
+
+#[cfg(not(debug_assertions))]
+fn make_prompt() -> Prompt<'static> {
+    // The server will send us the prompt. This is just a placeholder.
+    Prompt::default()
 }
 
 #[component]

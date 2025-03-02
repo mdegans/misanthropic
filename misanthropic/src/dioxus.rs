@@ -307,13 +307,15 @@ impl IntoElement for &Block<'_> {
                 cache_control,
             } => {
                 {
-                    rsx!(div {
-                        key: key,
-                        class: "text",
-                        class: if cache_control.is_some() { "cache" } else { "" },
-                        {ThoughtsAndSpeech::new(text.as_ref())
-                            .enumerate()
-                            .map(|(i, ts)| ts.into_element_custom(hash(&[key, i as u64]), opts))}
+                    rsx!({
+                        ThoughtsAndSpeech::new(text.as_ref()).enumerate().map(
+                            |(i, ts)| {
+                                ts.into_element_custom(
+                                    hash(&[key, i as u64]),
+                                    opts,
+                                )
+                            },
+                        )
                     })
                 }
                 #[cfg(not(feature = "cot"))]
