@@ -120,8 +120,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if let Some(call) = message.tool_use() {
         let result = handle_tool_call(call)?;
         // Append the tool request and result messages to the chat.
-        chat.messages.push(message.into());
-        chat.messages.push(result);
+        chat.push_message(message)?;
+        chat.push_message(result)?;
     } else {
         // The Assistant did not call the tool. This may not be an error if the
         // user did not ask for the tool to be used, in which case it could be
@@ -135,13 +135,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Append the message and print the entire conversation as Markdown. The
         // default display also renders markdown, but without system prompt and
         // tool use information.
-        chat.messages.push(message.into());
+        chat.push_message(message)?;
         println!("{}", chat.markdown_verbose());
     } else {
         // Just print the message content. The response `Message` contains the
         // `request::Message` with a `Role` and `Content`. The message can also
         // be printed directly, but this will include the `Role` header.
-        println!("{}", message.message.content);
+        println!("{}", message.inner.content);
     }
 
     Ok(())

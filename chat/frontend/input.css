@@ -6,10 +6,20 @@
 @tailwind utilities;
 
 @layer components {
-  #main {
-    @apply flex flex-col w-full h-full p-4 bg-neutral-900;
+  body {
+    @apply bg-neutral-900 text-white;
   }
-  .div#navbar {
+
+  #main {
+    @apply flex flex-col w-full h-full p-4;
+  }
+  img.image.show {
+    @apply max-w-xl w-full flex flex-col overflow-hidden rounded-xl mt-4 shadow-2xl shadow-black hover:shadow-neutral-700;
+  }
+  div.multi-part > img.image.show {
+    @apply rounded-md shadow-none max-w-none;
+  }
+  .atta .div#navbar {
     @apply text-white;
   }
   .system {
@@ -22,13 +32,13 @@
     @apply bg-black rounded-2xl shadow-2xl shadow-black hover:shadow-neutral-700 p-4 border-neutral-800 border-2 hover:border-white transition-all ease-in-out mt-4;
   }
   .assistant .speech {
-    @apply mt-4 pl-4 pr-4;
+    @apply mt-4 pl-4 pr-4 whitespace-pre-wrap overflow-x-auto;
   }
   .multi-part {
     @apply flex flex-col;
   }
   /* todo: animation for thought.placeholder */
-  .thought.show {
+  .thought {
     @apply text-neutral-200 hover:text-white italic transition-all ease-in-out pr-4 pl-4 pt-4;
   }
   .tool-use {
@@ -45,13 +55,16 @@
     @apply shadow-2xl shadow-neutral-700 border-2 border-white;
   }
   .toggle {
-    @apply shadow-2xl shadow-black hover:shadow-neutral-700 bg-black hover:bg-neutral-800 text-white rounded-full p-4 mt-3 text-center mr-4 border-2 border-neutral-800 hover:border-white transition-all ease-in-out;
+    @apply shadow-2xl shadow-black hover:shadow-neutral-950 bg-black text-white rounded-full p-4 mt-3 text-center mr-4 border-2 border-neutral-800 hover:border-neutral-600 transition-all ease-in-out;
   }
   .active {
-    @apply bg-neutral-700 border-white shadow-xl shadow-neutral-700 transition-all ease-in-out;
+    @apply bg-neutral-700 border-white hover:border-white shadow-neutral-700 hover:shadow-neutral-700 transition-all ease-in-out;
   }
   .active.toggle {
     @apply bg-neutral-700;
+  }
+  .toggle.save.ready {
+    @apply bg-emerald-900 border-emerald-200 shadow-emerald-900;
   }
   .active > .text {
     @apply shadow-md shadow-black hover:shadow-neutral-700 transition-shadow ease-in-out;

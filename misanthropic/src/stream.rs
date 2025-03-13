@@ -579,17 +579,17 @@ pub trait FilterExt:
                     }
                     Ok(Event::ContentBlockStart { index, content_block }) => {
                         if let Some(message) = message {
-                            if index == message.message.content.len() {
+                            if index == message.inner.content.len() {
                                 // Most common case, append to the end.
-                                message.message.content.push(content_block.clone());
+                                message.inner.inner.content.push(content_block.clone());
                             } else if index == 0 {
                                 // Insert at the beginning.
-                                message.message.content = Content::MultiPart(
+                                message.inner.inner.content = Content::MultiPart(
                                     vec![content_block.clone()]
                                 );
                             } else {
                                 yield Err(Error::MessageAssembly {
-                                    message: format!("Index {} out of bounds. Max index is {}.", index, message.message.content.len()).into(),
+                                    message: format!("Index {} out of bounds. Max index is {}.", index, message.inner.content.len()).into(),
                                     delta: None,
                                 });
                             }
@@ -604,16 +604,16 @@ pub trait FilterExt:
                     }
                     Ok(Event::ContentBlockDelta { index, delta }) => {
                         if let Some(message) = message {
-                            if index != message.message.content.len() - 1 {
+                            if index != message.inner.content.len() - 1 {
                                 // A message delta appends to an existing index,
                                 // so the index should not be the len.
                                 yield Err(Error::MessageAssembly {
-                                    message: format!("Unexpected index for delta. Got `{}`, expected `{}`.", index, message.message.content.len() - 1).into(),
+                                    message: format!("Unexpected index for delta. Got `{}`, expected `{}`.", index, message.inner.content.len() - 1).into(),
                                     delta: Some(delta.clone()),
                                 });
                             }
 
-                            if let Err(err) = message.message.content.push_delta(delta.clone()) {
+                            if let Err(err) = message.inner.inner.content.push_delta(delta.clone()) {
                                 yield Err(Error::MessageAssembly {
                                     message: err.to_string().into(),
                                     delta: Some(delta.clone()),
@@ -630,9 +630,9 @@ pub trait FilterExt:
                     }
                     Ok(Event::ContentBlockStop { index }) => {
                         if let Some(message) = message {
-                            if index != message.message.content.len() - 1 {
+                            if index != message.inner.content.len() - 1 {
                                 yield Err(Error::MessageAssembly {
-                                    message: format!("Unexpected index for stop. Got `{}`, expected `{}`.", index, message.message.content.len() - 1).into(),
+                                    message: format!("Unexpected index for stop. Got `{}`, expected `{}`.", index, message.inner.content.len() - 1).into(),
                                     delta: None,
                                 });
                             }

@@ -1,5 +1,5 @@
 [package]
-name = "misanthropic-chat"
+name = "chat-backend"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,4 +18,7 @@ async-stream = "0.3"
 serde_json = "1"
 lazy_static = "1"
 tokio-stream = "0.1"
-tower-http = { version = "0.6", features = ["fs"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+
+# This is the model crate, which is shared between the frontend and backend.
+model = { path = "../model" }

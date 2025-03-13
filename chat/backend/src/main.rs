@@ -8,6 +8,8 @@ mod state;
 pub(crate) use state::AppState;
 
 type UserMessage = misanthropic::prompt::message::UserMessage<'static>;
+type AssisstantMessage =
+    misanthropic::prompt::message::AssistantMessage<'static>;
 type Prompt = misanthropic::Prompt<'static>;
 
 #[shuttle_runtime::main]

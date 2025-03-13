@@ -309,26 +309,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .truncate(chat.messages.len() - (retry * 2));
                     }
 
-                    chat.messages.push(message.into());
-                    chat.messages.push(result);
+                    chat.push_message(message);
+                    chat.push_message(result);
 
                     // Generate a message with the result.
                     let message = client.message(&chat).await?;
-                    chat.messages.push(message.into());
+                    chat.push_message(message);
                     break;
                 }
                 Err(error) => {
                     // Something went wrong with the tool use. We'll append the
                     // error message so the Assistant can learn from it and try
                     // again.
-                    chat.messages.push(message.into());
-                    chat.messages.push(error);
+                    chat.push_message(message);
+                    chat.push_message(error);
                 }
             }
         } else {
             // Tool was not called. This is fine if the user didn't ask for
             // something that requires Python.
-            chat.messages.push(message.into());
+            chat.push_message(message);
             break;
         }
     }

@@ -15,7 +15,7 @@ use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
 pub mod message;
-pub use message::Message;
+pub use message::{AssistantMessage, Message, UserMessage};
 
 pub mod thinking;
 pub use thinking::Thinking;
@@ -834,17 +834,13 @@ impl<'a> Prompt<'a> {
                     }
                 }
             }
-            Event::MessageStop => {
-                // Nothing to do here.
-                return Err(ApplyEventError::Unsupported { event });
-            }
             #[cfg_attr(not(feature = "partial-eq"), allow(unused_variables))]
             Event::Message { message } => {
                 // The complete message should be identical to the last message
                 // or there is a logic error in the caller.
                 #[cfg(feature = "partial-eq")]
                 if let Some(last) = self.messages.last() {
-                    if last == &message.message {
+                    if *last == **&message.inner {
                         return Ok(());
                     }
 
@@ -884,7 +880,9 @@ impl<'a> Prompt<'a> {
                     });
                 }
             }
-            stream::Event::Ping | stream::Event::MessageDelta { .. } => {
+            stream::Event::Ping
+            | stream::Event::MessageStop
+            | stream::Event::MessageDelta { .. } => {
                 // Can't merge MessageDelta because a prompt contains
                 // `prompt::Message` not `response::Message` which contains
                 // `Usage`. But also I don't like throwing this away since it's

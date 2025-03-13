@@ -19,18 +19,20 @@ use misanthropic::{prompt::message::Role, stream::FilterExt};
 
 use crate::{AppState, UserMessage};
 
+use model::request::Request;
+
 /// Accept a message from the user.
 #[axum::debug_handler]
 pub async fn message_post(
     State(state): State<AppState>,
-    Json(message): Json<UserMessage>,
+    Json(request): Json<model::request::Request>,
 ) -> impl IntoResponse {
     // Panic is not possible here because the channel is never closed because
     // AppState owns the channel and it is never dropped until the program
     // exits.
-    state.to_events.send(message).await.unwrap();
+    state.to_events.send(request).await.unwrap();
 
-    StatusCode::PROCESSING
+    StatusCode::ACCEPTED
 }
 
 /// Stream events from the user and the AI. Also updates the prompt with any
@@ -46,8 +48,8 @@ pub async fn events_stream(
         let mut from_user = state.from_user.lock().await;
         let mut prompt = state.prompt.lock().await;
 
-        let mut assistant_message = None;
-        let mut interrupt_message = None;
+        let mut assistant_message: Option<misanthropic::response::Message> = None;
+        let mut interrupt_message: Option<UserMessage> = None;
 
         loop {
             // If we were interrupted, we need to handle the partial message.
@@ -55,37 +57,39 @@ pub async fn events_stream(
                 // User interrupted. There should be a partial assistant message
                 // unless the assistant hasn't responded yet.
                 if let Some(assistant_message) = assistant_message.take() {
-                    // Unwrap can't panic because we have exclusive access to the
-                    // prompt and we just verified the turn order.
-                    prompt.push_message(assistant_message).unwrap();
-                    prompt.push_message(user_message).unwrap();
+                    // Assistant was interrupted. If the assistant just started
+                    // thinking there is a chance that the first thought block
+                    // is empty and the API will not accept unsigned thoughts.
+                    if let Some(assistant_message) = assistant_message.remove_incomplete_thought() {
+                        // There is still at least one block in the message, so
+                        // we can push both new messages to the prompt.
+                        prompt.push_message(assistant_message).unwrap();
+                        prompt.push_message(user_message).unwrap();
+                    } else {
+                        // User interrupted before the assistant responded and
+                        // the Assistant thought block is empty. This user was
+                        // very quick! We'll handle this edge case by merging
+                        // the user message onto any previous message, which,
+                        // unless we screwed up, should be a user message.
+                        if let Some(last) = prompt.messages.last_mut() {
+                            for block in user_message {
+                                last.content.push(block);
+                            }
+                        }
+                    }
                 } else if let Err(e) = prompt.push_message(user_message) {
                     // The user interrupted before the assistant responded. This
                     // is very unlikely and a bug in the frontend if it happens.
+                    let response = model::response::Response::Err(
+                        model::response::Error::TurnOrder { error: e },
+                    );
                     yield Event::default()
-                        .event("turn_order_error")
-                        .json_data(json!({
-                            "type": "turn_order_error",
-                            "data": e,
-                        }))
+                        .event("response")
+                        .json_data(response)
                         .unwrap();
                     break;
                 }
             }
-
-            // Yield a copy of the prompt. In production, this would be a bad
-            // idea because the prompt could be large and this struct includes
-            // the system prompt. This is just for demonstration purposes and so
-            // the code is easier to understand. If somehow the client is
-            // desynchronized, this will help us debug it. If the client needs
-            // to reconnect, it will get the full prompt to resynchronize. A
-            // fancier system could have a user event to request a full prompt.
-            yield Event::default()
-                .json_data(json!({
-                    "type": "prompt",
-                    "data": prompt.deref(),
-                }))
-                .unwrap();
 
             if prompt.messages.last().is_none_or(|m| m.role == Role::Assistant) {
                 // If the last message is a user message, we don't want to await
@@ -93,7 +97,42 @@ pub async fn events_stream(
                 // maintain the turn order. It would be the assistant's turn to
                 // respond. We'll wait for the assistant to respond first before
                 // taking from the user message channel again.
-                let user_message = from_user.recv().await.unwrap();
+                let user_message = match from_user.recv().await.unwrap() {
+                    Request::GetPrompt => {
+                        yield Event::default()
+                            .event("response")
+                            // We are doing this to avoid a clone.
+                            // This is supposed to be a Response::Ok(Prompt(prompt))
+                            .json_data(json!({
+                                "Ok": {
+                                    "prompt": prompt.deref(),
+                                },
+                            }))
+                            .unwrap();
+                        continue;
+                    },
+                    Request::SetPrompt(new) => {
+                        // This is not a fantastic idea in production because
+                        // letting the user specify the prompt, including the
+                        // system prompt, will absolutely lead to assholes
+                        // abusing the system and getting your API key banned.
+                        *prompt = new;
+                        continue;
+                    }
+                    Request::UserMessage(user_message) => {
+                        // Echo the user message back to the user. Input
+                        // checks should be done here.
+                        yield Event::default()
+                            .event("response")
+                            .json_data(json!({
+                                "Ok": {
+                                    "user_message": &user_message,
+                                },
+                            }))
+                            .unwrap();
+                        user_message
+                    },
+                };
                 // Unwrap can't panic because we just verified the turn order
                 // and we have exclusive access to the prompt.
                 prompt.push_message(user_message).unwrap();
@@ -117,12 +156,14 @@ pub async fn events_stream(
                     // Something went wrong getting a stream from Anthropic. We
                     // should really handle the individual errors here, since
                     // some are recoverable.
+                    let response = model::response::Response::Err(
+                        model::response::Error::MisanthropicClient {
+                            message: e.to_string(),
+                        },
+                    );
                     yield Event::default()
-                        .event("misanthropic_client_error")
-                        .json_data(json!({
-                            "type": "misanthropic_client_error",
-                            "data": e.to_string(),
-                        }))
+                        .event("response")
+                        .json_data(response)
                         .unwrap();
                     break;
                 }
@@ -135,7 +176,39 @@ pub async fn events_stream(
                 // this with `stream.next()` but it's easier to understand this
                 // way. Very small latency difference since we must wait for the
                 // next event but there are many of these per second.
-                if let Ok(user_message) = from_user.try_recv() {
+                if let Ok(request) = from_user.try_recv() {
+                    // Handle user interrupt.
+                    let user_message = match request {
+                        Request::GetPrompt => {
+                            yield Event::default()
+                                .event("response")
+                                .json_data(json!({
+                                    "Ok": {
+                                        "prompt": prompt.deref(),
+                                    },
+                                }))
+                                .unwrap();
+                            continue;
+                        },
+                        Request::SetPrompt(new) => {
+                            *prompt = new;
+                            continue;
+                        }
+                        Request::UserMessage(user_message) => {
+                            yield Event::default()
+                                .event("response")
+                                .json_data(json!({
+                                    "Ok": {
+                                        "user_message": &user_message,
+                                    },
+                                }))
+                                .unwrap();
+                            user_message
+                        },
+                    };
+
+
+
                     // We can't take the partial message here because the stream
                     // owns a mutable reference to it. We'll just store the user
                     // message here and handle it on the next iteration.
@@ -144,37 +217,31 @@ pub async fn events_stream(
                 }
 
                 match event {
-                    Ok(misanthropic::stream::Event::Message { message }) => {
-                        // A complete message from the AI. We'll add it to the
-                        // prompt. The next iteration of the loop will send it
-                        // to the user, who should have an identical copy if
-                        // the frontend is assembling the events correctly.
-                        // Unwrap can't panic because we have exclusive access
-                        // to the prompt and we just verified the turn order.
-                        prompt.push_message(message).unwrap();
-                        // TODO: Handle tool use here. Technically, as is, the
-                        // API can handle tool use on the client side since the
-                        // tool use response is a user message.
-                    }
                     Ok(event) => {
-                        // Any other event we'll just send to the user,
-                        // including tool use.
+                        // Forward the message to the client.
+                        let response = model::response::Response::Ok(
+                            model::response::Success::Stream(event),
+                        );
                         yield Event::default()
-                            .event("stream_event")
-                            .json_data(json!({
-                                "type": "stream_event",
-                                "data": event,
-                            }))
+                            .event("response")
+                            .json_data(&response)
                             .unwrap();
+
+                        let event = response.unwrap().unwrap_stream();
+
+                        // Handle it with the same code that the client uses.
+                        prompt.handle_stream_event(event).unwrap();
                     }
                     Err(e) => {
                         // Something went wrong getting an event from the stream.
+                        let response = model::response::Response::Err(
+                            model::response::Error::Stream {
+                                message: e.to_string(),
+                            },
+                        );
                         yield Event::default()
-                            .event("stream_error")
-                            .json_data(json!({
-                                "type": "stream_error",
-                                "data": e.to_string(),
-                            }))
+                            .event("response")
+                            .json_data(response)
                             .unwrap();
                     }
                 }
@@ -204,9 +271,28 @@ pub fn create_router(secrets: SecretStore) -> Router {
         prompt: Arc::new(Mutex::new(prompt)),
     };
 
-    Router::new()
+    let router = Router::new()
         .route("/events", get(events_stream))
-        .route("/message", post(message_post))
-        // frontend goes here
-        .with_state(state)
+        .route("/message", post(message_post));
+    // frontend goes here
+    #[cfg(debug_assertions)]
+    {
+        use axum::http::Method;
+
+        let cors = tower_http::cors::CorsLayer::new()
+            // Allow localhost.
+            .allow_origin(tower_http::cors::Any)
+            // Allow Get and post
+            .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+            // Allow content type headers
+            .allow_headers([axum::http::HeaderName::from_static(
+                "content-type",
+            )]);
+
+        router.layer(cors).with_state(state)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        router.with_state(state)
+    }
 }

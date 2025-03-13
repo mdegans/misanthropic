@@ -24,7 +24,9 @@ cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 unsafe_code = "forbid"
 
 [dependencies]
+# For base64 encoding/decoding, obvs.
 base64 = "0.22"
+# Because I don't like boilerplate.
 derive_more = { version = "1", features = [
     "as_ref",
     "deref",
@@ -33,22 +35,48 @@ derive_more = { version = "1", features = [
     "into",
     "is_variant",
 ] }
+# For the client
 eventsource-stream = "0.2"
+# We don't depend on tokio. Misanthropic should support anything that `rewqest`
+# supports, howevet the Client will not build on wasm32 currently.
 futures = "0.3"
+# Because I like `yield`. It makes some things so much easier to write.
 async-trait = "0.1"
+# For `image` crate support.
 image = { version = "0.25", optional = true }
+# For logging
 log = { version = "0.4", optional = true }
+# For paranoid people who want to encrypt the key in memory. I have no idea how
+# secure this is, but it would make malware that searches for keys in memory
+# harder to write. This is a mitigation for an already bad situation.
 memsecurity = { version = "3.5", optional = true }
+# For zeroizing keys in memory.
 zeroize = { version = "1", features = ["derive"] }
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "http2",
+], default-features = false }
 serde = { version = "1", features = ["derive"] }
+# In some places in this crate, we use `serde_json::Value` to represent JSON
+# objects.
 serde_json = "1"
+# I like this for errors.
 thiserror = "1"
 # markdown support
 pulldown-cmark = { version = "0.12", optional = true, features = ["serde"] }
+# Html rendering of markdown. `dioxus` feature is better for this, but it is
+# available for those who want it.
 pulldown-cmark-to-cmark = { version = "19", optional = true }
+# To enforce certain guarantees at compile time.
 static_assertions = "1"
+# For output sanitization. Currently this is not supported for `Block::thought`
+# because character escaping could break Anthropic's signature, and the API
+# would reject the message when resubmitting. The developer is responsible for
+# ensuring the output is sanitized. Or simply hide agent thoughts. Log them
+# instead. Users only need see "thinking" unless you really, really want to
+# expose customers to the random thoughts of a machine learning model.
 langsan = { version = "0", features = [
     "english",
     "french",
@@ -76,12 +104,14 @@ dioxus = { version = "0.6", optional = true }
 [dev-dependencies]
 # for all examples
 clap = { version = "4", features = ["derive"] }
+# for all examples
 env_logger = "0.11"
+# The async runtime. `misanthropic` itself is async runtime agnostic. Except
+# wasm. Wasm is a special snowflake.
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # for the strawberry example
 itertools = "0.13"
 # for the python example
-
 subprocess = "0.2"
 tempfile = "3.12"
 
@@ -89,8 +119,8 @@ tempfile = "3.12"
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
 default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch"]
 # Image crate support. Note that images are supported without this feature but
-# you must handle encoding/decoding yourself. This is mostly for interop with
-# the `image` crate.
+# you must handle encoding/decoding yourself, so it almost always makes sense
+# to enable this and use the image crate.
 image = ["dep:image"]
 # A beta has been enabled. It is not necessary to set this manually. Only one
 # beta can be enabled at a time (for example, `prompt-caching`).
@@ -153,3 +183,5 @@ doc-scrape-examples = true
 [[example]]
 name = "neologism"
 doc-scrape-examples = true
+
+# See also the `chat` example in the root of the repository.

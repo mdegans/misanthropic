@@ -693,7 +693,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        model, prompt::message::Role, response::Usage, AnthropicModel,
+        model, prompt::message::Content, response::Usage, AnthropicModel,
     };
 
     use super::*;
@@ -970,7 +970,7 @@ mod tests {
             id,
             BatchResult::Ok(response::Message {
                 id: PENDING_ID.into(),
-                message: (Role::User, "Hello roboto!").into(),
+                inner: Content::from("Hello roboto!").into(),
                 model: model::Id::Anthropic(AnthropicModel::Haiku30),
                 stop_reason: None,
                 stop_sequence: Some("potato".into()),
@@ -1019,7 +1019,7 @@ mod tests {
         let (prompt, msg) = iter.next().unwrap();
         assert_eq!(prompt, &Prompt::default());
         assert_eq!(msg.id, PENDING_ID);
-        assert_eq!(msg.message, (Role::User, "Hello roboto!").into());
+        assert_eq!(msg.inner, Content::from("Hello roboto!").into());
         assert!(iter.next().is_none());
     }
 
@@ -1030,7 +1030,7 @@ mod tests {
         let (prompt, msg) = ready.remove_ok().pop().unwrap();
         assert_eq!(prompt, Prompt::default());
         assert_eq!(msg.id, PENDING_ID);
-        assert_eq!(msg.message, (Role::User, "Hello roboto!").into());
+        assert_eq!(msg.inner, Content::from("Hello roboto!").into());
         assert_eq!(ready.pending.meta.stats.succeeded, 49);
         assert_eq!(ready.results.len(), 3);
     }
@@ -1137,7 +1137,7 @@ mod tests {
     fn test_batch_result_into_result() {
         let ok = Result::from(BatchResult::Ok(response::Message {
             id: PENDING_ID.into(),
-            message: (Role::User, "Hello roboto!").into(),
+            inner: Content::from("Hello roboto!").into(),
             model: model::Id::Anthropic(AnthropicModel::Haiku30),
             stop_reason: None,
             stop_sequence: Some("potato".into()),

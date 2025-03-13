@@ -143,11 +143,46 @@ impl Message<'_> {
             content: self.content.into_static(),
         }
     }
+
+    /// A convenience method to fix an incomplete [`Block::Thought`] in the case
+    /// of interruption in a streaming context.
+    ///
+    /// Such messages must be removed or the API will reject the request if this
+    /// is sent in a new request (because the signature will be absent).
+    ///
+    /// If, after removing the last block, there are no more blocks, None will
+    /// be returned.
+    pub fn remove_incomplete_thought(mut self) -> Option<Self> {
+        if self.role != Role::Assistant {
+            // There cannot be thinking content from the user.
+            return Some(self);
+        }
+
+        if let Content::MultiPart(parts) = &mut self.content {
+            if let Some(Block::Thought { signature, .. }) = parts.last() {
+                if signature.is_empty() {
+                    parts.pop();
+                }
+            }
+        }
+
+        if self.is_empty() {
+            None
+        } else {
+            Some(self)
+        }
+    }
 }
 
 impl<'a> From<response::Message<'a>> for Message<'a> {
     fn from(message: response::Message<'a>) -> Self {
-        message.message
+        message.inner.inner
+    }
+}
+
+impl<'a> From<response::Message<'a>> for AssistantMessage<'a> {
+    fn from(message: response::Message<'a>) -> Self {
+        message.inner
     }
 }
 
@@ -177,6 +212,23 @@ impl<'a> From<tool::Result<'a>> for Message<'a> {
         Message {
             role: Role::User,
             content: result.into(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for Message<'a> {
+    type Item = Block<'a>;
+    type IntoIter = std::vec::IntoIter<Block<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self.content {
+            Content::SinglePart(text) => vec![Block::Text {
+                text,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            }]
+            .into_iter(),
+            Content::MultiPart(parts) => parts.into_iter(),
         }
     }
 }
@@ -249,23 +301,49 @@ impl std::fmt::Display for Message<'_> {
 }
 
 /// A message guaranteed to be from the assistant.
-#[derive(Debug, Serialize, Clone, derive_more::Deref, Deserialize)]
-#[serde(try_from = "Message<'_>")]
-pub struct AssisstantMessage<'a> {
-    inner: Message<'a>,
+#[derive(
+    Debug,
+    Serialize,
+    Clone,
+    derive_more::Deref,
+    Deserialize,
+    derive_more::Display,
+)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(try_from = "Message<'_>", into = "Message<'_>")]
+pub struct AssistantMessage<'a> {
+    pub(crate) inner: Message<'a>, // Invariant: role == Role::Assistant
 }
 
-impl AssisstantMessage<'_> {
+impl<'a> AssistantMessage<'a> {
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
-    pub fn into_static(self) -> Self {
-        Self {
+    pub fn into_static(self) -> AssistantMessage<'static> {
+        AssistantMessage::<'static> {
             inner: self.inner.into_static(),
         }
     }
+
+    /// Get the inner [`Content`].
+    pub fn content(&self) -> &Content<'a> {
+        &self.inner.content
+    }
+
+    /// Get the inner [`Content`] mutably.
+    pub fn content_mut(&mut self) -> &mut Content<'a> {
+        &mut self.inner.content
+    }
+
+    /// Remove an incomplete [`Block::Thought`] from the end of the message.
+    /// See [`Message::remove_incomplete_thought`] for more information.
+    pub fn remove_incomplete_thought(self) -> Option<Self> {
+        self.inner
+            .remove_incomplete_thought()
+            .map(|inner| AssistantMessage { inner })
+    }
 }
 
-impl<'a> From<Content<'a>> for AssisstantMessage<'a> {
+impl<'a> From<Content<'a>> for AssistantMessage<'a> {
     fn from(content: Content<'a>) -> Self {
         Self {
             inner: Message {
@@ -276,13 +354,19 @@ impl<'a> From<Content<'a>> for AssisstantMessage<'a> {
     }
 }
 
-impl<'a> From<AssisstantMessage<'a>> for Content<'a> {
-    fn from(val: AssisstantMessage<'a>) -> Self {
+impl<'a> From<AssistantMessage<'a>> for Message<'a> {
+    fn from(val: AssistantMessage<'a>) -> Self {
+        val.inner
+    }
+}
+
+impl<'a> From<AssistantMessage<'a>> for Content<'a> {
+    fn from(val: AssistantMessage<'a>) -> Self {
         val.inner.content
     }
 }
 
-impl<'a> TryFrom<Message<'a>> for AssisstantMessage<'a> {
+impl<'a> TryFrom<Message<'a>> for AssistantMessage<'a> {
     type Error = NotTheAssistant;
 
     fn try_from(message: Message<'a>) -> Result<Self, Self::Error> {
@@ -301,18 +385,28 @@ pub struct NotTheAssistant;
 
 /// A message guaranteed to be from the user.
 #[derive(Debug, Serialize, Clone, derive_more::Deref, Deserialize)]
-#[serde(try_from = "Message<'_>")]
+#[serde(try_from = "Message<'_>", into = "Message<'_>")]
 pub struct UserMessage<'a> {
-    inner: Message<'a>,
+    inner: Message<'a>, // Invariant: role == Role::User
 }
 
-impl UserMessage<'_> {
+impl<'a> UserMessage<'a> {
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
-    pub fn into_static(self) -> Self {
-        Self {
+    pub fn into_static(self) -> UserMessage<'static> {
+        UserMessage::<'static> {
             inner: self.inner.into_static(),
         }
+    }
+
+    /// Get the inner [`Content`].
+    pub fn content(&self) -> &Content<'a> {
+        &self.inner.content
+    }
+
+    /// Get the inner [`Content`] mutably.
+    pub fn content_mut(&mut self) -> &mut Content<'a> {
+        &mut self.inner.content
     }
 }
 
@@ -351,6 +445,23 @@ impl<'a> From<&'a str> for UserMessage<'a> {
                 role: Role::User,
                 content: Content::text(string),
             },
+        }
+    }
+}
+
+impl<'a> IntoIterator for UserMessage<'a> {
+    type Item = Block<'a>;
+    type IntoIter = std::vec::IntoIter<Block<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self.inner.content {
+            Content::SinglePart(text) => vec![Block::Text {
+                text,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            }]
+            .into_iter(),
+            Content::MultiPart(parts) => parts.into_iter(),
         }
     }
 }
@@ -520,7 +631,10 @@ impl<'a> Content<'a> {
     }
 
     /// Get the last [`Block`] in the [`Content`]. Returns [`None`] if the
-    /// [`Content`] is empty.
+    /// [`Content`] is empty or [`SinglePart`].
+    ///
+    /// [`SinglePart`]: Content::SinglePart
+    // Because to make it multi-part on access this would have to be &mut
     pub fn last(&self) -> Option<&Block> {
         match self {
             Self::SinglePart(_) => None,
@@ -571,6 +685,46 @@ impl<'a> Content<'a> {
         }
 
         Ok(())
+    }
+
+    /// Drains the blocks from the content.
+    pub fn drain(&'a mut self) -> impl Iterator<Item = Block<'a>> + 'a {
+        let ret: Box<dyn Iterator<Item = Block<'a>>> = match self {
+            Self::SinglePart(_) => {
+                let mut old = Content::MultiPart(vec![]);
+                std::mem::swap(self, &mut old);
+                match old {
+                    Content::SinglePart(text) => {
+                        Box::new(std::iter::once(Block::Text {
+                            text,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }))
+                    }
+                    Content::MultiPart(parts) => Box::new(parts.into_iter()),
+                }
+            }
+            Self::MultiPart(parts) => Box::new(parts.drain(..)),
+        };
+
+        ret
+    }
+}
+
+impl<'a> IntoIterator for Content<'a> {
+    type Item = Block<'a>;
+    type IntoIter = std::vec::IntoIter<Block<'a>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        match self {
+            Content::SinglePart(text) => vec![Block::Text {
+                text,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            }]
+            .into_iter(),
+            Content::MultiPart(parts) => parts.into_iter(),
+        }
     }
 }
 
@@ -630,26 +784,6 @@ impl From<dioxus::html::FormData> for Content<'_> {
     }
 }
 
-impl<'a> IntoIterator for Content<'a> {
-    type Item = Block<'a>;
-    type IntoIter = std::vec::IntoIter<Block<'a>>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        match self {
-            Content::SinglePart(text) => vec![Block::Text {
-                text,
-                cache_control: None,
-            }]
-            .into_iter(),
-            Content::MultiPart(parts) => parts
-                .into_iter()
-                .map(Block::into_static)
-                .collect::<Vec<_>>()
-                .into_iter(),
-        }
-    }
-}
-
 #[cfg(feature = "markdown")]
 impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -671,6 +805,45 @@ where
 {
     fn from(block: T) -> Self {
         Self::MultiPart(vec![block.into()])
+    }
+}
+
+impl<'a, T> FromIterator<T> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::MultiPart(iter.into_iter().map(Into::into).collect())
+    }
+}
+
+impl<'a, T> Extend<T> for Content<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
+        let text = match self {
+            Self::SinglePart(old) => {
+                let mut text: crate::CowStr<'a> = String::new().into();
+                std::mem::swap(old, &mut text);
+                text
+            }
+            Self::MultiPart(parts) => {
+                parts.extend(iter.into_iter().map(Into::into));
+                return;
+            }
+        };
+        // We have single-part content, so we need to convert it to multi-part
+        // and then extend it.
+
+        *self = Self::MultiPart(vec![Block::Text {
+            text,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }]);
+        // This can never recurse infinitely because we just converted to
+        // MultiPart and that will skip this by returning early.
+        self.extend(iter);
     }
 }
 
@@ -727,7 +900,7 @@ pub enum Block<'a> {
     /// with each request but does not count against the token budget uness the
     /// Assistant refers to a past thought.
     #[serde(rename = "thinking")]
-    #[cfg_attr(not(feature = "markdown"), display("{}", thinking))]
+    #[cfg_attr(not(feature = "markdown"), display("{thought}"))]
     Thought {
         /// Complete Thought.
         ///
@@ -1221,7 +1394,7 @@ impl From<image::RgbaImage> for Block<'_> {
             .unwrap_or_else(|e| {
                 #[cfg(feature = "log")]
                 log::error!("Error encoding image: {}", e);
-                Image::from_parts(MediaType::Png, String::new())
+                Image::from_parts(MediaType::Png, String::new().into())
             })
             .into()
     }
@@ -1261,18 +1434,15 @@ pub enum Image<'a> {
         /// Image encoding format.
         media_type: MediaType,
         /// Base64 encoded compressed image data.
-        data: crate::CowStr<'a>,
+        data: Cow<'a, str>,
     },
 }
 
-impl Image<'_> {
+impl<'a> Image<'a> {
     /// From raw parts. The data is expected to be base64 encoded compressed
     /// image data or the API will reject it.
-    pub fn from_parts(media_type: MediaType, data: String) -> Self {
-        Self::Base64 {
-            media_type,
-            data: data.into(),
-        }
+    pub fn from_parts(media_type: MediaType, data: Cow<'a, str>) -> Self {
+        Self::Base64 { media_type, data }
     }
 
     /// Encode from compressed image data (not base64 encoded). This cannot fail
@@ -1328,10 +1498,7 @@ impl Image<'_> {
         match self {
             Self::Base64 { media_type, data } => Image::Base64 {
                 media_type,
-                #[cfg(not(feature = "langsan"))]
                 data: std::borrow::Cow::Owned(data.into_owned()),
-                #[cfg(feature = "langsan")]
-                data: data.into_static(),
             },
         }
     }
@@ -1383,6 +1550,38 @@ pub enum MediaType {
     Gif,
     #[serde(rename = "image/webp")]
     Webp,
+}
+
+impl MediaType {
+    /// Supported [`MediaType`]s.
+    pub const SUPPORTED: &'static [Self] =
+        &[Self::Jpeg, Self::Png, Self::Gif, Self::Webp];
+
+    /// Extensions supported by the [`MediaType`].
+    pub const fn exts(&self) -> &'static [&'static str] {
+        match self {
+            Self::Jpeg => &["jpeg", "jpg"],
+            Self::Png => &["png"],
+            Self::Gif => &["gif"],
+            Self::Webp => &["webp"],
+        }
+    }
+
+    /// Returns true if `filename` has a supported extension.
+    pub fn is_supported(filename: &str) -> bool {
+        Self::detect(filename).is_some()
+    }
+
+    /// Detects the [`MediaType`] from the `filename` extension.
+    pub fn detect(filename: &str) -> Option<Self> {
+        for mt in Self::SUPPORTED {
+            if mt.exts().iter().any(|ext| filename.ends_with(ext)) {
+                return Some(*mt);
+            }
+        }
+
+        None
+    }
 }
 
 impl std::fmt::Display for MediaType {
@@ -1535,7 +1734,7 @@ mod tests {
         let block: Block<'static> = block.into_static();
         assert_eq!(block.to_string(), "Hello, world!");
 
-        let image: Image = Image::from_parts(MediaType::Png, String::new());
+        let image: Image = Image::from_parts(MediaType::Png, "data".into());
         let image: Image<'static> = image.into_static();
         assert_eq!(image.to_string(), "![Image](data:image/png;base64,)");
 
@@ -1671,10 +1870,12 @@ mod tests {
     #[test]
     fn test_from_response_message() {
         let response = response::Message {
-            message: Message {
-                role: Role::User,
+            inner: Message {
+                role: Role::Assistant,
                 content: Content::text("Hello, world!"),
-            },
+            }
+            .try_into()
+            .unwrap(),
             id: "msg_123".into(),
             model: crate::AnthropicModel::Sonnet35.into(),
             stop_reason: None,
@@ -1684,7 +1885,7 @@ mod tests {
 
         let message: Message = response.into();
 
-        assert_eq!(message.to_string(), "### User\n\nHello, world!");
+        assert_eq!(message.to_string(), "### Assistant\n\nHello, world!");
     }
 
     #[test]
@@ -1873,7 +2074,7 @@ mod tests {
     #[test]
     #[cfg(feature = "png")]
     fn test_block_from_image() {
-        let image = Image::from_parts(MediaType::Png, "data".to_string());
+        let image = Image::from_parts(MediaType::Png, "data".into());
         let block: Block = image.into();
         assert_eq!(block.to_string(), "![Image](data:image/png;base64,data)");
     }
@@ -1913,5 +2114,47 @@ mod tests {
         let actual: image::RgbaImage = image.try_into().unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_user_message_try_from_message() {
+        let message: Message = (Role::Assistant, "Imitation!").into();
+        assert!(UserMessage::try_from(message).is_err());
+        let message: Message = (Role::User, "Valid!").into();
+        assert!(UserMessage::try_from(message).is_ok());
+    }
+
+    #[test]
+    fn test_user_message_serde() {
+        let message: Message = (Role::Assistant, "Imitation!").into();
+        let invalid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<UserMessage, _> = serde_json::from_str(&invalid_json);
+        assert!(ret.is_err());
+        let message: Message = (Role::User, "Valid!").into();
+        let valid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<UserMessage, _> = serde_json::from_str(&valid_json);
+        assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_assistant_message_try_from_message() {
+        let message: Message = (Role::User, "Imitation!").into();
+        assert!(AssistantMessage::try_from(message).is_err());
+        let message: Message = (Role::Assistant, "Valid!").into();
+        assert!(AssistantMessage::try_from(message).is_ok());
+    }
+
+    #[test]
+    fn test_assistant_message_serde() {
+        let message: Message = (Role::User, "Imitation!").into();
+        let invalid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<AssistantMessage, _> =
+            serde_json::from_str(&invalid_json);
+        assert!(ret.is_err());
+        let message: Message = (Role::Assistant, "Valid!").into();
+        let valid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<AssistantMessage, _> =
+            serde_json::from_str(&valid_json);
+        assert!(ret.is_ok());
     }
 }

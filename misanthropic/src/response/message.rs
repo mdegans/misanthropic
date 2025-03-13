@@ -3,16 +3,16 @@ use std::borrow::Cow;
 use crate::{prompt, stream::MessageDelta, Id};
 use serde::{Deserialize, Serialize};
 
-/// A [`prompt::message`] with additional response metadata.
+/// A [`prompt::Message`] with additional response metadata.
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[display("{}", message)]
+#[display("{}", inner)]
 pub struct Message<'a> {
     /// Unique `id` for the message.
     pub id: Cow<'a, str>,
     /// Inner [`prompt::message`].
     #[serde(flatten)]
-    pub message: prompt::Message<'a>,
+    pub inner: prompt::AssistantMessage<'a>,
     /// [`Model`] that generated the message.
     pub model: Id<'a>,
     /// The reason the model stopped generating tokens.
@@ -50,7 +50,7 @@ impl Message<'_> {
             return None;
         }
 
-        self.message.content.last()?.tool_use()
+        self.inner.content.last()?.tool_use()
     }
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
@@ -58,7 +58,7 @@ impl Message<'_> {
     pub fn into_static(self) -> Message<'static> {
         Message {
             id: Cow::Owned(self.id.into_owned()),
-            message: self.message.into_static(),
+            inner: self.inner.into_static(),
             model: self.model.into_static(),
             stop_reason: self.stop_reason,
             stop_sequence: self
@@ -66,6 +66,15 @@ impl Message<'_> {
                 .map(|s| Cow::Owned(s.into_owned())),
             usage: self.usage,
         }
+    }
+
+    /// Remove an incomplete thought from the message. If after removal, the
+    /// message is empty, `None` is returned.
+    ///
+    /// See also [`prompt::Message::remove_incomplete_thought`].
+    pub fn remove_incomplete_thought(self) -> Option<Self> {
+        let inner = self.inner.remove_incomplete_thought()?;
+        Some(Self { inner, ..self })
     }
 }
 
@@ -107,7 +116,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        self.message.markdown_events_custom(options)
+        self.inner.markdown_events_custom(options)
     }
 }
 
@@ -140,7 +149,7 @@ mod tests {
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        assert_eq!(message.message.content.len(), 1); // single block
+        assert_eq!(message.inner.content.len(), 1); // single block
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
         assert_eq!(message.model, crate::AnthropicModel::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
@@ -178,7 +187,7 @@ mod tests {
         message.stop_reason = Some(StopReason::ToolUse);
         assert!(message.tool_use().is_none());
 
-        message.message.content.push(crate::tool::Use {
+        message.inner.content_mut().push(crate::tool::Use {
             id: "id".into(),
             name: "name".into(),
             input: serde_json::json!({}),
@@ -216,11 +225,13 @@ mod tests {
 
         let message = Message {
             id: "id".into(),
-            message: prompt::Message {
-                role: prompt::message::Role::User,
-                content: prompt::message::Content::SinglePart(
-                    "Hello, **world**!".into(),
-                ),
+            inner: prompt::AssistantMessage {
+                inner: prompt::Message {
+                    role: prompt::message::Role::User,
+                    content: prompt::message::Content::SinglePart(
+                        "Hello, **world**!".into(),
+                    ),
+                },
             },
             model: crate::AnthropicModel::Sonnet35.into(),
             stop_reason: None,

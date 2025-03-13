@@ -1,5 +1,5 @@
 [package]
-name = "frontend"
+name = "chat-frontend"
 version = "0.1.0"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 edition = "2021"
@@ -9,7 +9,11 @@ edition = "2021"
 [dependencies]
 dioxus = { version = "0.6", features = ["router"] }
 eventsource-stream = "0.2"
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = [
+    "json",
+    "stream",
+    "http2",
+], default-features = false }
 misanthropic = { path = "../../misanthropic", default-features = false, features = [
     "html",
     "cot",
@@ -24,10 +28,13 @@ serde-wasm-bindgen = "0.4"
 wasm-logger = "0.2"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = "0.3"
+web-sys = { version = "0.3" }
 thiserror = "1"
 js-sys = "0.3"
 futures = "0.3"
+
+# This is the model crate, which is shared between the frontend and backend.
+model = { path = "../model" }
 
 [features]
 default = ["web"]

@@ -6,4 +6,6 @@ api.key
 lcov.info
 node_modules/
 Secrets.toml
+*.Dockerfile
+*.docker-compose.yaml
 *.env

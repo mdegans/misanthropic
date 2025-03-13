@@ -1,13 +1,22 @@
-use dioxus::prelude::*;
+use std::ops::Deref;
+
+use dioxus::{html::HasFileData, prelude::*};
 
 use misanthropic::{
     dioxus::{
         opts::{self, HeadingLevel},
         IntoElement, Options,
     },
-    exports::futures::StreamExt,
-    prompt::Prompt,
+    exports::{
+        base64::{self, engine::GeneralPurpose, Engine},
+        futures::StreamExt,
+    },
+    prompt::{
+        message::{Block, Image, MediaType, UserMessage},
+        Prompt,
+    },
 };
+use model::{request::Request, response::Success};
 
 use crate::utils::sleep_ms;
 
@@ -17,10 +26,7 @@ const CSS: Asset = asset!("/assets/styling/chat.css");
 /// pooling.
 static CLIENT: GlobalSignal<crate::client::Client> =
     GlobalSignal::new(crate::client::Client::new);
-/// Global flags to toggle the visibility of different types of messages.
-static SHOW_THOUGHT: GlobalSignal<bool> = GlobalSignal::new(|| false);
-static SHOW_TOOL_USE: GlobalSignal<bool> = GlobalSignal::new(|| false);
-static SHOW_SYSTEM: GlobalSignal<bool> = GlobalSignal::new(|| false);
+const BASE64: GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 /// A test prompt for testing the chat view.
 #[cfg(debug_assertions)]
@@ -153,6 +159,14 @@ pub fn Chat() -> Element {
     let mut failures = use_signal(|| 0);
     let mut shift_held = use_signal(|| false);
     let mut options = use_signal(Options::default);
+    let mut show_thought = use_signal(|| false);
+    let mut show_tool_use = use_signal(|| false);
+    let mut show_system = use_signal(|| false);
+    let mut dragged_over = use_signal(|| true);
+    let mut dragged_file_supported = use_signal(|| false);
+    let mut attachments = use_signal(|| Vec::<Block>::new());
+    let mut ready_json = use_signal(|| None);
+
     // Our long-running task is the stream task. It will run until the
     // component is dropped, connecting with the
     let _stream_task = use_resource(move || async move {
@@ -171,42 +185,67 @@ pub fn Chat() -> Element {
             }
         };
 
+        // Stream connected. Get the prompt.
+        if let Err(e) = CLIENT.read().send(Request::GetPrompt).await {
+            connected.set(false);
+            log::error!("Failed to request prompt because: {}", e);
+        };
+
+        // Stream events until disconnected.
         while let Some(event) = stream.next().await {
-            use crate::client;
             match event {
-                Ok(event) => match event {
-                    client::Event::Stream(event) => {
-                        // The most common event is a stream event forwarded
-                        // from Anthropic. This is where the magic happens.
-                        if let Err(e) =
-                            prompt.write().handle_stream_event(event)
-                        {
-                            log::error!("Failed to handle stream event: {}", e);
+                Ok(event) => {
+                    log::debug!("Event: {:?}", event);
+
+                    match event {
+                        Ok(Success::Stream(event)) => {
+                            // The most common event is a stream event forwarded
+                            // from Anthropic. This is where the magic happens.
+                            if let Err(e) =
+                                // A Prompt and Vec<Message> both implement
+                                // `HandleStreamEvent`. In a real app, the
+                                // latter is likely more useful on the client
+                                // side.
+                                //
+                                // The trait can also be implemented for custom
+                                // types, like a wrapper for a `Vec<Message>`
+                                // with class invariant checks.
+                                prompt.write().handle_stream_event(event)
+                            {
+                                log::error!(
+                                    "Failed to handle stream event: {}",
+                                    e
+                                );
+                            }
+                        }
+                        Ok(Success::Prompt(new)) => {
+                            // This handles desyncs and initial state.
+                            prompt.set(new);
+                        }
+                        Ok(Success::UserMessage(message)) => {
+                            // This is a message from the user. It should be
+                            // displayed in the chat.
+                            if let Err(e) = prompt.write().push_message(message)
+                            {
+                                log::error!("Failed to push message: {}", e);
+                                // no clue how we got here but do know how to
+                                // fix it
+                                if let Err(ce) =
+                                    CLIENT.read().send(Request::GetPrompt).await
+                                {
+                                    connected.set(false);
+                                    log::error!(
+                                        "Failed to get prompt after error `{e}` because: {}",
+                                        ce
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::error!("{e}");
                         }
                     }
-                    client::Event::Prompt(new_prompt) => {
-                        // Update the prompt with the new prompt. This should
-                        // match the one assembled by the stream. This handles
-                        // desyncs and initial state.
-                        prompt.set(new_prompt);
-                    }
-                    client::Event::StreamError(e) => {
-                        // This indicates a problem with the stream. Normally
-                        // this should not reach the user.
-                        log::error!("Stream error: {}", e);
-                    }
-                    client::Event::MisanthropicClientError(e) => {
-                        // This indicates a problem with the Anthropic client on
-                        // the server side. Normally this should not reach the
-                        // user.
-                        log::error!("Misanthropic client error: {}", e);
-                    }
-                    client::Event::TurnOrderError(e) => {
-                        // This should not happen. It indicates a logic error.
-                        // We could panic but it's better to log and continue.
-                        log::error!("Turn order error: {}", e);
-                    }
-                },
+                }
                 // This is a problem with the stream itself. Can't reach the
                 // backend, etc.
                 Err(e) => log::error!("Error: {}", e),
@@ -219,47 +258,41 @@ pub fn Chat() -> Element {
 
     let mut input_buffer = use_signal(|| String::new());
 
-    // if !*connected.read() {
-    //     return rsx! {
-    //         document::Link { rel: "stylesheet", href: CSS }
+    if !*connected.read() {
+        return rsx! {
+            document::Link { rel: "stylesheet", href: CSS }
 
-    //         div {
-    //             h1 { "Chat" }
-    //             div { class: "chat",
-    //                 div { class: "message", role: "system",
-    //                     {
-    //                         // Do our little indicator dance.
-    //                         format!(
-    //                             "Connecting{}",
-    //                             std::iter::repeat('.').take(*failures.read() % 4).collect::<String>(),
-    //                         )
-    //                     }
-    //                 }
-    //             }
-    //         }
-    //     };
-    // }
+            div {
+                class: "chat connecting",
+                // Do our little indicator dance.
+                {format!(
+                    "Connecting{}",
+                    std::iter::repeat('.').take(*failures.read() % 4).collect::<String>(),
+                )}
+            }
+        };
+    }
 
     rsx! {
         document::Stylesheet { href: CSS }
 
         div {
             class: "chat",
+            // Renders the entire prompt. This is the main view of the chat.
             {prompt.read().into_element_custom(1337, &options.read())}
         }
 
         div {
             class: "input",
             form {
-                onsubmit: move |e| async move {
-                    if let Err(e) = CLIENT.read().send(e.value()).await {
-                        log::error!("Failed to send message: {}", e);
-                    } else {
-                        input_buffer.write().clear();
-                    }
-                },
                 textarea {
                     class: "input-box",
+                    class: if *dragged_over.read() {
+                        "dragged-over"
+                    } else { "" },
+                    class: if *dragged_file_supported.read() {
+                        "dragged-file-supported"
+                    } else { "" },
                     placeholder: "Type your message...",
                     autofocus: true,
                     value: "{input_buffer}",
@@ -274,8 +307,12 @@ pub fn Chat() -> Element {
 
                         if e.key() == Key::Enter && !*shift_held.read() {
                             e.prevent_default();
-                            let message = input_buffer.read().to_string();
-                            if !message.trim().is_empty() {
+                            let content = input_buffer.read().to_string();
+                            if !content.trim().is_empty() {
+                                let mut message = UserMessage::from(content);
+                                message.content_mut().extend(
+                                    attachments.write().drain(..)
+                                );
                                 if let Err(e) = CLIENT.read().send(message).await {
                                     connected.set(false);
                                     log::error!(
@@ -283,6 +320,7 @@ pub fn Chat() -> Element {
                                         e
                                     );
                                 } else {
+                                    // Sucessfully sent the message.
                                     input_buffer.write().clear();
                                 }
                             }
@@ -292,19 +330,89 @@ pub fn Chat() -> Element {
                         if e.key() == Key::Shift {
                             shift_held.set(false);
                         }
+                    },
+                    ondragover: move |e| {
+                        e.prevent_default();
+                        dragged_over.set(true);
+                        if let Some(files) = e.files() {
+                            let filenames = files.files();
+                            if filenames.len() != 1 {
+                                dragged_file_supported.set(false);
+                                return;
+                            }
+                            let filename = &filenames[0];
+                            if MediaType::is_supported(filename) {
+                                dragged_file_supported.set(true);
+                            } else {
+                                dragged_file_supported.set(false);
+                            }
+                        }
+                    },
+                    ondragleave: move |e| {
+                        e.prevent_default();
+                        dragged_over.set(false);
+                        dragged_file_supported.set(false);
+                    },
+                    ondrop: move |e| async move {
+                        e.prevent_default();
+                        dragged_over.set(false);
+                        dragged_file_supported.set(false);
+                        if let Some(files) = e.files() {
+                            let filenames = files.files();
+                            if filenames.len() == 0 {
+                                log::warn!("No files dropped.");
+                                return;
+                            } else if filenames.len() > 1 {
+                                log::warn!("Only one file can be dropped at a time.");
+                                return;
+                            }
+
+                            // len is 1
+                            let filename = &filenames[0];
+                            let format = if let Some(format) =  MediaType::detect(&filename) {
+                                format
+                            } else {
+                                log::warn!("Unsupported file type.");
+                                return;
+                            };
+
+                            let data = if let Some(data) = files.read_file(filename).await {
+                                data
+                            } else {
+                                log::warn!("Failed to read file.");
+                                return;
+                            };
+
+                            if data.is_empty() {
+                                log::warn!("Empty file.");
+                                return;
+                            }
+                            // We have a file data with a supported format. Load
+                            // it and push it to the attachments.
+
+                            let image = Image::from_compressed(format, data);
+                            attachments.write().push(image.into());
+                        }
                     }
                 }
             }
         }
 
         div {
+            class: "attachments",
+            {attachments.read().iter().map(|block| {
+                block.into_element_custom(1338, &options.read())
+            })}
+        }
+
+        div {
             button {
                 class: "toggle",
-                class: if *SHOW_THOUGHT.read() { "active" } else { "" },
+                class: if *show_thought.read() { "active" } else { "" },
                 onmousedown: move |e| {
                     e.prevent_default();
-                    let val = *SHOW_THOUGHT.read();
-                    *SHOW_THOUGHT.write() = !val;
+                    let val = *show_thought.read();
+                    *show_thought.write() = !val;
 
                     if !val {
                         options.write().thought = opts::Thought::Show {
@@ -320,11 +428,11 @@ pub fn Chat() -> Element {
             }
             button {
                 class: "toggle",
-                class: if *SHOW_TOOL_USE.read() { "active" } else { "" },
+                class: if *show_tool_use.read() { "active" } else { "" },
                 onmousedown: move |e| {
                     e.prevent_default();
-                    let val = *SHOW_TOOL_USE.read();
-                    *SHOW_TOOL_USE.write() = !val;
+                    let val = *show_tool_use.read();
+                    *show_tool_use.write() = !val;
 
                     if !val {
                         options.write().tool_use = opts::ToolUse::Show {
@@ -344,11 +452,11 @@ pub fn Chat() -> Element {
             }
             button {
                 class: "toggle",
-                class: if *SHOW_SYSTEM.read() { "active" } else { "" },
+                class: if *show_system.read() { "active" } else { "" },
                 onmousedown: move |e| {
                     e.prevent_default();
-                    let val = *SHOW_SYSTEM.read();
-                    *SHOW_SYSTEM.write() = !val;
+                    let val = *show_system.read();
+                    *show_system.write() = !val;
 
                     if !val {
                         options.write().system = opts::System::Show {
@@ -360,6 +468,45 @@ pub fn Chat() -> Element {
                 },
                 "System"
             }
+            // This is kind of hacky, but it's actually the cleanest way to
+            // do this without incomprehensible web_sys code.
+            button {
+                class: "toggle",
+                class: "save",
+                class: if ready_json.read().is_some() { "ready" } else { "" },
+                onmouseover: move |e| {
+                    e.prevent_default();
+                    let val = serde_wasm_bindgen::to_value(
+                        prompt.read().deref()
+                    ).unwrap();
+
+                    let json = js_sys::JSON::stringify(&val).unwrap();
+                    ready_json.write().replace(String::from(json));
+                },
+                onmouseleave: move |e| {
+                    e.prevent_default();
+                    ready_json.write().take();
+                },
+                a {
+                    href: if let Some(json) = ready_json.read().deref() {
+                        Some(format!(
+                            "data:application/json;base64,{}",
+                            BASE64.encode(json.as_bytes())
+                        ))
+                    } else {
+                        None
+                    },
+                    download: "prompt.json",
+                    "Download"
+                }
+            }
+            // button {
+            //     class: "toggle",
+            //     class: "load",
+
+            // }
         }
     }
 }
+
+// <a download="prompt.json" href="data:application/json;base64,">Download</a>

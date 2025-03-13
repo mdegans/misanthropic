@@ -1,16 +1,13 @@
 //! Basic support for parsing chain of thought within XML tags. Nested tags are
 //! not supported. Bring the [`Thinkable`] trait into scope to use the methods
 //! provided by this module.
-use std::{borrow::Cow, vec};
+use std::borrow::Cow;
 
 use derive_more::derive::Deref;
 
-use crate::{
-    markdown::ToMarkdown,
-    prompt::{
-        message::{Block, Content},
-        Message,
-    },
+use crate::prompt::{
+    message::{Block, Content},
+    Message,
 };
 
 /// Supported start tags for [`Thought`]s.
@@ -29,7 +26,7 @@ pub struct Thought<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> ToMarkdown<'a> for Thought<'a> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Thought<'a> {
     fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,
@@ -50,7 +47,7 @@ pub struct Speech<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> ToMarkdown<'a> for Speech<'a> {
+impl<'a> crate::markdown::ToMarkdown<'a> for Speech<'a> {
     fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,
@@ -318,7 +315,8 @@ impl<'a> Thinkable<'a> for Message<'a> {
     }
 }
 
-impl<'a> ToMarkdown<'a> for ThoughtOrSpeech<'a> {
+#[cfg(feature = "markdown")]
+impl<'a> crate::markdown::ToMarkdown<'a> for ThoughtOrSpeech<'a> {
     fn markdown_events_custom(
         &'a self,
         options: crate::html::Options,

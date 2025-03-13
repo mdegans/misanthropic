@@ -67,7 +67,7 @@ impl<'a> Response<'a> {
     /// [`response::Message`]: self::Message
     pub fn message(&self) -> Option<&prompt::Message> {
         match self {
-            Self::Message { message, .. } => Some(&message.message),
+            Self::Message { message, .. } => Some(&message.inner),
             _ => None,
         }
     }
@@ -78,7 +78,7 @@ impl<'a> Response<'a> {
     /// [`response::Message`]: self::Message
     pub fn into_message(self) -> Option<prompt::Message<'a>> {
         match self {
-            Self::Message { message, .. } => Some(message.message),
+            Self::Message { message, .. } => Some(message.inner.into()),
             _ => None,
         }
     }
@@ -127,11 +127,11 @@ mod tests {
         Response::Message {
             message: Message {
                 id: TEST_ID.into(),
-                message: prompt::Message {
-                    role: prompt::message::Role::User,
-                    content: prompt::message::Content::SinglePart(
-                        CONTENT.into(),
-                    ),
+                inner: prompt::AssistantMessage {
+                    inner: prompt::Message {
+                        role: prompt::message::Role::Assistant,
+                        content: CONTENT.into(),
+                    },
                 },
                 model: crate::AnthropicModel::Sonnet35.into(),
                 stop_reason: None,
@@ -249,7 +249,7 @@ mod tests {
             create_response()
                 .into_response_message()
                 .unwrap()
-                .message
+                .inner
                 .content
                 .to_string(),
             "Hello, world!"
@@ -272,7 +272,7 @@ mod tests {
             create_response()
                 .response_message()
                 .unwrap()
-                .message
+                .inner
                 .content
                 .to_string(),
             "Hello, world!"
@@ -294,7 +294,7 @@ mod tests {
         assert_eq!(
             create_response()
                 .unwrap_response_message()
-                .message
+                .inner
                 .content
                 .to_string(),
             "Hello, world!"
