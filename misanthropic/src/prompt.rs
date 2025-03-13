@@ -7,7 +7,7 @@ use std::{borrow::Cow, num::NonZeroU16, vec};
 
 use crate::{
     stream::{self, DeltaError},
-    tool, Id, Tool,
+    tool, Id, Spec,
 };
 use message::Content;
 
@@ -77,7 +77,7 @@ pub struct Prompt<'a> {
     pub tool_choice: Option<tool::Choice>,
     /// Tool definitions for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Tool<'a>>>,
+    pub tools: Option<Vec<Spec<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -596,7 +596,7 @@ impl<'a> Prompt<'a> {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<Tool<'a>>,
+        T: Into<Spec<'a>>,
         Ts: IntoIterator<Item = T>,
     {
         self.tools = Some(tools.into_iter().map(Into::into).collect());
@@ -626,7 +626,7 @@ impl<'a> Prompt<'a> {
     /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<Tool<'a>, Error = E>,
+        T: TryInto<Spec<'a>, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
         self.tools = Some(
@@ -641,7 +641,7 @@ impl<'a> Prompt<'a> {
     /// Add a tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<Tool<'a>>,
+        T: Into<Spec<'a>>,
     {
         self.tools
             .get_or_insert_with(Default::default)
@@ -653,7 +653,7 @@ impl<'a> Prompt<'a> {
     /// be converted into a [`Tool`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<Tool<'a>, Error = E>,
+        T: TryInto<Spec<'a>, Error = E>,
     {
         self.tools
             .get_or_insert_with(Default::default)
@@ -751,7 +751,7 @@ impl<'a> Prompt<'a> {
             tool_choice: self.tool_choice,
             tools: self
                 .tools
-                .map(|t| t.into_iter().map(Tool::into_static).collect()),
+                .map(|t| t.into_iter().map(Spec::into_static).collect()),
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
@@ -1344,10 +1344,10 @@ mod tests {
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Prompt::default().add_tool(Tool {
+        let request = Prompt::default().add_tool(Spec {
             name: "ping".into(),
             description: "Ping a server.".into(),
-            input_schema: json!({}),
+            schema: json!({}),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         });
@@ -1462,10 +1462,10 @@ mod tests {
         // A tool can be created from a Tool itself. This is infallible, however
         // the API might reject the request if the tool is invalid. There is
         // currently no schema validation in this crate.
-        let tool = Tool {
+        let tool = Spec {
             name: "ping".into(),
             description: "Ping a server.".into(),
-            input_schema: schema.clone(),
+            schema: schema.clone(),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
@@ -1486,7 +1486,7 @@ mod tests {
             request.tools.as_ref().unwrap()[1].description,
             "Ping a server. Part deux."
         );
-        assert_eq!(request.tools.as_ref().unwrap()[0].input_schema, schema);
+        assert_eq!(request.tools.as_ref().unwrap()[0].schema, schema);
 
         // Test with a fallible tool. This should fail.
 
@@ -1552,10 +1552,10 @@ mod tests {
         use crate::markdown::{Markdown, ToMarkdown};
 
         let request = Prompt::default()
-            .tools([Tool {
+            .tools([Spec {
                 name: "ping".into(),
                 description: "Ping a server.".into(),
-                input_schema: json!({
+                schema: json!({
                     "type": "object",
                     "properties": {
                         "host": {

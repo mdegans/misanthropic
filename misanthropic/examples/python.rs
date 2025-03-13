@@ -20,7 +20,7 @@ use misanthropic::{
         message::{Content, Role},
         Message,
     },
-    tool, AnthropicModel, Client, Prompt, Tool,
+    tool, AnthropicModel, Client, Prompt, Spec,
 };
 
 /// Use Python to answer the user's questions.
@@ -196,10 +196,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             AnthropicModel::Haiku30
         })
-        .add_tool(Tool {
+        .add_tool(Spec {
             name: "python".into(),
             description: "Run a Python script.".into(),
-            input_schema: json!({
+            schema: json!({
                 "type": "object",
                 "properties": {
                     "script": {

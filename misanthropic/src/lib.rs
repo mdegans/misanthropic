@@ -36,7 +36,7 @@ pub mod stream;
 pub use stream::Stream;
 
 pub mod tool;
-pub use tool::Tool;
+pub use tool::Spec;
 
 pub mod response;
 pub use response::Response;

@@ -37,16 +37,16 @@ fn make_prompt() -> Prompt<'static> {
             message::{Block, Content, Role},
             Message,
         },
-        tool, AnthropicModel, Tool,
+        tool, AnthropicModel, Spec,
     };
     use AnthropicModel::*;
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(Tool {
+        .add_tool(Spec {
             name: "python".into(),
             description: "Run a Python script.".into(),
-            input_schema: json!({
+            schema: json!({
                 "type": "object",
                 "properties": {
                     "script": {

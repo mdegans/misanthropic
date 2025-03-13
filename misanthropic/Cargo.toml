@@ -165,6 +165,8 @@ batch = ["dep:uuid"]
 client = []
 # Enables some Dioxus support. This is not necessary for the client.
 dioxus = ["dep:dioxus"]
+# Notepad tool for the assistant to take notes.
+notepad = []
 
 [[example]]
 name = "strawberry"

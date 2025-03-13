@@ -1,6 +1,5 @@
 {
-  "model": "claude-3-5-haiku-latest",
-  "system": "You are a poet. You are a programmer. You are a Rustacean.",
+  "model": "claude-3-haiku-20240307",
   "messages": [],
   "max_tokens": 4096
 }

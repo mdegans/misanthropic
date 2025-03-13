@@ -1736,7 +1736,7 @@ mod tests {
 
         let image: Image = Image::from_parts(MediaType::Png, "data".into());
         let image: Image<'static> = image.into_static();
-        assert_eq!(image.to_string(), "![Image](data:image/png;base64,)");
+        assert_eq!(image.to_string(), "![Image](data:image/png;base64,data)");
 
         let tool_use: Block = tool::Use {
             id: "tool_123".into(),

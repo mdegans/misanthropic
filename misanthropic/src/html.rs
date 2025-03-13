@@ -176,7 +176,7 @@ mod tests {
 
     use crate::{
         prompt::{message::Role, Message},
-        tool, Tool,
+        tool, Spec,
     };
 
     use super::*;
@@ -208,10 +208,10 @@ mod tests {
     fn test_prompt_html() {
         let prompt = crate::prompt::Prompt {
             system: Some("Do stuff the user says.".into()),
-            tools: Some(vec![Tool {
+            tools: Some(vec![Spec {
                 name: "python".into(),
                 description: "Run a Python script.".into(),
-                input_schema: json!({
+                schema: json!({
                     "type": "object",
                     "properties": {
                         "script": {
