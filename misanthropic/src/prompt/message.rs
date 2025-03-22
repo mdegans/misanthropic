@@ -311,6 +311,7 @@ impl std::fmt::Display for Message<'_> {
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(try_from = "Message<'_>", into = "Message<'_>")]
+#[display("{}", inner)]
 pub struct AssistantMessage<'a> {
     pub(crate) inner: Message<'a>, // Invariant: role == Role::Assistant
 }
@@ -378,14 +379,37 @@ impl<'a> TryFrom<Message<'a>> for AssistantMessage<'a> {
     }
 }
 
+#[cfg(feature = "markdown")]
+impl<'a> crate::markdown::ToMarkdown<'a> for AssistantMessage<'a> {
+    /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
+    /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
+    /// [`Role`].
+    ///
+    /// [`Options`]: crate::markdown::Options
+    fn markdown_events_custom(
+        &'a self,
+        options: crate::markdown::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        self.inner.markdown_events_custom(options)
+    }
+}
+
 /// Error message when conversion to [`AgentMessage`] fails.
 #[derive(Debug, Serialize, Deserialize, thiserror::Error)]
 #[error("Message is not from the assistant.")]
 pub struct NotTheAssistant;
 
 /// A message guaranteed to be from the user.
-#[derive(Debug, Serialize, Clone, derive_more::Deref, Deserialize)]
+#[derive(
+    Clone,
+    Debug,
+    derive_more::Deref,
+    derive_more::Display,
+    Deserialize,
+    Serialize,
+)]
 #[serde(try_from = "Message<'_>", into = "Message<'_>")]
+#[display("{}", inner)]
 pub struct UserMessage<'a> {
     inner: Message<'a>, // Invariant: role == Role::User
 }
@@ -449,6 +473,14 @@ impl<'a> From<&'a str> for UserMessage<'a> {
     }
 }
 
+impl<'a> From<tool::Result<'a>> for UserMessage<'a> {
+    fn from(result: tool::Result<'a>) -> Self {
+        UserMessage {
+            inner: result.into(),
+        }
+    }
+}
+
 impl<'a> IntoIterator for UserMessage<'a> {
     type Item = Block<'a>;
     type IntoIter = std::vec::IntoIter<Block<'a>>;
@@ -506,6 +538,21 @@ impl<'a> TryFrom<Message<'a>> for UserMessage<'a> {
 impl<'a> From<UserMessage<'a>> for Message<'a> {
     fn from(message: UserMessage<'a>) -> Self {
         message.inner
+    }
+}
+
+#[cfg(feature = "markdown")]
+impl<'a> crate::markdown::ToMarkdown<'a> for UserMessage<'a> {
+    /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
+    /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
+    /// [`Role`].
+    ///
+    /// [`Options`]: crate::markdown::Options
+    fn markdown_events_custom(
+        &'a self,
+        options: crate::markdown::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        self.inner.markdown_events_custom(options)
     }
 }
 
@@ -589,9 +636,11 @@ impl<'a> Content<'a> {
     /// Add a [`Block`] to the [`Content`]. If the [`Content`] is a
     /// [`SinglePart`], it will be converted to a [`MultiPart`].
     ///
+    /// The index of the inserted block is returned.
+    ///
     /// [`SinglePart`]: Content::SinglePart
     /// [`MultiPart`]: Content::MultiPart
-    pub fn push<P>(&mut self, part: P)
+    pub fn push<P>(&mut self, part: P) -> usize
     where
         P: Into<Block<'a>>,
     {
@@ -606,7 +655,11 @@ impl<'a> Content<'a> {
         }
 
         if let Content::MultiPart(parts) = self {
+            let index = parts.len();
             parts.push(part.into());
+            return index;
+        } else {
+            unreachable!()
         }
     }
 
@@ -668,7 +721,22 @@ impl<'a> Content<'a> {
 
     /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
     /// this will return a [`ContentMismatch`] error.
+    ///
+    /// It is an error to try to merge a single json delta into a content block.
     pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
+        if let Delta::Json { .. } = &delta {
+            // It isn't possible to merge a single json delta into a content
+            // block because ToolUse::input is a serde_json::Value and not a
+            // string. Instead. FilterExt::with_tool_use should be used to
+            // assemble tool use blocks.
+            return Err(DeltaError::ContentMismatch {
+                error: ContentMismatch {
+                    from: delta.clone(),
+                    to: stringify!(Content),
+                },
+            });
+        }
+
         match self {
             Self::SinglePart(_) => {
                 let mut old = Content::MultiPart(vec![]);
@@ -708,6 +776,37 @@ impl<'a> Content<'a> {
         };
 
         ret
+    }
+
+    /// Get a block mutably. If this is [`SinglePart`] content, it will be
+    /// converted to [`MultiPart`] first.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut Block<'a>> {
+        if self.is_single_part() {
+            let mut old = Content::MultiPart(vec![]);
+            std::mem::swap(self, &mut old);
+            self.push(old.unwrap_single_part());
+        }
+        // Self is now MultiPart
+
+        match self {
+            Self::MultiPart(parts) => parts.get_mut(index),
+            Self::SinglePart(_) => unreachable!(),
+        }
+    }
+
+    /// Iterate mutably over the blocks. If this is [`SinglePart`] content, it
+    /// will be converted to [`MultiPart`] first.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Block<'a>> {
+        if self.is_single_part() {
+            let mut old = Content::MultiPart(vec![]);
+            std::mem::swap(self, &mut old);
+            self.push(old.unwrap_single_part());
+        }
+
+        match self {
+            Self::MultiPart(parts) => parts.iter_mut(),
+            Self::SinglePart(_) => unreachable!(),
+        }
     }
 }
 
@@ -879,7 +978,9 @@ where
 }
 
 /// A [`Content`] [`Block`] of a [`Message`].
-#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[derive(
+    Clone, Debug, Serialize, Deserialize, Hash, derive_more::IsVariant,
+)]
 #[cfg_attr(not(feature = "markdown"), derive(derive_more::Display))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
@@ -1009,7 +1110,8 @@ impl<'a> Block<'a> {
     }
 
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
-    /// will return a [`ContentMismatch`] error.
+    /// will return a [`ContentMismatch`] error. In the case of a [`ToolUse`]
+    /// block, the deltas, together, must form a complete json object.
     pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
     where
         Ds: IntoIterator<Item = Delta<'a>>,
@@ -1754,25 +1856,6 @@ mod tests {
 
         let message: Message = (Role::User, "Hello, world!").into();
         let _: Message<'static> = message.into_static();
-    }
-
-    #[test]
-    fn test_push_delta() {
-        let mut content = Content::SinglePart("Hello, world!".into());
-        content
-            .push_delta(Delta::Text {
-                text: " How are you?".into(),
-            })
-            .unwrap();
-
-        assert_eq!(content.to_string(), "Hello, world! How are you?");
-        assert!(content.is_multi_part());
-
-        // an incompatible delta
-        let err = content.push_delta(Delta::Json {
-            partial_json: "blabla".into(),
-        });
-        assert!(err.is_err());
     }
 
     #[test]

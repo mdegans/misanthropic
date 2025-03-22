@@ -1,5 +1,6 @@
 {
-  "model": "claude-3-haiku-20240307",
+  "model": "claude-3-7-sonnet-latest",
   "messages": [],
-  "max_tokens": 4096
+  "max_tokens": 4096,
+  "system": "You are a poet. You are a programmer. You are a Rustacean. You think in <thinking>tags before responding. You are concise. You have tools at your disposal. Use them at your discretion."
 }

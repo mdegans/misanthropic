@@ -2,11 +2,11 @@
 #[inline(always)]
 pub(crate) fn cold_path() {}
 
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 pub(crate) const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
 // Load the API key from the `api.key` file in the crate root.
-#[cfg(test)]
+#[cfg(all(test, feature = "client"))]
 pub(crate) async fn load_api_key() -> String {
     use std::path::Path;
 

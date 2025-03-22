@@ -58,6 +58,9 @@ pub enum Event {
     MessageDelta {
         /// Delta to apply to the [`response::Message`].
         delta: MessageDelta,
+        /// Usage statistics for the message.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage: Option<Usage>,
     },
     /// Message end.
     MessageStop,
@@ -338,9 +341,6 @@ pub struct MessageDelta {
     /// Stop sequence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequence: Option<Cow<'static, str>>,
-    /// Token usage.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub usage: Option<Usage>,
 }
 
 /// Stream error. This can be JSON parsing errors or errors from the API.
@@ -369,13 +369,20 @@ pub enum Error {
         /// [`eventsource_stream::Event`] containing the error.
         event: eventsource_stream::Event,
     },
-    /// Message assembly error (delta application, etc).
+    /// Message assembly error (delta without message start, etc).
     #[error("Message assembly error: {message}")]
     MessageAssembly {
         /// Error message.
         message: Cow<'static, str>,
         /// Any delta that failed to apply.
         delta: Option<Delta<'static>>,
+    },
+    /// DeltaError from applying a delta.
+    #[error("Delta error: {error}")]
+    Delta {
+        /// Error from applying a delta.
+        #[from]
+        error: DeltaError<'static>,
     },
 }
 
@@ -419,6 +426,12 @@ impl Serialize for Error {
                 "type": "message_assembly",
                 "message": message,
                 "delta": delta,
+            })
+            .serialize(serializer),
+            Error::Delta { error } => json!({
+                "type": "delta",
+                "message": message,
+                "error": error,
             })
             .serialize(serializer),
         }
@@ -549,20 +562,22 @@ pub trait FilterExt:
     }
 
     /// Adds [`Event::Message`] to the stream by assembling a message from the
-    /// stream in place. This is useful for when you want to assemble a message
-    /// as well as use the deltas and interrupt the stream, taking any
-    /// partiallly assembled message with you. If the stream is allowed to
-    /// complete, the `message` supplied will be `None` and the complete message
-    /// yielded as with [`with_message`].
+    /// stream in place. If the stream is allowed to complete, the `message`
+    /// supplied will be `None` and the complete message yielded as with
+    /// [`with_message`].
     ///
     /// # Note:
-    /// Message is set to `None` at the beginning of the stream.
+    /// - Message is set to `None` at the beginning of the stream.
+    /// - Implies [`with_tool_use`].
+    ///
+    /// [`with_tool_use`]: FilterExt::with_tool_use
+    /// [`with_message`]: FilterExt::with_message
     fn with_message_ip(
         self,
         message: &mut Option<response::Message<'static>>,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         async_stream::stream! {
-            let stream = self;
+            let stream = self.with_tool_use();
 
             pin_mut!(stream);
 
@@ -570,107 +585,83 @@ pub trait FilterExt:
             *message = None;
 
             while let Some(result) = stream.next().await {
-                match result {
-                    Ok(Event::MessageStart { message: msg }) => {
-                        // Beginning of stream, Anthropic sends an empty message
-                        *message = Some(msg.clone());
-
-                        yield Ok(Event::MessageStart { message: message.clone().unwrap() });
-                    }
-                    Ok(Event::ContentBlockStart { index, content_block }) => {
-                        if let Some(message) = message {
-                            if index == message.inner.content.len() {
-                                // Most common case, append to the end.
-                                message.inner.inner.content.push(content_block.clone());
-                            } else if index == 0 {
-                                // Insert at the beginning.
-                                message.inner.inner.content = Content::MultiPart(
-                                    vec![content_block.clone()]
-                                );
-                            } else {
-                                yield Err(Error::MessageAssembly {
-                                    message: format!("Index {} out of bounds. Max index is {}.", index, message.inner.content.len()).into(),
-                                    delta: None,
-                                });
+                match &result {
+                    // The most common case is content block delta.
+                    Ok(Event::ContentBlockDelta { delta, ..}) => {
+                        if let Some(message) = message.as_mut() {
+                            if let Err(e) = message.inner.inner.content.push_delta(delta.clone()) {
+                                yield Err(e.into_static().into());
                             }
                         } else {
                             yield Err(Error::MessageAssembly {
-                                message: "Content block start without message start.".into(),
-                                delta: None,
-                            });
-                        }
-
-                        yield Ok(Event::ContentBlockStart { index, content_block });
-                    }
-                    Ok(Event::ContentBlockDelta { index, delta }) => {
-                        if let Some(message) = message {
-                            if index != message.inner.content.len() - 1 {
-                                // A message delta appends to an existing index,
-                                // so the index should not be the len.
-                                yield Err(Error::MessageAssembly {
-                                    message: format!("Unexpected index for delta. Got `{}`, expected `{}`.", index, message.inner.content.len() - 1).into(),
-                                    delta: Some(delta.clone()),
-                                });
-                            }
-
-                            if let Err(err) = message.inner.inner.content.push_delta(delta.clone()) {
-                                yield Err(Error::MessageAssembly {
-                                    message: err.to_string().into(),
-                                    delta: Some(delta.clone()),
-                                });
-                            }
-                        } else {
-                            yield Err(Error::MessageAssembly {
-                                message: "Content block delta without message start.".into(),
+                                message: "Content block delta received before message start.".into(),
                                 delta: Some(delta.clone()),
                             });
                         }
-
-                        yield Ok(Event::ContentBlockDelta { index, delta });
                     }
-                    Ok(Event::ContentBlockStop { index }) => {
-                        if let Some(message) = message {
-                            if index != message.inner.content.len() - 1 {
-                                yield Err(Error::MessageAssembly {
-                                    message: format!("Unexpected index for stop. Got `{}`, expected `{}`.", index, message.inner.content.len() - 1).into(),
-                                    delta: None,
-                                });
+                    Ok(Event::MessageStart { message: start }) => {
+                        *message = Some(start.clone());
+                    }
+                    Ok(Event::ContentBlockStart {
+                        content_block, ..
+                    }) => {
+                        if let Some(message) = message.as_mut() {
+                            message.inner.inner.content.push(
+                                content_block.clone()
+                            );
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Content block received before message start.".into(),
+                                delta: None,
+                            });
+                        }
+                    }
+                    Ok(Event::ToolUse { tool_use }) => {
+                        if let Some(message) = message.as_mut() {
+                            message.inner.inner.content.push(tool_use.clone());
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Tool use received before message start.".into(),
+                                delta: None,
+                            });
+                        }
+                    }
+                    Ok(Event::MessageDelta { delta, usage }) => {
+                        if let Some(message) = message.as_mut() {
+                            message.apply_delta(delta.clone());
+                            if let Some(usage) = usage {
+                                message.usage += *usage;
                             }
                         } else {
                             yield Err(Error::MessageAssembly {
-                                message: "Content block stop without message start.".into(),
+                                message: "Message delta received before message start.".into(),
                                 delta: None,
                             });
                         }
-
-                        yield Ok(Event::ContentBlockStop { index });
-                    }
-                    Ok(Event::MessageDelta { delta }) => {
-                        if let Some(message) = message {
-                            message.apply_delta(delta.clone())
-                        } else {
-                            yield Err(Error::MessageAssembly {
-                                message: format!("Message metadata delta without start: {:?}", delta).into(),
-                                delta: None,
-                            });
-                        }
-
-                        yield Ok(Event::MessageDelta { delta });
                     }
                     Ok(Event::MessageStop) => {
                         if let Some(message) = message.take() {
                             yield Ok(Event::Message { message });
                         } else {
                             yield Err(Error::MessageAssembly {
-                                message: "Message stop without start.".into(),
+                                message: "Message stop received before message start.".into(),
                                 delta: None,
                             });
                         }
-
-                        yield Ok(Event::MessageStop);
                     }
-                    event => yield event,
+                    Ok(Event::ContentBlockStop { .. })
+                    | Ok(Event::Ping)
+                    | Ok(Event::Message { .. })=> {
+                        // This is a no-op. We don't need to do anything with
+                        // this event.
+                    }
+                    Err(_) => {
+                        // It's passed through below.
+                    }
                 }
+
+
+                yield result;
             }
         }
     }
@@ -694,52 +685,45 @@ pub trait FilterExt:
         }
     }
 
-    /// Adds [`Event::ToolUse`] to the stream. This is useful for when you don't
-    /// want to bother with assembling tool use from pieces of JSON deltas. In
-    /// the case a tool::Use fails to deserialize, the JSON will be included in
-    /// the [`Error::MessageAssembly`] error.
+    /// Yields tool_use events when complete, instead of an empty tool use at
+    /// the beginning and then having to handle the deltas yourself when a tool
+    /// call is 99% of the time only useful when complete. This will also skip
+    /// `input_json_delta` events.
     fn with_tool_use(
         self,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         async_stream::stream! {
             let stream = self;
-            let mut json_buf = String::new();
+            let mut call: Option<tool::Use> = None;
+            let mut input = String::new();
 
             pin_mut!(stream);
 
             while let Some(result) = stream.next().await {
                 match result {
-                    Ok(Event::ContentBlockStart { index, content_block }) => {
-                        // New block, clear the buffer.
-                        json_buf.clear();
-                        yield Ok(Event::ContentBlockStart { index, content_block });
+                    Ok(Event::ContentBlockStart {
+                        content_block: Block::ToolUse { call: empty }, .. }) => {
+                        input.clear();
+                        call = Some(empty);
                     }
-                    Ok(Event::ContentBlockDelta { index, delta }) => {
-                        // Content delta, if it's JSON, append to the buffer.
-                        if let Delta::Json { partial_json } = &delta {
-                            json_buf.push_str(partial_json);
-                        }
-
-                        yield Ok(Event::ContentBlockDelta { index, delta });
+                    Ok(Event::ContentBlockDelta { delta: Delta::Json { partial_json }, .. }) => {
+                        input.push_str(&partial_json);
                     }
-                    Ok(Event::ContentBlockStop { index }) => {
-
-                        if !json_buf.is_empty() {
-                            let tool_use = match serde_json::from_str(&json_buf) {
-                                Ok(tool_use) => tool_use,
-                                Err(error) => {
+                    Ok(Event::ContentBlockStop { .. }) => {
+                        if let Some(mut call) = call.take() {
+                            call.input = match serde_json::from_str(&input) {
+                                Ok(input) => input,
+                                Err(err) => {
                                     yield Err(Error::MessageAssembly {
-                                        message: error.to_string().into(),
-                                        delta: Some(Delta::Json { partial_json: json_buf.clone().into() }),
+                                        message: format!("Failed to parse JSON: {}", err).into(),
+                                        delta: None,
                                     });
                                     continue;
                                 }
                             };
 
-                            yield Ok(Event::ToolUse { tool_use });
+                            yield Ok(Event::ToolUse { tool_use: call });
                         }
-
-                        yield Ok(Event::ContentBlockStop { index });
                     }
                     event => yield event,
                 }
@@ -757,6 +741,7 @@ impl<S> FilterExt for S where
 pub(crate) mod tests {
     use futures::TryStreamExt;
 
+    #[allow(unused_imports)] // because conditional compilation.
     use crate::{
         prompt::{message::Role, Message},
         AnthropicModel, Prompt,
@@ -768,6 +753,138 @@ pub(crate) mod tests {
 
     pub const CONTENT_BLOCK_START: &str = "{\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"} }";
     pub const CONTENT_BLOCK_DELTA: &str = "{\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Certainly! I\"}     }";
+
+    // Test each event individually.
+    #[test]
+    pub fn test_event_ping() {
+        let event: Event = serde_json::from_str(r#"{"type":"ping"}"#).unwrap();
+        match event {
+            Event::Ping => {}
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_message_start() {
+        let event: Event = serde_json::from_str(
+            r#"{"type":"message_start","message":{"id":"msg_014p7gG3wDgGV9EUtLvnow3U","type":"message","role":"assistant","model":"claude-3-haiku-20240307","stop_sequence":null,"usage":{"input_tokens":472,"output_tokens":2},"content":[],"stop_reason":null}}"#,
+        )
+        .unwrap();
+        match event {
+            Event::MessageStart { message } => {
+                assert_eq!(message.inner.inner.role, Role::Assistant);
+                assert_eq!(message.id, "msg_014p7gG3wDgGV9EUtLvnow3U");
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_content_block_start() {
+        // Test tool_use delta. Text is tested in many other places.
+        let event: Event = serde_json::from_str(r#"{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_01T1x1fJ34qAmk2tNTrN7Up6","name":"get_weather","input":{}}}"#).unwrap();
+        match event {
+            Event::ContentBlockStart {
+                index,
+                content_block,
+            } => {
+                assert_eq!(index, 1);
+                assert!(content_block.is_tool_use());
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_content_block_delta() {
+        // text delta
+        let event: Event = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" check"}}"#,
+        )
+        .unwrap();
+        match event {
+            Event::ContentBlockDelta { index, delta } => {
+                assert_eq!(index, 0);
+                assert_eq!(
+                    delta,
+                    Delta::Text {
+                        text: " check".into()
+                    }
+                );
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+        // json delta
+        let event: Event = serde_json::from_str(
+            r#"{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" Francisc"}}"#,
+        )
+        .unwrap();
+        match event {
+            Event::ContentBlockDelta { index, delta } => {
+                assert_eq!(index, 1);
+                assert_eq!(
+                    delta,
+                    Delta::Json {
+                        partial_json: " Francisc".into()
+                    }
+                );
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_content_block_stop() {
+        let event: Event =
+            serde_json::from_str(r#"{"type":"content_block_stop","index":0}"#)
+                .unwrap();
+        match event {
+            Event::ContentBlockStop { index } => {
+                assert_eq!(index, 0);
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_message_delta() {
+        let event: Event = serde_json::from_str(
+            r#"{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":89}}"#,
+        )
+        .unwrap();
+        match event {
+            Event::MessageDelta { delta, usage } => {
+                assert!(delta
+                    .stop_reason
+                    .is_some_and(|reason| reason.is_tool_use()));
+                assert!(delta.stop_sequence.is_none());
+                assert_eq!(usage.unwrap().output_tokens, 89);
+            }
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    #[test]
+    pub fn test_event_message_stop() {
+        let event: Event =
+            serde_json::from_str(r#"{"type":"message_stop"}"#).unwrap();
+        match event {
+            Event::MessageStop => {}
+            _ => panic!("Unexpected event: {:?}", event),
+        }
+    }
+
+    // MessageDelta tests.
+
+    #[test]
+    pub fn test_message_delta() {
+        let delta: MessageDelta = serde_json::from_str(
+            r#"{"stop_reason":"tool_use","stop_sequence":null}"#,
+        )
+        .unwrap();
+        assert!(delta.stop_reason.is_some_and(|reason| reason.is_tool_use()));
+        assert!(delta.stop_sequence.is_none());
+    }
 
     /// Creates a mock stream from a string (likely `include_str!`). The string
     /// should be a series of `event`, `data`, and empty lines (a SSE stream).
@@ -941,6 +1058,18 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_stream() {
+        let stream = mock_stream(include_str!("../test/data/sse.stream.txt"));
+
+        let events = stream.collect::<Vec<_>>().await;
+
+        assert_eq!(events.len(), 32);
+        // there are 2 errors
+        let n_errors = events.iter().filter(|e| e.is_err()).count();
+        assert_eq!(n_errors, 2);
+    }
+
+    #[tokio::test]
+    async fn test_stream_text() {
         // sse.stream.txt is from the API docs and includes one of every event
         // type, with the exception of fatal errors, but they all have the same
         // structure, so if one works, they all should. It covers every code
@@ -1022,7 +1151,11 @@ pub(crate) mod tests {
                         thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
                         signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()
                     },
-                    Block::Text { text: "27 * 453 = 12,231".to_string().into(), cache_control: None }
+                    Block::Text {
+                        text: "27 * 453 = 12,231".to_string().into(),
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None
+                    }
                 ])
             }
         );
@@ -1061,7 +1194,11 @@ pub(crate) mod tests {
                         thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
                         signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()
                     },
-                    Block::Text { text: "27 * 453 = 12,231".to_string().into(), cache_control: None }
+                    Block::Text {
+                        text: "27 * 453 = 12,231".to_string().into(),
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None
+                    }
                 ])
             }
         );
@@ -1101,6 +1238,7 @@ pub(crate) mod tests {
     }
 
     // Test from live API. If they break our client, we'll know.
+    #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore]
     async fn test_stream_redacted_thought() {
@@ -1150,5 +1288,66 @@ pub(crate) mod tests {
         }
 
         assert!(redacted_seen);
+    }
+
+    // This also tests the `_ip` version since this just wraps it.
+    #[tokio::test]
+    async fn test_stream_with_message() {
+        let stream = mock_stream(include_str!("../test/data/sse.stream.txt"));
+
+        let stream = stream.with_message();
+
+        pin_mut!(stream);
+
+        let mut message = None;
+        while let Some(event) = stream.next().await {
+            dbg!(&event);
+            if let Ok(Event::Message { message: new }) = event {
+                message = Some(new);
+                break;
+            }
+        }
+
+        if let Some(message) = message {
+            assert_eq!(message.id, "msg_014p7gG3wDgGV9EUtLvnow3U");
+            assert_eq!(message.model.to_string(), "claude-3-haiku-20240307");
+        } else {
+            panic!("No message assembled.");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_with_tool_use() {
+        let stream = mock_stream(include_str!("../test/data/sse.stream.txt"))
+            .with_tool_use();
+        let mut tool_use = None;
+
+        pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            dbg!(&event);
+            match event {
+                Ok(Event::ToolUse { tool_use: new }) => {
+                    tool_use = Some(new);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(tool_use) = tool_use {
+            assert_eq!(
+                serde_json::to_value(tool_use).unwrap(),
+                serde_json::json!({
+                    "id": "toolu_01T1x1fJ34qAmk2tNTrN7Up6",
+                    "name": "get_weather",
+                    "input": {
+                        "location": "San Francisco, CA",
+                        "unit": "fahrenheit",
+                    }
+                })
+            )
+        } else {
+            panic!("No tool use assembled.");
+        }
     }
 }

@@ -16,3 +16,19 @@ pub struct AppState {
     pub client: misanthropic::Client,
     pub prompt: Arc<Mutex<Prompt>>,
 }
+
+static_assertions::assert_impl_all!(AppState: Send, Sync);
+
+impl From<misanthropic::Client> for AppState {
+    fn from(client: misanthropic::Client) -> Self {
+        let (to_events, from_user) = tokio::sync::mpsc::channel(10);
+
+        AppState {
+            to_events,
+            // Single consumer, so owned so, Arc.
+            from_user: Arc::new(Mutex::new(from_user)),
+            client,
+            prompt: Arc::new(crate::prompt::default().into()),
+        }
+    }
+}

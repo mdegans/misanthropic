@@ -1,9 +1,10 @@
-/target
-Cargo.lock
 .vscode
-cobertura.xml
+*.env
+target/
 api.key
+Cargo.lock
+cobertura.xml
 lcov.info
 node_modules/
+notepad.json
 Secrets.toml
-*.env

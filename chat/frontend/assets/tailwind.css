@@ -649,6 +649,8 @@ div.multi-part > img.image.show {
 
 .user {
   margin-top: 1rem;
+  overflow-x: auto;
+  white-space: pre-wrap;
   border-radius: 1rem;
   border-width: 2px;
   --tw-border-opacity: 1;

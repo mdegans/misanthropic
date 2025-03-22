@@ -1,4 +1,4 @@
-use std::{ops::Deref, sync::Arc};
+use std::ops::Deref;
 
 use axum::{
     extract::State,
@@ -13,7 +13,6 @@ use axum::{
 use futures::{pin_mut, Stream, StreamExt};
 use serde_json::json;
 use shuttle_runtime::SecretStore;
-use tokio::sync::Mutex;
 
 use misanthropic::{prompt::message::Role, stream::FilterExt};
 
@@ -40,6 +39,8 @@ pub async fn message_post(
 pub async fn events_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, BoxError>>> {
+    log::debug!("Creating event stream");
+
     // Get the prompt. If it's in use, return a busy message.
     let stream = async_stream::try_stream! {
         // Lock the prompt and the user message channel. A more sophisticated
@@ -48,24 +49,47 @@ pub async fn events_stream(
         let mut from_user = state.from_user.lock().await;
         let mut prompt = state.prompt.lock().await;
 
+        log::info!("Starting event stream");
+        log::info!("Prompt: {}", serde_json::to_string_pretty(prompt.deref()).unwrap());
+
         let mut assistant_message: Option<misanthropic::response::Message> = None;
         let mut interrupt_message: Option<UserMessage> = None;
 
         loop {
             // If we were interrupted, we need to handle the partial message.
             if let Some(user_message) = interrupt_message.take() {
+                log::debug!(
+                    "Handling user message: {:?}",
+                    serde_json::to_string_pretty(&user_message).unwrap()
+                );
                 // User interrupted. There should be a partial assistant message
                 // unless the assistant hasn't responded yet.
                 if let Some(assistant_message) = assistant_message.take() {
+                    log::debug!(
+                        "Already have partial assistant message: {:?}",
+                        serde_json::to_string_pretty(&assistant_message).unwrap()
+                    );
                     // Assistant was interrupted. If the assistant just started
                     // thinking there is a chance that the first thought block
                     // is empty and the API will not accept unsigned thoughts.
                     if let Some(assistant_message) = assistant_message.remove_incomplete_thought() {
+                        log::debug!(
+                            // TODO: In the future, if the model is not sonnet
+                            // 3.7 with built-in thought block support, we can
+                            // terminate the thought block instead of removing.
+                            // (because *in this configuration* thoughts must be
+                            // signed by Anthropic).
+                            "Any incomplete thought was removed and a message is still left over: {:?}",
+                            serde_json::to_string_pretty(&assistant_message).unwrap()
+                        );
                         // There is still at least one block in the message, so
                         // we can push both new messages to the prompt.
                         prompt.push_message(assistant_message).unwrap();
                         prompt.push_message(user_message).unwrap();
                     } else {
+                        log::debug!(
+                            "After removing thought, the assistant message is empty. This is not allowed, so we'll merge the user message onto the previous message."
+                        );
                         // User interrupted before the assistant responded and
                         // the Assistant thought block is empty. This user was
                         // very quick! We'll handle this edge case by merging
@@ -76,10 +100,20 @@ pub async fn events_stream(
                                 last.content.push(block);
                             }
                         }
+                        log::debug!(
+                            "Merge complete. User message: {:?}",
+                            serde_json::to_string_pretty(prompt.messages.last().unwrap()).unwrap()
+                        )
                     }
                 } else if let Err(e) = prompt.push_message(user_message) {
-                    // The user interrupted before the assistant responded. This
-                    // is very unlikely and a bug in the frontend if it happens.
+                    // The assistant did not get a chance to even start
+                    // responding. This is posisble but unlikely. The client
+                    // will have to handle this case.
+                    log::error!(
+                        "User possibly responded too fast. Error pushing user message to prompt: {:?}",
+                        serde_json::to_string_pretty(&e).unwrap()
+                    );
+
                     let response = model::response::Response::Err(
                         model::response::Error::TurnOrder { error: e },
                     );
@@ -92,6 +126,8 @@ pub async fn events_stream(
             }
 
             if prompt.messages.last().is_none_or(|m| m.role == Role::Assistant) {
+                log::debug!("User's turn to respond");
+
                 // If the last message is a user message, we don't want to await
                 // a new message from the user just yet, because we must
                 // maintain the turn order. It would be the assistant's turn to
@@ -99,6 +135,10 @@ pub async fn events_stream(
                 // taking from the user message channel again.
                 let user_message = match from_user.recv().await.unwrap() {
                     Request::GetPrompt => {
+                        log::info!(
+                            "GetPrompt {}",
+                            serde_json::to_string_pretty(prompt.deref()).unwrap()
+                        );
                         yield Event::default()
                             .event("response")
                             // We are doing this to avoid a clone.
@@ -116,10 +156,12 @@ pub async fn events_stream(
                         // letting the user specify the prompt, including the
                         // system prompt, will absolutely lead to assholes
                         // abusing the system and getting your API key banned.
+                        log::info!("SetPrompt: {}", serde_json::to_string_pretty(&new).unwrap());
                         *prompt = new;
                         continue;
                     }
                     Request::UserMessage(user_message) => {
+                        log::info!("UserMessage: {}", serde_json::to_string_pretty(&user_message).unwrap());
                         // Echo the user message back to the user. Input
                         // checks should be done here.
                         yield Event::default()
@@ -133,12 +175,17 @@ pub async fn events_stream(
                         user_message
                     },
                 };
-                // Unwrap can't panic because we just verified the turn order
-                // and we have exclusive access to the prompt.
-                prompt.push_message(user_message).unwrap();
+                // We have a user message and the prompt is ready for it.
+
+                // This can't panic because we just checked that the last
+                // message was a user message or that there were no messages in
+                // which case the push is allowed.
+                log::debug!("Pushing user message");
+                prompt.push_message(user_message).unwrap()
             }
-            // Agent's turn to respond. We have guaranteed that the last message
-            // in the prompt is a user message because there are only two roles.
+            // Final message is a user message. It is the Agent's turn to
+            // respond. We have guaranteed that the last message in the prompt
+            // is a user message because there are only two roles.
 
             // Get a streaming response from the Anthropic AI. This will include
             // full messages and tool use events.
@@ -148,11 +195,10 @@ pub async fn events_stream(
                     // important, however with many users it might be useful to
                     // include rate limit errors.
                     .filter_rate_limit()
-                    // Adds a full message event, `Event::Message`
-                    .with_message_ip(&mut assistant_message)
-                    // Adds a tool use event, `Event::ToolUse`
-                    .with_tool_use(),
+                    // Adds a full message event, `Event::Message` and tool use.
+                    .with_message_ip(&mut assistant_message),
                 Err(e) => {
+                    log::error!("Error getting stream from Anthropic: {e}");
                     // Something went wrong getting a stream from Anthropic. We
                     // should really handle the individual errors here, since
                     // some are recoverable.
@@ -165,13 +211,31 @@ pub async fn events_stream(
                         .event("response")
                         .json_data(response)
                         .unwrap();
+
+                    // FIXME: The issue here is if we break here, the stream
+                    // ends, the client reconnects, and we immediately get a new
+                    // one with the same rejected prompt, meaning we hammer the
+                    // api which is not good.
+                    //
+                    // Sorry Anthropic! It was an accident!
+                    //
+                    // Right now this is fixed in the client with a wait but we
+                    // probably also want to do an exponential backoff here. An
+                    // async sleep or something. Ideally waiting for a new
+                    // message from the client at the same time using `select!`
+                    // or something. It might just be a better idea to wait for
+                    // a new message from the client which can decide what to do
+                    // about the message. We need to add a modal to the client
+                    // to handle this.
                     break;
                 }
             };
+            log::info!("Got Stream from Anthropic");
 
             pin_mut!(stream);
 
             while let Some(event) = stream.next().await {
+                log::debug!("Event: {}", serde_json::to_string(&event).unwrap());
                 // Listen for an interrupt signal from the user. We could join
                 // this with `stream.next()` but it's easier to understand this
                 // way. Very small latency difference since we must wait for the
@@ -180,6 +244,10 @@ pub async fn events_stream(
                     // Handle user interrupt.
                     let user_message = match request {
                         Request::GetPrompt => {
+                            log::info!(
+                                "GetPrompt: {}",
+                                serde_json::to_string_pretty(prompt.deref()).unwrap()
+                            );
                             yield Event::default()
                                 .event("response")
                                 .json_data(json!({
@@ -191,10 +259,12 @@ pub async fn events_stream(
                             continue;
                         },
                         Request::SetPrompt(new) => {
+                            log::info!("SetPrompt: {}", serde_json::to_string_pretty(&new).unwrap());
                             *prompt = new;
-                            continue;
+                            break;
                         }
                         Request::UserMessage(user_message) => {
+                            log::info!("UserMessage: {}", serde_json::to_string_pretty(&user_message).unwrap());
                             yield Event::default()
                                 .event("response")
                                 .json_data(json!({
@@ -206,8 +276,6 @@ pub async fn events_stream(
                             user_message
                         },
                     };
-
-
 
                     // We can't take the partial message here because the stream
                     // owns a mutable reference to it. We'll just store the user
@@ -253,23 +321,14 @@ pub async fn events_stream(
 }
 
 pub fn create_router(secrets: SecretStore) -> Router {
+    log::debug!("Creating router");
     let client = misanthropic::Client::new(
         secrets
             .get("ANTHROPIC_API_KEY")
             .expect("ANTHROPIC_API_KEY must be set in a Secrets.toml file."),
     )
     .unwrap();
-    let prompt = crate::prompt::default();
-
-    let (to_events, from_user) = tokio::sync::mpsc::channel(10);
-
-    let state = AppState {
-        to_events,
-        // Single consumer, so owned so, Arc.
-        from_user: Arc::new(Mutex::new(from_user)),
-        client,
-        prompt: Arc::new(Mutex::new(prompt)),
-    };
+    let state = AppState::from(client);
 
     let router = Router::new()
         .route("/events", get(events_stream))

@@ -314,4 +314,51 @@ mod tests {
 
         let _panic = response.unwrap_response_message();
     }
+
+    #[test]
+    fn test_usage_serde() {
+        const A: &str = r#"{"output_tokens":89}"#;
+
+        let deserialized: Usage = serde_json::from_str(&A).unwrap();
+
+        assert_eq!(deserialized.input_tokens, 0);
+        assert_eq!(deserialized.output_tokens, 89);
+
+        const B: &str = r#"{"input_tokens":1,"output_tokens":2}"#;
+
+        let deserialized: Usage = serde_json::from_str(&B).unwrap();
+
+        assert_eq!(deserialized.input_tokens, 1);
+        assert_eq!(deserialized.output_tokens, 2);
+    }
+
+    #[test]
+    fn test_usage_add() {
+        let mut a = Usage {
+            input_tokens: 1,
+            #[cfg(feature = "prompt-caching")]
+            cache_creation_input_tokens: Some(2),
+            #[cfg(feature = "prompt-caching")]
+            cache_read_input_tokens: Some(3),
+            output_tokens: 4,
+        };
+
+        let b = Usage {
+            input_tokens: 5,
+            #[cfg(feature = "prompt-caching")]
+            cache_creation_input_tokens: Some(6),
+            #[cfg(feature = "prompt-caching")]
+            cache_read_input_tokens: Some(7),
+            output_tokens: 8,
+        };
+
+        a += b;
+
+        assert_eq!(a.input_tokens, 6);
+        #[cfg(feature = "prompt-caching")]
+        assert_eq!(a.cache_creation_input_tokens, Some(8));
+        #[cfg(feature = "prompt-caching")]
+        assert_eq!(a.cache_read_input_tokens, Some(10));
+        assert_eq!(a.output_tokens, 12);
+    }
 }

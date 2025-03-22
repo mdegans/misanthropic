@@ -40,6 +40,7 @@ pub trait Tool {
     /// Get the [`Spec`] for the [`Tool`].
     fn spec(&self) -> Spec<'static>;
     /// [`Use`] the [`Tool`], returning a [`Result`].
+    // FIXME: this needs to be async, so we'll need to add async_trait as a dep
     fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
     ///
@@ -49,11 +50,27 @@ pub trait Tool {
         serde_json::Value::Null
     }
     /// Deserialize state from json if possible.
+    // String is used for the message because a boxed error is not Send.
     fn load_json(
         &mut self,
         _json: serde_json::Value,
+    ) -> std::result::Result<(), String> {
+        Err(format!(
+            "Tool `{}` does not support loading state.",
+            self.name()
+        ))
+    }
+    /// Setup the prompt with tools. For example, for the notepad, add it before
+    /// the chat starts so the assitant can read their persistant state.
+    ///  
+    /// # Note:
+    /// - A tool should handle the case where it has already been called on a
+    ///   prompt. In general, a tool should overwrite or update existing state.
+    fn setup(
+        &self,
+        _prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        Err("Not implemented".into())
+        Ok(())
     }
 }
 
@@ -67,7 +84,7 @@ static_assertions::assert_obj_safe!(Tool);
 #[derive(Default)]
 pub struct ToolBox {
     /// [`Tool`]s in the [`ToolBox`].
-    pub tools: BTreeMap<String, Box<dyn Tool>>,
+    pub tools: BTreeMap<String, Box<dyn Tool + Send>>,
 }
 
 impl ToolBox {
@@ -77,26 +94,26 @@ impl ToolBox {
     }
 
     /// Add a [`Tool`] to the [`ToolBox`].
-    pub fn add(self, tool: impl Tool + 'static) -> Self {
+    pub fn add(self, tool: impl Tool + Send + 'static) -> Self {
         let name = tool.name().to_string();
         self.add_boxed(name, Box::new(tool))
     }
 
     /// Add a boxed [`Tool`] to the [`ToolBox`].
-    pub fn add_boxed(self, name: String, tool: Box<dyn Tool>) -> Self {
+    pub fn add_boxed(self, name: String, tool: Box<dyn Tool + Send>) -> Self {
         let mut tools = self.tools;
         tools.insert(name, tool);
         Self { tools }
     }
 
     /// Push a [`Tool`] to the [`ToolBox`].
-    pub fn push(&mut self, tool: impl Tool + 'static) {
+    pub fn push(&mut self, tool: impl Tool + Send + 'static) {
         let name = tool.name().to_string();
         self.push_boxed(name, Box::new(tool))
     }
 
     /// Push a boxed [`Tool`] to the [`ToolBox`].
-    pub fn push_boxed(&mut self, name: String, tool: Box<dyn Tool>) {
+    pub fn push_boxed(&mut self, name: String, tool: Box<dyn Tool + Send>) {
         self.tools.insert(name, tool);
     }
 
@@ -108,11 +125,6 @@ impl ToolBox {
     /// Specs for all [`Tool`]s in the [`ToolBox`].
     pub fn specs(&self) -> impl Iterator<Item = Spec<'static>> + '_ {
         self.tools.values().map(|tool| tool.spec())
-    }
-
-    /// Get a [`Tool`] by name.
-    pub fn get(&self, name: &str) -> Option<&dyn Tool> {
-        self.tools.get(name).map(|tool| tool.as_ref())
     }
 }
 
@@ -147,6 +159,8 @@ impl Tool for ToolBox {
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
     fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
+        #[cfg(feature = "log")]
+        log::debug!("ToolBox call: {:?}", call);
         let tool = match self.tools.get_mut(call.name.as_ref()) {
             Some(tool) => tool,
             None => {
@@ -160,14 +174,17 @@ impl Tool for ToolBox {
             }
         };
 
+        #[cfg(feature = "log")]
+        log::debug!("ToolBox calling tool: {}", tool.name());
         tool.call(call)
     }
 
-    /// Load state for all tools in the [`ToolBox`].
+    /// Load state for all tools in the [`ToolBox`]. Any errors are collected
+    /// and returned as a single error message.
     fn load_json(
         &mut self,
         json: serde_json::Value,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    ) -> std::result::Result<(), String> {
         // Assuming a tagged type with a mapping as a single key with the tool
         // name and the value as the tool state.
         let map = if let serde_json::Value::Object(map) = json {
@@ -176,18 +193,28 @@ impl Tool for ToolBox {
             return Err("Expected object".into());
         };
 
+        // Errors
+        let mut errors = Vec::new();
+
         for (name, state) in map {
             let tool = match self.tools.get_mut(&name) {
                 Some(tool) => tool,
                 None => {
-                    return Err(format!("Tool not found: {}", name).into());
+                    errors.push(format!("Tool {} not found.", name).into());
+                    continue;
                 }
             };
 
-            tool.load_json(state)?;
+            if let Err(e) = tool.load_json(state) {
+                errors.push(e);
+            }
         }
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("\n").into())
+        }
     }
 
     /// Save state for all tools in the [`ToolBox`].
@@ -205,6 +232,42 @@ impl Tool for ToolBox {
             serde_json::Value::Null
         } else {
             map.into()
+        }
+    }
+
+    /// Setup the [`Prompt`] by calling this method on all children, collecting
+    /// any errors.
+    fn setup(
+        &self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut errors = Vec::new();
+
+        #[allow(unused_variables)]
+        for (name, tool) in &self.tools {
+            #[cfg(feature = "log")]
+            log::debug!("Setting up `Prompt` for {name} tool.");
+
+            if let Err(e) = tool.setup(prompt) {
+                #[cfg(feature = "log")]
+                log::error!("Error setting up `Prompt` for {name} tool: {e}");
+
+                errors.push(e);
+            } else {
+                #[cfg(feature = "log")]
+                log::debug!("Sucessful setup of `Prompt` for {name} tool.")
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into())
         }
     }
 }

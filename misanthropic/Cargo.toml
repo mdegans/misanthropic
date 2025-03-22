@@ -1,6 +1,6 @@
 [package]
 name = "misanthropic"
-version = "1.0.0"
+version = "1.0.0-alpha.1"
 edition = "2021"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
@@ -58,6 +58,9 @@ reqwest = { version = "0.12", features = [
     "stream",
     "http2",
 ], default-features = false }
+# Because of a strange issue wiht reqwest::Url missing Deserialize
+url = { version = "2", features = ["serde"] }
+# What else would we use? Ok there are options, but this is a good one.
 serde = { version = "1", features = ["derive"] }
 # In some places in this crate, we use `serde_json::Value` to represent JSON
 # objects.
@@ -97,7 +100,7 @@ async-stream = "0.3"
 # for date and time parsing
 chrono = { version = "0.4", features = ["serde"] }
 # for request ids
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"], optional = true }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
 
@@ -159,7 +162,7 @@ cot = []
 # Support for shuttle-runtime crate.
 shuttle = ["dep:shuttle-runtime"]
 # Batch support. By default this is on but it breaks wasm, FYI.
-batch = ["dep:uuid"]
+batch = ["client", "dep:uuid"]
 # Enable the actual client. This can be off for wasm becanse eventsource-stream
 # requires Sync on some things and that's not possible in wasm.
 client = []
@@ -170,20 +173,22 @@ notepad = []
 
 [[example]]
 name = "strawberry"
-required-features = ["markdown"]
+required-features = ["client", "markdown"]
 doc-scrape-examples = true
 
 [[example]]
 name = "python"
-required-features = ["markdown", "prompt-caching"]
+required-features = ["client", "markdown", "prompt-caching"]
 doc-scrape-examples = true
 
 [[example]]
 name = "website_wizard"
+required-features = ["client"]
 doc-scrape-examples = true
 
 [[example]]
 name = "neologism"
+required-features = ["client"]
 doc-scrape-examples = true
 
 # See also the `chat` example in the root of the repository.

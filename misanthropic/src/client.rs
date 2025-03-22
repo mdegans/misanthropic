@@ -1,6 +1,6 @@
 //! [`Client`] for the Anthropic Messages API and related types.
 
-#[cfg_attr(not(feature = "client"), allow(unused_imports))]
+#[allow(unused_imports)] // because lots of conditional compilation
 use std::{collections::HashMap, env, num::NonZeroU16, sync::Arc};
 
 #[cfg(feature = "client")]
@@ -10,7 +10,7 @@ use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-#[cfg_attr(not(feature = "client"), allow(unused_imports))]
+#[allow(unused_imports)] // because lots of conditional compilation
 use crate::{key, model::Models, response, Key, Prompt};
 
 #[cfg(all(feature = "batch", feature = "client"))]
@@ -18,6 +18,10 @@ use crate::batch::{self, IdentifiedBatchResult, Prompts};
 
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
+
+/// FIXME: Prompt caching is now out of beta so we can remove the feature flag
+/// for it. This will require a breaking change. Additionally, it should be
+/// possible to set the beta version at runtime.
 
 /// Client for the Anthropic Messages API. Cheap to clone.
 ///
@@ -491,6 +495,7 @@ impl Client {
     /// can be used to track the progress of the batch.
     ///
     /// [`Prompts`]: crate::batch::Prompts
+    #[cfg(feature = "batch")]
     pub async fn batch<'a, P>(&self, prompts: P) -> Result<batch::Pending<'a>>
     where
         P: IntoIterator<Item = Prompt<'a>>,
@@ -507,6 +512,7 @@ impl Client {
 
     /// Same as [`Self::batch`] but with user-supplied [`batch::Id`]s. Duplicate
     /// [`batch::Id`]s will be overwritten in the order they are supplied.
+    #[cfg(feature = "batch")]
     pub async fn tagged_batch<'a, It, Id>(
         &self,
         prompts: It,
@@ -530,6 +536,7 @@ impl Client {
     /// results are downloaded and returned in a [`batch::Ready`] variant.
     ///
     /// [`Batch`]: batch::Batch
+    #[cfg(feature = "batch")]
     pub async fn batch_poll<'a>(
         &self,
         mut pending: batch::Pending<'a>,
@@ -573,6 +580,7 @@ impl Client {
                             }
                         }
                     }
+                    #[allow(unused_variables)]
                     Err(e) => {
                         // This should almost never happen. If it does
                         // the server is likely misbehaving.
@@ -733,6 +741,7 @@ pub(crate) struct AnthropicErrorWrapper {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use futures::TryStreamExt;
 
     use super::*;
@@ -825,6 +834,7 @@ mod tests {
 
         // Test wrapped error (we use this in the client). We only need test one
         // variant because the wrapper is the same for all.
+        #[cfg(feature = "client")]
         const INVALID_REQUEST_WRAPPED: &str = r#"{
   "type": "error",
   "error": {
@@ -833,25 +843,30 @@ mod tests {
   }
 }"#;
 
-        let error: AnthropicErrorWrapper =
-            serde_json::from_str(INVALID_REQUEST_WRAPPED).unwrap();
-        assert_eq!(
-            error.error,
-            AnthropicError::InvalidRequest {
-                message: "<string>".to_string()
-            }
-        );
+        #[cfg(feature = "client")]
+        {
+            let error: AnthropicErrorWrapper =
+                serde_json::from_str(INVALID_REQUEST_WRAPPED).unwrap();
+            assert_eq!(
+                error.error,
+                AnthropicError::InvalidRequest {
+                    message: "<string>".to_string()
+                }
+            );
+        }
     }
 
     // Test the Client
-
+    #[cfg(feature = "client")]
     use crate::{prompt::message::Role, stream::FilterExt, Prompt};
 
     // Note: This is a real key but it's been disabled. As is warned in the
     // docs above, do not use a string literal for a real key. There is no
     // TryFrom<&'static str> for Key for this reason.
+    #[cfg(feature = "client")]
     const FAKE_API_KEY: &str = "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";
 
+    #[cfg(feature = "client")]
     use crate::utils::load_api_key;
 
     #[cfg(feature = "log")]
@@ -864,6 +879,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "client")]
     fn test_client_new() {
         #[cfg(feature = "log")]
         init_log();
@@ -877,6 +893,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(feature = "client")]
     #[ignore = "This test requires a real API key."]
     async fn test_client_message() {
         #[cfg(feature = "log")]
@@ -897,6 +914,7 @@ mod tests {
         assert!(message.to_string().contains("🙏"));
     }
 
+    #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_client_stream() {
@@ -924,6 +942,7 @@ mod tests {
         assert_eq!(msg, "🙏");
     }
 
+    #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_client_models() {

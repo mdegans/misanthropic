@@ -15,10 +15,12 @@ reqwest = { version = "0.12", features = [
     "http2",
 ], default-features = false }
 misanthropic = { path = "../../misanthropic", default-features = false, features = [
-    "html",
+    "log",
     "cot",
-    "prompt-caching",
     "dioxus",
+    "html",
+    "notepad",
+    "prompt-caching",
 ] }
 uuid = { version = "0.8", features = ["v4"], default-features = false }
 getrandom = { version = "0.2", features = ["js"], default-features = false }
@@ -32,9 +34,11 @@ web-sys = { version = "0.3" }
 thiserror = "1"
 js-sys = "0.3"
 futures = "0.3"
+lazy_static = "1"
 
 # This is the model crate, which is shared between the frontend and backend.
 model = { path = "../model" }
+dioxus-sdk = { version = "0.6", features = ["storage", "system_theme"] }
 
 [features]
 default = ["web"]

@@ -72,6 +72,12 @@ impl<'a> Id<'a> {
     }
 }
 
+impl std::fmt::Display for Id<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.name())
+    }
+}
+
 impl<'a, T> From<T> for Id<'a>
 where
     T: Into<Cow<'a, str>>,
@@ -228,10 +234,15 @@ impl AnthropicModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{prompt::message::Role, Client, Prompt};
+    #[cfg(feature = "client")]
+    use crate::Client;
+    #[cfg(feature = "client")]
+    use crate::{prompt::message::Role, Prompt};
 
+    #[cfg(feature = "client")]
     const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
 
+    #[cfg(feature = "client")]
     fn load_api_key() -> Option<String> {
         use std::fs::File;
         use std::io::Read;
@@ -303,6 +314,7 @@ mod tests {
         assert_eq!(model, AnthropicModel::Sonnet35);
     }
 
+    #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_ids_are_valid() {

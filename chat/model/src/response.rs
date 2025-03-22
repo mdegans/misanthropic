@@ -10,9 +10,7 @@ pub type Response = Result<Success, Error>;
 #[serde(rename_all = "snake_case")]
 pub enum Success {
     /// The server-side copy of the prompt, considered the source of truth.
-    // If there is ever a desync, this should be reported with repro steps. The
-    // same handling code runs on the server and client, so this should never
-    // happen.
+    /// Except for tools. The toolbox lives in the frontend.
     Prompt(prompt::Prompt<'static>),
     /// [`mianthropic::stream::Event`] forwarded from Anthropic
     Stream(misanthropic::stream::Event),
@@ -26,18 +24,24 @@ pub enum Success {
 )]
 #[serde(rename_all = "snake_case")]
 pub enum Error {
-    /// Turn order error
+    /// [`TurnOrderError`] when appending a [`Message`] to the [`Prompt`].
+    ///
+    /// [`TurnOrderError`]: prompt::TurnOrderError
+    /// [`Message`]: prompt::Message
+    /// [`Prompt`]: prompt::Prompt
     TurnOrder {
         /// Error
         #[from]
         error: prompt::TurnOrderError,
     },
-    /// Misantropic client error
+    /// [`misanthropic::client::Error`] (connection related).
     MisanthropicClient {
         /// Error message
         message: String,
     },
-    /// Stream error
+    /// [`stream::Error`]
+    ///
+    /// [`stream::Error`]: misanthropic::stream::Error
     Stream {
         /// Error message
         message: String,

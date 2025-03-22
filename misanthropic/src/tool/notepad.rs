@@ -1,26 +1,30 @@
 //! [`Notepad`] [`tool`].
 //!
 //! [`tool`]: super
+use crate::{prompt::message::Block, Prompt};
+
 use super::{Spec, Tool, Use};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use std::borrow::Cow;
+const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
 /// A `Notepad` tool for an [`Assistant`] to take persistent notes.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
-#[derive(Serialize, Deserialize)]
+#[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Notepad<'a> {
     /// Notes taken by the [`Assistant`].
     ///
     /// [`Assistant`]: crate::prompt::message::Role::Assistant
-    pub notes: Vec<Cow<'a, str>>,
+    notes: Vec<crate::CowStr<'a>>,
 }
 
 impl<'a> Notepad<'a> {
+    const NAME: &'static str = "notepad";
+
     /// Creates a new `Notepad` tool.
     pub fn new() -> Self {
         Self { notes: Vec::new() }
@@ -29,7 +33,7 @@ impl<'a> Notepad<'a> {
 
 impl<'a> Tool for Notepad<'a> {
     fn name(&self) -> &str {
-        "notepad"
+        Self::NAME
     }
 
     fn spec(&self) -> Spec<'static> {
@@ -50,7 +54,11 @@ impl<'a> Tool for Notepad<'a> {
     }
 
     fn call<'c>(&mut self, mut call: Use<'c>) -> super::Result<'c> {
+        #[cfg(feature = "log")]
+        log::debug!("Notepad call: {:?}", serde_json::to_string_pretty(&call));
         if call.name != self.name() {
+            #[cfg(feature = "log")]
+            log::error!("Invalid tool name.");
             return super::Result {
                 tool_use_id: call.id,
                 content: "Invalid tool name.".into(),
@@ -61,7 +69,43 @@ impl<'a> Tool for Notepad<'a> {
         }
 
         if let Value::String(note) = call.input["note"].take() {
+            if note.contains("<notepad>") || note.contains("</notepad>") {
+                #[cfg(feature = "log")]
+                log::error!("Injection attack detected.");
+                return super::Result {
+                    tool_use_id: call.id,
+                    content: "You cannot put `<notepad>` or `</notepad>` in your note.".into(),
+                    is_error: true,
+                    #[cfg(feature = "prompt-caching")]
+                    cache_control: None,
+                };
+            }
+
+            if note.contains("<note>") || note.contains("</note>") {
+                #[cfg(feature = "log")]
+                log::error!("Agent goofed and put a note tag in their note.");
+                return super::Result {
+                    tool_use_id: call.id,
+                    content: "You cannot put `<note>` or `</note>` in your note. `notepad` will handle it.".into(),
+                    is_error: true,
+                    #[cfg(feature = "prompt-caching")]
+                    cache_control: None,
+                };
+            }
+
+            #[cfg(feature = "log")]
+            log::debug!("Note taken: {}", note);
             self.notes.push(note.into());
+        } else {
+            #[cfg(feature = "log")]
+            log::error!("Input should be a string.");
+            return super::Result {
+                tool_use_id: call.id,
+                content: "Input should be a string.".into(),
+                is_error: true,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            };
         }
 
         super::Result {
@@ -80,15 +124,121 @@ impl<'a> Tool for Notepad<'a> {
     fn load_json(
         &mut self,
         _json: serde_json::Value,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let new: Notepad = serde_json::from_value(_json)?;
+    ) -> std::result::Result<(), String> {
+        let new: Notepad =
+            serde_json::from_value(_json).map_err(|e| e.to_string())?;
+
+        for note in &new.notes {
+            if note.contains("<notepad>") || note.contains("</notepad>") {
+                return Err("Injection attack detected. Notepad contains `<notepad>` tags.".into());
+            }
+            if note.contains("<note>") || note.contains("</note>") {
+                return Err("Notepad contains forbidden tags (`<note>` is not necessary).".into());
+            }
+        }
+
         self.notes = new.notes;
+        Ok(())
+    }
+
+    /// Setup [`Prompt`] by updating the notepad block in the system prompt.
+    ///
+    /// O(n) where n is the length of the system prompt.
+    // This would be O(1), but Anthropic won't let us stuff as much metadata as
+    // we want in Prompt::metadata. We found this out the hard way.
+    fn setup(
+        &self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Check for the presence of a `<notepad>` tags in the system prompt.
+        for note in &self.notes {
+            if note.contains("<notepad>") || note.contains("</notepad>") {
+                // This should never happen unless the developer allows the user
+                // to supply the notepad and a compromised prompt is used. It is
+                // possible to Deserialize or otherwise craft such a Notepad.
+                return Err("Injection attack detected. Notepad is compromised and contains forbidden tags.".into());
+            }
+            if note.contains("<note>") || note.contains("</note>") {
+                // This should never happen unless the developer allows the user
+                // to supply the notepad and a compromised prompt is used. It is
+                // possible to Deserialize or otherwise craft such a Notepad.
+                return Err("Notepad contains forbidden tags.".into());
+            }
+        }
+        // Notepad does not contain forbidden tags.
+
+        // Write the text to the prompt, returning true if the text was written.
+        // Text is only written where <notepad_instructions> is found.
+        let write_text = |text: &mut crate::CowStr| -> bool {
+            #[cfg(feature = "langsan")]
+            if text.contains("<notepad_instructions>") {
+                // This is the correct block. Overwrite it.
+                let mut new: crate::CowStr = String::new().into();
+
+                new.push_str(NOTEPAD_INSTRUCTIONS);
+                new.push_str("<notepad>");
+                for note in &self.notes {
+                    new.push_str("<note>");
+                    new.push_str(note);
+                    new.push_str("</note>");
+                }
+                new.push_str("</notepad>");
+
+                *text = new;
+
+                true
+            } else {
+                false
+            }
+            #[cfg(not(feature = "langsan"))]
+            if text.contains("<notepad_instructions>") {
+                // Regular old std::borrow::Cow<str>
+                text.to_mut().clear();
+                text.to_mut().push_str(NOTEPAD_INSTRUCTIONS);
+                text.to_mut().push_str("<notepad>");
+                for note in &self.notes {
+                    text.to_mut().push_str("<note>");
+                    text.to_mut().push_str(note);
+                    text.to_mut().push_str("</note>");
+                }
+                text.to_mut().push_str("</notepad>");
+
+                true
+            } else {
+                false
+            }
+        };
+
+        if let Some(system) = &mut prompt.system {
+            // Existing system prompt. Try to find the notepad instructions.
+            for block in system.iter_mut() {
+                if let Block::Text { text, .. } = block {
+                    if write_text(text) {
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Not found. Append it to existing system prompt.
+            let mut text: crate::CowStr = "<notepad_instructions>".into();
+            write_text(&mut text);
+            system.push(text);
+            return Ok(());
+        }
+
+        // Not found. No existing system prompt. Create a new one.
+        let mut text: crate::CowStr = "<notepad_instructions>".into();
+        write_text(&mut text);
+        prompt.system.replace(text.into());
+
         Ok(())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::Cow;
+
     use crate::tool::ToolBox;
 
     use super::*;
@@ -140,7 +290,7 @@ mod tests {
         assert_eq!(result.content, "Note taken.".into());
         assert_eq!(result.is_error, false);
         assert_eq!(notepad.notes.len(), 1);
-        assert_eq!(notepad.notes[0], "Hello, world!");
+        assert_eq!(notepad.notes[0].as_ref(), "Hello, world!");
     }
 
     #[test]
@@ -174,11 +324,70 @@ mod tests {
         let mut toolbox2 = ToolBox::default().add(Notepad::new());
         toolbox2.load_json(json).unwrap();
 
-        let notepad = toolbox2.get("notepad").unwrap();
+        let notepad = toolbox2.tools.get("notepad").unwrap();
         let json = notepad.save_json();
         let mut notepad2 = Notepad::new();
         notepad2.load_json(json).unwrap();
         assert_eq!(notepad2.notes.len(), 1);
-        assert_eq!(notepad2.notes[0], "Hello, world!");
+        assert_eq!(notepad2.notes[0].as_ref(), "Hello, world!");
+    }
+
+    #[test]
+    fn test_notepad_setup_injection_attack() {
+        const FORBIDDEN: &[&str] =
+            &["<notepad>", "</notepad>", "<note>", "</note>"];
+
+        for &seq in FORBIDDEN {
+            let mut notepad = Notepad::new();
+            notepad.notes.push(seq.into());
+            let mut prompt = Prompt::default();
+            let result = notepad.setup(&mut prompt);
+            assert!(result.is_err());
+        }
+    }
+
+    // Test with no existing block.
+    #[test]
+    fn test_notepad_setup_no_existing_block() {
+        let mut notepad = Notepad::new();
+        notepad.notes.push("I am test code! Whee!".into());
+        let mut prompt =
+            Prompt::default().set_system("You are a test code! Whee!");
+        notepad.setup(&mut prompt).unwrap();
+
+        // The block should have been appended.
+        assert_eq!(prompt.system.as_ref().unwrap().len(), 2);
+        if let Block::Text { text, .. } = prompt.system.unwrap().last().unwrap()
+        {
+            assert_eq!(
+                text.as_ref(),
+                "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>I am test code! Whee!</note></notepad>"
+            );
+        } else {
+            panic!("Expected a text block.");
+        }
+    }
+
+    // Test with existing block.
+    #[test]
+    fn test_notepad_setup_existing_block() {
+        let mut notepad = Notepad::new();
+        notepad.notes.push("I am test code! Whee!".into());
+        let mut prompt = Prompt::default().set_system(
+            "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>Existing note.</note></notepad>",
+        );
+        notepad.setup(&mut prompt).unwrap();
+
+        // The block should have been replaced.
+        assert_eq!(prompt.system.as_ref().unwrap().len(), 1);
+        if let Block::Text { text, .. } = prompt.system.unwrap().last().unwrap()
+        {
+            assert_eq!(
+                text.as_ref(),
+                "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>I am test code! Whee!</note></notepad>"
+            );
+        } else {
+            panic!("Expected a text block.");
+        }
     }
 }

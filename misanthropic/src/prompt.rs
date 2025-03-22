@@ -838,16 +838,8 @@ impl<'a> Prompt<'a> {
             Event::Message { message } => {
                 // The complete message should be identical to the last message
                 // or there is a logic error in the caller.
-                #[cfg(feature = "partial-eq")]
-                if let Some(last) = self.messages.last() {
-                    if *last == **&message.inner {
-                        return Ok(());
-                    }
-
-                    return Err(ApplyEventError::UnexpectedMessage {
-                        event: Event::Message { message },
-                        last: last.clone().into_static(),
-                    });
+                if let Some(last) = self.messages.last_mut() {
+                    *last = message.inner.into();
                 } else {
                     return Err(ApplyEventError::EmptyPrompt {
                         event: Event::Message { message },
@@ -858,22 +850,23 @@ impl<'a> Prompt<'a> {
             stream::Event::ToolUse { tool_use } => {
                 // The last content block of the last message should be a tool
                 // use. This is the final, assembled tool use.
-                #[cfg(feature = "partial-eq")]
-                if let Some(last) = self.messages.last() {
-                    if let Content::MultiPart(blocks) = &last.content {
-                        if let Some(message::Block::ToolUse { call }) =
-                            blocks.last()
-                        {
-                            if call == &tool_use {
-                                return Ok(());
-                            }
+                if let Some(last) = self.messages.last_mut() {
+                    // If `with_tool_use` and `with_message` are both on, it's
+                    // possible there is already a tool use block, in that case
+                    // there is nothing to do.
+                    if let Some(existing) = last.tool_use() {
+                        if existing.id == tool_use.id {
+                            // The tool use is already present.
+                            return Ok(());
+                        } else {
+                            return Err(ApplyEventError::UnexpectedMessage {
+                                event: Event::ToolUse { tool_use },
+                                last: last.clone().into_static(),
+                            });
                         }
+                    } else {
+                        last.content.push(tool_use);
                     }
-
-                    return Err(ApplyEventError::UnexpectedMessage {
-                        event: Event::ToolUse { tool_use },
-                        last: last.clone().into_static(),
-                    });
                 } else {
                     return Err(ApplyEventError::EmptyPrompt {
                         event: Event::ToolUse { tool_use },

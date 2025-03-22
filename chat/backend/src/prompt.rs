@@ -21,18 +21,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn generate_default_prompt() {
-        let chat = Prompt::default();
-
-        // get path to crate root
-        let crate_root = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-        let path =
-            std::path::Path::new(&crate_root).join("src/prompt/default.json");
-        let json = serde_json::to_string_pretty(&chat).unwrap();
-        std::fs::write(path, json).unwrap();
-    }
-
-    #[test]
     fn test_default() {
         let prompt = default();
         assert_eq!(prompt.messages.len(), 0);

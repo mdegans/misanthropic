@@ -30,10 +30,11 @@ pub struct Message<'a> {
 impl Message<'_> {
     /// Apply a [`MessageDelta`] with metadata to the message.
     pub fn apply_delta(&mut self, delta: MessageDelta) {
-        self.stop_reason = delta.stop_reason;
-        self.stop_sequence = delta.stop_sequence;
-        if let Some(usage) = delta.usage {
-            self.usage = usage;
+        if let Some(stop_reason) = delta.stop_reason {
+            self.stop_reason = Some(stop_reason);
+        }
+        if let Some(stop_sequence) = delta.stop_sequence {
+            self.stop_sequence = Some(stop_sequence);
         }
     }
 
@@ -79,7 +80,9 @@ impl Message<'_> {
 }
 
 /// Reason the model stopped generating tokens.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Serialize, Deserialize, derive_more::IsVariant,
+)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
@@ -97,6 +100,7 @@ pub enum StopReason {
 /// for messages.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
 pub struct Usage {
     /// Number of input tokens used.
     pub input_tokens: u64,
@@ -108,6 +112,33 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+}
+
+impl std::ops::Add<Usage> for Usage {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            input_tokens: self.input_tokens + rhs.input_tokens,
+            #[cfg(feature = "prompt-caching")]
+            cache_creation_input_tokens: self
+                .cache_creation_input_tokens
+                .map(|c| c + rhs.cache_creation_input_tokens.unwrap_or(0))
+                .or_else(|| rhs.cache_creation_input_tokens),
+            #[cfg(feature = "prompt-caching")]
+            cache_read_input_tokens: self
+                .cache_read_input_tokens
+                .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
+                .or_else(|| rhs.cache_read_input_tokens),
+            output_tokens: self.output_tokens + rhs.output_tokens,
+        }
+    }
+}
+
+impl std::ops::AddAssign<Usage> for Usage {
+    fn add_assign(&mut self, rhs: Usage) {
+        *self = *self + rhs;
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -154,8 +185,6 @@ mod tests {
         assert_eq!(message.model, crate::AnthropicModel::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
         assert_eq!(message.stop_sequence, None);
-        assert_eq!(message.usage.input_tokens, 2095);
-        assert_eq!(message.usage.output_tokens, 503);
     }
 
     #[test]
@@ -164,19 +193,12 @@ mod tests {
         let delta = MessageDelta {
             stop_reason: Some(StopReason::MaxTokens),
             stop_sequence: Some("sequence".into()),
-            usage: Some(Usage {
-                input_tokens: 100,
-                output_tokens: 200,
-                ..Default::default()
-            }),
         };
 
         message.apply_delta(delta);
 
         assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
         assert_eq!(message.stop_sequence, Some("sequence".into()));
-        assert_eq!(message.usage.input_tokens, 100);
-        assert_eq!(message.usage.output_tokens, 200);
     }
 
     #[test]
