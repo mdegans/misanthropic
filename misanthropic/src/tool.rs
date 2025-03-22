@@ -34,6 +34,7 @@ pub enum Choice {
 /// A `Tool` that the [`Assistant`] can [`Use`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
+#[async_trait::async_trait]
 pub trait Tool {
     /// [`Tool`] name.
     fn name(&self) -> &str;
@@ -41,7 +42,7 @@ pub trait Tool {
     fn spec(&self) -> Spec<'static>;
     /// [`Use`] the [`Tool`], returning a [`Result`].
     // FIXME: this needs to be async, so we'll need to add async_trait as a dep
-    fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
+    async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
     ///
     /// [`Value`]: serde_json::Value
@@ -128,6 +129,7 @@ impl ToolBox {
     }
 }
 
+#[async_trait::async_trait]
 impl Tool for ToolBox {
     fn name(&self) -> &str {
         stringify!(ToolBox)
@@ -158,7 +160,7 @@ impl Tool for ToolBox {
     }
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
-    fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
+    async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
         #[cfg(feature = "log")]
         log::debug!("ToolBox call: {:?}", call);
         let tool = match self.tools.get_mut(call.name.as_ref()) {
@@ -176,7 +178,7 @@ impl Tool for ToolBox {
 
         #[cfg(feature = "log")]
         log::debug!("ToolBox calling tool: {}", tool.name());
-        tool.call(call)
+        tool.call(call).await
     }
 
     /// Load state for all tools in the [`ToolBox`]. Any errors are collected

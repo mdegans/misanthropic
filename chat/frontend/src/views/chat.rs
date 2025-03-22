@@ -265,8 +265,10 @@ pub fn Chat() -> Element {
                                 {
                                     log::info!("Tool use: {:?}", tool_use);
                                     // A tool has been used.
-                                    let result =
-                                        toolbox.write().call(tool_use.clone());
+                                    let result = toolbox
+                                        .write()
+                                        .call(tool_use.clone())
+                                        .await;
                                     toolbox_state
                                         .set(toolbox.peek().save_json());
                                     log::info!("Tool result: {:?}", result);

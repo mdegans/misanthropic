@@ -31,6 +31,7 @@ impl<'a> Notepad<'a> {
     }
 }
 
+#[async_trait::async_trait]
 impl<'a> Tool for Notepad<'a> {
     fn name(&self) -> &str {
         Self::NAME
@@ -53,7 +54,7 @@ impl<'a> Tool for Notepad<'a> {
             .unwrap()
     }
 
-    fn call<'c>(&mut self, mut call: Use<'c>) -> super::Result<'c> {
+    async fn call<'c>(&mut self, mut call: Use<'c>) -> super::Result<'c> {
         #[cfg(feature = "log")]
         log::debug!("Notepad call: {:?}", serde_json::to_string_pretty(&call));
         if call.name != self.name() {
@@ -273,8 +274,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_notepad_call() {
+    #[tokio::test]
+    async fn test_notepad_call() {
         let mut notepad = Notepad::new();
         let call = Use {
             id: "abcd".into(),
@@ -285,7 +286,7 @@ mod tests {
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
-        let result = notepad.call(call);
+        let result = notepad.call(call).await;
         assert_eq!(result.tool_use_id, "abcd");
         assert_eq!(result.content, "Note taken.".into());
         assert_eq!(result.is_error, false);
@@ -303,8 +304,8 @@ mod tests {
         assert_eq!(notepad.notes, notepad2.notes);
     }
 
-    #[test]
-    fn test_notepad_in_toolbox() {
+    #[tokio::test]
+    async fn test_notepad_in_toolbox() {
         let mut toolbox = ToolBox::default().add(Notepad::new());
         let call = Use {
             id: "abcd".into(),
@@ -315,7 +316,7 @@ mod tests {
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
-        let result = toolbox.call(call);
+        let result = toolbox.call(call).await;
         assert_eq!(result.tool_use_id, "abcd");
         assert_eq!(result.content, "Note taken.".into());
         assert_eq!(result.is_error, false);
