@@ -22,7 +22,7 @@ use misanthropic::{
         Prompt,
     },
     tool::Tool,
-    Spec,
+    Function,
 };
 use model::{request::Request, response::Success, toolbox};
 use wasm_bindgen::{prelude::Closure, JsCast};
@@ -52,13 +52,13 @@ fn make_prompt() -> Prompt<'static> {
             message::{Block, Content, Role},
             Message,
         },
-        tool, AnthropicModel, Spec,
+        tool, AnthropicModel, Function,
     };
     use AnthropicModel::*;
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(Spec {
+        .add_tool(Function {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({
@@ -183,7 +183,7 @@ pub fn Chat() -> Element {
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
     let specs = use_signal(|| {
-        let specs: Vec<Spec> = toolbox::create().specs().collect();
+        let specs: Vec<Function> = toolbox::create().functions().collect();
         specs
     });
     let mut toolbox_state =

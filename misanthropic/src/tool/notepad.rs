@@ -3,7 +3,7 @@
 //! [`tool`]: super
 use crate::{prompt::message::Block, Prompt};
 
-use super::{Spec, Tool, Use};
+use super::{Function, Tool, Use};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -37,21 +37,23 @@ impl<'a> Tool for Notepad<'a> {
         Self::NAME
     }
 
-    fn spec(&self) -> Spec<'static> {
-        Spec::builder(self.name().to_string())
-            .description("Take a note for the next chat.")
-            .schema(json!({
-                "type": "object",
-                "properties": {
-                    "note": {
-                        "type": "string",
-                        "description": "The note to take."
-                    }
-                },
-                "required": ["note"]
-            }))
-            .build()
-            .unwrap()
+    fn functions(&self) -> Box<dyn Iterator<Item = Function<'static>> + '_> {
+        Box::new(std::iter::once(
+            Function::builder(self.name().to_string())
+                .description("Take a note for the next chat.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "note": {
+                            "type": "string",
+                            "description": "The note to take."
+                        }
+                    },
+                    "required": ["note"]
+                }))
+                .build()
+                .unwrap(),
+        ))
     }
 
     async fn call<'c>(&mut self, mut call: Use<'c>) -> super::Result<'c> {
@@ -251,16 +253,16 @@ mod tests {
     }
 
     #[test]
-    fn test_notepad_spec() {
+    fn test_notepad_functions() {
         let notepad = Notepad::new();
-        let spec = notepad.spec();
-        assert_eq!(spec.name, "notepad");
+        let function = notepad.functions().next().unwrap();
+        assert_eq!(function.name, "notepad");
         assert_eq!(
-            spec.description,
+            function.description,
             Cow::Borrowed("Take a note for the next chat.")
         );
         assert_eq!(
-            spec.schema,
+            function.schema,
             json!({
                 "type": "object",
                 "properties": {

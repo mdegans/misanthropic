@@ -40,7 +40,7 @@ eventsource-stream = "0.2"
 # We don't depend on tokio. Misanthropic should support anything that `rewqest`
 # supports, howevet the Client will not build on wasm32 currently.
 futures = "0.3"
-# Because I like `yield`. It makes some things so much easier to write.
+# For various traits like `Tool` 
 async-trait = "0.1"
 # For `image` crate support.
 image = { version = "0.25", optional = true }

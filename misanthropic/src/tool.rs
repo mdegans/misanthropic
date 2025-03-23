@@ -4,8 +4,8 @@ use std::{borrow::Cow, collections::BTreeMap};
 use crate::prompt::message::Content;
 #[allow(unused_imports)]
 use crate::Prompt;
-// without this rustdoc doesn't link to Prompt, even with the
-// full path and all features enabled. Rustdoc bug?
+// without this rustdoc doesn't link to Prompt, even with the full path and all
+// features enabled. Rustdoc bug?
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "notepad")]
@@ -13,7 +13,7 @@ mod notepad;
 #[cfg(feature = "notepad")]
 pub use notepad::Notepad;
 
-/// Constrain the [`Assistant`]'s choice of [`Tool`]s.
+/// Constrain the [`Assistant`]'s choice of [`Function`]s.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -24,24 +24,31 @@ pub enum Choice {
     Auto,
     /// Model must use at least one of the tools provided.
     Any,
-    /// Model must use a specific tool.
-    Tool {
-        /// Name of the tool.
+    /// Model must use a specific [`Function`]`.
+    ///
+    /// # Note:
+    /// - Anthropic calls this a "tool" in the API, but since [`Tool`]s can have
+    ///   multiple functions in this crate, we use "function" instead.
+    #[serde(rename = "tool")]
+    Function {
+        /// The [`Function::name`] to use.
         name: String,
     },
 }
 
-/// A `Tool` that the [`Assistant`] can [`Use`].
+/// A `Tool` that the [`Assistant`] can [`Use`]. Tools can have multiple
+/// [`Function`]s.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[async_trait::async_trait]
 pub trait Tool {
     /// [`Tool`] name.
     fn name(&self) -> &str;
-    /// Get the [`Spec`] for the [`Tool`].
-    fn spec(&self) -> Spec<'static>;
-    /// [`Use`] the [`Tool`], returning a [`Result`].
-    // FIXME: this needs to be async, so we'll need to add async_trait as a dep
+    /// Get the [`Function`](s) provided by the [`Tool`].
+    fn functions(&self) -> Box<dyn Iterator<Item = Function<'static>> + '_>;
+    /// [`Use`] the [`Tool`], returning a [`tool::Result`].
+    ///
+    /// [`tool::Result`]: Result
     async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
     ///
@@ -122,11 +129,6 @@ impl ToolBox {
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.tools.keys().map(|name| name.as_str())
     }
-
-    /// Specs for all [`Tool`]s in the [`ToolBox`].
-    pub fn specs(&self) -> impl Iterator<Item = Spec<'static>> + '_ {
-        self.tools.values().map(|tool| tool.spec())
-    }
 }
 
 #[async_trait::async_trait]
@@ -135,28 +137,9 @@ impl Tool for ToolBox {
         stringify!(ToolBox)
     }
 
-    /// A [`ToolBox`] has a [`Spec`] but this should not be used. Use this to
-    /// set [`Prompt::tools`] and forward all [`Use`]s to this [`ToolBox`].
-    fn spec(&self) -> Spec<'static> {
-        // Generally this shouldn't be called, but the trait requires it.
-        Spec::builder(self.name().to_string())
-            .description("A collection of tools.")
-            .schema(serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "tool": {
-                        "type": "string",
-                        "description": "The name of the tool to use.",
-                    },
-                    "input": {
-                        "type": "object",
-                        "description": "The input for the tool.",
-                    },
-                },
-                "required": ["tool", "input"],
-            }))
-            .build()
-            .unwrap()
+    /// The [`Function`]s for all [`Tool`]s in the [`ToolBox`].
+    fn functions(&self) -> Box<dyn Iterator<Item = Function<'static>> + '_> {
+        Box::new(self.tools.values().flat_map(|tool| tool.functions()))
     }
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
@@ -274,16 +257,16 @@ impl Tool for ToolBox {
     }
 }
 
-/// `Spec` for a [`Tool`] a [`Model`] can [`Use`] while completing a
-/// [`prompt::Message`].
+/// `Function` definition for a [`Tool`] a [`Model`] can [`Use`] while
+/// completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
 /// [`Model`]: crate::model::Model
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
-#[serde(try_from = "ToolBuilder<'a>")]
+#[serde(try_from = "FunctionBuilder<'a>")]
 #[serde(rename = "tool")]
-pub struct Spec<'a> {
+pub struct Function<'a> {
     /// Name of the [`Tool`]. This should be unique.
     pub name: Cow<'a, str>,
     /// Description of the tool. The model will use this as documentation.
@@ -304,27 +287,27 @@ pub struct Spec<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl<'a> TryFrom<ToolBuilder<'a>> for Spec<'a> {
+impl<'a> TryFrom<FunctionBuilder<'a>> for Function<'a> {
     type Error = ToolBuildError;
 
     fn try_from(
-        builder: ToolBuilder<'a>,
+        builder: FunctionBuilder<'a>,
     ) -> std::result::Result<Self, Self::Error> {
         builder.build()
     }
 }
 
-/// A builder for creating a [`Spec`] with some basic validation. See
-/// [`Spec::builder`] to create one.
-pub struct ToolBuilder<'a> {
-    tool: Spec<'a>,
+/// A builder for creating a [`Function`] with some basic validation. See
+/// [`Function::builder`] to create one.
+pub struct FunctionBuilder<'a> {
+    tool: Function<'a>,
 }
 
-// ToolBuilder must implement Deserialize but we can't derive it because it
+// FunctionBuilder must implement Deserialize but we can't derive it because it
 // would recursively require Tool to implement Deserialize, so we have to
 // implement it manually. This is a bit ugly, but it works and ensures that
 // a Tool is always valid when deserialized.
-impl<'de> Deserialize<'de> for ToolBuilder<'_> {
+impl<'de> Deserialize<'de> for FunctionBuilder<'_> {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -348,8 +331,8 @@ impl<'de> Deserialize<'de> for ToolBuilder<'_> {
             cache_control,
         } = foreign;
 
-        Ok(ToolBuilder {
-            tool: Spec {
+        Ok(FunctionBuilder {
+            tool: Function {
                 name,
                 description,
                 schema: input_schema,
@@ -360,14 +343,14 @@ impl<'de> Deserialize<'de> for ToolBuilder<'_> {
     }
 }
 
-impl<'a> ToolBuilder<'a> {
+impl<'a> FunctionBuilder<'a> {
     /// Set the description for the tool.
     pub fn description(mut self, description: impl Into<Cow<'a, str>>) -> Self {
         self.tool.description = description.into();
         self
     }
 
-    /// Set a cache breakpoint at this [`Spec`] by setting [`cache_control`] to
+    /// Set a cache breakpoint at this [`Function`] by setting [`cache_control`] to
     /// [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// [`cache_control`]: Spec::cache_control
@@ -380,7 +363,7 @@ impl<'a> ToolBuilder<'a> {
         self
     }
 
-    /// Set the [`Spec::input_schema`]. The schema should be a JSON Schema
+    /// Set the [`Function::input_schema`]. The schema should be a JSON Schema
     /// object conforming to the [JSON Schema] specification like the following
     /// example:
     ///
@@ -408,16 +391,16 @@ impl<'a> ToolBuilder<'a> {
     /// tool.
     ///
     /// [JSON Schema]: <https://json-schema.org/>
-    /// [`build`]: ToolBuilder::build
+    /// [`build`]: FunctionBuilder::build
     // TODO: This could be improved by using a JSON Schema library.
     pub fn schema(mut self, schema: serde_json::Value) -> Self {
         self.tool.schema = schema;
         self
     }
 
-    /// This will build the [`Spec`] without checking any of the fields. This is
+    /// This will build the [`Function`] without checking any of the fields. This is
     /// recommended only with static strings.
-    pub fn build_unchecked(self) -> Spec<'a> {
+    pub fn build_unchecked(self) -> Function<'a> {
         self.tool
     }
 
@@ -485,9 +468,9 @@ impl<'a> ToolBuilder<'a> {
         Ok(())
     }
 
-    /// This will build the [`Spec`] and do some basic validation on the fields.
+    /// This will build the [`Function`] and do some basic validation on the fields.
     /// This does not guarantee that the tool will be accepted by the API.
-    pub fn build(self) -> std::result::Result<Spec<'a>, ToolBuildError> {
+    pub fn build(self) -> std::result::Result<Function<'a>, ToolBuildError> {
         if self.tool.name.is_empty() {
             return Err(ToolBuildError::EmptyName);
         }
@@ -512,8 +495,8 @@ impl<'a> ToolBuilder<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields. If they are already owned, this is a no-op.
-    pub fn into_static(self) -> Spec<'static> {
-        Spec {
+    pub fn into_static(self) -> Function<'static> {
+        Function {
             name: Cow::Owned(self.tool.name.into_owned()),
             description: Cow::Owned(self.tool.description.into_owned()),
             schema: self.tool.schema,
@@ -523,7 +506,7 @@ impl<'a> ToolBuilder<'a> {
     }
 }
 
-/// Errors that can occur when building a [`Spec`] with a [`ToolBuilder`].
+/// Errors that can occur when building a [`Function`] with a [`FunctionBuilder`].
 #[derive(Debug, thiserror::Error)]
 #[allow(missing_docs)]
 pub enum ToolBuildError {
@@ -540,11 +523,11 @@ pub enum ToolBuildError {
     },
 }
 
-impl<'a> Spec<'a> {
+impl<'a> Function<'a> {
     /// Use a builder to create a new tool with some very basic validation.
-    pub fn builder(name: impl Into<Cow<'a, str>>) -> ToolBuilder<'a> {
-        ToolBuilder {
-            tool: Spec {
+    pub fn builder(name: impl Into<Cow<'a, str>>) -> FunctionBuilder<'a> {
+        FunctionBuilder {
+            tool: Function {
                 name: name.into(),
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
@@ -554,7 +537,7 @@ impl<'a> Spec<'a> {
         }
     }
 
-    /// Create a cache breakpoint at this [`Spec`] by setting [`cache_control`]
+    /// Create a cache breakpoint at this [`Function`] by setting [`cache_control`]
     /// to [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// [`cache_control`]: Self::cache_control
@@ -567,20 +550,20 @@ impl<'a> Spec<'a> {
         self
     }
 
-    /// Returns true if the [`Spec`] has a cache breakpoint set (if
+    /// Returns true if the [`Function`] has a cache breakpoint set (if
     /// `cache_control` is [`Some`]).
     #[cfg(feature = "prompt-caching")]
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
 
-    /// Try to convert from a serializable value to a [`Spec`].
+    /// Try to convert from a serializable value to a [`Function`].
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
     // Serialize. This is a bit of a hack but it works.
     pub fn from_serializable<T>(
         value: T,
-    ) -> std::result::Result<Spec<'a>, serde_json::Error>
+    ) -> std::result::Result<Function<'a>, serde_json::Error>
     where
         T: Serialize,
     {
@@ -590,8 +573,8 @@ impl<'a> Spec<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
-    pub fn into_static(self) -> Spec<'static> {
-        Spec {
+    pub fn into_static(self) -> Function<'static> {
+        Function {
             name: Cow::Owned(self.name.into_owned()),
             description: Cow::Owned(self.description.into_owned()),
             schema: self.schema,
@@ -601,20 +584,20 @@ impl<'a> Spec<'a> {
     }
 }
 
-impl TryFrom<serde_json::Value> for Spec<'static> {
+impl TryFrom<serde_json::Value> for Function<'static> {
     type Error = serde_json::Error;
 
     fn try_from(
         value: serde_json::Value,
     ) -> std::result::Result<Self, Self::Error> {
-        let builder: ToolBuilder<'static> = serde_json::from_value(value)?;
+        let builder: FunctionBuilder<'static> = serde_json::from_value(value)?;
         builder
             .build()
             .map_err(|e| serde::de::Error::custom(e.to_string()))
     }
 }
 
-/// A [`Spec`] [`Use`] of the model. This should be handled and a response sent
+/// A [`Function`] [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///
 /// [`Block::ToolResult`]: crate::prompt::message::Block::ToolResult
@@ -706,7 +689,7 @@ impl std::fmt::Display for Use<'_> {
     }
 }
 
-/// Result of [`Spec`] [`Use`] sent back to the [`Assistant`] as a [`User`]
+/// Result of [`Function`] [`Use`] sent back to the [`Assistant`] as a [`User`]
 /// [`Message`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
@@ -714,9 +697,9 @@ impl std::fmt::Display for Use<'_> {
 /// [`Message`]: crate::prompt::message
 #[derive(Clone, Debug, Serialize, Deserialize, Hash, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-// On the one hand this can clash with the `Result` type from the standard
-// library, but on the other hand it's what the API uses, and I'm trying to
-// be as faithful to the API as possible.
+// FIXME: On the one hand this can clash with the `Result` type from the
+// standard library, but on the other hand it's what the API uses. We should
+// probably rename this to avoid confusion, since it is confusing.
 #[display("{}", self.content)]
 pub struct Result<'a> {
     /// Unique Id for this tool call.
@@ -846,7 +829,7 @@ mod tests {
             "required": ["letter", "string"],
         });
 
-        assert!(ToolBuilder::is_valid_input_schema(&schema).is_ok());
+        assert!(FunctionBuilder::is_valid_input_schema(&schema).is_ok());
 
         let schema = serde_json::json!({
             "type": "object",
@@ -863,12 +846,12 @@ mod tests {
             "required": "letter",
         });
 
-        assert!(ToolBuilder::is_valid_input_schema(&schema).is_err());
+        assert!(FunctionBuilder::is_valid_input_schema(&schema).is_err());
     }
 
     #[test]
     fn test_build() {
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -908,7 +891,7 @@ mod tests {
         );
 
         // Test error cases
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -932,7 +915,7 @@ mod tests {
         ));
 
         // input schema not an object
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::Value::String("blah".into()))
             .build();
@@ -943,7 +926,7 @@ mod tests {
         ));
 
         // Properties not an object
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -958,7 +941,7 @@ mod tests {
         ));
 
         // Schema does not have properties
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -973,7 +956,7 @@ mod tests {
 
         // Schema does not have `required` keys (empty array allowed, but it
         // must be present)
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -996,7 +979,7 @@ mod tests {
         ));
 
         // required keys not found in properties
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1020,7 +1003,7 @@ mod tests {
         ));
 
         // required keys not strings
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1044,14 +1027,14 @@ mod tests {
         ));
 
         // missing schema
-        let tool = Spec::builder("test_name")
+        let tool = Function::builder("test_name")
             .description("test_description")
             .build();
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyInputSchema)));
 
         // with missing names and descriptions
-        let tool = Spec::builder("")
+        let tool = Function::builder("")
             .description("foo")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1071,7 +1054,7 @@ mod tests {
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyName)));
 
-        let tool = Spec::builder("foo")
+        let tool = Function::builder("foo")
             .description("")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1104,7 +1087,7 @@ mod tests {
         let choice2: Choice = serde_json::from_str(&json).unwrap();
         assert_eq!(choice, choice2);
 
-        let choice = Choice::Tool {
+        let choice = Choice::Function {
             name: "test_name".into(),
         };
         let json = serde_json::to_string(&choice).unwrap();
@@ -1146,7 +1129,7 @@ mod tests {
 
     #[test]
     fn test_tool_from_serializable() {
-        let tool = Spec::from_serializable(serde_json::json!({
+        let tool = Function::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
@@ -1188,7 +1171,7 @@ mod tests {
 
         // Test invalid schema. Comprehensive testing of this is in the builder
         // tests. This just makes sure that the error is propagated.
-        let tool = Spec::from_serializable(serde_json::json!({
+        let tool = Function::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
