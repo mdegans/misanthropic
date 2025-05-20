@@ -6,8 +6,9 @@
 use std::{borrow::Cow, num::NonZeroU16, vec};
 
 use crate::{
+    model,
     stream::{self, DeltaError},
-    tool, Function, Id,
+    tool::{self, Method, Tool},
 };
 use message::Content;
 
@@ -28,7 +29,7 @@ pub use thinking::Thinking;
 #[serde(default)]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
-    pub model: Id<'a>,
+    pub model: model::Id<'a>,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
@@ -77,7 +78,8 @@ pub struct Prompt<'a> {
     pub tool_choice: Option<tool::Choice>,
     /// Tool definitions for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub tools: Option<Vec<Function<'a>>>,
+    #[serde(rename = "tools")]
+    pub functions: Option<Vec<Method<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -111,7 +113,7 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("system", &self.system)
             .field("temperature", &self.temperature)
             .field("tool_choice", &self.tool_choice)
-            .field("tools", &self.tools)
+            .field("tools", &self.functions)
             .field("top_k", &self.top_k)
             .field("...", &"...")
             .finish()
@@ -132,7 +134,7 @@ impl Default for Prompt<'_> {
             system: Default::default(),
             temperature: Default::default(),
             tool_choice: Default::default(),
-            tools: Default::default(),
+            functions: Default::default(),
             top_k: Default::default(),
             top_p: Default::default(),
             thinking: Default::default(),
@@ -181,7 +183,7 @@ impl<'a> Prompt<'a> {
     /// [`model`]: Prompt::model
     pub fn model<M>(mut self, model: M) -> Self
     where
-        M: Into<Id<'a>>,
+        M: Into<model::Id<'a>>,
     {
         self.model = model.into();
         self
@@ -596,10 +598,10 @@ impl<'a> Prompt<'a> {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<Function<'a>>,
+        T: Into<Method<'a>>,
         Ts: IntoIterator<Item = T>,
     {
-        self.tools = Some(tools.into_iter().map(Into::into).collect());
+        self.functions = Some(tools.into_iter().map(Into::into).collect());
         self
     }
 
@@ -626,10 +628,10 @@ impl<'a> Prompt<'a> {
     /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<Function<'a>, Error = E>,
+        T: TryInto<Method<'a>, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
-        self.tools = Some(
+        self.functions = Some(
             tools
                 .into_iter()
                 .map(TryInto::try_into)
@@ -641,9 +643,9 @@ impl<'a> Prompt<'a> {
     /// Add a tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<Function<'a>>,
+        T: Into<Method<'a>>,
     {
-        self.tools
+        self.functions
             .get_or_insert_with(Default::default)
             .push(tool.into());
         self
@@ -653,9 +655,9 @@ impl<'a> Prompt<'a> {
     /// be converted into a [`Tool`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<Function<'a>, Error = E>,
+        T: TryInto<Method<'a>, Error = E>,
     {
-        self.tools
+        self.functions
             .get_or_insert_with(Default::default)
             .push(tool.try_into()?);
         Ok(self)
@@ -722,7 +724,7 @@ impl<'a> Prompt<'a> {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.tools.as_mut().and_then(|tools| tools.last_mut())
+            self.functions.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache();
             return self;
@@ -749,9 +751,9 @@ impl<'a> Prompt<'a> {
             system: self.system.map(Content::into_static),
             temperature: self.temperature,
             tool_choice: self.tool_choice,
-            tools: self
-                .tools
-                .map(|t| t.into_iter().map(Function::into_static).collect()),
+            functions: self
+                .functions
+                .map(|t| t.into_iter().map(Method::into_static).collect()),
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
@@ -922,6 +924,19 @@ impl<'a> Prompt<'a> {
                 None => break Ok(self),
             }
         }
+    }
+
+    /// Apply a [`Tool`] to the prompt. This is a convenience method to call
+    /// [`Tool::apply_to_prompt`] on [`self`].
+    pub fn setup_tool<T>(
+        mut self,
+        tool: &T,
+    ) -> Result<Self, Box<dyn std::error::Error>>
+    where
+        T: Tool,
+    {
+        tool.apply_to_prompt(&mut self)?;
+        Ok(self)
     }
 }
 
@@ -1123,7 +1138,7 @@ mod tests {
     #[test]
     fn test_default_request() {
         let request = Prompt::default();
-        assert_eq!(request.model, Id::default());
+        assert_eq!(request.model, crate::model::Id::default());
         assert!(request.messages.is_empty());
         assert_eq!(request.max_tokens, NonZeroU16::new(4096).unwrap());
         assert!(request.metadata.is_empty());
@@ -1132,7 +1147,7 @@ mod tests {
         assert!(request.system.is_none());
         assert!(request.temperature.is_none());
         assert!(request.tool_choice.is_none());
-        assert!(request.tools.is_none());
+        assert!(request.functions.is_none());
         assert!(request.top_k.is_none());
         assert!(request.top_p.is_none());
     }
@@ -1160,7 +1175,7 @@ mod tests {
     fn test_set_model() {
         let model = AnthropicModel::default();
         let request = Prompt::default().model(model); // AnthropicModel is Copy
-        assert_eq!(request.model, Id::default());
+        assert_eq!(request.model, crate::model::Id::default());
     }
 
     fn create_test_messages() -> [Message<'static>; 2] {
@@ -1337,7 +1352,7 @@ mod tests {
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Prompt::default().add_tool(Function {
+        let request = Prompt::default().add_tool(Method {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: json!({}),
@@ -1345,16 +1360,28 @@ mod tests {
             cache_control: None,
         });
 
-        assert!(!request.tools.as_ref().unwrap().last().unwrap().is_cached());
+        assert!(!request
+            .functions
+            .as_ref()
+            .unwrap()
+            .last()
+            .unwrap()
+            .is_cached());
 
         let mut request = request.cache();
 
-        assert!(request.tools.as_ref().unwrap().last().unwrap().is_cached());
+        assert!(request
+            .functions
+            .as_ref()
+            .unwrap()
+            .last()
+            .unwrap()
+            .is_cached());
 
         // remove the cache breakpoint
         // TODO: add an un_cache method? set_cache?
         request
-            .tools
+            .functions
             .as_mut()
             .unwrap()
             .last_mut()
@@ -1370,7 +1397,13 @@ mod tests {
 
         assert!(request.system.as_ref().unwrap().last().unwrap().is_cached());
         // ensure the tools are not affected
-        assert!(!request.tools.as_ref().unwrap().last().unwrap().is_cached());
+        assert!(!request
+            .functions
+            .as_ref()
+            .unwrap()
+            .last()
+            .unwrap()
+            .is_cached());
 
         // Test with messages. The call to cache should affect the last message.
         let request = request
@@ -1455,7 +1488,7 @@ mod tests {
         // A tool can be created from a Tool itself. This is infallible, however
         // the API might reject the request if the tool is invalid. There is
         // currently no schema validation in this crate.
-        let tool = Function {
+        let tool = Method {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: schema.clone(),
@@ -1468,18 +1501,18 @@ mod tests {
             .try_add_tool(json_tool)
             .unwrap();
 
-        assert_eq!(request.tools.as_ref().unwrap().len(), 2);
-        assert_eq!(request.tools.as_ref().unwrap()[0].name, "ping");
-        assert_eq!(request.tools.as_ref().unwrap()[1].name, "ping2");
+        assert_eq!(request.functions.as_ref().unwrap().len(), 2);
+        assert_eq!(request.functions.as_ref().unwrap()[0].name, "ping");
+        assert_eq!(request.functions.as_ref().unwrap()[1].name, "ping2");
         assert_eq!(
-            request.tools.as_ref().unwrap()[0].description,
+            request.functions.as_ref().unwrap()[0].description,
             "Ping a server."
         );
         assert_eq!(
-            request.tools.as_ref().unwrap()[1].description,
+            request.functions.as_ref().unwrap()[1].description,
             "Ping a server. Part deux."
         );
-        assert_eq!(request.tools.as_ref().unwrap()[0].schema, schema);
+        assert_eq!(request.functions.as_ref().unwrap()[0].schema, schema);
 
         // Test with a fallible tool. This should fail.
 
@@ -1545,7 +1578,7 @@ mod tests {
         use crate::markdown::{Markdown, ToMarkdown};
 
         let request = Prompt::default()
-            .tools([Function {
+            .tools([Method {
                 name: "ping".into(),
                 description: "Ping a server.".into(),
                 schema: json!({

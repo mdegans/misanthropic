@@ -67,20 +67,16 @@ println!("{}", message);
 - [x] Message responses
 - [x] Image support with or without the `image` crate
 - [x] Markdown formatting of messages, including images
-- [x] HTML formatting of messages\*.
+- [x] HTML formatting of messages
+- [x] Dioxus support
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
 - [x] Zero-copy where possible
 - [x] [Sanitization](https://crates.io/crates/langsan) of input and output to mitigate [injection attacks](https://arstechnica.com/security/2024/10/ai-chatbots-can-read-and-write-invisible-text-creating-an-ideal-covert-channel/)
-- [x] Wasm support (without the Client itself, just the data structures and stream types, extensions, and so on).
-
-  This is actually what you want because running the client itself in the frontend would require the user to expose their API key to the browser which is not a good thing to be teaching users to do.
-
-- [x] Batch API support. On Wasm this is not available.
+- [x] Wasm support (without the Client itself, just the data structures and stream types, extensions, tools, and so on)
+- [x] Batch API support
 - [ ] Amazon Bedrock support
 - [ ] Vertex AI support
-
-\* _Base64 encoded images are currently not implemented for HTML but this is a planned feature._
 
 [reqwest]: https://docs.rs/reqwest
 

@@ -1,6 +1,6 @@
 use std::borrow::Cow;
 
-use crate::{prompt, stream::MessageDelta, Id};
+use crate::{model, prompt, stream::MessageDelta};
 use serde::{Deserialize, Serialize};
 
 /// A [`prompt::Message`] with additional response metadata.
@@ -14,7 +14,7 @@ pub struct Message<'a> {
     #[serde(flatten)]
     pub inner: prompt::AssistantMessage<'a>,
     /// [`Model`] that generated the message.
-    pub model: Id<'a>,
+    pub model: model::Id<'a>,
     /// The reason the model stopped generating tokens.
     pub stop_reason: Option<StopReason>,
     /// If the [`StopReason`] was [`StopSequence`], this is the sequence that

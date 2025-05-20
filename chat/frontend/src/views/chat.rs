@@ -21,8 +21,7 @@ use misanthropic::{
         message::{Block, Image, MediaType, UserMessage},
         Prompt,
     },
-    tool::Tool,
-    Function,
+    tool::{Method, Tool},
 };
 use model::{request::Request, response::Success, toolbox};
 use wasm_bindgen::{prelude::Closure, JsCast};
@@ -52,13 +51,14 @@ fn make_prompt() -> Prompt<'static> {
             message::{Block, Content, Role},
             Message,
         },
-        tool, AnthropicModel, Function,
+        tool::{self, Method},
+        AnthropicModel,
     };
     use AnthropicModel::*;
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(Function {
+        .add_tool(Method {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({
@@ -183,7 +183,7 @@ pub fn Chat() -> Element {
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
     let specs = use_signal(|| {
-        let specs: Vec<Function> = toolbox::create().functions().collect();
+        let specs: Vec<Method> = toolbox::create().methods().collect();
         specs
     });
     let mut toolbox_state =
@@ -314,10 +314,12 @@ pub fn Chat() -> Element {
                             }
                             Ok(Success::Prompt(mut new)) => {
                                 // Update tools.
-                                new.tools = Some(specs.read().clone());
+                                new.functions = Some(specs.read().clone());
 
                                 // Update the prompt with the tools.
-                                if let Err(e) = toolbox.peek().setup(&mut new) {
+                                if let Err(e) =
+                                    toolbox.peek().apply_to_prompt(&mut new)
+                                {
                                     log::error!(
                                         "`Toolbox::setup` had error(s): {e}"
                                     );
@@ -549,13 +551,13 @@ pub fn Chat() -> Element {
                                     // tools that don't exist, and may have
                                     // changed since the original prompt was
                                     // created. This is always overwritten.
-                                    new_prompt.tools.replace(specs.read().clone());
+                                    new_prompt.functions.replace(specs.read().clone());
 
                                     // Update tools.
-                                    new_prompt.tools = Some(specs.read().clone());
+                                    new_prompt.functions = Some(specs.read().clone());
 
                                     // Update the prompt with the tools.
-                                    if let Err(e) = toolbox.peek().setup(&mut new_prompt) {
+                                    if let Err(e) = toolbox.peek().apply_to_prompt(&mut new_prompt) {
                                         log::error!(
                                             "`Toolbox::setup` had error(s): {e}"
                                         );

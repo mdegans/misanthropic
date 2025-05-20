@@ -27,7 +27,7 @@ pub mod dioxus;
 pub mod batch;
 
 pub mod model;
-pub use model::{AnthropicModel, Id};
+pub use model::{AnthropicModel, Model};
 
 pub mod prompt;
 pub use prompt::Prompt;
@@ -36,7 +36,7 @@ pub mod stream;
 pub use stream::Stream;
 
 pub mod tool;
-pub use tool::Function;
+pub use tool::Tool;
 
 pub mod response;
 pub use response::Response;

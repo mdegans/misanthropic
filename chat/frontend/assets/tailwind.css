@@ -561,7 +561,7 @@ body {
   color: rgb(255 255 255 / var(--tw-text-opacity, 1));
 }
 
-#main {
+div#main {
   display: flex;
   height: 100%;
   width: 100%;
@@ -602,8 +602,8 @@ div.multi-part > img.image.show {
   color: rgb(255 255 255 / var(--tw-text-opacity, 1));
 }
 
-.system {
-  margin-top: 1rem;
+div.system {
+  margin-bottom: 1rem;
   display: flex;
   width: 100%;
   max-width: 42rem;
@@ -628,7 +628,7 @@ div.multi-part > img.image.show {
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.system:hover {
+div.system:hover {
   --tw-border-opacity: 1;
   border-color: rgb(167 139 250 / var(--tw-border-opacity, 1));
   --tw-bg-opacity: 1;
@@ -753,7 +753,6 @@ div.multi-part > img.image.show {
 }
 
 .input-box {
-  margin-top: 1rem;
   aspect-ratio: 16 / 9;
   width: 100%;
   max-width: 42rem;
@@ -916,23 +915,8 @@ div.multi-part > img.image.show {
   display: flex;
 }
 
-.rounded-xl {
-  border-radius: 0.75rem;
-}
-
 .border {
   border-width: 1px;
-}
-
-.shadow-2xl {
-  --tw-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.25);
-  --tw-shadow-colored: 0 25px 50px -12px var(--tw-shadow-color);
-  box-shadow: var(--tw-ring-offset-shadow, 0 0 #0000), var(--tw-ring-shadow, 0 0 #0000), var(--tw-shadow);
-}
-
-.shadow-black {
-  --tw-shadow-color: #000;
-  --tw-shadow: var(--tw-shadow-colored);
 }
 
 .transition {

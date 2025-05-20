@@ -10,7 +10,7 @@
     @apply bg-neutral-900 text-white;
   }
 
-  #main {
+  div#main {
     @apply flex flex-col w-full h-full p-4;
   }
   img.image.show {
@@ -22,8 +22,9 @@
   .atta .div#navbar {
     @apply text-white;
   }
-  .system {
-    @apply max-w-2xl shadow-2xl shadow-purple-950 hover:shadow-purple-600 w-full flex p-4 mt-4 bg-violet-950 border-2 border-violet-800 hover:border-violet-400 hover:bg-violet-800 rounded-2xl text-violet-200 hover:text-white font-sans whitespace-pre-wrap transition-all ease-in-out;
+
+  div.system {
+    @apply max-w-2xl shadow-2xl shadow-purple-950 hover:shadow-purple-600 w-full flex p-4 mb-4 bg-violet-950 border-2 border-violet-800 hover:border-violet-400 hover:bg-violet-800 rounded-2xl text-violet-200 hover:text-white font-sans whitespace-pre-wrap transition-all ease-in-out;
   }
   .message {
     @apply max-w-2xl w-full flex flex-col overflow-hidden;
@@ -49,7 +50,7 @@
     @apply bg-black p-4 rounded-b-lg text-neutral-200 hover:text-white whitespace-pre overflow-x-scroll max-w-full pl-4 pr-4 ml-4 mr-4;
   }
   .input-box {
-    @apply shadow-2xl shadow-black hover:shadow-neutral-700 max-w-2xl w-full mt-4 bg-black rounded-2xl p-4 text-white border-2 border-neutral-800 hover:border-white font-sans transition-all ease-in-out aspect-video;
+    @apply shadow-2xl shadow-black hover:shadow-neutral-700 max-w-2xl w-full bg-black rounded-2xl p-4 text-white border-2 border-neutral-800 hover:border-white font-sans transition-all ease-in-out aspect-video;
   }
   .input-box:focus {
     @apply shadow-2xl shadow-neutral-700 border-2 border-white;

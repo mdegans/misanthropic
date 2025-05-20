@@ -3,10 +3,11 @@
 //! [`tool`]: super
 use crate::{prompt::message::Block, Prompt};
 
-use super::{Function, Tool, Use};
+use super::{Method, Tool, Use};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
 const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
@@ -23,7 +24,7 @@ pub struct Notepad<'a> {
 }
 
 impl<'a> Notepad<'a> {
-    const NAME: &'static str = "notepad";
+    const NAME: &'static str = stringify!(Notepad);
 
     /// Creates a new `Notepad` tool.
     pub fn new() -> Self {
@@ -33,13 +34,17 @@ impl<'a> Notepad<'a> {
 
 #[async_trait::async_trait]
 impl<'a> Tool for Notepad<'a> {
+    fn id(&self) -> Uuid {
+        Uuid::from_bytes(*b"mis::notepad::01")
+    }
+
     fn name(&self) -> &str {
         Self::NAME
     }
 
-    fn functions(&self) -> Box<dyn Iterator<Item = Function<'static>> + '_> {
+    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
         Box::new(std::iter::once(
-            Function::builder(self.name().to_string())
+            Method::builder("Notepad::push")
                 .description("Take a note for the next chat.")
                 .schema(json!({
                     "type": "object",
@@ -56,25 +61,45 @@ impl<'a> Tool for Notepad<'a> {
         ))
     }
 
-    async fn call<'c>(&mut self, mut call: Use<'c>) -> super::Result<'c> {
+    async fn call<'c>(&mut self, call: Use<'c>) -> super::Result<'c> {
         #[cfg(feature = "log")]
         log::debug!("Notepad call: {:?}", serde_json::to_string_pretty(&call));
-        if call.name != self.name() {
+        if !call.name.ends_with("Notepad::push") {
             #[cfg(feature = "log")]
             log::error!("Invalid tool name.");
             return super::Result {
                 tool_use_id: call.id,
-                content: "Invalid tool name.".into(),
+                content:
+                    "`Notepad::push` is the only method available on `Notepad`"
+                        .into(),
                 is_error: true,
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             };
         }
 
-        if let Value::String(note) = call.input["note"].take() {
+        let mut map = if let Value::Object(map) = call.input {
+            map
+        } else {
+            let detail = serde_json::to_string(&call.input).unwrap();
+            #[cfg(feature = "log")]
+            log::error!("`input` not an object: {detail}");
+            return super::Result {
+                tool_use_id: call.id,
+                content: format!(
+                    "`input` must be an object. This should be impossible is probably the developer's fault. Got: `{}`",
+                    detail
+                ).into(),
+                is_error: true,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            };
+        };
+
+        if let Some(Value::String(note)) = map.remove("note") {
             if note.contains("<notepad>") || note.contains("</notepad>") {
                 #[cfg(feature = "log")]
-                log::error!("Injection attack detected.");
+                log::error!("Injection attack detected. `<notepad>` or `</notepad>` in note.");
                 return super::Result {
                     tool_use_id: call.id,
                     content: "You cannot put `<notepad>` or `</notepad>` in your note.".into(),
@@ -101,10 +126,10 @@ impl<'a> Tool for Notepad<'a> {
             self.notes.push(note.into());
         } else {
             #[cfg(feature = "log")]
-            log::error!("Input should be a string.");
+            log::error!("`note` not a string.");
             return super::Result {
                 tool_use_id: call.id,
-                content: "Input should be a string.".into(),
+                content: "`note` must be a string.".into(),
                 is_error: true,
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
@@ -149,7 +174,7 @@ impl<'a> Tool for Notepad<'a> {
     /// O(n) where n is the length of the system prompt.
     // This would be O(1), but Anthropic won't let us stuff as much metadata as
     // we want in Prompt::metadata. We found this out the hard way.
-    fn setup(
+    fn apply_to_prompt(
         &self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
@@ -249,14 +274,15 @@ mod tests {
     #[test]
     fn test_notepad_name() {
         let notepad = Notepad::new();
-        assert_eq!(notepad.name(), "notepad");
+        assert_eq!(notepad.name(), stringify!(Notepad));
     }
 
     #[test]
     fn test_notepad_functions() {
         let notepad = Notepad::new();
-        let function = notepad.functions().next().unwrap();
-        assert_eq!(function.name, "notepad");
+        let function = notepad.methods().next().unwrap();
+        assert!(function.name.starts_with(stringify!(Notepad)));
+        assert!(function.name.ends_with("::push"));
         assert_eq!(
             function.description,
             Cow::Borrowed("Take a note for the next chat.")
@@ -281,7 +307,7 @@ mod tests {
         let mut notepad = Notepad::new();
         let call = Use {
             id: "abcd".into(),
-            name: "notepad".into(),
+            name: "Notepad::push".into(),
             input: json!({
                 "note": "Hello, world!"
             }),
@@ -309,9 +335,12 @@ mod tests {
     #[tokio::test]
     async fn test_notepad_in_toolbox() {
         let mut toolbox = ToolBox::default().add(Notepad::new());
+        for method in toolbox.methods() {
+            assert_eq!(method.name, "toolbox::Notepad::push");
+        }
         let call = Use {
             id: "abcd".into(),
-            name: "notepad".into(),
+            name: "toolbox::Notepad::push".into(),
             input: json!({
                 "note": "Hello, world!"
             }),
@@ -327,7 +356,8 @@ mod tests {
         let mut toolbox2 = ToolBox::default().add(Notepad::new());
         toolbox2.load_json(json).unwrap();
 
-        let notepad = toolbox2.tools.get("notepad").unwrap();
+        let notepad =
+            toolbox2.tool_id_to_tool.get(&Notepad::new().id()).unwrap();
         let json = notepad.save_json();
         let mut notepad2 = Notepad::new();
         notepad2.load_json(json).unwrap();
@@ -344,7 +374,7 @@ mod tests {
             let mut notepad = Notepad::new();
             notepad.notes.push(seq.into());
             let mut prompt = Prompt::default();
-            let result = notepad.setup(&mut prompt);
+            let result = notepad.apply_to_prompt(&mut prompt);
             assert!(result.is_err());
         }
     }
@@ -356,7 +386,7 @@ mod tests {
         notepad.notes.push("I am test code! Whee!".into());
         let mut prompt =
             Prompt::default().set_system("You are a test code! Whee!");
-        notepad.setup(&mut prompt).unwrap();
+        notepad.apply_to_prompt(&mut prompt).unwrap();
 
         // The block should have been appended.
         assert_eq!(prompt.system.as_ref().unwrap().len(), 2);
@@ -379,7 +409,7 @@ mod tests {
         let mut prompt = Prompt::default().set_system(
             "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>Existing note.</note></notepad>",
         );
-        notepad.setup(&mut prompt).unwrap();
+        notepad.apply_to_prompt(&mut prompt).unwrap();
 
         // The block should have been replaced.
         assert_eq!(prompt.system.as_ref().unwrap().len(), 1);

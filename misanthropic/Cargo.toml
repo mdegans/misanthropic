@@ -100,7 +100,7 @@ async-stream = "0.3"
 # for date and time parsing
 chrono = { version = "0.4", features = ["serde"] }
 # for request ids
-uuid = { version = "1", features = ["v4", "serde"], optional = true }
+uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
 
@@ -162,14 +162,16 @@ cot = []
 # Support for shuttle-runtime crate.
 shuttle = ["dep:shuttle-runtime"]
 # Batch support. By default this is on but it breaks wasm, FYI.
-batch = ["client", "dep:uuid"]
-# Enable the actual client. This can be off for wasm becanse eventsource-stream
+batch = ["client"]
+# Enable the actual client. This can be off for wasm because eventsource-stream
 # requires Sync on some things and that's not possible in wasm.
 client = []
 # Enables some Dioxus support. This is not necessary for the client.
 dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes.
 notepad = []
+# Tool trait and TooBox for the assistant to use tools.
+# tool = ["dep:uuid"]
 
 [[example]]
 name = "strawberry"

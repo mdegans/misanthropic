@@ -1,7 +1,7 @@
 use dioxus::prelude::*;
 
 use components::Navbar;
-use views::{Chat, Home};
+use views::Chat;
 
 mod client;
 mod components;
@@ -12,8 +12,6 @@ mod views;
 #[rustfmt::skip]
 enum Route {
     #[layout(Navbar)]
-    #[route("/")]
-    Home {},
     #[route("/chat/")]
     Chat {},
 }
