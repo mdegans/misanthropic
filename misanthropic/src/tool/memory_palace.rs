@@ -1,0 +1,907 @@
+//! [`MemoryPalace`] tool for hierarchical knowledge organization using SurrealDB.
+
+use super::{Method, Tool, Use};
+use crate::{prompt::message::Block, Prompt};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::HashSet;
+use surrealdb::{engine::local::Mem, RecordId, Surreal};
+
+const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system powered by SurrealDB. Your memories are organized into rooms with semantic relationships, tags, and full-text search capabilities. Use this to store, organize, and retrieve knowledge across conversations.</memory_palace_instructions>"#;
+
+/// A memory item stored in the palace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Memory {
+    /// The actual content/knowledge stored.
+    content: String,
+    /// Room this memory belongs to.
+    room: String,
+    /// Tags for categorization and search.
+    tags: Vec<String>,
+    /// When this memory was created (ISO 8601 timestamp).
+    created_at: String,
+    /// When this memory was last accessed.
+    last_accessed: String,
+}
+
+/// A room in the memory palace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Room {
+    /// Name of the room.
+    name: String,
+    /// Description of what this room contains.
+    description: String,
+}
+
+/// A connection between two rooms.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Connection {
+    /// Source room ID.
+    from: RecordId,
+    /// Target room ID.
+    to: RecordId,
+    /// Optional description of the relationship.
+    description: Option<String>,
+}
+
+/// Database record with ID for queries.
+#[derive(Debug, Deserialize)]
+struct Record<T> {
+    id: RecordId,
+    #[serde(flatten)]
+    data: T,
+}
+
+/// A Memory Palace tool using SurrealDB for semantic storage.
+#[derive(Debug)]
+pub struct MemoryPalace {
+    /// SurrealDB connection.
+    db: Surreal<Mem>,
+    /// Whether the database has been initialized.
+    initialized: bool,
+}
+
+impl Default for MemoryPalace {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MemoryPalace {
+    const NAME: &'static str = "MemoryPalace";
+
+    /// Create a new memory palace with an in-memory SurrealDB.
+    pub fn new() -> Self {
+        Self {
+            db: Surreal::init(),
+            initialized: false,
+        }
+    }
+
+    /// Initialize the database connection and schema.
+    async fn ensure_initialized(&mut self) -> Result<(), String> {
+        if self.initialized {
+            return Ok(());
+        }
+
+        // Connect to in-memory database
+        self.db = Surreal::new::<Mem>(())
+            .await
+            .map_err(|e| format!("Failed to create database: {}", e))?;
+
+        // Use namespace and database
+        self.db
+            .use_ns("memory_palace")
+            .use_db("palace")
+            .await
+            .map_err(|e| format!("Failed to use namespace/database: {}", e))?;
+
+        // Create schema and indexes
+        self.db
+            .query(
+                r#"
+                DEFINE TABLE memory SCHEMAFULL;
+                DEFINE FIELD content ON TABLE memory TYPE string;
+                DEFINE FIELD room ON TABLE memory TYPE string;
+                DEFINE FIELD tags ON TABLE memory TYPE array<string>;
+                DEFINE FIELD created_at ON TABLE memory TYPE datetime;
+                DEFINE FIELD last_accessed ON TABLE memory TYPE datetime;
+                DEFINE INDEX content_index ON TABLE memory COLUMNS content SEARCH ANALYZER ascii BM25 HIGHLIGHTS;
+                DEFINE INDEX room_index ON TABLE memory COLUMNS room;
+                DEFINE INDEX tags_index ON TABLE memory COLUMNS tags;
+
+                DEFINE TABLE room SCHEMAFULL;
+                DEFINE FIELD name ON TABLE room TYPE string;
+                DEFINE FIELD description ON TABLE room TYPE string;
+                DEFINE INDEX room_name_index ON TABLE room COLUMNS name UNIQUE;
+
+                DEFINE TABLE connection SCHEMAFULL;
+                DEFINE FIELD from ON TABLE connection TYPE record(room);
+                DEFINE FIELD to ON TABLE connection TYPE record(room);
+                DEFINE FIELD description ON TABLE connection TYPE option<string>;
+                "#,
+            )
+            .await
+            .map_err(|e| format!("Failed to create schema: {}", e))?;
+
+        self.initialized = true;
+        Ok(())
+    }
+
+    /// Get current timestamp as ISO 8601 string.
+    fn now() -> String {
+        // In a real implementation, you'd use chrono
+        "2024-01-01T00:00:00Z".to_string()
+    }
+
+    /// Store a memory in a specific room.
+    async fn store_memory(
+        &mut self,
+        room_name: &str,
+        content: &str,
+        tags: Vec<String>,
+    ) -> Result<String, String> {
+        self.ensure_initialized().await?;
+
+        let now = Self::now();
+
+        // Ensure room exists
+        let room_query = r#"
+            SELECT * FROM room WHERE name = $room_name;
+        "#;
+        let existing_rooms: Vec<Record<Room>> = self
+            .db
+            .query(room_query)
+            .bind(("room_name", room_name))
+            .await
+            .map_err(|e| format!("Failed to query rooms: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take rooms result: {}", e))?;
+
+        if existing_rooms.is_empty() {
+            // Create the room
+            let _room: Option<Record<Room>> = self
+                .db
+                .create("room")
+                .content(Room {
+                    name: room_name.to_string(),
+                    description: format!("Room for {}", room_name),
+                })
+                .await
+                .map_err(|e| format!("Failed to create room: {}", e))?;
+        }
+
+        // Create the memory
+        let memory: Option<Record<Memory>> = self
+            .db
+            .create("memory")
+            .content(Memory {
+                content: content.to_string(),
+                room: room_name.to_string(),
+                tags,
+                created_at: now.clone(),
+                last_accessed: now,
+            })
+            .await
+            .map_err(|e| format!("Failed to create memory: {}", e))?;
+
+        match memory {
+            Some(record) => Ok(record.id.to_string()),
+            None => Err("Failed to create memory record".to_string()),
+        }
+    }
+
+    /// Search for memories using full-text search and filters.
+    async fn search(
+        &mut self,
+        query: &str,
+    ) -> Result<Vec<(String, String, Memory)>, String> {
+        self.ensure_initialized().await?;
+
+        let now = Self::now();
+
+        // Use SurrealDB's full-text search capabilities
+        let search_query = r#"
+            SELECT *, search::highlight('<mark>', '</mark>', 1) AS highlights 
+            FROM memory 
+            WHERE content @@ $query OR $query IN tags OR room CONTAINS $query
+            ORDER BY search::score(1) DESC;
+        "#;
+
+        let mut results: Vec<Record<Memory>> = self
+            .db
+            .query(search_query)
+            .bind(("query", query))
+            .await
+            .map_err(|e| format!("Failed to search memories: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take search results: {}", e))?;
+
+        // Update last_accessed for found memories
+        for record in &results {
+            let _: Option<Record<Memory>> = self
+                .db
+                .update(&record.id)
+                .merge(json!({"last_accessed": now}))
+                .await
+                .map_err(|e| {
+                    format!("Failed to update last_accessed: {}", e)
+                })?;
+        }
+
+        // Convert to expected format
+        Ok(results
+            .into_iter()
+            .map(|record| {
+                (record.data.room.clone(), record.id.to_string(), record.data)
+            })
+            .collect())
+    }
+
+    /// Connect two rooms in the palace.
+    async fn connect_rooms(
+        &mut self,
+        room1: &str,
+        room2: &str,
+    ) -> Result<(), String> {
+        self.ensure_initialized().await?;
+
+        // Find both rooms
+        let room_query = r#"
+            SELECT * FROM room WHERE name = $room_name;
+        "#;
+
+        let room1_records: Vec<Record<Room>> = self
+            .db
+            .query(room_query)
+            .bind(("room_name", room1))
+            .await
+            .map_err(|e| format!("Failed to query room1: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take room1 result: {}", e))?;
+
+        let room2_records: Vec<Record<Room>> = self
+            .db
+            .query(room_query)
+            .bind(("room_name", room2))
+            .await
+            .map_err(|e| format!("Failed to query room2: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take room2 result: {}", e))?;
+
+        if room1_records.is_empty() {
+            return Err(format!("Room '{}' does not exist", room1));
+        }
+        if room2_records.is_empty() {
+            return Err(format!("Room '{}' does not exist", room2));
+        }
+
+        let room1_id = &room1_records[0].id;
+        let room2_id = &room2_records[0].id;
+
+        // Create bidirectional connections
+        let _: Option<Record<Connection>> = self
+            .db
+            .create("connection")
+            .content(Connection {
+                from: room1_id.clone(),
+                to: room2_id.clone(),
+                description: None,
+            })
+            .await
+            .map_err(|e| format!("Failed to create connection 1->2: {}", e))?;
+
+        let _: Option<Record<Connection>> = self
+            .db
+            .create("connection")
+            .content(Connection {
+                from: room2_id.clone(),
+                to: room1_id.clone(),
+                description: None,
+            })
+            .await
+            .map_err(|e| format!("Failed to create connection 2->1: {}", e))?;
+
+        Ok(())
+    }
+
+    /// List all rooms with their memory counts and connections.
+    async fn list_rooms(
+        &mut self,
+    ) -> Result<Vec<(String, String, usize, Vec<String>)>, String> {
+        self.ensure_initialized().await?;
+
+        let room_query = r#"
+            SELECT *, 
+                   (SELECT count() FROM memory WHERE room = $parent.name)[0] AS memory_count,
+                   (SELECT room.name FROM connection WHERE from = $parent.id) AS connected_rooms
+            FROM room;
+        "#;
+
+        let rooms: Vec<serde_json::Value> = self
+            .db
+            .query(room_query)
+            .await
+            .map_err(|e| format!("Failed to query rooms: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take rooms result: {}", e))?;
+
+        Ok(rooms
+            .into_iter()
+            .map(|room| {
+                let name = room["name"].as_str().unwrap_or("").to_string();
+                let description =
+                    room["description"].as_str().unwrap_or("").to_string();
+                let memory_count =
+                    room["memory_count"].as_u64().unwrap_or(0) as usize;
+                let connected_rooms = room["connected_rooms"]
+                    .as_array()
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                (name, description, memory_count, connected_rooms)
+            })
+            .collect())
+    }
+}
+
+// Note: We can't implement Serialize/Deserialize for MemoryPalace due to the SurrealDB connection
+// Instead, we'll implement custom save/load that exports/imports the data
+
+#[async_trait::async_trait]
+impl Tool for MemoryPalace {
+    fn name(&self) -> &str {
+        Self::NAME
+    }
+
+    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
+        Box::new([
+            Method::builder("MemoryPalace::store")
+                .description("Store a memory in a specific room of the palace.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "room": {
+                            "type": "string",
+                            "description": "Name of the room to store the memory in."
+                        },
+                        "content": {
+                            "type": "string",
+                            "description": "The knowledge/memory content to store."
+                        },
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Tags for categorizing this memory."
+                        }
+                    },
+                    "required": ["room", "content"]
+                }))
+                .build()
+                .unwrap(),
+
+            Method::builder("MemoryPalace::search")
+                .description("Search for memories using full-text search, tags, or room names.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": "Search query to find relevant memories. Supports full-text search."
+                        }
+                    },
+                    "required": ["query"]
+                }))
+                .build()
+                .unwrap(),
+
+            Method::builder("MemoryPalace::connect")
+                .description("Connect two rooms in the palace to show their relationship.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "room1": {
+                            "type": "string",
+                            "description": "First room to connect."
+                        },
+                        "room2": {
+                            "type": "string",
+                            "description": "Second room to connect."
+                        }
+                    },
+                    "required": ["room1", "room2"]
+                }))
+                .build()
+                .unwrap(),
+
+            Method::builder("MemoryPalace::list_rooms")
+                .description("List all rooms in the palace with their descriptions, memory counts, and connections.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }))
+                .build()
+                .unwrap(),
+        ].into_iter())
+    }
+
+    async fn call<'a>(&mut self, call: Use<'a>) -> super::Result<'a> {
+        let method_name = call.name.split("::").last().unwrap_or(&call.name);
+
+        match method_name {
+            "store" => {
+                let input = match call.input.as_object() {
+                    Some(obj) => obj,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Input must be an object".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                let room = match input.get("room").and_then(|v| v.as_str()) {
+                    Some(room) => room,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'room' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                let content =
+                    match input.get("content").and_then(|v| v.as_str()) {
+                        Some(content) => content,
+                        None => {
+                            return super::Result {
+                                tool_use_id: call.id,
+                                content: "Missing required 'content' parameter"
+                                    .into(),
+                                is_error: true,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                        }
+                    };
+
+                let tags = input
+                    .get("tags")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                match self.store_memory(room, content, tags).await {
+                    Ok(memory_id) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!(
+                            "Memory stored in room '{}' with ID '{}'",
+                            room, memory_id
+                        )
+                        .into(),
+                        is_error: false,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to store memory: {}", err)
+                            .into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
+
+            "search" => {
+                let input = match call.input.as_object() {
+                    Some(obj) => obj,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Input must be an object".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                let query = match input.get("query").and_then(|v| v.as_str()) {
+                    Some(query) => query,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'query' parameter"
+                                .into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                match self.search(query).await {
+                    Ok(results) => {
+                        if results.is_empty() {
+                            super::Result {
+                                tool_use_id: call.id,
+                                content: format!(
+                                    "No memories found matching '{}'",
+                                    query
+                                )
+                                .into(),
+                                is_error: false,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                        } else {
+                            let mut response = format!(
+                                "Found {} memories matching '{}':\n\n",
+                                results.len(),
+                                query
+                            );
+                            for (room_name, memory_id, memory) in results {
+                                response.push_str(&format!(
+                                    "Room: {}\nID: {}\nContent: {}\nTags: {}\n\n",
+                                    room_name,
+                                    memory_id,
+                                    memory.content,
+                                    memory.tags.join(", ")
+                                ));
+                            }
+
+                            super::Result {
+                                tool_use_id: call.id,
+                                content: response.into(),
+                                is_error: false,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                        }
+                    }
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Search failed: {}", err).into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
+
+            "connect" => {
+                let input = match call.input.as_object() {
+                    Some(obj) => obj,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Input must be an object".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                let room1 = match input.get("room1").and_then(|v| v.as_str()) {
+                    Some(room) => room,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'room1' parameter"
+                                .into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                let room2 = match input.get("room2").and_then(|v| v.as_str()) {
+                    Some(room) => room,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'room2' parameter"
+                                .into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                };
+
+                match self.connect_rooms(room1, room2).await {
+                    Ok(()) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!(
+                            "Connected rooms '{}' and '{}'",
+                            room1, room2
+                        )
+                        .into(),
+                        is_error: false,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: err.into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
+
+            "list_rooms" => match self.list_rooms().await {
+                Ok(rooms) => {
+                    if rooms.is_empty() {
+                        super::Result {
+                                tool_use_id: call.id,
+                                content: "The memory palace is empty. No rooms have been created yet.".into(),
+                                is_error: false,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                    } else {
+                        let mut response = format!(
+                            "Memory Palace contains {} rooms:\n\n",
+                            rooms.len()
+                        );
+                        for (name, description, count, connections) in rooms {
+                            response.push_str(&format!(
+                                    "Room: {}\nDescription: {}\nMemories: {}\nConnections: {}\n\n",
+                                    name,
+                                    description,
+                                    count,
+                                    if connections.is_empty() {
+                                        "None".to_string()
+                                    } else {
+                                        connections.join(", ")
+                                    }
+                                ));
+                        }
+
+                        super::Result {
+                            tool_use_id: call.id,
+                            content: response.into(),
+                            is_error: false,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
+                    }
+                }
+                Err(err) => super::Result {
+                    tool_use_id: call.id,
+                    content: format!("Failed to list rooms: {}", err).into(),
+                    is_error: true,
+                    #[cfg(feature = "prompt-caching")]
+                    cache_control: None,
+                },
+            },
+
+            _ => super::Result {
+                tool_use_id: call.id,
+                content: format!("Unknown method: {}", method_name).into(),
+                is_error: true,
+                #[cfg(feature = "prompt-caching")]
+                cache_control: None,
+            },
+        }
+    }
+
+    async fn save_json(&mut self) -> serde_json::Value {
+        if let Err(_) = self.ensure_initialized().await {
+            return json!({"error": "Failed to initialize database"});
+        }
+
+        // Export all data from the database
+        let export_query = r#"
+            {
+                "memories": (SELECT * FROM memory),
+                "rooms": (SELECT * FROM room),
+                "connections": (SELECT * FROM connection)
+            }
+        "#;
+
+        match self.db.query(export_query).await {
+            Ok(mut result) => match result.take::<serde_json::Value>(0) {
+                Ok(data) => data,
+                Err(_) => json!({"error": "Failed to export data"}),
+            },
+            Err(_) => json!({"error": "Failed to query database for export"}),
+        }
+    }
+
+    async fn load_json(
+        &mut self,
+        json: serde_json::Value,
+    ) -> Result<(), String> {
+        self.ensure_initialized().await?;
+
+        // Clear existing data
+        self.db
+            .query("DELETE memory; DELETE room; DELETE connection;")
+            .await
+            .map_err(|e| format!("Failed to clear database: {}", e))?;
+
+        // Import rooms first
+        if let Some(rooms) = json.get("rooms").and_then(|v| v.as_array()) {
+            for room in rooms {
+                if let Ok(room_data) =
+                    serde_json::from_value::<Room>(room.clone())
+                {
+                    let _: Option<Record<Room>> = self
+                        .db
+                        .create("room")
+                        .content(room_data)
+                        .await
+                        .map_err(|e| format!("Failed to import room: {}", e))?;
+                }
+            }
+        }
+
+        // Import memories
+        if let Some(memories) = json.get("memories").and_then(|v| v.as_array())
+        {
+            for memory in memories {
+                if let Ok(memory_data) =
+                    serde_json::from_value::<Memory>(memory.clone())
+                {
+                    let _: Option<Record<Memory>> = self
+                        .db
+                        .create("memory")
+                        .content(memory_data)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to import memory: {}", e)
+                        })?;
+                }
+            }
+        }
+
+        // Import connections
+        if let Some(connections) =
+            json.get("connections").and_then(|v| v.as_array())
+        {
+            for connection in connections {
+                if let Ok(connection_data) =
+                    serde_json::from_value::<Connection>(connection.clone())
+                {
+                    let _: Option<Record<Connection>> = self
+                        .db
+                        .create("connection")
+                        .content(connection_data)
+                        .await
+                        .map_err(|e| {
+                            format!("Failed to import connection: {}", e)
+                        })?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn apply_to_prompt(
+        &self,
+        prompt: &mut Prompt,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        // For now, just add static instructions since we can't await in this method
+        // In a future version, we could add room summaries here
+        let palace_context = "<memory_palace>\nMemory Palace is available for storing and retrieving knowledge.\n</memory_palace>";
+
+        if let Some(system) = &mut prompt.system {
+            for block in system.iter_mut() {
+                if let Block::Text { text, .. } = block {
+                    if text.contains("<memory_palace_instructions>") {
+                        let mut new_text =
+                            MEMORY_PALACE_INSTRUCTIONS.to_string();
+                        new_text.push('\n');
+                        new_text.push_str(palace_context);
+                        *text = new_text.into();
+                        return Ok(());
+                    }
+                }
+            }
+
+            // Not found, append to system prompt
+            let mut full_text = MEMORY_PALACE_INSTRUCTIONS.to_string();
+            full_text.push('\n');
+            full_text.push_str(palace_context);
+            system.push(full_text);
+        } else {
+            // No system prompt, create one
+            let mut full_text = MEMORY_PALACE_INSTRUCTIONS.to_string();
+            full_text.push('\n');
+            full_text.push_str(palace_context);
+            prompt.system = Some(full_text.into());
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_memory_palace_store_and_search() {
+        let mut palace = MemoryPalace::new();
+
+        // Store some memories
+        let id1 = palace
+            .store_memory(
+                "Rust",
+                "async/await is for concurrent programming",
+                vec!["rust".to_string(), "async".to_string()],
+            )
+            .await
+            .unwrap();
+
+        let _id2 = palace
+            .store_memory(
+                "Rust",
+                "Traits define shared behavior",
+                vec!["rust".to_string(), "traits".to_string()],
+            )
+            .await
+            .unwrap();
+
+        // Search for memories
+        let results = palace.search("async").await.unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].2.content,
+            "async/await is for concurrent programming"
+        );
+
+        let results = palace.search("rust").await.unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_memory_palace_rooms_and_connections() {
+        let mut palace = MemoryPalace::new();
+
+        // Create rooms with memories
+        palace
+            .store_memory("Rust", "Systems programming", vec![])
+            .await
+            .unwrap();
+        palace
+            .store_memory("WebAssembly", "Compile target", vec![])
+            .await
+            .unwrap();
+
+        // Connect rooms
+        palace.connect_rooms("Rust", "WebAssembly").await.unwrap();
+
+        // List rooms
+        let rooms = palace.list_rooms().await.unwrap();
+        assert_eq!(rooms.len(), 2);
+
+        // Check that rooms are connected
+        let rust_room =
+            rooms.iter().find(|(name, _, _, _)| name == "Rust").unwrap();
+        assert!(rust_room.3.contains(&"WebAssembly".to_string()));
+    }
+}

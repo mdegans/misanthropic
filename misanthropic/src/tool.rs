@@ -10,6 +10,11 @@ use crate::Prompt;
 mod toolbox;
 pub use toolbox::ToolBox;
 
+#[cfg(feature = "memory-palace")]
+mod memory_palace;
+#[cfg(feature = "memory-palace")]
+pub use memory_palace::MemoryPalace;
+
 #[cfg(feature = "notepad")]
 mod notepad;
 #[cfg(feature = "notepad")]

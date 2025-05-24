@@ -1,7 +1,7 @@
 [package]
 name = "misanthropic"
 version = "1.0.0-alpha.1"
-edition = "2021"
+edition = "2024"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
 homepage = "https://github.com/mdegans/misanthropic"
@@ -103,6 +103,8 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
+# SurrealDB support - pinned to 1.x for edition 2021 compatibility
+surrealdb = { version = "1.5", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -170,8 +172,11 @@ client = []
 dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes.
 notepad = []
-# Tool trait and TooBox for the assistant to use tools.
-# tool = ["dep:uuid"]
+# MemoryPalace tool for the assistant to store and retrieve memories.
+memory-palace = ["surrealdb"]
+# SurrealDb support.
+surrealdb = ["dep:surrealdb"]
+
 
 [[example]]
 name = "strawberry"

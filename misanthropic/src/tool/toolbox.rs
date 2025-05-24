@@ -102,6 +102,7 @@ impl ToolBox {
             );
         }
 
+        #[allow(unused_variables)] // because of the `log` feature
         if let Some(existing) =
             self.tool_name_to_tool.insert(tool.name().to_string(), tool)
         {
