@@ -1,12 +1,11 @@
 //! [`Tool`] [`Use`] and friends.
 use std::{borrow::Cow, hash::Hash};
 
+use serde::{Deserialize, Serialize};
+
 use crate::prompt::message::Content;
 #[allow(unused_imports)]
 use crate::Prompt;
-// without this rustdoc doesn't link to Prompt, even with the full path and all
-// features enabled. Rustdoc bug?
-use serde::{Deserialize, Serialize};
 
 mod toolbox;
 pub use toolbox::ToolBox;
@@ -20,7 +19,7 @@ pub use notepad::Notepad;
 ///
 /// # Note:
 /// - Anthropic calls this a "tool" in the API, but since [`Tool`]s can have
-///   multiple [`Method`] in this crate, we use "function" instead.
+///   multiple [`Method`] in this crate, we use "method" instead.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -57,7 +56,11 @@ pub trait Tool: Send {
     /// [`tool::Result`]: Result
     async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
-    /// Takes &mut self to allow tools to update internal state during serialization if needed.
+    ///
+    /// # Note:
+    ///
+    /// Takes &mut self to allow tools to update internal state during
+    /// serialization if needed and because of lifetime issues with `&self`.
     ///
     /// [`Value`]: serde_json::Value
     /// [`Null`]: serde_json::Value::Null
@@ -65,7 +68,6 @@ pub trait Tool: Send {
         serde_json::Value::Null
     }
     /// Deserialize state from json [`Value`] if possible.
-    /// Now async to support tools that need to perform IO during deserialization.
     // String is used for the message because a boxed error is not Send.
     async fn load_json(
         &mut self,
