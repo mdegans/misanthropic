@@ -238,6 +238,85 @@ impl<'a> MethodBuilder<'a> {
         self
     }
 
+    /// Add a string parameter to the schema.
+    pub fn string_param(
+        self,
+        name: &str,
+        description: &str,
+        required: bool,
+    ) -> Self {
+        self.add_param(name, description, "string", required)
+    }
+
+    /// Add a number parameter to the schema.
+    pub fn number_param(
+        self,
+        name: &str,
+        description: &str,
+        required: bool,
+    ) -> Self {
+        self.add_param(name, description, "number", required)
+    }
+
+    /// Add a boolean parameter to the schema.
+    pub fn boolean_param(
+        self,
+        name: &str,
+        description: &str,
+        required: bool,
+    ) -> Self {
+        self.add_param(name, description, "boolean", required)
+    }
+
+    /// Helper method to add a parameter to the schema.
+    fn add_param(
+        mut self,
+        name: &str,
+        description: &str,
+        param_type: &str,
+        required: bool,
+    ) -> Self {
+        // Initialize schema if it's null
+        if self.tool.schema.is_null() {
+            self.tool.schema = serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            });
+        }
+
+        // Add the property
+        if let Some(properties) = self
+            .tool
+            .schema
+            .get_mut("properties")
+            .and_then(|p| p.as_object_mut())
+        {
+            properties.insert(
+                name.to_string(),
+                serde_json::json!({
+                    "type": param_type,
+                    "description": description
+                }),
+            );
+        }
+
+        // Add to required array if needed
+        if required {
+            if let Some(required_array) = self
+                .tool
+                .schema
+                .get_mut("required")
+                .and_then(|r| r.as_array_mut())
+            {
+                required_array
+                    .push(serde_json::Value::String(name.to_string()));
+            }
+        }
+
+        self
+    }
+
     /// This will build the [`Method`] without checking any of the fields. This is
     /// recommended only with static strings.
     pub fn build_unchecked(self) -> Method<'a> {
@@ -377,6 +456,53 @@ impl<'a> Method<'a> {
         }
     }
 
+    /// Create a simple method with just a name and description.
+    /// Uses an empty object schema with no required fields.
+    pub fn simple(
+        name: impl Into<Cow<'a, str>>,
+        description: impl Into<Cow<'a, str>>,
+    ) -> Self {
+        Method {
+            name: name.into(),
+            description: description.into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+
+    /// Create a method that takes a single string parameter.
+    pub fn with_string_param(
+        name: impl Into<Cow<'a, str>>,
+        description: impl Into<Cow<'a, str>>,
+        param_name: &str,
+        param_description: &str,
+        required: bool,
+    ) -> Self {
+        let required_array = if required { vec![param_name] } else { vec![] };
+
+        Method {
+            name: name.into(),
+            description: description.into(),
+            schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    param_name: {
+                        "type": "string",
+                        "description": param_description
+                    }
+                },
+                "required": required_array
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+
     /// Create a cache breakpoint at this [`Method`] by setting [`cache_control`]
     /// to [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
@@ -437,7 +563,7 @@ impl TryFrom<serde_json::Value> for Method<'static> {
     }
 }
 
-/// A [`Method`] [`Use`] of the model. This should be handled and a response sent
+/// `Method` [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///
 /// [`Block::ToolResult`]: crate::prompt::message::Block::ToolResult
@@ -602,6 +728,114 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Result<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_method_simple() {
+        let method = Method::simple("test_method", "A simple test method");
+
+        assert_eq!(method.name, "test_method");
+        assert_eq!(method.description, "A simple test method");
+        assert_eq!(
+            method.schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            })
+        );
+    }
+
+    #[test]
+    fn test_method_with_string_param() {
+        let method = Method::with_string_param(
+            "get_weather",
+            "Get weather for a location",
+            "location",
+            "The city name",
+            true,
+        );
+
+        assert_eq!(method.name, "get_weather");
+        assert_eq!(method.description, "Get weather for a location");
+        assert_eq!(
+            method.schema,
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The city name"
+                    }
+                },
+                "required": ["location"]
+            })
+        );
+    }
+
+    #[test]
+    fn test_method_builder_param_helpers() {
+        let method = Method::builder("test_method")
+            .description("Test method with multiple params")
+            .string_param("name", "A person's name", true)
+            .number_param("age", "A person's age", false)
+            .boolean_param("active", "Whether the person is active", true)
+            .build()
+            .unwrap();
+
+        assert_eq!(method.name, "test_method");
+        assert_eq!(method.description, "Test method with multiple params");
+
+        let expected_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "A person's name"
+                },
+                "age": {
+                    "type": "number",
+                    "description": "A person's age"
+                },
+                "active": {
+                    "type": "boolean",
+                    "description": "Whether the person is active"
+                }
+            },
+            "required": ["name", "active"]
+        });
+
+        assert_eq!(method.schema, expected_schema);
+    }
+
+    #[test]
+    fn test_method_builder_param_helpers_with_existing_schema() {
+        // Start with an existing schema and add to it
+        let method = Method::builder("test_method")
+            .description("Test method")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "existing": {
+                        "type": "string",
+                        "description": "An existing property"
+                    }
+                },
+                "required": ["existing"]
+            }))
+            .string_param("new_param", "A new parameter", true)
+            .build()
+            .unwrap();
+
+        let properties = method.schema["properties"].as_object().unwrap();
+        assert!(properties.contains_key("existing"));
+        assert!(properties.contains_key("new_param"));
+
+        let required = method.schema["required"].as_array().unwrap();
+        assert!(required
+            .contains(&serde_json::Value::String("existing".to_string())));
+        assert!(required
+            .contains(&serde_json::Value::String("new_param".to_string())));
+    }
 
     #[test]
     fn use_try_from_value() {
