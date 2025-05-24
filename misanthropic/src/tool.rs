@@ -7,7 +7,6 @@ use crate::Prompt;
 // without this rustdoc doesn't link to Prompt, even with the full path and all
 // features enabled. Rustdoc bug?
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 mod toolbox;
 pub use toolbox::ToolBox;
@@ -49,10 +48,6 @@ pub enum Choice {
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[async_trait::async_trait]
 pub trait Tool {
-    /// Id of the tool and revision. If the id is the same it is considered the
-    /// API is the same. Some tools may have randomized ids to support multiple
-    /// instances of the same tool.
-    fn id(&self) -> Uuid;
     /// [`Tool`] name.
     fn name(&self) -> &str;
     /// Get the [`Method`](s) provided by the [`Tool`].

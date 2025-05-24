@@ -4,7 +4,6 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
 
 use crate::{
     tool::{self, Method, Tool, Use},
@@ -17,27 +16,22 @@ use crate::{
 /// [`functions`]: ToolBox::functions
 /// [`call`]: ToolBox::call
 pub struct ToolBox {
-    /// Unique identifier for the [`ToolBox`].
-    id: Uuid,
     /// Name of the [`ToolBox`].
     name: Cow<'static, str>,
-    /// Map of [`Method::name`] to index in [`tools`] of the [`Tool`] to call.
+    /// Map of [`Method::name`] to tool name of the [`Tool`] to call.
     ///
     /// Stores namespaced function names in the format `tool::function`.
-    ///
-    /// [`tools`]: ToolBox::tools
-    pub(crate) method_to_tool_id: BTreeMap<Cow<'static, str>, Uuid>,
-    /// Vector of [`Tool`]s to call.
-    pub(crate) tool_id_to_tool: HashMap<Uuid, Box<dyn Tool + Send>>,
+    pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
+    /// Map of tool names to [`Tool`]s.
+    pub(crate) tool_name_to_tool: HashMap<String, Box<dyn Tool + Send>>,
 }
 
 impl Default for ToolBox {
     fn default() -> Self {
         Self {
-            id: Uuid::new_v4(),
             name: "toolbox".into(), // module syntax, snake case
-            method_to_tool_id: BTreeMap::new(),
-            tool_id_to_tool: HashMap::new(),
+            method_to_tool_name: BTreeMap::new(),
+            tool_name_to_tool: HashMap::new(),
         }
     }
 }
@@ -102,13 +96,15 @@ impl ToolBox {
     pub fn push_boxed(&mut self, tool: Box<dyn Tool + Send>) {
         // Append the function names to self.functions.
         for method in tool.methods() {
-            self.method_to_tool_id.insert(
+            self.method_to_tool_name.insert(
                 format!("{}::{}", self.name, method.name).into(),
-                tool.id(),
+                tool.name().to_string(),
             );
         }
 
-        if let Some(existing) = self.tool_id_to_tool.insert(tool.id(), tool) {
+        if let Some(existing) =
+            self.tool_name_to_tool.insert(tool.name().to_string(), tool)
+        {
             #[cfg(feature = "log")]
             log::debug!("Tool replaced: {}", existing.name());
         }
@@ -116,12 +112,12 @@ impl ToolBox {
 
     /// Names of all [`Tool`]s in the [`ToolBox`].
     pub fn tool_names(&self) -> impl Iterator<Item = &str> {
-        self.tool_id_to_tool.values().map(|tool| tool.name())
+        self.tool_name_to_tool.values().map(|tool| tool.name())
     }
 
     /// Names of all the [`Method`]s in the [`ToolBox`].
     pub fn method_names(&self) -> impl ExactSizeIterator<Item = &str> {
-        self.method_to_tool_id.keys().map(|name| name.as_ref())
+        self.method_to_tool_name.keys().map(|name| name.as_ref())
     }
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
@@ -134,6 +130,7 @@ impl ToolBox {
     /// [`Method`]s.
     pub fn replace_boxed(&mut self, tool: Box<dyn Tool + Send>) {
         let self_name = self.name.as_ref();
+        let tool_name = tool.name().to_string();
         let function_names = tool.methods().map(|method| {
             format!(
                 "{self_name}::{tool}::{method}",
@@ -144,10 +141,11 @@ impl ToolBox {
 
         // Remove the old tool and its functions.
         for name in function_names {
-            if let Some(old_id) =
-                self.method_to_tool_id.insert(name.into(), tool.id())
+            if let Some(old_tool_name) = self
+                .method_to_tool_name
+                .insert(name.into(), tool_name.clone())
             {
-                self.tool_id_to_tool.remove(&old_id);
+                self.tool_name_to_tool.remove(&old_tool_name);
             }
         }
     }
@@ -156,24 +154,18 @@ impl ToolBox {
 #[derive(Serialize, Deserialize)]
 struct State {
     name: Cow<'static, str>,
-    id: Uuid,
     tools: serde_json::Map<String, serde_json::Value>,
 }
 
 #[async_trait::async_trait]
 impl Tool for ToolBox {
-    /// Unique identifier per instance of [`ToolBox`].
-    fn id(&self) -> Uuid {
-        self.id
-    }
-
     fn name(&self) -> &str {
         &self.name
     }
 
     /// The [`Method`]s for all [`Tool`]s in the [`ToolBox`].
     fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new(self.tool_id_to_tool.values().flat_map(|tool| {
+        Box::new(self.tool_name_to_tool.values().flat_map(|tool| {
             tool.methods().map(|mut method| {
                 // Append our prefix to the function name, which should already
                 // include `tool::function` format for the function name.
@@ -188,11 +180,11 @@ impl Tool for ToolBox {
     async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {
         #[cfg(feature = "log")]
         log::debug!("ToolBox call: {:?}", call);
-        let index = match self.method_to_tool_id.get(call.name.as_ref()) {
-            Some(index) => {
+        let tool_name = match self.method_to_tool_name.get(call.name.as_ref()) {
+            Some(tool_name) => {
                 #[cfg(feature = "log")]
                 log::debug!("Method found: `{}`", call.name);
-                *index
+                tool_name.clone()
             }
             None => {
                 // This can happen if somehow the Prompt and ToolBox are out of
@@ -222,7 +214,7 @@ impl Tool for ToolBox {
             }
         };
 
-        if let Some(tool) = self.tool_id_to_tool.get_mut(&index) {
+        if let Some(tool) = self.tool_name_to_tool.get_mut(&tool_name) {
             tool.call(call).await
         } else {
             tool::Result {
@@ -258,11 +250,10 @@ impl Tool for ToolBox {
         };
 
         self.name = state.name;
-        self.id = state.id;
 
         for (name, tool_json) in state.tools {
             let tool = match self
-                .tool_id_to_tool
+                .tool_name_to_tool
                 .values_mut()
                 .find(|t| t.name() == name)
             {
@@ -304,9 +295,8 @@ impl Tool for ToolBox {
     fn save_json(&self) -> serde_json::Value {
         let state = State {
             name: self.name.clone(),
-            id: self.id,
             tools: self
-                .tool_id_to_tool
+                .tool_name_to_tool
                 .iter()
                 .map(|(_, tool)| (tool.name().to_string(), tool.save_json()))
                 .collect(),
@@ -326,7 +316,7 @@ impl Tool for ToolBox {
         let backup = prompt.clone();
 
         #[allow(unused_variables)]
-        for (_, tool) in &self.tool_id_to_tool {
+        for (_, tool) in &self.tool_name_to_tool {
             #[cfg(feature = "log")]
             log::debug!("Setting up `Prompt` for `{}` tool.", tool.name());
 
@@ -372,10 +362,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl Tool for TestTool {
-        fn id(&self) -> Uuid {
-            Uuid::nil()
-        }
-
         fn name(&self) -> &str {
             "TestTool"
         }
@@ -417,7 +403,7 @@ mod tests {
             .unwrap()
             .add(TestTool { calls: Vec::new() });
         assert_eq!(
-            toolbox.method_to_tool_id.keys().next().unwrap(),
+            toolbox.method_to_tool_name.keys().next().unwrap(),
             "tools::TestTool::test"
         );
     }
@@ -473,14 +459,6 @@ mod tests {
     }
 
     #[test]
-    fn test_id() {
-        // ToolBox ids are unique per instance.
-        let a = ToolBox::new();
-        let b = ToolBox::new();
-        assert_ne!(a.id(), b.id());
-    }
-
-    #[test]
     fn test_name() {
         let mut named = ToolBox::new();
         named.name = "test".into();
@@ -528,11 +506,9 @@ mod tests {
     fn test_load_json() {
         let a = ToolBox::new().add(TestTool { calls: Vec::new() });
         let mut b = ToolBox::new().add(TestTool { calls: Vec::new() });
-        assert_ne!(a.id(), b.id());
 
         let json = a.save_json();
         b.load_json(json).unwrap();
-        assert_eq!(a.id(), b.id());
         assert_eq!(a.save_json(), b.save_json());
     }
 }

@@ -7,7 +7,6 @@ use super::{Method, Tool, Use};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use uuid::Uuid;
 
 const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
@@ -34,10 +33,6 @@ impl<'a> Notepad<'a> {
 
 #[async_trait::async_trait]
 impl<'a> Tool for Notepad<'a> {
-    fn id(&self) -> Uuid {
-        Uuid::from_bytes(*b"mis::notepad::01")
-    }
-
     fn name(&self) -> &str {
         Self::NAME
     }
@@ -356,8 +351,10 @@ mod tests {
         let mut toolbox2 = ToolBox::default().add(Notepad::new());
         toolbox2.load_json(json).unwrap();
 
-        let notepad =
-            toolbox2.tool_id_to_tool.get(&Notepad::new().id()).unwrap();
+        let notepad = toolbox2
+            .tool_name_to_tool
+            .get(Notepad::new().name())
+            .unwrap();
         let json = notepad.save_json();
         let mut notepad2 = Notepad::new();
         notepad2.load_json(json).unwrap();
