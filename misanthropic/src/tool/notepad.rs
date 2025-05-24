@@ -140,16 +140,18 @@ impl<'a> Tool for Notepad<'a> {
         }
     }
 
-    fn save_json(&self) -> serde_json::Value {
+    /// Save notepad state. Now async to support potential future IO operations.
+    async fn save_json(&mut self) -> serde_json::Value {
         json!(self)
     }
 
-    fn load_json(
+    /// Load notepad state. Now async to support potential future IO operations.
+    async fn load_json(
         &mut self,
-        _json: serde_json::Value,
+        json: serde_json::Value,
     ) -> std::result::Result<(), String> {
         let new: Notepad =
-            serde_json::from_value(_json).map_err(|e| e.to_string())?;
+            serde_json::from_value(json).map_err(|e| e.to_string())?;
 
         for note in &new.notes {
             if note.contains("<notepad>") || note.contains("</notepad>") {
@@ -317,13 +319,13 @@ mod tests {
         assert_eq!(notepad.notes[0].as_ref(), "Hello, world!");
     }
 
-    #[test]
-    fn test_notepad_save_load_json() {
+    #[tokio::test]
+    async fn test_notepad_save_load_json() {
         let mut notepad = Notepad::new();
         notepad.notes.push("Hello, world!".into());
-        let json = notepad.save_json();
+        let json = notepad.save_json().await;
         let mut notepad2 = Notepad::new();
-        notepad2.load_json(json).unwrap();
+        notepad2.load_json(json).await.unwrap();
         assert_eq!(notepad.notes, notepad2.notes);
     }
 
@@ -347,17 +349,17 @@ mod tests {
         assert_eq!(result.content, "Note taken.".into());
         assert_eq!(result.is_error, false);
 
-        let json = toolbox.save_json();
+        let json = toolbox.save_json().await;
         let mut toolbox2 = ToolBox::default().add(Notepad::new());
-        toolbox2.load_json(json).unwrap();
+        toolbox2.load_json(json).await.unwrap();
 
         let notepad = toolbox2
             .tool_name_to_tool
-            .get(Notepad::new().name())
+            .get_mut(Notepad::new().name())
             .unwrap();
-        let json = notepad.save_json();
+        let json = notepad.save_json().await;
         let mut notepad2 = Notepad::new();
-        notepad2.load_json(json).unwrap();
+        notepad2.load_json(json).await.unwrap();
         assert_eq!(notepad2.notes.len(), 1);
         assert_eq!(notepad2.notes[0].as_ref(), "Hello, world!");
     }

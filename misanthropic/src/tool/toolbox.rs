@@ -232,8 +232,9 @@ impl Tool for ToolBox {
         }
     }
 
-    /// Load state for all [`Tool`]s in the [`ToolBox`].
-    fn load_json(
+    /// Load state for all [`Tool`]s in the [`ToolBox`]. Now async to support
+    /// tools that need to perform IO during deserialization.
+    async fn load_json(
         &mut self,
         json: serde_json::Value,
     ) -> std::result::Result<(), String> {
@@ -271,7 +272,7 @@ impl Tool for ToolBox {
                 }
             };
 
-            if let Err(e) = tool.load_json(tool_json) {
+            if let Err(e) = tool.load_json(tool_json).await {
                 errors.push(format!(
                     "Error loading state for tool `{}` in ToolBox `{}`: {}",
                     name,
@@ -286,20 +287,25 @@ impl Tool for ToolBox {
         } else {
             let mut message = "Errors loading state for tools:\n".to_string();
             message.push_str(errors.join("\n").as_str());
+            #[cfg(feature = "log")]
             log::error!("{}", message);
             Err(message)
         }
     }
 
-    /// Save state for all [`Tool`]s in the [`ToolBox`].
-    fn save_json(&self) -> serde_json::Value {
+    /// Save state for all [`Tool`]s in the [`ToolBox`]. Now async to support
+    /// tools that need to perform IO during serialization.
+    async fn save_json(&mut self) -> serde_json::Value {
+        let mut tools = serde_json::Map::new();
+
+        for (_, tool) in &mut self.tool_name_to_tool {
+            let tool_state = tool.save_json().await;
+            tools.insert(tool.name().to_string(), tool_state);
+        }
+
         let state = State {
             name: self.name.clone(),
-            tools: self
-                .tool_name_to_tool
-                .iter()
-                .map(|(_, tool)| (tool.name().to_string(), tool.save_json()))
-                .collect(),
+            tools,
         };
 
         serde_json::to_value(state).unwrap()
@@ -394,6 +400,30 @@ mod tests {
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }
+        }
+
+        // Make save_json pointlessly async
+        async fn save_json(&mut self) -> serde_json::Value {
+            // Simulate some async work
+            tokio::task::yield_now().await;
+            serde_json::json!({
+                "calls": self.calls
+            })
+        }
+
+        // Make load_json pointlessly async
+        async fn load_json(
+            &mut self,
+            json: serde_json::Value,
+        ) -> std::result::Result<(), String> {
+            // Simulate some async work
+            tokio::task::yield_now().await;
+
+            if let Some(calls) = json.get("calls") {
+                self.calls = serde_json::from_value(calls.clone())
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
         }
     }
 
@@ -502,13 +532,13 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_load_json() {
-        let a = ToolBox::new().add(TestTool { calls: Vec::new() });
+    #[tokio::test]
+    async fn test_load_json() {
+        let mut a = ToolBox::new().add(TestTool { calls: Vec::new() });
         let mut b = ToolBox::new().add(TestTool { calls: Vec::new() });
 
-        let json = a.save_json();
-        b.load_json(json).unwrap();
-        assert_eq!(a.save_json(), b.save_json());
+        let json = a.save_json().await;
+        b.load_json(json).await.unwrap();
+        assert_eq!(a.save_json().await, b.save_json().await);
     }
 }

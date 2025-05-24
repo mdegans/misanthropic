@@ -6,6 +6,7 @@ use dioxus::{
 };
 
 use dioxus_sdk::storage::use_persistent;
+use futures::executor::block_on;
 use misanthropic::{
     dioxus::{
         opts::{self, HeadingLevel},
@@ -191,7 +192,9 @@ pub fn Chat() -> Element {
     let mut toolbox = use_signal(|| {
         let mut toolbox = toolbox::create();
         log::info!("Loading toolbox state.");
-        if let Err(e) = toolbox.load_json(toolbox_state.peek().clone()) {
+        if let Err(e) =
+            block_on(toolbox.load_json(toolbox_state.peek().clone()))
+        {
             log::error!("`Toolbox::load_json` had error(s): {e}");
         } else {
             log::info!("Toolbox state loaded.")
@@ -270,7 +273,7 @@ pub fn Chat() -> Element {
                                         .call(tool_use.clone())
                                         .await;
                                     toolbox_state
-                                        .set(toolbox.peek().save_json());
+                                        .set(toolbox.write().save_json().await);
                                     log::info!("Tool result: {:?}", result);
 
                                     // We send the result back to the server.
@@ -582,12 +585,12 @@ pub fn Chat() -> Element {
                                 // Load any tool state from the JSON file.
                                 if let serde_json::Value::Object(tool_state) = json["tool_state"].take() {
                                     log::info!("Loading tool state.");
-                                    if let Err(e) = toolbox.write().load_json(tool_state.into()) {
+                                    if let Err(e) = toolbox.write().load_json(tool_state.into()).await {
                                         log::warn!("Failed to load tool state: {}", e);
                                     } else {
                                         log::info!("Tool state loaded.")
                                     }
-                                    toolbox_state.set(toolbox.peek().save_json());
+                                    toolbox_state.set(toolbox.write().save_json().await);
                                 }
 
                                 return;
@@ -700,11 +703,11 @@ pub fn Chat() -> Element {
                 class: "save",
                 class: if ready_json.read().is_some() { "ready" } else { "" },
                 // Serialize on hover.
-                onmouseover: move |e| {
+                onmouseover: move |e| async move {
                     e.prevent_default();
                     let json = serde_json::to_string_pretty(&json!({
                         "prompt": prompt.read().deref(),
-                        "tool_state": toolbox.read().save_json(),
+                        "tool_state": toolbox.write().save_json().await,
                     })).unwrap();
                     ready_json.write().replace(json);
                 },

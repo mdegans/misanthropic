@@ -47,7 +47,7 @@ pub enum Choice {
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[async_trait::async_trait]
-pub trait Tool {
+pub trait Tool: Send {
     /// [`Tool`] name.
     fn name(&self) -> &str;
     /// Get the [`Method`](s) provided by the [`Tool`].
@@ -57,15 +57,17 @@ pub trait Tool {
     /// [`tool::Result`]: Result
     async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
+    /// Takes &mut self to allow tools to update internal state during serialization if needed.
     ///
     /// [`Value`]: serde_json::Value
     /// [`Null`]: serde_json::Value::Null
-    fn save_json(&self) -> serde_json::Value {
+    async fn save_json(&mut self) -> serde_json::Value {
         serde_json::Value::Null
     }
     /// Deserialize state from json [`Value`] if possible.
+    /// Now async to support tools that need to perform IO during deserialization.
     // String is used for the message because a boxed error is not Send.
-    fn load_json(
+    async fn load_json(
         &mut self,
         _json: serde_json::Value,
     ) -> std::result::Result<(), String> {
@@ -96,6 +98,8 @@ pub trait Tool {
 }
 
 static_assertions::assert_obj_safe!(Tool);
+// Ensure Tool is Send (but not Sync) for use in async contexts and ToolBox
+static_assertions::assert_impl_all!(dyn Tool: Send);
 
 /// `Method` definition for a [`Tool`] a [`Model`] can [`Use`] while
 /// completing a [`prompt::Message`].
