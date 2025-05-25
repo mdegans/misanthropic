@@ -119,6 +119,8 @@ itertools = "0.13"
 # for the python example
 subprocess = "0.2"
 tempfile = "3.12"
+# for the memory-palace example
+sqlx = { version = "0.8", features = ["sqlite", "chrono"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -178,6 +180,8 @@ memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx"]
 butler = ["memory-palace"]
 # Sqlx support (need for some tools)
 sqlx = ["dep:sqlx"]
+# Tokio for sqlx support
+tokio-sqlx = ["sqlx/runtime-tokio-rustls"]
 # Feature for testing with in-memory database
 kv-mem = []
 

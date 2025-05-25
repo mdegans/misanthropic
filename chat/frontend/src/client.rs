@@ -1,7 +1,6 @@
 use eventsource_stream::Eventsource;
 use misanthropic::exports::futures::{Stream, StreamExt};
 use model::{request::Request, response::Response};
-use serde::Serialize;
 
 #[derive(thiserror::Error, Debug)]
 pub enum Error {

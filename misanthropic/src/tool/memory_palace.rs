@@ -170,7 +170,7 @@ impl MemoryPalace {
         room_name: &str,
         content: &str,
         tags: impl IntoIterator<Item = &str>,
-    ) -> Result<String, String> {
+    ) -> Result<i64, String> {
         // Ensure room exists
         sqlx::query(
             r#"
@@ -205,7 +205,7 @@ impl MemoryPalace {
         .map_err(|e| format!("Failed to create memory: {}", e))?;
 
         let memory_id: i64 = row.get("id");
-        Ok(memory_id.to_string())
+        Ok(memory_id)
     }
 
     /// Search for memories using full-text search and filters.
@@ -1414,7 +1414,7 @@ impl Tool for MemoryPalace {
                             "room": row.get::<String, _>("room"),
                             "tags": tags_json,
                             "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
-                            "last_accessed": row.get::<chrono::DateTime<chrono::Utc>, _>("last_accessed").to_rfc3339(),
+                            "last_updated": row.get::<chrono::DateTime<chrono::Utc>, _>("last_updated").to_rfc3339(),
                         })
                     })
                     .collect();
@@ -1603,8 +1603,597 @@ impl Tool for MemoryPalace {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
+    use super::*;
 
-    // Tests would need to be updated to use a test PostgreSQL instance
-    // or use sqlx::test with migrations
+    // Helper to check if we can connect to a test PostgreSQL database
+    async fn try_create_test_db() -> Option<PgPool> {
+        // Try multiple database URL formats for flexibility
+        let database_urls = [
+            // CI environment variable
+            std::env::var("TEST_DATABASE_URL").ok(),
+            // Local Docker with authentication
+            Some("postgresql://postgres:test_password@localhost:5432/misanthropic_test".to_string()),
+            // Local Docker without authentication (if trust is configured)
+            Some("postgresql://postgres@localhost:5432/misanthropic_test".to_string()),
+            // Default PostgreSQL setup
+            Some("postgresql://localhost/misanthropic_test".to_string()),
+        ];
+
+        for url in database_urls.into_iter().flatten() {
+            if let Ok(pool) = sqlx::PgPool::connect(&url).await {
+                #[cfg(feature = "log")]
+                log::debug!("Connected to test database: {}", url);
+                return Some(pool);
+            }
+        }
+
+        None
+    }
+
+    /// Create a test memory palace - requires PostgreSQL
+    async fn create_test_palace() -> Option<MemoryPalace> {
+        let pool = try_create_test_db().await?;
+
+        // Clean up any existing test data
+        let _ = sqlx::query("DROP SCHEMA IF EXISTS test_schema CASCADE")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("CREATE SCHEMA test_schema")
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("SET search_path TO test_schema")
+            .execute(&pool)
+            .await;
+
+        let mut palace = MemoryPalace { pool };
+        palace.ensure_initialized().await.ok()?;
+        Some(palace)
+    }
+
+    #[tokio::test]
+    async fn test_store_and_search_memory() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Store a memory
+        let memory_id = palace
+            .store_memory(
+                "library",
+                "The capital of France is Paris",
+                ["geography", "facts"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        assert!(memory_id > 0);
+
+        // Search for the memory
+        let results = palace
+            .search("France")
+            .await
+            .expect("Failed to search memories");
+
+        assert_eq!(results.len(), 1);
+        let (room, id, memory) = &results[0];
+        assert_eq!(room, "library");
+        assert_eq!(id, &memory_id.to_string());
+        assert_eq!(memory.content, "The capital of France is Paris");
+        assert!(memory.tags.contains(&"geography".to_string()));
+        assert!(memory.tags.contains(&"facts".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_search_empty_results() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        let results = palace
+            .search("nonexistent")
+            .await
+            .expect("Failed to search memories");
+
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_by_room() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        palace
+            .store_memory("kitchen", "Recipe for pasta", ["cooking"])
+            .await
+            .expect("Failed to store memory");
+
+        let results = palace
+            .search("kitchen")
+            .await
+            .expect("Failed to search memories");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "kitchen");
+    }
+
+    #[tokio::test]
+    async fn test_search_by_tags() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        palace
+            .store_memory(
+                "study",
+                "Python is a programming language",
+                ["programming", "python"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let results = palace
+            .search("programming")
+            .await
+            .expect("Failed to search memories");
+
+        assert_eq!(results.len(), 1);
+        assert!(results[0].2.tags.contains(&"programming".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_list_rooms() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Initially no rooms
+        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
+        assert!(rooms.is_empty());
+
+        // Add some memories to create rooms
+        palace
+            .store_memory("library", "Book about history", ["history"])
+            .await
+            .expect("Failed to store memory");
+
+        palace
+            .store_memory("kitchen", "Recipe for cookies", ["cooking"])
+            .await
+            .expect("Failed to store memory");
+
+        palace
+            .store_memory("library", "Another book", ["literature"])
+            .await
+            .expect("Failed to store memory");
+
+        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
+        assert_eq!(rooms.len(), 2);
+
+        // Find library room
+        let library_room = rooms
+            .iter()
+            .find(|(name, _, _, _)| name == "library")
+            .unwrap();
+        assert_eq!(library_room.2, 2); // 2 memories in library
+
+        // Find kitchen room
+        let kitchen_room = rooms
+            .iter()
+            .find(|(name, _, _, _)| name == "kitchen")
+            .unwrap();
+        assert_eq!(kitchen_room.2, 1); // 1 memory in kitchen
+    }
+
+    #[tokio::test]
+    async fn test_connect_rooms() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Create rooms by storing memories
+        palace
+            .store_memory("library", "A book", [])
+            .await
+            .expect("Failed to store memory");
+
+        palace
+            .store_memory("study", "Study notes", [])
+            .await
+            .expect("Failed to store memory");
+
+        // Connect the rooms
+        palace
+            .connect_rooms("library", "study")
+            .await
+            .expect("Failed to connect rooms");
+
+        // Check connections
+        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
+        let library_room = rooms
+            .iter()
+            .find(|(name, _, _, _)| name == "library")
+            .unwrap();
+        assert!(library_room.3.contains(&"study".to_string()));
+
+        let study_room = rooms
+            .iter()
+            .find(|(name, _, _, _)| name == "study")
+            .unwrap();
+        assert!(study_room.3.contains(&"library".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_memory_relationships() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Store two memories
+        let memory_id1 = palace
+            .store_memory("science", "E = mc²", ["physics", "einstein"])
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id2 = palace
+            .store_memory(
+                "science",
+                "Theory of relativity",
+                ["physics", "einstein"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        // Create a relationship
+        let result = palace
+            .relate_memories(memory_id1, memory_id2, "related_to", 0.9)
+            .await
+            .expect("Failed to create relationship");
+
+        assert!(result.contains("related_to"));
+        assert!(result.contains(&memory_id1.to_string()));
+        assert!(result.contains(&memory_id2.to_string()));
+
+        // Find related memories
+        let related = palace
+            .find_related_memories(memory_id1, 2, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].2.id, memory_id2);
+        assert_eq!(related[0].3, "related_to");
+        assert_eq!(related[0].4, 0.9);
+    }
+
+    #[tokio::test]
+    async fn test_concepts() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Store a memory
+        let memory_id = palace
+            .store_memory(
+                "science",
+                "Photosynthesis converts light to energy",
+                ["biology"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        // Extract concepts
+        let result = palace
+            .extract_concepts(
+                memory_id,
+                ["photosynthesis", "energy", "biology"],
+            )
+            .await
+            .expect("Failed to extract concepts");
+
+        assert!(result.contains("3 concepts"));
+        assert!(result.contains("photosynthesis"));
+        assert!(result.contains("energy"));
+        assert!(result.contains("biology"));
+
+        // Find memories by concept
+        let memories = palace
+            .find_memories_by_concept("photosynthesis")
+            .await
+            .expect("Failed to find memories by concept");
+
+        assert_eq!(memories.len(), 1);
+        assert_eq!(memories[0].2.id, memory_id);
+        assert_eq!(memories[0].3, 1.0); // confidence
+    }
+
+    #[tokio::test]
+    async fn test_graph_stats() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Initially empty
+        let stats =
+            palace.get_graph_stats().await.expect("Failed to get stats");
+
+        assert!(stats.contains("Total Memories: 0"));
+        assert!(stats.contains("Total Rooms: 0"));
+
+        // Add some data
+        let memory_id1 = palace
+            .store_memory("room1", "Memory 1", ["tag1"])
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id2 = palace
+            .store_memory("room2", "Memory 2", ["tag2"])
+            .await
+            .expect("Failed to store memory");
+
+        palace
+            .relate_memories(memory_id1, memory_id2, "related", 1.0)
+            .await
+            .expect("Failed to relate memories");
+
+        palace
+            .extract_concepts(memory_id1, ["concept1"])
+            .await
+            .expect("Failed to extract concepts");
+
+        let stats =
+            palace.get_graph_stats().await.expect("Failed to get stats");
+
+        assert!(stats.contains("Total Memories: 2"));
+        assert!(stats.contains("Total Rooms: 2"));
+        assert!(stats.contains("Total Relationships: 1"));
+        assert!(stats.contains("Total Concepts: 1"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_interface() {
+        let Some(palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Test name
+        assert_eq!(palace.name(), "MemoryPalace");
+
+        // Test methods
+        let methods: Vec<_> = palace.methods().collect();
+        assert!(!methods.is_empty());
+
+        let method_names: Vec<_> =
+            methods.iter().map(|m| m.name.as_ref()).collect();
+        assert!(method_names.contains(&"MemoryPalace::store"));
+        assert!(method_names.contains(&"MemoryPalace::search"));
+        assert!(method_names.contains(&"MemoryPalace::list_rooms"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_store() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::store".into(),
+            input: json!({
+                "room": "test_room",
+                "content": "test content",
+                "tags": ["test_tag"]
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(!result.is_error);
+        assert!(result.content.to_string().contains("Memory stored"));
+        assert!(result.content.to_string().contains("test_room"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_search() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // First store something to search for
+        palace
+            .store_memory(
+                "library",
+                "A fascinating book about AI",
+                ["technology", "AI"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::search".into(),
+            input: json!({
+                "query": "AI"
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(!result.is_error);
+        assert!(result.content.to_string().contains("Found 1 memories"));
+        assert!(result.content.to_string().contains("fascinating book"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_invalid_method() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::invalid_method".into(),
+            input: json!({}),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("not implemented"));
+    }
+
+    #[tokio::test]
+    async fn test_tool_call_missing_parameters() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Test store without required parameters
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::store".into(),
+            input: json!({
+                "room": "test_room"
+                // missing content and tags
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("Missing required"));
+    }
+
+    #[tokio::test]
+    async fn test_save_load_json() {
+        let Some(mut palace1) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Add some data
+        palace1
+            .store_memory("room1", "content1", ["tag1"])
+            .await
+            .expect("Failed to store memory");
+
+        palace1
+            .store_memory("room2", "content2", ["tag2"])
+            .await
+            .expect("Failed to store memory");
+
+        // Save state
+        let json = palace1.save_json().await;
+        assert!(json.is_object());
+
+        // Create new palace and load state
+        let mut palace2 = create_test_palace()
+            .await
+            .expect("Failed to create test palace");
+        palace2.load_json(json).await.expect("Failed to load state");
+
+        // Verify data was loaded
+        let results =
+            palace2.search("content1").await.expect("Failed to search");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].2.content, "content1");
+    }
+
+    #[tokio::test]
+    async fn test_apply_to_prompt() {
+        let Some(palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+        let mut prompt = Prompt::default();
+
+        palace
+            .apply_to_prompt(&mut prompt)
+            .expect("Failed to apply to prompt");
+
+        let system_content = prompt.system.unwrap().to_string();
+        assert!(system_content.contains("memory_palace_instructions"));
+        assert!(system_content.contains("Memory Palace"));
+    }
+
+    #[tokio::test]
+    async fn test_empty_tags() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Store memory with empty tags
+        let memory_id = palace
+            .store_memory(
+                "room1",
+                "content with no tags",
+                std::iter::empty::<&str>(),
+            )
+            .await
+            .expect("Failed to store memory");
+
+        // Search for the memory
+        let results = palace
+            .search("content")
+            .await
+            .expect("Failed to search memories");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].2.id, memory_id);
+        assert!(results[0].2.tags.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_recursive_relationships() {
+        let Some(mut palace) = create_test_palace().await else {
+            eprintln!("Skipping test: PostgreSQL not available");
+            return;
+        };
+
+        // Create a chain of related memories
+        let mem1 = palace.store_memory("room1", "Memory 1", []).await.unwrap();
+        let mem2 = palace.store_memory("room1", "Memory 2", []).await.unwrap();
+        let mem3 = palace.store_memory("room1", "Memory 3", []).await.unwrap();
+
+        // Create chain: 1 -> 2 -> 3
+        palace
+            .relate_memories(mem1, mem2, "leads_to", 1.0)
+            .await
+            .unwrap();
+        palace
+            .relate_memories(mem2, mem3, "leads_to", 1.0)
+            .await
+            .unwrap();
+
+        // Find related with depth 1 (should only find mem2)
+        let related = palace.find_related_memories(mem1, 1, 0.1).await.unwrap();
+        assert_eq!(related.len(), 1);
+        assert_eq!(related[0].2.id, mem2);
+
+        // Find related with depth 2 (should find mem2 and mem3)
+        let related = palace.find_related_memories(mem1, 2, 0.1).await.unwrap();
+        assert_eq!(related.len(), 2);
+        let found_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+        assert!(found_ids.contains(&mem2));
+        assert!(found_ids.contains(&mem3));
+    }
 }

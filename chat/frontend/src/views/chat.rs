@@ -1,9 +1,6 @@
 use std::ops::Deref;
 
-use dioxus::{
-    html::{mo, HasFileData},
-    prelude::*,
-};
+use dioxus::{html::HasFileData, prelude::*};
 
 use dioxus_sdk::storage::use_persistent;
 use futures::executor::block_on;
