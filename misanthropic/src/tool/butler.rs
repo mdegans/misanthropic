@@ -21,9 +21,9 @@ impl<C: surrealdb::Connection> Butler<C> {
     const NAME: &'static str = "Butler";
 
     /// Create a new Butler from an existing Memory Palace.
-    pub fn from_memory_lalace(memory_palace: MemoryPalace<C>) -> Self {
+    pub fn from_memory_palace(memory_palace: MemoryPalace<C>) -> Self {
         Self {
-            memory_palace: memory_palace,
+            memory_palace,
             context_notes: Vec::new(),
             recent_queries: Vec::new(),
         }
@@ -67,15 +67,31 @@ impl<C: surrealdb::Connection> Butler<C> {
 
         // Extract key terms from the question for search
         let search_terms = self.extract_search_terms(question);
+        #[cfg(feature = "log")]
+        log::debug!("Extracted search terms: {:?}", search_terms);
 
         let mut all_results = Vec::new();
         let mut seen_content = std::collections::HashSet::new();
 
         // Search for each term
         for term in &search_terms {
+            #[cfg(feature = "log")]
+            log::trace!("Searching for term: '{}'", term);
             match self.memory_palace.search(term).await {
                 Ok(results) => {
+                    #[cfg(feature = "log")]
+                    log::trace!(
+                        "Found {} results for term '{}'",
+                        results.len(),
+                        term
+                    );
                     for (room, id, memory) in results {
+                        #[cfg(feature = "log")]
+                        log::trace!(
+                            "Result - Room: {}, Content: {}",
+                            room,
+                            memory.content
+                        );
                         // Avoid duplicates
                         if seen_content.insert(memory.content.clone()) {
                             all_results.push((room, id, memory));
@@ -83,6 +99,8 @@ impl<C: surrealdb::Connection> Butler<C> {
                     }
                 }
                 Err(e) => {
+                    #[cfg(feature = "log")]
+                    log::error!("Search failed for term '{}': {}", term, e);
                     return Err(format!(
                         "Search failed for term '{}': {}",
                         term, e
@@ -91,13 +109,8 @@ impl<C: surrealdb::Connection> Butler<C> {
             }
         }
 
-        // If no results, try searching the full question
-        if all_results.is_empty() {
-            match self.memory_palace.search(question).await {
-                Ok(results) => all_results = results,
-                Err(e) => return Err(format!("Search failed: {}", e)),
-            }
-        }
+        #[cfg(feature = "log")]
+        log::debug!("Total unique results: {}", all_results.len());
 
         // Generate a thoughtful response
         if all_results.is_empty() {
@@ -154,16 +167,39 @@ impl<C: surrealdb::Connection> Butler<C> {
             "could", "should", "would", "will",
         ];
 
-        question
-            .to_lowercase()
+        let terms: Vec<String> = question
             .split_whitespace()
-            .filter(|word| {
-                word.len() > 2
-                    && !stop_words.contains(word)
-                    && word.chars().all(|c| c.is_alphabetic())
+            .filter_map(|word| {
+                // Strip punctuation from the word
+                let word_clean: String =
+                    word.chars().filter(|c| c.is_alphabetic()).collect();
+                let word_lower = word_clean.to_lowercase();
+
+                #[cfg(feature = "log")]
+                log::trace!(
+                    "Processing word: '{}' -> '{}' (lowercase: '{}')",
+                    word,
+                    word_clean,
+                    word_lower
+                );
+
+                if word_lower.len() > 2
+                    && !stop_words.contains(&word_lower.as_str())
+                {
+                    #[cfg(feature = "log")]
+                    log::trace!("Including word: '{}'", word_lower);
+                    Some(word_lower)
+                } else {
+                    #[cfg(feature = "log")]
+                    log::trace!("Excluding word: '{}'", word_lower);
+                    None
+                }
             })
-            .map(|word| word.to_string())
-            .collect()
+            .collect();
+
+        #[cfg(feature = "log")]
+        log::trace!("Final extracted terms: {:?}", terms);
+        terms
     }
 
     /// Add a note to the butler's context.
@@ -451,16 +487,25 @@ impl<C: surrealdb::Connection> Tool for Butler<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use surrealdb::engine::local::{Db, Mem};
+    use surrealdb::opt::Config;
+
+    async fn new_test_db() -> surrealdb::Surreal<Db> {
+        let config = Config::default().strict();
+        let db = surrealdb::Surreal::new::<Mem>(config).await.unwrap();
+        // No need to manually create namespace/database - MemoryPalace will handle it
+        db
+    }
 
     #[tokio::test]
     async fn test_butler_ask() {
-        let mut butler = Butler::new();
+        let memory_palace =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
+        let mut butler = Butler::from_memory_palace(memory_palace);
 
         // First, store some information via the memory palace
-        butler.ensure_memory_palace();
-        let memory_palace = butler.memory_palace.as_mut().unwrap();
-
-        memory_palace
+        butler
+            .memory_palace
             .store_memory(
                 "Programming",
                 "Rust is a systems programming language",
@@ -468,7 +513,8 @@ mod tests {
             )
             .await
             .unwrap();
-        memory_palace
+        butler
+            .memory_palace
             .store_memory(
                 "Programming",
                 "Python is great for scripting",
@@ -482,13 +528,16 @@ mod tests {
             .ask_butler("What do you know about Rust?")
             .await
             .unwrap();
+        dbg!(&response);
         assert!(response.contains("Rust is a systems programming language"));
         assert!(response.contains("Programming"));
     }
 
     #[tokio::test]
     async fn test_butler_context() {
-        let mut butler = Butler::new();
+        let memory_palace =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
+        let mut butler = Butler::from_memory_palace(memory_palace);
 
         // Add context note
         butler
@@ -503,13 +552,17 @@ mod tests {
 
     #[tokio::test]
     async fn test_butler_save_load() {
-        let mut butler1 = Butler::new();
+        let memory_palace1 =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
+        let mut butler1 = Butler::from_memory_palace(memory_palace1);
         butler1.add_context_note("Test context").await.unwrap();
         butler1.add_recent_query("test query");
 
         let json = butler1.save_json().await;
 
-        let mut butler2 = Butler::new();
+        let memory_palace2 =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
+        let mut butler2 = Butler::from_memory_palace(memory_palace2);
         butler2.load_json(json).await.unwrap();
 
         assert_eq!(butler1.context_notes, butler2.context_notes);

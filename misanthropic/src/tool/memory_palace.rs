@@ -17,7 +17,7 @@ pub(crate) struct Memory {
     room: String,
     /// Tags for categorization and search.
     pub(crate) tags: Vec<String>,
-    /// When this memory was created (ISO 8601 timestamp).
+    /// When this memory was created (as string for SurrealDB).
     created_at: String,
     /// When this memory was last accessed.
     last_accessed: String,
@@ -64,11 +64,17 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
     const NAME: &'static str = "MemoryPalace";
 
     /// Create a new [`MemoryPalace`]` from an existing [`Surreal`] DB.
-    pub fn from_db(db: Surreal<C>) -> Self {
-        Self {
+    /// Initializes the database if it hasn't been done yet.
+    pub async fn from_db(db: Surreal<C>) -> Result<Self, String> {
+        let mut new = Self {
             db,
             initialized: false,
-        }
+        };
+
+        // Ensure the database is initialized
+        new.ensure_initialized().await?;
+
+        Ok(new)
     }
 
     /// Initialize the database connection and schema.
@@ -77,14 +83,31 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
             return Ok(());
         }
 
-        // Use namespace and database
+        // Create namespace first
+        self.db
+            .query("DEFINE NAMESPACE IF NOT EXISTS memory_palace;")
+            .await
+            .map_err(|e| format!("Failed to create namespace: {}", e))?;
+
+        // Use the namespace
         self.db
             .use_ns("memory_palace")
+            .await
+            .map_err(|e| format!("Failed to use namespace: {}", e))?;
+
+        // Now create the database within the namespace
+        self.db
+            .query("DEFINE DATABASE IF NOT EXISTS palace;")
+            .await
+            .map_err(|e| format!("Failed to create database: {}", e))?;
+
+        // Use the database
+        self.db
             .use_db("palace")
             .await
-            .map_err(|e| format!("Failed to use namespace/database: {}", e))?;
+            .map_err(|e| format!("Failed to use database: {}", e))?;
 
-        // Create schema and indexes
+        // Create schema and indexes - simplified without full-text search for now
         self.db
             .query(
                 r#"
@@ -94,7 +117,6 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
                 DEFINE FIELD tags ON TABLE memory TYPE array<string>;
                 DEFINE FIELD created_at ON TABLE memory TYPE datetime;
                 DEFINE FIELD last_accessed ON TABLE memory TYPE datetime;
-                DEFINE INDEX content_index ON TABLE memory COLUMNS content SEARCH ANALYZER ascii BM25 HIGHLIGHTS;
                 DEFINE INDEX room_index ON TABLE memory COLUMNS room;
                 DEFINE INDEX tags_index ON TABLE memory COLUMNS tags;
 
@@ -104,8 +126,8 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
                 DEFINE INDEX room_name_index ON TABLE room COLUMNS name UNIQUE;
 
                 DEFINE TABLE connection SCHEMAFULL;
-                DEFINE FIELD from ON TABLE connection TYPE record(room);
-                DEFINE FIELD to ON TABLE connection TYPE record(room);
+                DEFINE FIELD from ON TABLE connection TYPE record<room>;
+                DEFINE FIELD to ON TABLE connection TYPE record<room>;
                 DEFINE FIELD description ON TABLE connection TYPE option<string>;
                 "#,
             )
@@ -116,12 +138,6 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
         Ok(())
     }
 
-    /// Get current timestamp as ISO 8601 string.
-    fn now() -> String {
-        // In a real implementation, you'd use chrono
-        "2024-01-01T00:00:00Z".to_string()
-    }
-
     /// Store a memory in a specific room.
     pub(crate) async fn store_memory<S: std::fmt::Display>(
         &mut self,
@@ -130,8 +146,6 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
         tags: Vec<String>,
     ) -> Result<String, String> {
         self.ensure_initialized().await?;
-
-        let now = Self::now();
 
         // Ensure room exists
         let room_query = r#"
@@ -159,68 +173,101 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
                 .map_err(|e| format!("Failed to create room: {}", e))?;
         }
 
-        // Create the memory
-        let memory: Option<Record<Memory>> = self
-            .db
-            .create("memory")
-            .content(Memory {
-                content: content.to_string(),
-                room: room_name.to_string(),
-                tags,
-                created_at: now.clone(),
-                last_accessed: now,
-            })
-            .await
-            .map_err(|e| format!("Failed to create memory: {}", e))?;
+        // Create the memory using SurrealDB's time::now() function
+        let create_query = r#"
+            CREATE memory SET 
+                content = $content,
+                room = $room,
+                tags = $tags,
+                created_at = time::now(),
+                last_accessed = time::now();
+        "#;
 
-        match memory {
+        let results: Vec<Record<Memory>> = self
+            .db
+            .query(create_query)
+            .bind(("content", content.to_string()))
+            .bind(("room", room_name.to_string()))
+            .bind(("tags", tags))
+            .await
+            .map_err(|e| format!("Failed to create memory: {}", e))?
+            .take(0)
+            .map_err(|e| format!("Failed to take create result: {}", e))?;
+
+        match results.first() {
             Some(record) => Ok(record.id.to_string()),
             None => Err("Failed to create memory record".to_string()),
         }
     }
 
-    /// Search for memories using full-text search and filters.
+    /// Search for memories using basic text matching and filters.
     pub(crate) async fn search<S: std::fmt::Display>(
         &mut self,
         query: S,
     ) -> Result<Vec<(String, String, Memory)>, String> {
         self.ensure_initialized().await?;
 
-        let now = Self::now();
+        let query_lower = query.to_string().to_lowercase();
+        #[cfg(feature = "log")]
+        log::debug!("Memory Palace searching for: '{}'", query_lower);
 
-        // Use SurrealDB's full-text search capabilities
+        // Use basic string matching - search in content, tags, and room names (case-insensitive)
+        // Simplify array search - just check if any tag contains the query
         let search_query = r#"
-            SELECT *, search::highlight('<mark>', '</mark>', 1) AS highlights 
-            FROM memory 
-            WHERE content @@ $query OR $query IN tags OR room CONTAINS $query
-            ORDER BY search::score(1) DESC;
+            SELECT * FROM memory 
+            WHERE string::lowercase(content) CONTAINS $query
+               OR string::lowercase(room) CONTAINS $query
+               OR array::any(tags, |$tag| string::lowercase($tag) CONTAINS $query)
+            ORDER BY created_at DESC;
         "#;
 
         let results: Vec<Record<Memory>> = self
             .db
             .query(search_query)
-            .bind(("query", query.to_string()))
+            .bind(("query", query_lower))
             .await
-            .map_err(|e| format!("Failed to search memories: {}", e))?
+            .map_err(|e| {
+                #[cfg(feature = "log")]
+                log::error!("Search query failed: {}", e);
+                format!("Failed to search memories: {}", e)
+            })?
             .take(0)
-            .map_err(|e| format!("Failed to take search results: {}", e))?;
+            .map_err(|e| {
+                #[cfg(feature = "log")]
+                log::error!("Failed to take search results: {}", e);
+                format!("Failed to take search results: {}", e)
+            })?;
 
-        // Update last_accessed for found memories
+        #[cfg(feature = "log")]
+        log::debug!("Found {} memories", results.len());
+
+        // Update last_accessed for found memories using SurrealDB's time::now()
         for record in &results {
-            let _: Option<Record<Memory>> = self
+            let update_query = r#"
+                UPDATE $id SET last_accessed = time::now();
+            "#;
+
+            let _: Vec<Record<Memory>> = self
                 .db
-                .update(&record.id) // Use &RecordId which implements IntoResource
-                .merge(json!({"last_accessed": now}))
+                .query(update_query)
+                .bind(("id", record.id.clone()))
                 .await
-                .map_err(|e| {
-                    format!("Failed to update last_accessed: {}", e)
-                })?;
+                .map_err(|e| format!("Failed to update last_accessed: {}", e))?
+                .take(0)
+                .map_err(|e| format!("Failed to take update result: {}", e))?;
         }
 
         // Convert to expected format
         Ok(results
             .into_iter()
             .map(|record| {
+                #[cfg(feature = "log")]
+                log::trace!(
+                    "Memory result - Room: {}, Content: {}, Tags: {:?}",
+                    record.data.room,
+                    record.data.content,
+                    record.data.tags
+                );
                 (record.data.room.clone(), record.id.to_string(), record.data)
             })
             .collect())
@@ -862,14 +909,15 @@ mod tests {
     async fn new_test_db() -> Surreal<Db> {
         let config = Config::default().strict();
         let db = Surreal::new::<Mem>(config).await.unwrap();
-        db.use_ns("test").use_db("test").await.unwrap();
+        // No need to manually create namespace/database - MemoryPalace will handle it
         db
     }
 
     #[tokio::test]
     #[allow(unused_variables)] // Used in tests
     async fn test_memory_palace_store_and_search() {
-        let mut palace = MemoryPalace::from_db(new_test_db().await);
+        let mut palace =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
 
         // Store some memories
         let id1 = palace
@@ -904,7 +952,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_palace_rooms_and_connections() {
-        let mut palace = MemoryPalace::from_db(new_test_db().await);
+        let mut palace =
+            MemoryPalace::from_db(new_test_db().await).await.unwrap();
 
         // Create rooms with memories
         palace
