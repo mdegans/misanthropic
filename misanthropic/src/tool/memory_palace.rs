@@ -107,7 +107,7 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
             .await
             .map_err(|e| format!("Failed to use database: {}", e))?;
 
-        // Create schema and indexes - simplified without full-text search for now
+        // Enhanced schema with graph relationships and future vector support
         self.db
             .query(
                 r#"
@@ -117,18 +117,43 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
                 DEFINE FIELD tags ON TABLE memory TYPE array<string>;
                 DEFINE FIELD created_at ON TABLE memory TYPE datetime;
                 DEFINE FIELD last_accessed ON TABLE memory TYPE datetime;
+                DEFINE FIELD access_count ON TABLE memory TYPE int DEFAULT 0;
                 DEFINE INDEX room_index ON TABLE memory COLUMNS room;
                 DEFINE INDEX tags_index ON TABLE memory COLUMNS tags;
+                DEFINE INDEX content_index ON TABLE memory COLUMNS content;
 
                 DEFINE TABLE room SCHEMAFULL;
                 DEFINE FIELD name ON TABLE room TYPE string;
                 DEFINE FIELD description ON TABLE room TYPE string;
+                DEFINE FIELD created_at ON TABLE room TYPE datetime DEFAULT time::now();
                 DEFINE INDEX room_name_index ON TABLE room COLUMNS name UNIQUE;
 
                 DEFINE TABLE connection SCHEMAFULL;
                 DEFINE FIELD from ON TABLE connection TYPE record<room>;
                 DEFINE FIELD to ON TABLE connection TYPE record<room>;
                 DEFINE FIELD description ON TABLE connection TYPE option<string>;
+                DEFINE FIELD strength ON TABLE connection TYPE int DEFAULT 1;
+                DEFINE FIELD created_at ON TABLE connection TYPE datetime DEFAULT time::now();
+
+                -- Graph relationships between memories (relates, references, etc.)
+                DEFINE TABLE relates SCHEMAFULL;
+                DEFINE FIELD in ON TABLE relates TYPE record<memory>;
+                DEFINE FIELD out ON TABLE relates TYPE record<memory>;
+                DEFINE FIELD relationship_type ON TABLE relates TYPE string DEFAULT 'related';
+                DEFINE FIELD strength ON TABLE relates TYPE float DEFAULT 1.0;
+                DEFINE FIELD created_at ON TABLE relates TYPE datetime DEFAULT time::now();
+
+                -- For future: concept extraction and linking
+                DEFINE TABLE concept SCHEMAFULL;
+                DEFINE FIELD name ON TABLE concept TYPE string;
+                DEFINE FIELD description ON TABLE concept TYPE option<string>;
+                DEFINE FIELD created_at ON TABLE concept TYPE datetime DEFAULT time::now();
+                DEFINE INDEX concept_name_index ON TABLE concept COLUMNS name UNIQUE;
+
+                DEFINE TABLE mentions SCHEMAFULL;
+                DEFINE FIELD in ON TABLE mentions TYPE record<memory>;
+                DEFINE FIELD out ON TABLE mentions TYPE record<concept>;
+                DEFINE FIELD confidence ON TABLE mentions TYPE float DEFAULT 1.0;
                 "#,
             )
             .await
@@ -271,6 +296,119 @@ impl<C: surrealdb::Connection> MemoryPalace<C> {
                 (record.data.room.clone(), record.id.to_string(), record.data)
             })
             .collect())
+    }
+
+    /// Optimized search for multiple terms using a single query with ranking.
+    pub(crate) async fn search_optimized(
+        &mut self,
+        search_terms: &[String],
+    ) -> Result<Vec<(String, String, Memory)>, String> {
+        self.ensure_initialized().await?;
+
+        if search_terms.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        #[cfg(feature = "log")]
+        log::debug!(
+            "Memory Palace optimized search for terms: {:?}",
+            search_terms
+        );
+
+        // Build a more sophisticated query with scoring using proper SurrealDB boolean handling
+        let mut query_conditions = Vec::new();
+        let mut score_expressions = Vec::new();
+        let mut bindings = Vec::new();
+
+        for (i, term) in search_terms.iter().enumerate() {
+            let term_lower = term.to_lowercase();
+            let param_name = format!("term{}", i);
+
+            // Search conditions (OR logic for any match)
+            query_conditions.push(format!(
+                "(string::lowercase(content) CONTAINS ${param} OR string::lowercase(room) CONTAINS ${param} OR array::any(tags, |$tag| string::lowercase($tag) CONTAINS ${param}))",
+                param = param_name
+            ));
+
+            // Score expressions using count() to convert boolean to number
+            // SurrealDB: count(condition) gives us 1 for true, 0 for false
+            score_expressions.push(format!(
+                "count(string::lowercase(content) CONTAINS ${param}) * 3 + count(string::lowercase(room) CONTAINS ${param}) * 2 + count(array::any(tags, |$tag| string::lowercase($tag) CONTAINS ${param})) * 1",
+                param = param_name
+            ));
+
+            bindings.push((param_name, term_lower));
+        }
+
+        // Create relevance score by summing all score expressions
+        let relevance_score = score_expressions.join(" + ");
+
+        let search_query = format!(
+            r#"
+            SELECT *, ({relevance_score}) AS relevance_score FROM memory 
+            WHERE {conditions}
+            ORDER BY relevance_score DESC, created_at DESC;
+            "#,
+            conditions = query_conditions.join(" OR "),
+            relevance_score = relevance_score
+        );
+
+        #[cfg(feature = "log")]
+        log::trace!("Optimized search query: {}", search_query);
+
+        let mut query = self.db.query(&search_query);
+        for (param_name, value) in bindings {
+            query = query.bind((param_name, value));
+        }
+
+        let results: Vec<Record<Memory>> = query
+            .await
+            .map_err(|e| {
+                #[cfg(feature = "log")]
+                log::error!("Optimized search query failed: {}", e);
+                format!("Failed to search memories: {}", e)
+            })?
+            .take(0)
+            .map_err(|e| {
+                #[cfg(feature = "log")]
+                log::error!("Failed to take search results: {}", e);
+                format!("Failed to take search results: {}", e)
+            })?;
+
+        #[cfg(feature = "log")]
+        log::debug!("Found {} memories with optimized search", results.len());
+
+        // Convert to Memory records and update last_accessed
+        let mut memory_results = Vec::new();
+        for record in results {
+            let id = record.id.to_string();
+
+            // Update last_accessed for this memory
+            let update_query = r#"
+                UPDATE $id SET last_accessed = time::now();
+            "#;
+
+            let _: Vec<Record<Memory>> = self
+                .db
+                .query(update_query)
+                .bind(("id", record.id.clone()))
+                .await
+                .map_err(|e| format!("Failed to update last_accessed: {}", e))?
+                .take(0)
+                .map_err(|e| format!("Failed to take update result: {}", e))?;
+
+            #[cfg(feature = "log")]
+            log::trace!(
+                "Memory result - Room: {}, Content: {}, Tags: {:?}",
+                record.data.room,
+                record.data.content,
+                record.data.tags
+            );
+
+            memory_results.push((record.data.room.clone(), id, record.data));
+        }
+
+        Ok(memory_results)
     }
 
     /// Connect two rooms in the palace.

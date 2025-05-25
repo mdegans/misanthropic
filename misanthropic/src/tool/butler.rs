@@ -70,101 +70,71 @@ impl<C: surrealdb::Connection> Butler<C> {
         #[cfg(feature = "log")]
         log::debug!("Extracted search terms: {:?}", search_terms);
 
-        let mut all_results = Vec::new();
-        let mut seen_content = std::collections::HashSet::new();
+        // Use optimized single-query search instead of multiple individual searches
+        match self.memory_palace.search_optimized(&search_terms).await {
+            Ok(all_results) => {
+                #[cfg(feature = "log")]
+                log::debug!("Total unique results: {}", all_results.len());
 
-        // Search for each term
-        for term in &search_terms {
-            #[cfg(feature = "log")]
-            log::trace!("Searching for term: '{}'", term);
-            match self.memory_palace.search(term).await {
-                Ok(results) => {
-                    #[cfg(feature = "log")]
-                    log::trace!(
-                        "Found {} results for term '{}'",
-                        results.len(),
-                        term
+                // Generate a thoughtful response
+                if all_results.is_empty() {
+                    Ok(format!(
+                        "I searched the Memory Palace for information related to '{}', but couldn't find any relevant memories. \
+                         You might want to store some information about this topic first using the Memory Palace store function.\n\n\
+                         {}",
+                        question,
+                        self.generate_context()
+                    ))
+                } else {
+                    let mut response = format!(
+                        "Based on your question '{}', I found {} relevant memories in the Memory Palace:\n\n",
+                        question,
+                        all_results.len()
                     );
-                    for (room, id, memory) in results {
-                        #[cfg(feature = "log")]
-                        log::trace!(
-                            "Result - Room: {}, Content: {}",
-                            room,
-                            memory.content
-                        );
-                        // Avoid duplicates
-                        if seen_content.insert(memory.content.clone()) {
-                            all_results.push((room, id, memory));
+
+                    // Group results by room for better organization
+                    let mut rooms: std::collections::HashMap<String, Vec<_>> =
+                        std::collections::HashMap::new();
+                    for (room, id, memory) in all_results {
+                        rooms.entry(room).or_default().push((id, memory));
+                    }
+
+                    for (room_name, memories) in rooms {
+                        response
+                            .push_str(&format!("**From {}:**\n", room_name));
+                        for (id, memory) in memories {
+                            response.push_str(&format!(
+                                "- {}\n  Tags: {}\n  (ID: {})\n\n",
+                                memory.content,
+                                memory.tags.join(", "),
+                                id
+                            ));
                         }
                     }
-                }
-                Err(e) => {
-                    #[cfg(feature = "log")]
-                    log::error!("Search failed for term '{}': {}", term, e);
-                    return Err(format!(
-                        "Search failed for term '{}': {}",
-                        term, e
-                    ));
-                }
-            }
-        }
 
-        #[cfg(feature = "log")]
-        log::debug!("Total unique results: {}", all_results.len());
+                    // Add butler context
+                    let context = self.generate_context();
+                    if !context.is_empty() {
+                        response
+                            .push_str(&format!("**Context:**\n{}", context));
+                    }
 
-        // Generate a thoughtful response
-        if all_results.is_empty() {
-            Ok(format!(
-                "I searched the Memory Palace for information related to '{}', but couldn't find any relevant memories. \
-                 You might want to store some information about this topic first using the Memory Palace store function.\n\n\
-                 {}",
-                question,
-                self.generate_context()
-            ))
-        } else {
-            let mut response = format!(
-                "Based on your question '{}', I found {} relevant memories in the Memory Palace:\n\n",
-                question,
-                all_results.len()
-            );
-
-            // Group results by room for better organization
-            let mut rooms: std::collections::HashMap<String, Vec<_>> =
-                std::collections::HashMap::new();
-            for (room, id, memory) in all_results {
-                rooms.entry(room).or_default().push((id, memory));
-            }
-
-            for (room_name, memories) in rooms {
-                response.push_str(&format!("**From {}:**\n", room_name));
-                for (id, memory) in memories {
-                    response.push_str(&format!(
-                        "- {}\n  Tags: {}\n  (ID: {})\n\n",
-                        memory.content,
-                        memory.tags.join(", "),
-                        id
-                    ));
+                    Ok(response)
                 }
             }
-
-            // Add butler context
-            let context = self.generate_context();
-            if !context.is_empty() {
-                response.push_str(&format!("**Context:**\n{}", context));
-            }
-
-            Ok(response)
+            Err(e) => Err(format!("Search failed: {}", e)),
         }
     }
 
-    /// Extract search terms from a natural language question.
+    /// Extract search terms from a natural language question with basic lemmatization.
     fn extract_search_terms(&self, question: &str) -> Vec<String> {
-        // Simple term extraction - in a real implementation you might use NLP
+        // Simple term extraction with basic lemmatization
         let stop_words = [
             "the", "a", "an", "and", "or", "but", "in", "on", "at", "to",
             "for", "of", "with", "by", "what", "how", "when", "where", "why",
             "who", "is", "are", "was", "were", "do", "does", "did", "can",
-            "could", "should", "would", "will",
+            "could", "should", "would", "will", "have", "has", "had", "be",
+            "been", "being", "this", "that", "these", "those",
         ];
 
         let terms: Vec<String> = question
@@ -173,7 +143,7 @@ impl<C: surrealdb::Connection> Butler<C> {
                 // Strip punctuation from the word
                 let word_clean: String =
                     word.chars().filter(|c| c.is_alphabetic()).collect();
-                let word_lower = word_clean.to_lowercase();
+                let mut word_lower = word_clean.to_lowercase();
 
                 #[cfg(feature = "log")]
                 log::trace!(
@@ -182,6 +152,9 @@ impl<C: surrealdb::Connection> Butler<C> {
                     word_clean,
                     word_lower
                 );
+
+                // Basic lemmatization - convert common plural/verb forms to base form
+                word_lower = self.basic_lemmatize(&word_lower);
 
                 if word_lower.len() > 2
                     && !stop_words.contains(&word_lower.as_str())
@@ -200,6 +173,39 @@ impl<C: surrealdb::Connection> Butler<C> {
         #[cfg(feature = "log")]
         log::trace!("Final extracted terms: {:?}", terms);
         terms
+    }
+
+    /// Basic lemmatization for common English word forms.
+    fn basic_lemmatize(&self, word: &str) -> String {
+        // Handle common plural forms
+        if word.ends_with("ies") && word.len() > 4 {
+            return format!("{}y", &word[..word.len() - 3]);
+        }
+        if word.ends_with("es") && word.len() > 3 {
+            let base = &word[..word.len() - 2];
+            // Check if it's likely a plural (not a word that naturally ends in 'es')
+            if !["class", "pass", "press", "stress", "process"].contains(&base)
+            {
+                return base.to_string();
+            }
+        }
+        if word.ends_with('s') && word.len() > 3 {
+            let base = &word[..word.len() - 1];
+            // Simple heuristic: if removing 's' gives us a reasonable word
+            if !["as", "is", "has", "was", "this", "thus"].contains(&word) {
+                return base.to_string();
+            }
+        }
+
+        // Handle common verb forms
+        if word.ends_with("ing") && word.len() > 5 {
+            return word[..word.len() - 3].to_string();
+        }
+        if word.ends_with("ed") && word.len() > 4 {
+            return word[..word.len() - 2].to_string();
+        }
+
+        word.to_string()
     }
 
     /// Add a note to the butler's context.
