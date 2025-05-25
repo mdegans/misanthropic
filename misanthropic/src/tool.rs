@@ -3,12 +3,17 @@ use std::{borrow::Cow, hash::Hash};
 
 use serde::{Deserialize, Serialize};
 
-use crate::prompt::message::Content;
 #[allow(unused_imports)]
 use crate::Prompt;
+use crate::prompt::message::Content;
 
 mod toolbox;
 pub use toolbox::ToolBox;
+
+#[cfg(feature = "butler")]
+mod butler;
+#[cfg(feature = "butler")]
+pub use butler::Butler;
 
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
@@ -842,10 +847,14 @@ mod tests {
         assert!(properties.contains_key("new_param"));
 
         let required = method.schema["required"].as_array().unwrap();
-        assert!(required
-            .contains(&serde_json::Value::String("existing".to_string())));
-        assert!(required
-            .contains(&serde_json::Value::String("new_param".to_string())));
+        assert!(
+            required
+                .contains(&serde_json::Value::String("existing".to_string()))
+        );
+        assert!(
+            required
+                .contains(&serde_json::Value::String("new_param".to_string()))
+        );
     }
 
     #[test]

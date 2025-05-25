@@ -104,7 +104,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
 # SurrealDB support - pinned to 1.x for edition 2021 compatibility
-surrealdb = { version = "1.5", optional = true }
+surrealdb = { version = "2.2", optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -119,6 +119,8 @@ itertools = "0.13"
 # for the python example
 subprocess = "0.2"
 tempfile = "3.12"
+# SurrealDB with in-memory backend for testing
+surrealdb = { version = "2.2", features = ["kv-mem"], optional = false }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -174,8 +176,12 @@ dioxus = ["dep:dioxus"]
 notepad = []
 # MemoryPalace tool for the assistant to store and retrieve memories.
 memory-palace = ["surrealdb"]
+# Butler for the MemoryPalace tool.
+butler = ["memory-palace"]
 # SurrealDb support.
 surrealdb = ["dep:surrealdb"]
+# Feature for testing with in-memory database
+kv-mem = []
 
 
 [[example]]

@@ -1,23 +1,22 @@
 //! [`MemoryPalace`] tool for hierarchical knowledge organization using SurrealDB.
 
 use super::{Method, Tool, Use};
-use crate::{prompt::message::Block, Prompt};
+use crate::{Prompt, prompt::message::Block};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashSet;
-use surrealdb::{engine::local::Mem, RecordId, Surreal};
+use surrealdb::{RecordId, Surreal};
 
 const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system powered by SurrealDB. Your memories are organized into rooms with semantic relationships, tags, and full-text search capabilities. Use this to store, organize, and retrieve knowledge across conversations.</memory_palace_instructions>"#;
 
 /// A memory item stored in the palace.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct Memory {
+pub(crate) struct Memory {
     /// The actual content/knowledge stored.
-    content: String,
+    pub(crate) content: String,
     /// Room this memory belongs to.
     room: String,
     /// Tags for categorization and search.
-    tags: Vec<String>,
+    pub(crate) tags: Vec<String>,
     /// When this memory was created (ISO 8601 timestamp).
     created_at: String,
     /// When this memory was last accessed.
@@ -54,26 +53,20 @@ struct Record<T> {
 
 /// A Memory Palace tool using SurrealDB for semantic storage.
 #[derive(Debug)]
-pub struct MemoryPalace {
+pub struct MemoryPalace<C: surrealdb::Connection> {
     /// SurrealDB connection.
-    db: Surreal<Mem>,
+    pub(crate) db: Surreal<C>,
     /// Whether the database has been initialized.
     initialized: bool,
 }
 
-impl Default for MemoryPalace {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl MemoryPalace {
+impl<C: surrealdb::Connection> MemoryPalace<C> {
     const NAME: &'static str = "MemoryPalace";
 
-    /// Create a new memory palace with an in-memory SurrealDB.
-    pub fn new() -> Self {
+    /// Create a new [`MemoryPalace`]` from an existing [`Surreal`] DB.
+    pub fn from_db(db: Surreal<C>) -> Self {
         Self {
-            db: Surreal::init(),
+            db,
             initialized: false,
         }
     }
@@ -83,11 +76,6 @@ impl MemoryPalace {
         if self.initialized {
             return Ok(());
         }
-
-        // Connect to in-memory database
-        self.db = Surreal::new::<Mem>(())
-            .await
-            .map_err(|e| format!("Failed to create database: {}", e))?;
 
         // Use namespace and database
         self.db
@@ -135,10 +123,10 @@ impl MemoryPalace {
     }
 
     /// Store a memory in a specific room.
-    async fn store_memory(
+    pub(crate) async fn store_memory<S: std::fmt::Display>(
         &mut self,
-        room_name: &str,
-        content: &str,
+        room_name: S,
+        content: S,
         tags: Vec<String>,
     ) -> Result<String, String> {
         self.ensure_initialized().await?;
@@ -152,7 +140,7 @@ impl MemoryPalace {
         let existing_rooms: Vec<Record<Room>> = self
             .db
             .query(room_query)
-            .bind(("room_name", room_name))
+            .bind(("room_name", room_name.to_string()))
             .await
             .map_err(|e| format!("Failed to query rooms: {}", e))?
             .take(0)
@@ -192,9 +180,9 @@ impl MemoryPalace {
     }
 
     /// Search for memories using full-text search and filters.
-    async fn search(
+    pub(crate) async fn search<S: std::fmt::Display>(
         &mut self,
-        query: &str,
+        query: S,
     ) -> Result<Vec<(String, String, Memory)>, String> {
         self.ensure_initialized().await?;
 
@@ -208,10 +196,10 @@ impl MemoryPalace {
             ORDER BY search::score(1) DESC;
         "#;
 
-        let mut results: Vec<Record<Memory>> = self
+        let results: Vec<Record<Memory>> = self
             .db
             .query(search_query)
-            .bind(("query", query))
+            .bind(("query", query.to_string()))
             .await
             .map_err(|e| format!("Failed to search memories: {}", e))?
             .take(0)
@@ -221,7 +209,7 @@ impl MemoryPalace {
         for record in &results {
             let _: Option<Record<Memory>> = self
                 .db
-                .update(&record.id)
+                .update(&record.id) // Use &RecordId which implements IntoResource
                 .merge(json!({"last_accessed": now}))
                 .await
                 .map_err(|e| {
@@ -239,10 +227,10 @@ impl MemoryPalace {
     }
 
     /// Connect two rooms in the palace.
-    async fn connect_rooms(
+    async fn connect_rooms<S: std::fmt::Display>(
         &mut self,
-        room1: &str,
-        room2: &str,
+        room1: S,
+        room2: S,
     ) -> Result<(), String> {
         self.ensure_initialized().await?;
 
@@ -254,7 +242,7 @@ impl MemoryPalace {
         let room1_records: Vec<Record<Room>> = self
             .db
             .query(room_query)
-            .bind(("room_name", room1))
+            .bind(("room_name", room1.to_string()))
             .await
             .map_err(|e| format!("Failed to query room1: {}", e))?
             .take(0)
@@ -263,7 +251,7 @@ impl MemoryPalace {
         let room2_records: Vec<Record<Room>> = self
             .db
             .query(room_query)
-            .bind(("room_name", room2))
+            .bind(("room_name", room2.to_string()))
             .await
             .map_err(|e| format!("Failed to query room2: {}", e))?
             .take(0)
@@ -353,7 +341,7 @@ impl MemoryPalace {
 // Instead, we'll implement custom save/load that exports/imports the data
 
 #[async_trait::async_trait]
-impl Tool for MemoryPalace {
+impl<C: surrealdb::Connection> Tool for MemoryPalace<C> {
     fn name(&self) -> &str {
         Self::NAME
     }
@@ -444,7 +432,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -457,7 +445,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -472,7 +460,7 @@ impl Tool for MemoryPalace {
                                 is_error: true,
                                 #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
-                            }
+                            };
                         }
                     };
 
@@ -486,7 +474,10 @@ impl Tool for MemoryPalace {
                     })
                     .unwrap_or_default();
 
-                match self.store_memory(room, content, tags).await {
+                match self
+                    .store_memory(room.to_string(), content.to_string(), tags)
+                    .await
+                {
                     Ok(memory_id) => super::Result {
                         tool_use_id: call.id,
                         content: format!(
@@ -519,7 +510,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -533,7 +524,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -596,7 +587,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -610,7 +601,7 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
@@ -624,11 +615,14 @@ impl Tool for MemoryPalace {
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
-                        }
+                        };
                     }
                 };
 
-                match self.connect_rooms(room1, room2).await {
+                match self
+                    .connect_rooms(room1.to_string(), room2.to_string())
+                    .await
+                {
                     Ok(()) => super::Result {
                         tool_use_id: call.id,
                         content: format!(
@@ -712,22 +706,42 @@ impl Tool for MemoryPalace {
             return json!({"error": "Failed to initialize database"});
         }
 
-        // Export all data from the database
-        let export_query = r#"
-            {
-                "memories": (SELECT * FROM memory),
-                "rooms": (SELECT * FROM room),
-                "connections": (SELECT * FROM connection)
-            }
-        "#;
+        // Export all data from the database - use separate queries for SurrealDB 2.x
+        let memories_query = "SELECT * FROM memory";
+        let rooms_query = "SELECT * FROM room";
+        let connections_query = "SELECT * FROM connection";
 
-        match self.db.query(export_query).await {
-            Ok(mut result) => match result.take::<serde_json::Value>(0) {
+        let memories = match self.db.query(memories_query).await {
+            Ok(mut result) => match result.take::<Vec<serde_json::Value>>(0) {
                 Ok(data) => data,
-                Err(_) => json!({"error": "Failed to export data"}),
+                Err(_) => return json!({"error": "Failed to export memories"}),
             },
-            Err(_) => json!({"error": "Failed to query database for export"}),
-        }
+            Err(_) => return json!({"error": "Failed to query memories"}),
+        };
+
+        let rooms = match self.db.query(rooms_query).await {
+            Ok(mut result) => match result.take::<Vec<serde_json::Value>>(0) {
+                Ok(data) => data,
+                Err(_) => return json!({"error": "Failed to export rooms"}),
+            },
+            Err(_) => return json!({"error": "Failed to query rooms"}),
+        };
+
+        let connections = match self.db.query(connections_query).await {
+            Ok(mut result) => match result.take::<Vec<serde_json::Value>>(0) {
+                Ok(data) => data,
+                Err(_) => {
+                    return json!({"error": "Failed to export connections"});
+                }
+            },
+            Err(_) => return json!({"error": "Failed to query connections"}),
+        };
+
+        json!({
+            "memories": memories,
+            "rooms": rooms,
+            "connections": connections
+        })
     }
 
     async fn load_json(
@@ -839,13 +853,23 @@ impl Tool for MemoryPalace {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "kv-mem"))]
 mod tests {
     use super::*;
+    use surrealdb::engine::local::{Db, Mem};
+    use surrealdb::opt::Config;
+
+    async fn new_test_db() -> Surreal<Db> {
+        let config = Config::default().strict();
+        let db = Surreal::new::<Mem>(config).await.unwrap();
+        db.use_ns("test").use_db("test").await.unwrap();
+        db
+    }
 
     #[tokio::test]
+    #[allow(unused_variables)] // Used in tests
     async fn test_memory_palace_store_and_search() {
-        let mut palace = MemoryPalace::new();
+        let mut palace = MemoryPalace::from_db(new_test_db().await);
 
         // Store some memories
         let id1 = palace
@@ -880,7 +904,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_palace_rooms_and_connections() {
-        let mut palace = MemoryPalace::new();
+        let mut palace = MemoryPalace::from_db(new_test_db().await);
 
         // Create rooms with memories
         palace
