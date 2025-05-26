@@ -176,8 +176,6 @@ dioxus = ["dep:dioxus"]
 notepad = []
 # MemoryPalace tool for the assistant to store and retrieve memories.
 memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx"]
-# Butler for the MemoryPalace tool.
-butler = ["memory-palace"]
 # Sqlx support (need for some tools)
 sqlx = ["dep:sqlx"]
 # Tokio for sqlx support

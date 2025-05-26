@@ -10,11 +10,6 @@ use crate::prompt::message::Content;
 mod toolbox;
 pub use toolbox::ToolBox;
 
-#[cfg(feature = "butler")]
-mod butler;
-#[cfg(feature = "butler")]
-pub use butler::Butler;
-
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
 #[cfg(feature = "memory-palace")]

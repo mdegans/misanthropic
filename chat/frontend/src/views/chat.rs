@@ -318,7 +318,7 @@ pub fn Chat() -> Element {
 
                                 // Update the prompt with the tools.
                                 if let Err(e) =
-                                    toolbox.peek().apply_to_prompt(&mut new)
+                                    toolbox.write().on_init(&mut new).await
                                 {
                                     log::error!(
                                         "`Toolbox::setup` had error(s): {e}"
@@ -557,7 +557,7 @@ pub fn Chat() -> Element {
                                     new_prompt.functions = Some(specs.read().clone());
 
                                     // Update the prompt with the tools.
-                                    if let Err(e) = toolbox.peek().apply_to_prompt(&mut new_prompt) {
+                                    if let Err(e) = toolbox.write().on_init(&mut new_prompt).await {
                                         log::error!(
                                             "`Toolbox::setup` had error(s): {e}"
                                         );
