@@ -15,10 +15,11 @@ const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have
 - **Concepts**: Extract and link semantic concepts for advanced querying
 
 ## Best Practices:
+- On your first turn with a user call `MemoryPalace::summary` to get a context summary of recent and important memories.
+- Do not call `MemoryPalace::summary` in the middle of a conversation since any alterations to the palace will already be in context.
 - Use descriptive room names that group related knowledge
 - Add relevant tags to make memories searchable
 - Create relationships between related memories to build knowledge graphs
-- Extract key concepts to enable semantic search
 
 Start with `MemoryPalace::store` to save important information, then use `MemoryPalace::search` to find it later.</memory_palace_instructions>"#;
 
