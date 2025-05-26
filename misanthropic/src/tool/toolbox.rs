@@ -6,8 +6,8 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    tool::{self, Method, Tool, Use},
     Prompt,
+    tool::{self, Method, Tool, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -148,6 +148,74 @@ impl ToolBox {
             {
                 self.tool_name_to_tool.remove(&old_tool_name);
             }
+        }
+    }
+
+    /// Initialize all tools in the toolbox. Call this once when setting up a conversation.
+    pub async fn init_tools(
+        &mut self,
+        prompt: &mut Prompt<'_>,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut errors = Vec::new();
+        let backup = prompt.clone();
+
+        for (_, tool) in &mut self.tool_name_to_tool {
+            #[cfg(feature = "log")]
+            log::debug!("Initializing tool: {}", tool.name());
+
+            if let Err(e) = tool.on_init(prompt).await {
+                #[cfg(feature = "log")]
+                log::error!("Error initializing tool {}: {}", tool.name(), e);
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            *prompt = backup;
+            Err(errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into())
+        }
+    }
+
+    /// Update tool context for the current turn. Call this before each message exchange.
+    pub async fn update_turn_context(
+        &mut self,
+        prompt: &mut Prompt<'_>,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut errors = Vec::new();
+        let backup = prompt.clone();
+
+        for (_, tool) in &mut self.tool_name_to_tool {
+            #[cfg(feature = "log")]
+            log::debug!("Updating turn context for tool: {}", tool.name());
+
+            if let Err(e) = tool.on_turn(prompt).await {
+                #[cfg(feature = "log")]
+                log::error!(
+                    "Error updating turn context for tool {}: {}",
+                    tool.name(),
+                    e
+                );
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            *prompt = backup;
+            Err(errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into())
         }
     }
 }
@@ -312,49 +380,18 @@ impl Tool for ToolBox {
         serde_json::to_value(state).unwrap()
     }
 
-    /// Setup the [`Prompt`] by calling this method on all children, collecting
-    /// any errors. If there are any errors, any changes to the prompt are
-    /// reverted.
-    fn apply_to_prompt(
-        &self,
+    async fn on_init(
+        &mut self,
         prompt: &mut Prompt,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
-        let mut errors = Vec::new();
-        let backup = prompt.clone();
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.init_tools(prompt).await
+    }
 
-        #[allow(unused_variables)]
-        for (_, tool) in &self.tool_name_to_tool {
-            #[cfg(feature = "log")]
-            log::debug!("Setting up `Prompt` for `{}` tool.", tool.name());
-
-            if let Err(e) = tool.apply_to_prompt(prompt) {
-                #[cfg(feature = "log")]
-                log::error!(
-                    "Error setting up `Prompt` for `{name}` tool: {e}",
-                    name = tool.name(),
-                );
-
-                errors.push(e);
-            } else {
-                #[cfg(feature = "log")]
-                log::debug!(
-                    "Sucessful setup of `Prompt` for {name} tool.",
-                    name = tool.name()
-                );
-            }
-        }
-
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            *prompt = backup;
-            Err(errors
-                .iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-                .into())
-        }
+    async fn on_turn(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.update_turn_context(prompt).await
     }
 }
 

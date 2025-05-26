@@ -14,14 +14,13 @@ use clap::Parser;
 use subprocess::{Exec, Redirection};
 
 use misanthropic::{
-    json,
+    AnthropicModel, Client, Prompt, json,
     markdown::ToMarkdown,
     prompt::{
-        message::{Content, Role},
         Message,
+        message::{Content, Role},
     },
     tool::{self, Method},
-    AnthropicModel, Client, Prompt,
 };
 
 /// Use Python to answer the user's questions.
@@ -186,11 +185,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .trim()
         .to_string();
 
-    // Craft our `Prompt`, providing a Tool definition to call `python`. In the
-    // future this will be derivable from the function signature and docstring.
-    // Like many things in our API, `Tool` is also convertable from a
-    // `serde_json::Value` so the `json!` macro can be used instead as an
-    // argument to `add_tool`.
+    // Craft our `Prompt`, providing a Tool definition to call `python`.
+    // Note: We can't use the new async lifecycle methods here since we're not using a ToolBox,
+    // but this shows the traditional approach still works.
     let mut chat = Prompt::default()
         .model(if args.sonnet {
             AnthropicModel::Sonnet35
@@ -286,7 +283,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // the system prompt and examples are very long, it can be useful to
         // cache everything up to the user input.
         .cache()
-        // Add user input.
         .add_message((Role::User, args.prompt))?;
 
     // Call the tool and retry up to 3 times.
@@ -310,26 +306,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .truncate(chat.messages.len() - (retry * 2));
                     }
 
-                    chat.push_message(message);
-                    chat.push_message(result);
+                    let _ = chat.push_message(message);
+                    let _ = chat.push_message(result);
 
                     // Generate a message with the result.
                     let message = client.message(&chat).await?;
-                    chat.push_message(message);
+                    let _ = chat.push_message(message);
                     break;
                 }
                 Err(error) => {
                     // Something went wrong with the tool use. We'll append the
                     // error message so the Assistant can learn from it and try
                     // again.
-                    chat.push_message(message);
-                    chat.push_message(error);
+                    let _ = chat.push_message(message);
+                    let _ = chat.push_message(error);
                 }
             }
         } else {
             // Tool was not called. This is fine if the user didn't ask for
             // something that requires Python.
-            chat.push_message(message);
+            let _ = chat.push_message(message);
             break;
         }
     }

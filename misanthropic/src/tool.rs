@@ -85,26 +85,32 @@ pub trait Tool: Send {
     ) -> std::result::Result<(), String> {
         Ok(())
     }
-    /// Setup the [`Prompt`] with tools. For example, for the [`Notepad`], add
-    /// or update a notepad block in the system prompt.
-    ///  
+
+    /// Called once when the tool is first added to a prompt or toolbox.
+    /// Use this to set up initial context, instructions, or static content.
+    ///
     /// # Note:
-    /// - Tool implementations should be [idempotent]. A tool should handle the
-    ///   case where it has already been called on a prompt. In general, a tool
-    ///   should overwrite or update existing state. It should not add without
-    ///   checking if it already exists since the frequency of calls is
-    ///   undefined and the [`Prompt`] might grow too large. This could be
-    ///   called every turn, every message, or only once, depending on the tool.
-    ///
-    /// # See Also:
-    /// - [`Prompt::apply_tool`]
-    ///
-    /// [idempotent]: https://en.wikipedia.org/wiki/Idempotence
-    /// [`Assistant`]: crate::prompt::message::Role::Assistant
-    fn apply_to_prompt(
-        &self,
+    /// - This is called only once per tool lifetime in a conversation
+    /// - Use for setting up tool instructions, initial context blocks
+    /// - Should be idempotent in case called multiple times
+    async fn on_init(
+        &mut self,
         _prompt: &mut Prompt,
-    ) -> std::result::Result<(), Box<dyn std::error::Error>> {
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
+
+    /// Called before each turn/message exchange.
+    /// Use this to update dynamic context, recent state, or per-turn information.
+    ///
+    /// # Note:
+    /// - This is called before each user message or assistant response
+    /// - Use for updating dynamic content like recent memories, current state
+    /// - Should efficiently update existing content rather than appending
+    async fn on_turn(
+        &mut self,
+        _prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
 }

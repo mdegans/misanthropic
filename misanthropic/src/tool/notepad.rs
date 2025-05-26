@@ -1,12 +1,12 @@
 //! [`Notepad`] [`tool`].
 //!
 //! [`tool`]: super
-use crate::{prompt::message::Block, Prompt};
+use crate::{Prompt, prompt::message::Block};
 
 use super::{Method, Tool, Use};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
@@ -94,7 +94,9 @@ impl<'a> Tool for Notepad<'a> {
         if let Some(Value::String(note)) = map.remove("note") {
             if note.contains("<notepad>") || note.contains("</notepad>") {
                 #[cfg(feature = "log")]
-                log::error!("Injection attack detected. `<notepad>` or `</notepad>` in note.");
+                log::error!(
+                    "Injection attack detected. `<notepad>` or `</notepad>` in note."
+                );
                 return super::Result {
                     tool_use_id: call.id,
                     content: "You cannot put `<notepad>` or `</notepad>` in your note.".into(),
@@ -166,40 +168,56 @@ impl<'a> Tool for Notepad<'a> {
         Ok(())
     }
 
-    /// Setup [`Prompt`] by updating the notepad block in the system prompt.
-    ///
-    /// O(n) where n is the length of the system prompt.
-    // This would be O(1), but Anthropic won't let us stuff as much metadata as
-    // we want in Prompt::metadata. We found this out the hard way.
-    fn apply_to_prompt(
+    async fn on_init(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Set up the notepad instructions and initial state
+        self.sync_apply_to_prompt(prompt).map_err(|e| {
+            let error_string = e.to_string();
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                error_string,
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })
+    }
+
+    async fn on_turn(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Update the notepad content (notes may have been added)
+        self.sync_apply_to_prompt(prompt).map_err(|e| {
+            let error_string = e.to_string();
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                error_string,
+            )) as Box<dyn std::error::Error + Send + Sync>
+        })
+    }
+}
+
+impl<'a> Notepad<'a> {
+    /// Synchronous version of apply_to_prompt for internal use
+    fn sync_apply_to_prompt(
         &self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error>> {
         // Check for the presence of a `<notepad>` tags in the system prompt.
         for note in &self.notes {
             if note.contains("<notepad>") || note.contains("</notepad>") {
-                // This should never happen unless the developer allows the user
-                // to supply the notepad and a compromised prompt is used. It is
-                // possible to Deserialize or otherwise craft such a Notepad.
                 return Err("Injection attack detected. Notepad is compromised and contains forbidden tags.".into());
             }
             if note.contains("<note>") || note.contains("</note>") {
-                // This should never happen unless the developer allows the user
-                // to supply the notepad and a compromised prompt is used. It is
-                // possible to Deserialize or otherwise craft such a Notepad.
                 return Err("Notepad contains forbidden tags.".into());
             }
         }
-        // Notepad does not contain forbidden tags.
 
         // Write the text to the prompt, returning true if the text was written.
-        // Text is only written where <notepad_instructions> is found.
         let write_text = |text: &mut crate::CowStr| -> bool {
             #[cfg(feature = "langsan")]
             if text.contains("<notepad_instructions>") {
-                // This is the correct block. Overwrite it.
                 let mut new: crate::CowStr = String::new().into();
-
                 new.push_str(NOTEPAD_INSTRUCTIONS);
                 new.push_str("<notepad>");
                 for note in &self.notes {
@@ -208,16 +226,13 @@ impl<'a> Tool for Notepad<'a> {
                     new.push_str("</note>");
                 }
                 new.push_str("</notepad>");
-
                 *text = new;
-
                 true
             } else {
                 false
             }
             #[cfg(not(feature = "langsan"))]
             if text.contains("<notepad_instructions>") {
-                // Regular old std::borrow::Cow<str>
                 text.to_mut().clear();
                 text.to_mut().push_str(NOTEPAD_INSTRUCTIONS);
                 text.to_mut().push_str("<notepad>");
@@ -227,7 +242,6 @@ impl<'a> Tool for Notepad<'a> {
                     text.to_mut().push_str("</note>");
                 }
                 text.to_mut().push_str("</notepad>");
-
                 true
             } else {
                 false
@@ -364,8 +378,8 @@ mod tests {
         assert_eq!(notepad2.notes[0].as_ref(), "Hello, world!");
     }
 
-    #[test]
-    fn test_notepad_setup_injection_attack() {
+    #[tokio::test]
+    async fn test_notepad_setup_injection_attack() {
         const FORBIDDEN: &[&str] =
             &["<notepad>", "</notepad>", "<note>", "</note>"];
 
@@ -373,19 +387,19 @@ mod tests {
             let mut notepad = Notepad::new();
             notepad.notes.push(seq.into());
             let mut prompt = Prompt::default();
-            let result = notepad.apply_to_prompt(&mut prompt);
+            let result = notepad.on_init(&mut prompt).await;
             assert!(result.is_err());
         }
     }
 
     // Test with no existing block.
-    #[test]
-    fn test_notepad_setup_no_existing_block() {
+    #[tokio::test]
+    async fn test_notepad_setup_no_existing_block() {
         let mut notepad = Notepad::new();
         notepad.notes.push("I am test code! Whee!".into());
         let mut prompt =
             Prompt::default().set_system("You are a test code! Whee!");
-        notepad.apply_to_prompt(&mut prompt).unwrap();
+        notepad.on_init(&mut prompt).await.unwrap();
 
         // The block should have been appended.
         assert_eq!(prompt.system.as_ref().unwrap().len(), 2);
@@ -401,14 +415,14 @@ mod tests {
     }
 
     // Test with existing block.
-    #[test]
-    fn test_notepad_setup_existing_block() {
+    #[tokio::test]
+    async fn test_notepad_setup_existing_block() {
         let mut notepad = Notepad::new();
         notepad.notes.push("I am test code! Whee!".into());
         let mut prompt = Prompt::default().set_system(
             "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>Existing note.</note></notepad>",
         );
-        notepad.apply_to_prompt(&mut prompt).unwrap();
+        notepad.on_init(&mut prompt).await.unwrap();
 
         // The block should have been replaced.
         assert_eq!(prompt.system.as_ref().unwrap().len(), 1);

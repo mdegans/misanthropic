@@ -8,7 +8,7 @@ use std::{borrow::Cow, num::NonZeroU16, vec};
 use crate::{
     model,
     stream::{self, DeltaError},
-    tool::{self, Method, Tool},
+    tool::{self, Method},
 };
 use message::Content;
 
@@ -144,7 +144,9 @@ impl Default for Prompt<'_> {
 
 /// Message turn order is incorrect.
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
-#[error("The message turn order must alternate between User and Assistant. The first message is {first:?} and the second message is {second:?}.")]
+#[error(
+    "The message turn order must alternate between User and Assistant. The first message is {first:?} and the second message is {second:?}."
+)]
 pub struct TurnOrderError {
     /// First message in the pair of duplicate roles.
     pub first: Message<'static>,
@@ -926,17 +928,29 @@ impl<'a> Prompt<'a> {
         }
     }
 
-    /// Apply a [`Tool`] to the prompt. This is a convenience method to call
-    /// [`Tool::apply_to_prompt`] on [`self`].
-    pub fn setup_tool<T>(
+    /// Initialize a [`Tool`] with this [`Prompt`] asynchronously.
+    /// This will call [`Tool::on_init`] to set up the tool's initial context.
+    pub async fn init_tool<T>(
         mut self,
-        tool: &T,
-    ) -> Result<Self, Box<dyn std::error::Error>>
+        tool: &mut T,
+    ) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>>
     where
-        T: Tool,
+        T: ?Sized + crate::tool::Tool,
     {
-        tool.apply_to_prompt(&mut self)?;
+        tool.on_init(&mut self).await?;
         Ok(self)
+    }
+
+    /// Update turn context for a tool.
+    /// Call this before each conversation turn to refresh dynamic content.
+    pub async fn update_tool_context<T>(
+        &mut self,
+        tool: &mut T,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        T: ?Sized + crate::tool::Tool,
+    {
+        tool.on_turn(self).await
     }
 }
 
@@ -1026,7 +1040,9 @@ pub enum ApplyEventError {
     /// Expected the last message to be an [`Assistant`]. Similar to
     /// TurnOrderError but more specific and does not originate from
     /// `push_message` or `add_message`.
-    #[error("`Role::Assistant` must be the final message role in the prompt to apply this `Event`.")]
+    #[error(
+        "`Role::Assistant` must be the final message role in the prompt to apply this `Event`."
+    )]
     ExpectedAssistant {
         /// The [`Event`] that caused the error.
         event: stream::Event,
@@ -1129,7 +1145,7 @@ mod tests {
     use serde_json::json;
     use std::num::NonZeroU16;
 
-    use crate::{prompt::message::Role, AnthropicModel};
+    use crate::{AnthropicModel, prompt::message::Role};
 
     const STOP_SEQUENCES: [&str; 2] = ["stop1", "stop2"];
 
@@ -1360,23 +1376,27 @@ mod tests {
             cache_control: None,
         });
 
-        assert!(!request
-            .functions
-            .as_ref()
-            .unwrap()
-            .last()
-            .unwrap()
-            .is_cached());
+        assert!(
+            !request
+                .functions
+                .as_ref()
+                .unwrap()
+                .last()
+                .unwrap()
+                .is_cached()
+        );
 
         let mut request = request.cache();
 
-        assert!(request
-            .functions
-            .as_ref()
-            .unwrap()
-            .last()
-            .unwrap()
-            .is_cached());
+        assert!(
+            request
+                .functions
+                .as_ref()
+                .unwrap()
+                .last()
+                .unwrap()
+                .is_cached()
+        );
 
         // remove the cache breakpoint
         // TODO: add an un_cache method? set_cache?
@@ -1397,13 +1417,15 @@ mod tests {
 
         assert!(request.system.as_ref().unwrap().last().unwrap().is_cached());
         // ensure the tools are not affected
-        assert!(!request
-            .functions
-            .as_ref()
-            .unwrap()
-            .last()
-            .unwrap()
-            .is_cached());
+        assert!(
+            !request
+                .functions
+                .as_ref()
+                .unwrap()
+                .last()
+                .unwrap()
+                .is_cached()
+        );
 
         // Test with messages. The call to cache should affect the last message.
         let request = request
@@ -1424,14 +1446,16 @@ mod tests {
 
         // By now the final part should be a multi part string, since only
         // Block has `cache_control`
-        assert!(request
-            .messages
-            .last()
-            .unwrap()
-            .content
-            .last()
-            .unwrap()
-            .is_cached());
+        assert!(
+            request
+                .messages
+                .last()
+                .unwrap()
+                .content
+                .last()
+                .unwrap()
+                .is_cached()
+        );
     }
 
     #[test]

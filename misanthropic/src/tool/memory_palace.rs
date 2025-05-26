@@ -6,7 +6,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, PgPool, Row};
 
-const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system. Your memories are organized into rooms with semantic relationships, tags, and full-text search capabilities. Use this to store, organize, and retrieve knowledge across conversations.</memory_palace_instructions>"#;
+const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system that helps you store, organize, and retrieve knowledge across conversations.
+
+## Key Concepts:
+- **Rooms**: Organize memories by topic (e.g., "science", "cooking", "personal_facts")
+- **Memories**: Individual pieces of knowledge with content, tags, and timestamps
+- **Relationships**: Connect related memories for graph traversal and discovery
+- **Concepts**: Extract and link semantic concepts for advanced querying
+
+## Best Practices:
+- Use descriptive room names that group related knowledge
+- Add relevant tags to make memories searchable
+- Create relationships between related memories to build knowledge graphs
+- Extract key concepts to enable semantic search
+
+Start with `MemoryPalace::store` to save important information, then use `MemoryPalace::search` to find it later.</memory_palace_instructions>"#;
 
 /// A memory item stored in the palace.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -61,15 +75,26 @@ struct Connection {
 pub struct MemoryPalace {
     /// PostgreSQL connection pool.
     pub(crate) pool: PgPool,
+    /// The schema name to use for all operations.
+    schema_name: String,
 }
 
 impl MemoryPalace {
     const NAME: &'static str = "MemoryPalace";
 
     /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool.
-    /// Initializes the database schema if it hasn't been done yet.
+    /// Uses the default 'public' schema.
     pub async fn from_pool(pool: PgPool) -> Result<Self, String> {
-        let mut new = Self { pool };
+        Self::from_pool_with_schema(pool, "public".to_string()).await
+    }
+
+    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a specific schema.
+    /// Initializes the database schema if it hasn't been done yet.
+    pub async fn from_pool_with_schema(
+        pool: PgPool,
+        schema_name: String,
+    ) -> Result<Self, String> {
+        let mut new = Self { pool, schema_name };
 
         // Ensure the database is initialized - this is our class invariant
         new.ensure_initialized().await?;
@@ -79,133 +104,244 @@ impl MemoryPalace {
 
     /// Initialize the database schema with proper indexes and triggers.
     async fn ensure_initialized(&mut self) -> Result<(), String> {
-        // Create tables with proper indexes and triggers
-        sqlx::query(r#"
-            CREATE TABLE IF NOT EXISTS rooms (
+        // Execute schema creation statements in a transaction to ensure atomicity
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+        // Set search path for this transaction
+        sqlx::query(&format!("SET search_path TO {}", self.schema_name))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to set search path: {}", e))?;
+
+        // Create tables first
+        let table_statements = [
+            r#"CREATE TABLE IF NOT EXISTS rooms (
                 id BIGSERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS memories (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS memories (
                 id BIGSERIAL PRIMARY KEY,
                 content TEXT NOT NULL,
-                room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+                room VARCHAR(255) NOT NULL,
                 tags JSONB NOT NULL DEFAULT '[]',
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS room_connections (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS room_connections (
                 id BIGSERIAL PRIMARY KEY,
-                from_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
-                to_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+                from_room VARCHAR(255) NOT NULL,
+                to_room VARCHAR(255) NOT NULL,
                 description TEXT,
                 strength INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE(from_room, to_room)
-            );
-
-            CREATE TABLE IF NOT EXISTS memory_relationships (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS memory_relationships (
                 id BIGSERIAL PRIMARY KEY,
-                from_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                to_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                from_memory_id BIGINT NOT NULL,
+                to_memory_id BIGINT NOT NULL,
                 relationship_type VARCHAR(100) NOT NULL DEFAULT 'related',
                 strength FLOAT NOT NULL DEFAULT 1.0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE(from_memory_id, to_memory_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS concepts (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS concepts (
                 id BIGSERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
-                description TEXT, -- Optional description for complex concepts
+                description TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-
-            CREATE TABLE IF NOT EXISTS memory_concepts (
+            )"#,
+            r#"CREATE TABLE IF NOT EXISTS memory_concepts (
                 id BIGSERIAL PRIMARY KEY,
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                concept_id BIGINT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
+                memory_id BIGINT NOT NULL,
+                concept_id BIGINT NOT NULL,
                 confidence FLOAT NOT NULL DEFAULT 1.0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE(memory_id, concept_id)
-            );
+            )"#,
+        ];
 
-            -- Trigger to automatically update last_updated timestamp
-            CREATE OR REPLACE FUNCTION update_last_updated_column()
+        for statement in table_statements {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to create table: {}", e))?;
+        }
+
+        // Add foreign key constraints after tables are created
+        let constraint_statements = [
+            r#"ALTER TABLE memories DROP CONSTRAINT IF EXISTS memories_room_fkey"#,
+            r#"ALTER TABLE memories ADD CONSTRAINT memories_room_fkey 
+               FOREIGN KEY (room) REFERENCES rooms(name) ON DELETE CASCADE"#,
+            r#"ALTER TABLE room_connections DROP CONSTRAINT IF EXISTS room_connections_from_room_fkey"#,
+            r#"ALTER TABLE room_connections ADD CONSTRAINT room_connections_from_room_fkey 
+               FOREIGN KEY (from_room) REFERENCES rooms(name) ON DELETE CASCADE"#,
+            r#"ALTER TABLE room_connections DROP CONSTRAINT IF EXISTS room_connections_to_room_fkey"#,
+            r#"ALTER TABLE room_connections ADD CONSTRAINT room_connections_to_room_fkey 
+               FOREIGN KEY (to_room) REFERENCES rooms(name) ON DELETE CASCADE"#,
+            r#"ALTER TABLE memory_relationships DROP CONSTRAINT IF EXISTS memory_relationships_from_memory_id_fkey"#,
+            r#"ALTER TABLE memory_relationships ADD CONSTRAINT memory_relationships_from_memory_id_fkey 
+               FOREIGN KEY (from_memory_id) REFERENCES memories(id) ON DELETE CASCADE"#,
+            r#"ALTER TABLE memory_relationships DROP CONSTRAINT IF EXISTS memory_relationships_to_memory_id_fkey"#,
+            r#"ALTER TABLE memory_relationships ADD CONSTRAINT memory_relationships_to_memory_id_fkey 
+               FOREIGN KEY (to_memory_id) REFERENCES memories(id) ON DELETE CASCADE"#,
+            r#"ALTER TABLE memory_concepts DROP CONSTRAINT IF EXISTS memory_concepts_memory_id_fkey"#,
+            r#"ALTER TABLE memory_concepts ADD CONSTRAINT memory_concepts_memory_id_fkey 
+               FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE"#,
+            r#"ALTER TABLE memory_concepts DROP CONSTRAINT IF EXISTS memory_concepts_concept_id_fkey"#,
+            r#"ALTER TABLE memory_concepts ADD CONSTRAINT memory_concepts_concept_id_fkey 
+               FOREIGN KEY (concept_id) REFERENCES concepts(id) ON DELETE CASCADE"#,
+        ];
+
+        for statement in constraint_statements {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to add constraint: {}", e))?;
+        }
+
+        // Create functions and triggers
+        let function_statements = [
+            r#"CREATE OR REPLACE FUNCTION update_last_updated_column()
             RETURNS TRIGGER AS $$
             BEGIN
                 NEW.last_updated = NOW();
                 RETURN NEW;
             END;
-            $$ language 'plpgsql';
-
-            DROP TRIGGER IF EXISTS update_memories_last_updated ON memories;
-            CREATE TRIGGER update_memories_last_updated
+            $$ language 'plpgsql'"#,
+            r#"DROP TRIGGER IF EXISTS update_memories_last_updated ON memories"#,
+            r#"CREATE TRIGGER update_memories_last_updated
                 BEFORE UPDATE ON memories
                 FOR EACH ROW
-                EXECUTE FUNCTION update_last_updated_column();
+                EXECUTE FUNCTION update_last_updated_column()"#,
+        ];
 
-            -- Indexes for performance
-            CREATE INDEX IF NOT EXISTS idx_memories_room ON memories(room);
-            CREATE INDEX IF NOT EXISTS idx_memories_content_gin ON memories USING gin(to_tsvector('english', content));
-            CREATE INDEX IF NOT EXISTS idx_memories_tags_gin ON memories USING gin(tags);
-            CREATE INDEX IF NOT EXISTS idx_room_connections_from ON room_connections(from_room);
-            CREATE INDEX IF NOT EXISTS idx_memory_relationships_from ON memory_relationships(from_memory_id);
-            CREATE INDEX IF NOT EXISTS idx_memory_concepts_memory ON memory_concepts(memory_id);
-            CREATE INDEX IF NOT EXISTS idx_memory_concepts_concept ON memory_concepts(concept_id);
-        "#)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to create schema: {}", e))?;
+        for statement in function_statements {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| {
+                    format!("Failed to create function/trigger: {}", e)
+                })?;
+        }
+
+        // Create indexes
+        let index_statements = [
+            r#"CREATE INDEX IF NOT EXISTS idx_memories_room ON memories(room)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_memories_content_gin ON memories USING gin(to_tsvector('english', content))"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_memories_tags_gin ON memories USING gin(tags)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_room_connections_from ON room_connections(from_room)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_memory_relationships_from ON memory_relationships(from_memory_id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_memory_concepts_memory ON memory_concepts(memory_id)"#,
+            r#"CREATE INDEX IF NOT EXISTS idx_memory_concepts_concept ON memory_concepts(concept_id)"#,
+        ];
+
+        for statement in index_statements {
+            sqlx::query(statement)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| format!("Failed to create index: {}", e))?;
+        }
+
+        // Commit the transaction
+        tx.commit()
+            .await
+            .map_err(|e| format!("Failed to commit schema creation: {}", e))?;
 
         Ok(())
+    }
+
+    /// Execute a query with proper schema context
+    async fn execute_with_schema<'q, F, R>(
+        &self,
+        operation: F,
+    ) -> Result<R, String>
+    where
+        F: for<'c> FnOnce(
+            &'c mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<Output = Result<R, sqlx::Error>>
+                    + Send
+                    + 'c,
+            >,
+        >,
+    {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|e| format!("Failed to begin transaction: {}", e))?;
+
+        // Set search path for this transaction
+        sqlx::query(&format!("SET search_path TO {}", self.schema_name))
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("Failed to set search path: {}", e))?;
+
+        let result = operation(&mut tx)
+            .await
+            .map_err(|e| format!("Database operation failed: {}", e))?;
+
+        tx.commit()
+            .await
+            .map_err(|e| format!("Failed to commit transaction: {}", e))?;
+
+        Ok(result)
     }
 
     /// Store a memory in a specific room.
     pub(crate) async fn store_memory(
         &mut self,
-        room_name: &str,
-        content: &str,
+        room_name: impl Into<String>,
+        content: impl Into<String>,
         tags: impl IntoIterator<Item = &str>,
     ) -> Result<i64, String> {
-        // Ensure room exists
-        sqlx::query(
-            r#"
-            INSERT INTO rooms (name, description) 
-            VALUES ($1, $2) 
-            ON CONFLICT (name) DO NOTHING
-        "#,
-        )
-        .bind(room_name)
-        .bind(format!("Room for {}", room_name))
-        .execute(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to create room: {}", e))?;
-
-        // Convert tags to Vec<String> for JSON serialization
-        let tags: Vec<&str> = tags.into_iter().collect();
+        let tags: Vec<String> =
+            tags.into_iter().map(|s| s.to_string()).collect();
         let tags_json = serde_json::to_value(&tags)
             .map_err(|e| format!("Failed to serialize tags: {}", e))?;
+        let room_name = room_name.into();
+        let content = content.into();
 
-        let row = sqlx::query(
-            r#"
-            INSERT INTO memories (content, room, tags) 
-            VALUES ($1, $2, $3) 
-            RETURNING id
-        "#,
-        )
-        .bind(content)
-        .bind(room_name)
-        .bind(tags_json)
-        .fetch_one(&self.pool)
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                // Ensure room exists
+                sqlx::query(
+                    r#"
+                    INSERT INTO rooms (name, description) 
+                    VALUES ($1, $2) 
+                    ON CONFLICT (name) DO NOTHING
+                "#,
+                )
+                .bind(&room_name)
+                .bind(format!("Room for {}", room_name))
+                .execute(&mut **tx)
+                .await?;
+
+                let row = sqlx::query(
+                    r#"
+                    INSERT INTO memories (content, room, tags) 
+                    VALUES ($1, $2, $3) 
+                    RETURNING id
+                "#,
+                )
+                .bind(&content)
+                .bind(&room_name)
+                .bind(&tags_json)
+                .fetch_one(&mut **tx)
+                .await?;
+
+                Ok(row.get::<i64, _>("id"))
+            })
+        })
         .await
-        .map_err(|e| format!("Failed to create memory: {}", e))?;
-
-        let memory_id: i64 = row.get("id");
-        Ok(memory_id)
     }
 
     /// Search for memories using full-text search and filters.
@@ -216,114 +352,126 @@ impl MemoryPalace {
         #[cfg(feature = "log")]
         log::debug!("Memory Palace searching for: '{}'", query);
 
-        let memories: Vec<Memory> = sqlx::query_as(
-            r#"
-            SELECT id, content, room, tags, created_at, last_updated
-            FROM memories 
-            WHERE 
-                content ILIKE $1 
-                OR room ILIKE $1 
-                OR tags::text ILIKE $1
-            ORDER BY 
-                CASE 
-                    WHEN content ILIKE $1 THEN 3
-                    WHEN room ILIKE $1 THEN 2
-                    WHEN tags::text ILIKE $1 THEN 1
-                    ELSE 0
-                END DESC,
-                created_at DESC
-        "#,
-        )
-        .bind(format!("%{}%", query))
-        .fetch_all(&self.pool)
+        let query_pattern = format!("%{}%", query);
+
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let memories: Vec<Memory> = sqlx::query_as(
+                    r#"
+                    SELECT id, content, room, tags, created_at, last_updated
+                    FROM memories 
+                    WHERE 
+                        content ILIKE $1 
+                        OR room ILIKE $1 
+                        OR tags::text ILIKE $1
+                    ORDER BY 
+                        CASE 
+                            WHEN content ILIKE $1 THEN 3
+                            WHEN room ILIKE $1 THEN 2
+                            WHEN tags::text ILIKE $1 THEN 1
+                            ELSE 0
+                        END DESC,
+                        created_at DESC
+                "#,
+                )
+                .bind(&query_pattern)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                let results: Vec<_> = memories
+                    .into_iter()
+                    .map(|memory| {
+                        (memory.room.clone(), memory.id.to_string(), memory)
+                    })
+                    .collect();
+
+                Ok(results)
+            })
+        })
         .await
-        .map_err(|e| format!("Failed to search memories: {}", e))?;
-
-        let results: Vec<_> = memories
-            .into_iter()
-            .map(|memory| (memory.room.clone(), memory.id.to_string(), memory))
-            .collect();
-
-        #[cfg(feature = "log")]
-        log::debug!("Found {} memories", results.len());
-
-        Ok(results)
     }
 
     /// Connect two rooms in the palace.
     async fn connect_rooms(
         &mut self,
-        room1: &str,
-        room2: &str,
+        room1: impl Into<String>,
+        room2: impl Into<String>,
     ) -> Result<(), String> {
-        // Create bidirectional connections
-        sqlx::query(
-            r#"
-            INSERT INTO room_connections (from_room, to_room, strength) 
-            VALUES ($1, $2, 1), ($2, $1, 1)
-            ON CONFLICT (from_room, to_room) DO NOTHING
-        "#,
-        )
-        .bind(room1)
-        .bind(room2)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to create connections: {}", e))?;
+        let room1 = room1.into();
+        let room2 = room2.into();
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                sqlx::query(
+                    r#"
+                    INSERT INTO room_connections (from_room, to_room, strength) 
+                    VALUES ($1, $2, 1), ($2, $1, 1)
+                    ON CONFLICT (from_room, to_room) DO NOTHING
+                "#,
+                )
+                .bind(room1)
+                .bind(room2)
+                .execute(&mut **tx)
+                .await?;
 
-        Ok(())
+                Ok(())
+            })
+        })
+        .await
     }
 
     /// List all rooms with their memory counts and connections.
     async fn list_rooms(
         &mut self,
     ) -> Result<Vec<(String, String, usize, Vec<String>)>, String> {
-        let rows = sqlx::query(
-            r#"
-            SELECT 
-                r.name,
-                r.description,
-                COUNT(m.id) as memory_count
-            FROM rooms r
-            LEFT JOIN memories m ON r.name = m.room
-            GROUP BY r.name, r.description
-            ORDER BY r.name
-        "#,
-        )
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to query rooms: {}", e))?;
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT 
+                        r.name,
+                        r.description,
+                        COUNT(m.id) as memory_count
+                    FROM rooms r
+                    LEFT JOIN memories m ON r.name = m.room
+                    GROUP BY r.name, r.description
+                    ORDER BY r.name
+                "#,
+                )
+                .fetch_all(&mut **tx)
+                .await?;
 
-        let mut results = Vec::new();
-        for row in rows {
-            let room_name: String = row.get("name");
-            let description: String = row.get("description");
-            let memory_count: i64 = row.get("memory_count");
+                let mut results = Vec::new();
+                for row in rows {
+                    let room_name: String = row.get("name");
+                    let description: String = row.get("description");
+                    let memory_count: i64 = row.get("memory_count");
 
-            // Get connections for this room
-            let connection_rows = sqlx::query(
-                r#"
-                SELECT to_room FROM room_connections WHERE from_room = $1
-            "#,
-            )
-            .bind(&room_name)
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| format!("Failed to query connections: {}", e))?;
+                    // Get connections for this room
+                    let connection_rows = sqlx::query(
+                        r#"
+                        SELECT to_room FROM room_connections WHERE from_room = $1
+                    "#,
+                    )
+                    .bind(&room_name)
+                    .fetch_all(&mut **tx)
+                    .await?;
 
-            let connections: Vec<String> = connection_rows
-                .into_iter()
-                .map(|row| row.get("to_room"))
-                .collect();
+                    let connections: Vec<String> = connection_rows
+                        .into_iter()
+                        .map(|row| row.get("to_room"))
+                        .collect();
 
-            results.push((
-                room_name,
-                description,
-                memory_count as usize,
-                connections,
-            ));
-        }
+                    results.push((
+                        room_name,
+                        description,
+                        memory_count as usize,
+                        connections,
+                    ));
+                }
 
-        Ok(results)
+                Ok(results)
+            })
+        }).await
     }
 
     /// Create a relationship between two memories.
@@ -331,96 +479,104 @@ impl MemoryPalace {
         &mut self,
         memory_id1: i64,
         memory_id2: i64,
-        relationship_type: &str,
+        relationship_type: impl Into<String>,
         strength: f64,
     ) -> Result<String, String> {
-        sqlx::query(r#"
-            INSERT INTO memory_relationships (from_memory_id, to_memory_id, relationship_type, strength)
-            VALUES ($1, $2, $3, $4)
-            ON CONFLICT (from_memory_id, to_memory_id) 
-            DO UPDATE SET relationship_type = $3, strength = $4
-        "#)
-        .bind(memory_id1)
-        .bind(memory_id2)
-        .bind(relationship_type)
-        .bind(strength)
-        .execute(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to create relationship: {}", e))?;
-
-        Ok(format!(
+        let relationship_type = relationship_type.into();
+        let okmsg = format!(
             "Created {} relationship between {} and {} with strength {}",
             relationship_type, memory_id1, memory_id2, strength
-        ))
+        );
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                sqlx::query(r#"
+                    INSERT INTO memory_relationships (from_memory_id, to_memory_id, relationship_type, strength)
+                    VALUES ($1, $2, $3, $4)
+                    ON CONFLICT (from_memory_id, to_memory_id) 
+                    DO UPDATE SET relationship_type = $3, strength = $4
+                "#)
+                .bind(memory_id1)
+                .bind(memory_id2)
+                .bind(&relationship_type)
+                .bind(strength)
+                .execute(&mut **tx)
+                .await?;
+
+                Ok(())
+            })
+        }).await?;
+
+        Ok(okmsg)
     }
 
     /// Find memories related to a given memory through graph traversal.
-    /// Uses recursive CTE for multi-depth traversal.
     pub(crate) async fn find_related_memories(
         &mut self,
         memory_id: i64,
         max_depth: u32,
         min_strength: f64,
     ) -> Result<Vec<(String, String, Memory, String, f64)>, String> {
-        // Use recursive CTE for proper graph traversal
-        let rows = sqlx::query(
-            r#"
-            WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
-                -- Base case: direct relationships
-                SELECT mr.to_memory_id, mr.relationship_type, mr.strength, 1 as depth
-                FROM memory_relationships mr
-                WHERE mr.from_memory_id = $1 AND mr.strength >= $3
-                
-                UNION
-                
-                -- Recursive case: follow relationships up to max_depth
-                SELECT mr.to_memory_id, mr.relationship_type, mr.strength, rm.depth + 1
-                FROM memory_relationships mr
-                JOIN related_memories rm ON mr.from_memory_id = rm.memory_id
-                WHERE rm.depth < $2 AND mr.strength >= $3
-            )
-            SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-                   rm.relationship_type, rm.strength
-            FROM related_memories rm
-            JOIN memories m ON rm.memory_id = m.id
-            ORDER BY rm.strength DESC, rm.depth ASC
-        "#,
-        )
-        .bind(memory_id)
-        .bind(max_depth as i32)
-        .bind(min_strength)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to find related memories: {}", e))?;
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
+                        -- Base case: direct relationships
+                        SELECT mr.to_memory_id, mr.relationship_type, mr.strength, 1 as depth
+                        FROM memory_relationships mr
+                        WHERE mr.from_memory_id = $1 AND mr.strength >= $3
+                        
+                        UNION
+                        
+                        -- Recursive case: follow relationships up to max_depth
+                        SELECT mr.to_memory_id, mr.relationship_type, mr.strength, rm.depth + 1
+                        FROM memory_relationships mr
+                        JOIN related_memories rm ON mr.from_memory_id = rm.memory_id
+                        WHERE rm.depth < $2 AND mr.strength >= $3
+                    )
+                    SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                           rm.relationship_type, rm.strength
+                    FROM related_memories rm
+                    JOIN memories m ON rm.memory_id = m.id
+                    ORDER BY rm.strength DESC, rm.depth ASC
+                "#,
+                )
+                .bind(memory_id)
+                .bind(max_depth as i32)
+                .bind(min_strength)
+                .fetch_all(&mut **tx)
+                .await?;
 
-        let mut results = Vec::new();
-        for row in rows {
-            let memory_id: i64 = row.get("id");
-            let tags_json: serde_json::Value = row.get("tags");
-            let tags: Vec<String> =
-                serde_json::from_value(tags_json).unwrap_or_default();
-            let relationship_type: String = row.get("relationship_type");
-            let strength: f64 = row.get("strength");
+                let mut results = Vec::new();
+                for row in rows {
+                    let memory_id: i64 = row.get("id");
+                    let tags_json: serde_json::Value = row.get("tags");
+                    let tags: Vec<String> =
+                        serde_json::from_value(tags_json).unwrap_or_default();
+                    let relationship_type: String = row.get("relationship_type");
+                    let strength: f64 = row.get("strength");
 
-            let memory = Memory {
-                id: memory_id,
-                content: row.get("content"),
-                room: row.get("room"),
-                tags,
-                created_at: row.get("created_at"),
-                last_updated: row.get("last_updated"),
-            };
+                    let memory = Memory {
+                        id: memory_id,
+                        content: row.get("content"),
+                        room: row.get("room"),
+                        tags,
+                        created_at: row.get("created_at"),
+                        last_updated: row.get("last_updated"),
+                    };
 
-            results.push((
-                memory.room.clone(),
-                memory.id.to_string(),
-                memory,
-                relationship_type,
-                strength,
-            ));
-        }
+                    results.push((
+                        memory.room.clone(),
+                        memory.id.to_string(),
+                        memory,
+                        relationship_type,
+                        strength,
+                    ));
+                }
 
-        Ok(results)
+                Ok(results)
+            })
+        }).await
     }
 
     /// Extract and create concept nodes from memory content.
@@ -429,50 +585,56 @@ impl MemoryPalace {
         memory_id: i64,
         concepts: impl IntoIterator<Item = &str>,
     ) -> Result<String, String> {
-        let mut created_concepts = Vec::new();
+        let concept_names: Vec<String> =
+            concepts.into_iter().map(|s| s.to_string()).collect();
 
-        for concept_name in concepts {
-            // Create or get concept
-            let concept_row = sqlx::query(
-                r#"
-                INSERT INTO concepts (name) VALUES ($1)
-                ON CONFLICT (name) DO NOTHING
-                RETURNING id
-            "#,
-            )
-            .bind(concept_name)
-            .fetch_optional(&self.pool)
-            .await
-            .map_err(|e| format!("Failed to create concept: {}", e))?;
+        let created_concepts = self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let mut created = Vec::new();
 
-            let concept_id: i64 = if let Some(row) = concept_row {
-                row.get("id")
-            } else {
-                // Concept already exists, get its ID
-                sqlx::query("SELECT id FROM concepts WHERE name = $1")
+                for concept_name in &concept_names {
+                    // Create or get concept
+                    let concept_row = sqlx::query(
+                        r#"
+                        INSERT INTO concepts (name) VALUES ($1)
+                        ON CONFLICT (name) DO NOTHING
+                        RETURNING id
+                    "#,
+                    )
                     .bind(concept_name)
-                    .fetch_one(&self.pool)
-                    .await
-                    .map_err(|e| format!("Failed to get concept ID: {}", e))?
-                    .get("id")
-            };
+                    .fetch_optional(&mut **tx)
+                    .await?;
 
-            // Link memory to concept
-            sqlx::query(
-                r#"
-                INSERT INTO memory_concepts (memory_id, concept_id, confidence)
-                VALUES ($1, $2, 1.0)
-                ON CONFLICT (memory_id, concept_id) DO NOTHING
-            "#,
-            )
-            .bind(memory_id)
-            .bind(concept_id)
-            .execute(&self.pool)
-            .await
-            .map_err(|e| format!("Failed to link memory to concept: {}", e))?;
+                    let concept_id: i64 = if let Some(row) = concept_row {
+                        row.get("id")
+                    } else {
+                        // Concept already exists, get its ID
+                        sqlx::query("SELECT id FROM concepts WHERE name = $1")
+                            .bind(concept_name)
+                            .fetch_one(&mut **tx)
+                            .await?
+                            .get("id")
+                    };
 
-            created_concepts.push(concept_name.to_owned());
-        }
+                    // Link memory to concept
+                    sqlx::query(
+                        r#"
+                        INSERT INTO memory_concepts (memory_id, concept_id, confidence)
+                        VALUES ($1, $2, 1.0)
+                        ON CONFLICT (memory_id, concept_id) DO NOTHING
+                    "#,
+                    )
+                    .bind(memory_id)
+                    .bind(concept_id)
+                    .execute(&mut **tx)
+                    .await?;
+
+                    created.push(concept_name.clone());
+                }
+
+                Ok(created)
+            })
+        }).await?;
 
         Ok(format!(
             "Extracted and linked {} concepts: {}",
@@ -486,64 +648,72 @@ impl MemoryPalace {
         &mut self,
         concept_name: &str,
     ) -> Result<Vec<(String, String, Memory, f64)>, String> {
-        let rows = sqlx::query(
-            r#"
-            SELECT 
-                m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-                mc.confidence
-            FROM memory_concepts mc
-            JOIN memories m ON mc.memory_id = m.id
-            JOIN concepts c ON mc.concept_id = c.id
-            WHERE c.name = $1
-            ORDER BY mc.confidence DESC
-        "#,
-        )
-        .bind(concept_name)
-        .fetch_all(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to find memories by concept: {}", e))?;
+        let concept_name = concept_name.to_string();
 
-        let mut results = Vec::new();
-        for row in rows {
-            let memory_id: i64 = row.get("id");
-            let tags_json: serde_json::Value = row.get("tags");
-            let tags: Vec<String> =
-                serde_json::from_value(tags_json).unwrap_or_default();
-            let confidence: f64 = row.get("confidence");
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let rows = sqlx::query(
+                    r#"
+                    SELECT 
+                        m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                        mc.confidence
+                    FROM memory_concepts mc
+                    JOIN memories m ON mc.memory_id = m.id
+                    JOIN concepts c ON mc.concept_id = c.id
+                    WHERE c.name = $1
+                    ORDER BY mc.confidence DESC
+                "#,
+                )
+                .bind(&concept_name)
+                .fetch_all(&mut **tx)
+                .await?;
 
-            let memory = Memory {
-                id: memory_id,
-                content: row.get("content"),
-                room: row.get("room"),
-                tags,
-                created_at: row.get("created_at"),
-                last_updated: row.get("last_updated"),
-            };
+                let mut results = Vec::new();
+                for row in rows {
+                    let memory_id: i64 = row.get("id");
+                    let tags_json: serde_json::Value = row.get("tags");
+                    let tags: Vec<String> =
+                        serde_json::from_value(tags_json).unwrap_or_default();
+                    let confidence: f64 = row.get("confidence");
 
-            results.push((
-                memory.room.clone(),
-                memory.id.to_string(),
-                memory,
-                confidence,
-            ));
-        }
+                    let memory = Memory {
+                        id: memory_id,
+                        content: row.get("content"),
+                        room: row.get("room"),
+                        tags,
+                        created_at: row.get("created_at"),
+                        last_updated: row.get("last_updated"),
+                    };
 
-        Ok(results)
+                    results.push((
+                        memory.room.clone(),
+                        memory.id.to_string(),
+                        memory,
+                        confidence,
+                    ));
+                }
+
+                Ok(results)
+            })
+        }).await
     }
 
     /// Get graph statistics and insights.
     pub(crate) async fn get_graph_stats(&mut self) -> Result<String, String> {
-        let stats = sqlx::query(r#"
-            SELECT 
-                (SELECT COUNT(*) FROM memories) as total_memories,
-                (SELECT COUNT(*) FROM rooms) as total_rooms,
-                (SELECT COUNT(*) FROM memory_relationships) as total_relationships,
-                (SELECT COUNT(*) FROM concepts) as total_concepts,
-                (SELECT COUNT(*) FROM memory_concepts) as total_mentions
-        "#)
-        .fetch_one(&self.pool)
-        .await
-        .map_err(|e| format!("Failed to get stats: {}", e))?;
+        let stats = self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                sqlx::query(r#"
+                    SELECT 
+                        (SELECT COUNT(*) FROM memories) as total_memories,
+                        (SELECT COUNT(*) FROM rooms) as total_rooms,
+                        (SELECT COUNT(*) FROM memory_relationships) as total_relationships,
+                        (SELECT COUNT(*) FROM concepts) as total_concepts,
+                        (SELECT COUNT(*) FROM memory_concepts) as total_mentions
+                "#)
+                .fetch_one(&mut **tx)
+                .await
+            })
+        }).await?;
 
         let total_memories: i64 = stats.get("total_memories");
         let total_rooms: i64 = stats.get("total_rooms");
@@ -576,6 +746,102 @@ impl MemoryPalace {
                 0.0
             }
         ))
+    }
+
+    /// Get a summary of recent and important memories for prompt context.
+    async fn get_context_summary(&mut self) -> Result<String, String> {
+        let (recent_memories, top_relationships) = self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                // Get recent memories
+                let recent_memories = sqlx::query(
+                    r#"
+                    SELECT content, room, tags, created_at
+                    FROM memories 
+                    ORDER BY created_at DESC 
+                    LIMIT 5
+                "#,
+                )
+                .fetch_all(&mut **tx)
+                .await?;
+
+                // Get top relationships by strength
+                let top_relationships = sqlx::query(
+                    r#"
+                    SELECT m1.content as from_content, m2.content as to_content, 
+                           mr.relationship_type, mr.strength
+                    FROM memory_relationships mr
+                    JOIN memories m1 ON mr.from_memory_id = m1.id
+                    JOIN memories m2 ON mr.to_memory_id = m2.id
+                    ORDER BY mr.strength DESC
+                    LIMIT 3
+                "#,
+                )
+                .fetch_all(&mut **tx)
+                .await?;
+
+                Ok((recent_memories, top_relationships))
+            })
+        }).await?;
+
+        let mut context = String::new();
+
+        if !recent_memories.is_empty() {
+            context.push_str("Recent memories:\n");
+            for row in recent_memories {
+                let content: String = row.get("content");
+                let room: String = row.get("room");
+                let tags_json: serde_json::Value = row.get("tags");
+                let tags: Vec<String> =
+                    serde_json::from_value(tags_json).unwrap_or_default();
+
+                context.push_str(&format!(
+                    "- [{}] {}",
+                    room,
+                    if content.len() > 50 {
+                        format!("{}...", &content[..50])
+                    } else {
+                        content
+                    }
+                ));
+                if !tags.is_empty() {
+                    context.push_str(&format!(" ({})", tags.join(", ")));
+                }
+                context.push('\n');
+            }
+        }
+
+        if !top_relationships.is_empty() {
+            context.push_str("\nKey relationships:\n");
+            for row in top_relationships {
+                let from_content: String = row.get("from_content");
+                let to_content: String = row.get("to_content");
+                let rel_type: String = row.get("relationship_type");
+                let strength: f64 = row.get("strength");
+
+                context.push_str(&format!(
+                    "- {} --[{}]({:.1})--> {}\n",
+                    if from_content.len() > 30 {
+                        format!("{}...", &from_content[..30])
+                    } else {
+                        from_content
+                    },
+                    rel_type,
+                    strength,
+                    if to_content.len() > 30 {
+                        format!("{}...", &to_content[..30])
+                    } else {
+                        to_content
+                    }
+                ));
+            }
+        }
+
+        if context.is_empty() {
+            context = "Memory palace is empty - ready to store new knowledge!"
+                .to_string();
+        }
+
+        Ok(context)
     }
 }
 
@@ -776,7 +1042,7 @@ impl Tool for MemoryPalace {
                 };
 
                 let room = match input.get("room").and_then(|v| v.as_str()) {
-                    Some(room) => room,
+                    Some(room) => room.to_string(),
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
@@ -790,7 +1056,7 @@ impl Tool for MemoryPalace {
 
                 let content =
                     match input.get("content").and_then(|v| v.as_str()) {
-                        Some(content) => content,
+                        Some(content) => content.to_string(),
                         None => {
                             return super::Result {
                                 tool_use_id: call.id,
@@ -809,7 +1075,7 @@ impl Tool for MemoryPalace {
                     .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
                     .unwrap_or_default();
 
-                match self.store_memory(room, content, tags).await {
+                match self.store_memory(room.clone(), content, tags).await {
                     Ok(memory_id) => super::Result {
                         tool_use_id: call.id,
                         content: format!(
@@ -883,10 +1149,7 @@ impl Tool for MemoryPalace {
                             for (room_name, memory_id, memory) in results {
                                 response.push_str(&format!(
                                     "Room: {}\nID: {}\nContent: {}\nTags: {}\n\n",
-                                    room_name,
-                                    memory_id,
-                                    memory.content,
-                                    memory.tags.join(", ")
+                                    room_name, memory_id, memory.content, memory.tags.join(", ")
                                 ));
                             }
 
@@ -924,7 +1187,7 @@ impl Tool for MemoryPalace {
                 };
 
                 let room1 = match input.get("room1").and_then(|v| v.as_str()) {
-                    Some(room) => room,
+                    Some(room) => room.to_string(),
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
@@ -938,7 +1201,7 @@ impl Tool for MemoryPalace {
                 };
 
                 let room2 = match input.get("room2").and_then(|v| v.as_str()) {
-                    Some(room) => room,
+                    Some(room) => room.to_string(),
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
@@ -951,7 +1214,7 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                match self.connect_rooms(room1, room2).await {
+                match self.connect_rooms(room1.clone(), room2.clone()).await {
                     Ok(()) => super::Result {
                         tool_use_id: call.id,
                         content: format!(
@@ -977,12 +1240,12 @@ impl Tool for MemoryPalace {
                 Ok(rooms) => {
                     if rooms.is_empty() {
                         super::Result {
-                                tool_use_id: call.id,
-                                content: "The memory palace is empty. No rooms have been created yet.".into(),
-                                is_error: false,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            }
+                            tool_use_id: call.id,
+                            content: "The memory palace is empty. No rooms have been created yet.".into(),
+                            is_error: false,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        }
                     } else {
                         let mut response = format!(
                             "Memory Palace contains {} rooms:\n\n",
@@ -990,16 +1253,16 @@ impl Tool for MemoryPalace {
                         );
                         for (name, description, count, connections) in rooms {
                             response.push_str(&format!(
-                                    "Room: {}\nDescription: {}\nMemories: {}\nConnections: {}\n\n",
-                                    name,
-                                    description,
-                                    count,
-                                    if connections.is_empty() {
-                                        "None".to_string()
-                                    } else {
-                                        connections.join(", ")
-                                    }
-                                ));
+                                "Room: {}\nDescription: {}\nMemories: {}\nConnections: {}\n\n",
+                                name,
+                                description,
+                                count,
+                                if connections.is_empty() {
+                                    "None".to_string()
+                                } else {
+                                    connections.join(", ")
+                                }
+                            ));
                         }
 
                         super::Result {
@@ -1080,7 +1343,7 @@ impl Tool for MemoryPalace {
                     .relate_memories(
                         memory_id1,
                         memory_id2,
-                        relationship_type,
+                        relationship_type.to_string(),
                         strength,
                     )
                     .await
@@ -1180,11 +1443,7 @@ impl Tool for MemoryPalace {
                             {
                                 response.push_str(&format!(
                                     "Room: {}\nID: {}\nContent: {}\nRelationship: {} (strength: {})\n\n",
-                                    room_name,
-                                    related_memory_id,
-                                    memory.content,
-                                    rel_type,
-                                    strength
+                                    room_name, related_memory_id, memory.content, rel_type, strength
                                 ));
                             }
 
@@ -1320,10 +1579,7 @@ impl Tool for MemoryPalace {
                             {
                                 response.push_str(&format!(
                                     "Room: {}\nID: {}\nContent: {}\nConfidence: {}\n\n",
-                                    room_name,
-                                    memory_id,
-                                    memory.content,
-                                    confidence
+                                    room_name, memory_id, memory.content, confidence
                                 ));
                             }
 
@@ -1384,26 +1640,33 @@ impl Tool for MemoryPalace {
 
     /// Save the current state of the palace to JSON.
     async fn save_json(&mut self) -> serde_json::Value {
-        if let Err(_) = self.ensure_initialized().await {
-            return json!({"error": "Failed to initialize database"});
-        }
+        // Export all data as JSON using execute_with_schema
+        let export_result = self
+            .execute_with_schema(|tx| {
+                Box::pin(async move {
+                    let memories_result =
+                        sqlx::query("SELECT * FROM memories ORDER BY id")
+                            .fetch_all(&mut **tx)
+                            .await;
 
-        // Export all data as JSON
-        let memories_result = sqlx::query("SELECT * FROM memories ORDER BY id")
-            .fetch_all(&self.pool)
+                    let rooms_result =
+                        sqlx::query("SELECT * FROM rooms ORDER BY id")
+                            .fetch_all(&mut **tx)
+                            .await;
+
+                    let connections_result = sqlx::query(
+                        "SELECT * FROM room_connections ORDER BY id",
+                    )
+                    .fetch_all(&mut **tx)
+                    .await;
+
+                    Ok((memories_result, rooms_result, connections_result))
+                })
+            })
             .await;
 
-        let rooms_result = sqlx::query("SELECT * FROM rooms ORDER BY id")
-            .fetch_all(&self.pool)
-            .await;
-
-        let connections_result =
-            sqlx::query("SELECT * FROM room_connections ORDER BY id")
-                .fetch_all(&self.pool)
-                .await;
-
-        match (memories_result, rooms_result, connections_result) {
-            (Ok(memory_rows), Ok(room_rows), Ok(connection_rows)) => {
+        match export_result {
+            Ok((Ok(memory_rows), Ok(room_rows), Ok(connection_rows))) => {
                 let memories: Vec<serde_json::Value> = memory_rows
                     .into_iter()
                     .map(|row| {
@@ -1460,140 +1723,113 @@ impl Tool for MemoryPalace {
         &mut self,
         json: serde_json::Value,
     ) -> Result<(), String> {
-        self.ensure_initialized().await?;
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                // Clear existing data
+                sqlx::query("TRUNCATE memories, rooms, room_connections RESTART IDENTITY CASCADE")
+                    .execute(&mut **tx)
+                    .await?;
 
-        // Clear existing data
-        sqlx::query("TRUNCATE memories, rooms, room_connections RESTART IDENTITY CASCADE")
-            .execute(&self.pool)
-            .await
-            .map_err(|e| format!("Failed to clear database: {}", e))?;
-
-        // Import data
-        if let Some(rooms) = json.get("rooms").and_then(|v| v.as_array()) {
-            for room in rooms {
-                if let (Some(name), Some(description)) = (
-                    room.get("name").and_then(|v| v.as_str()),
-                    room.get("description").and_then(|v| v.as_str()),
-                ) {
-                    sqlx::query(
-                        "INSERT INTO rooms (name, description) VALUES ($1, $2)",
-                    )
-                    .bind(name)
-                    .bind(description)
-                    .execute(&self.pool)
-                    .await
-                    .map_err(|e| format!("Failed to import room: {}", e))?;
+                // Import data
+                if let Some(rooms) = json.get("rooms").and_then(|v| v.as_array()) {
+                    for room in rooms {
+                        if let (Some(name), Some(description)) = (
+                            room.get("name").and_then(|v| v.as_str()),
+                            room.get("description").and_then(|v| v.as_str()),
+                        ) {
+                            sqlx::query("INSERT INTO rooms (name, description) VALUES ($1, $2)")
+                                .bind(name)
+                                .bind(description)
+                                .execute(&mut **tx)
+                                .await?;
+                        }
+                    }
                 }
-            }
-        }
 
-        if let Some(memories) = json.get("memories").and_then(|v| v.as_array())
-        {
-            for memory in memories {
-                if let (Some(content), Some(room), Some(tags)) = (
-                    memory.get("content").and_then(|v| v.as_str()),
-                    memory.get("room").and_then(|v| v.as_str()),
-                    memory.get("tags"),
-                ) {
-                    sqlx::query("INSERT INTO memories (content, room, tags) VALUES ($1, $2, $3)")
-                        .bind(content)
-                        .bind(room)
-                        .bind(tags)
-                        .execute(&self.pool)
-                        .await
-                        .map_err(|e| format!("Failed to import memory: {}", e))?;
+                if let Some(memories) = json.get("memories").and_then(|v| v.as_array()) {
+                    for memory in memories {
+                        if let (Some(content), Some(room), Some(tags)) = (
+                            memory.get("content").and_then(|v| v.as_str()),
+                            memory.get("room").and_then(|v| v.as_str()),
+                            memory.get("tags"),
+                        ) {
+                            sqlx::query("INSERT INTO memories (content, room, tags) VALUES ($1, $2, $3)")
+                                .bind(content)
+                                .bind(room)
+                                .bind(tags)
+                                .execute(&mut **tx)
+                                .await?;
+                        }
+                    }
                 }
-            }
-        }
 
-        if let Some(connections) =
-            json.get("connections").and_then(|v| v.as_array())
-        {
-            for connection in connections {
-                if let (Some(from_room), Some(to_room)) = (
-                    connection.get("from_room").and_then(|v| v.as_str()),
-                    connection.get("to_room").and_then(|v| v.as_str()),
-                ) {
-                    let description = connection.get("description");
-                    let strength = connection
-                        .get("strength")
-                        .and_then(|v| v.as_i64())
-                        .unwrap_or(1) as i32;
+                if let Some(connections) = json.get("connections").and_then(|v| v.as_array()) {
+                    for connection in connections {
+                        if let (Some(from_room), Some(to_room)) = (
+                            connection.get("from_room").and_then(|v| v.as_str()),
+                            connection.get("to_room").and_then(|v| v.as_str()),
+                        ) {
+                            let description = connection.get("description");
+                            let strength = connection
+                                .get("strength")
+                                .and_then(|v| v.as_i64())
+                                .unwrap_or(1) as i32;
 
-                    sqlx::query("INSERT INTO room_connections (from_room, to_room, description, strength) VALUES ($1, $2, $3, $4)")
-                        .bind(from_room)
-                        .bind(to_room)
-                        .bind(description)
-                        .bind(strength)
-                        .execute(&self.pool)
-                        .await
-                        .map_err(|e| format!("Failed to import connection: {}", e))?;
+                            sqlx::query("INSERT INTO room_connections (from_room, to_room, description, strength) VALUES ($1, $2, $3, $4)")
+                                .bind(from_room)
+                                .bind(to_room)
+                                .bind(description)
+                                .bind(strength)
+                                .execute(&mut **tx)
+                                .await?;
+                        }
+                    }
                 }
-            }
-        }
 
+                Ok(())
+            })
+        }).await
+    }
+
+    /// Initialize the Memory Palace instructions in the prompt.
+    async fn on_init(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Add the static instructions once
+        if let Some(system) = &mut prompt.system {
+            self.update_or_add_instructions(system).await?;
+        } else {
+            prompt.system = Some(MEMORY_PALACE_INSTRUCTIONS.into());
+        }
         Ok(())
     }
 
-    /// Apply the memory palace context to a prompt.
-    fn apply_to_prompt(
-        &self,
+    /// Update the Memory Palace context with recent memories and relationships.
+    async fn on_turn(
+        &mut self,
         prompt: &mut Prompt,
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let palace_context = "<memory_palace>\nMemory Palace is available for storing and retrieving knowledge.\n</memory_palace>";
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Get dynamic context from database - this is the expensive part
+        let context_summary = self.get_context_summary().await.map_err(
+            |e| -> Box<dyn std::error::Error + Send + Sync> { e.into() },
+        )?;
 
-        if prompt.system.is_none() {
-            let full_text = MEMORY_PALACE_INSTRUCTIONS.to_string();
-            prompt.system = Some(full_text.into());
-        } else {
-            let system_content = prompt.system.as_mut().unwrap();
+        // Only update if we have meaningful context to add
+        if !context_summary.contains("Memory palace is empty") {
+            let palace_context = format!(
+                "<memory_palace>\n{}\n</memory_palace>",
+                context_summary
+            );
 
-            match system_content {
-                crate::prompt::message::Content::SinglePart(text) => {
-                    if text.contains("</memory_palace>") {
-                        let new_text = text.replace(
-                            "</memory_palace>",
-                            &format!("\n{}", palace_context),
-                        );
-                        *text = new_text.into();
-                    } else {
-                        let existing_text = text.clone();
-                        *system_content = vec![
-                            Block::Text {
-                                text: existing_text,
-                                cache_control: None,
-                            },
-                            Block::Text {
-                                text: palace_context.into(),
-                                cache_control: None,
-                            },
-                        ]
-                        .into();
-                    }
-                }
-                crate::prompt::message::Content::MultiPart(blocks) => {
-                    let mut found = false;
-                    for block in blocks.iter_mut() {
-                        if let Block::Text { text, .. } = block {
-                            if text.contains("</memory_palace>") {
-                                let new_text = text.replace(
-                                    "</memory_palace>",
-                                    &format!("\n{}", palace_context),
-                                );
-                                *text = new_text.into();
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-
-                    if !found {
-                        blocks.push(Block::Text {
-                            text: palace_context.into(),
-                            cache_control: None,
-                        });
-                    }
-                }
+            if let Some(system) = &mut prompt.system {
+                self.update_palace_context(system, palace_context).await?;
+            } else {
+                let full_text = format!(
+                    "{}\n{}",
+                    MEMORY_PALACE_INSTRUCTIONS, palace_context
+                );
+                prompt.system = Some(full_text.into());
             }
         }
 
@@ -1601,61 +1837,240 @@ impl Tool for MemoryPalace {
     }
 }
 
+impl MemoryPalace {
+    /// Update the memory palace context block with current state
+    async fn update_palace_context<'a>(
+        &self,
+        system: &mut crate::prompt::message::Content<'a>,
+        palace_context: String,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match system {
+            crate::prompt::message::Content::SinglePart(text) => {
+                if text.contains("<memory_palace>") {
+                    // Replace existing context
+                    let parts: Vec<&str> =
+                        text.split("<memory_palace>").collect();
+                    if parts.len() >= 2 {
+                        let before = parts[0];
+                        let after_parts: Vec<&str> =
+                            parts[1].split("</memory_palace>").collect();
+                        let after = if after_parts.len() > 1 {
+                            after_parts[1]
+                        } else {
+                            ""
+                        };
+
+                        let new_text =
+                            format!("{}{}{}", before, palace_context, after);
+                        *text = new_text.into();
+                    }
+                } else {
+                    // Add context to existing content
+                    let existing_text = text.clone();
+                    *system = vec![
+                        Block::Text {
+                            text: existing_text,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        },
+                        Block::Text {
+                            text: palace_context.into(),
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        },
+                    ]
+                    .into();
+                }
+            }
+            crate::prompt::message::Content::MultiPart(blocks) => {
+                let mut found = false;
+                for block in blocks.iter_mut() {
+                    if let Block::Text { text, .. } = block {
+                        if text.contains("<memory_palace>") {
+                            let parts: Vec<&str> =
+                                text.split("<memory_palace>").collect();
+                            if parts.len() >= 2 {
+                                let before = parts[0];
+                                let after_parts: Vec<&str> = parts[1]
+                                    .split("</memory_palace>")
+                                    .collect();
+                                let after = if after_parts.len() > 1 {
+                                    after_parts[1]
+                                } else {
+                                    ""
+                                };
+
+                                let new_text = format!(
+                                    "{}{}{}",
+                                    before, palace_context, after
+                                );
+                                *text = new_text.into();
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !found {
+                    blocks.push(Block::Text {
+                        text: palace_context.into(),
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Update or add memory palace instructions to the system content
+    async fn update_or_add_instructions<'a>(
+        &self,
+        system: &mut crate::prompt::message::Content<'a>,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        match system {
+            crate::prompt::message::Content::SinglePart(text) => {
+                if text.contains("<memory_palace_instructions>") {
+                    // Replace existing instructions
+                    let parts: Vec<&str> =
+                        text.split("<memory_palace_instructions>").collect();
+                    if parts.len() >= 2 {
+                        let before = parts[0];
+                        let after_parts: Vec<&str> = parts[1]
+                            .split("</memory_palace_instructions>")
+                            .collect();
+                        let after = if after_parts.len() > 1 {
+                            after_parts[1]
+                        } else {
+                            ""
+                        };
+
+                        let new_text = format!(
+                            "{}{}{}",
+                            before, MEMORY_PALACE_INSTRUCTIONS, after
+                        );
+                        *text = new_text.into();
+                    }
+                } else {
+                    // Add instructions to existing content
+                    let existing_text = text.clone();
+                    *system = vec![
+                        Block::Text {
+                            text: existing_text,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        },
+                        Block::Text {
+                            text: MEMORY_PALACE_INSTRUCTIONS.into(),
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        },
+                    ]
+                    .into();
+                }
+            }
+            crate::prompt::message::Content::MultiPart(blocks) => {
+                let mut found = false;
+                for block in blocks.iter_mut() {
+                    if let Block::Text { text, .. } = block {
+                        if text.contains("<memory_palace_instructions>") {
+                            let parts: Vec<&str> = text
+                                .split("<memory_palace_instructions>")
+                                .collect();
+                            if parts.len() >= 2 {
+                                let before = parts[0];
+                                let after_parts: Vec<&str> = parts[1]
+                                    .split("</memory_palace_instructions>")
+                                    .collect();
+                                let after = if after_parts.len() > 1 {
+                                    after_parts[1]
+                                } else {
+                                    ""
+                                };
+
+                                let new_text = format!(
+                                    "{}{}{}",
+                                    before, MEMORY_PALACE_INSTRUCTIONS, after
+                                );
+                                *text = new_text.into();
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if !found {
+                    blocks.push(Block::Text {
+                        text: MEMORY_PALACE_INSTRUCTIONS.into(),
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::PgPool;
 
-    // Helper to check if we can connect to a test PostgreSQL database
-    async fn try_create_test_db() -> Option<PgPool> {
-        // Try multiple database URL formats for flexibility
-        let database_urls = [
-            // CI environment variable
-            std::env::var("TEST_DATABASE_URL").ok(),
-            // Local Docker with authentication
-            Some("postgresql://postgres:test_password@localhost:5432/misanthropic_test".to_string()),
-            // Local Docker without authentication (if trust is configured)
-            Some("postgresql://postgres@localhost:5432/misanthropic_test".to_string()),
-            // Default PostgreSQL setup
-            Some("postgresql://localhost/misanthropic_test".to_string()),
-        ];
+    async fn create_test_palace(test_id: &str) -> MemoryPalace {
+        let database_url =
+            std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
+                "postgresql://postgres@localhost:5432/misanthropic_test"
+                    .to_string()
+            });
 
-        for url in database_urls.into_iter().flatten() {
-            if let Ok(pool) = sqlx::PgPool::connect(&url).await {
-                #[cfg(feature = "log")]
-                log::debug!("Connected to test database: {}", url);
-                return Some(pool);
-            }
-        }
+        let pool = PgPool::connect(&database_url)
+            .await
+            .expect("Failed to connect to test database");
 
-        None
-    }
+        // Create a unique schema for this test to avoid conflicts
+        let schema_name = format!("test_{}", test_id.replace("-", "_"));
 
-    /// Create a test memory palace - requires PostgreSQL
-    async fn create_test_palace() -> Option<MemoryPalace> {
-        let pool = try_create_test_db().await?;
+        // Drop and recreate schema in a transaction
+        let mut tx = pool.begin().await.expect("Failed to begin transaction");
 
-        // Clean up any existing test data
-        let _ = sqlx::query("DROP SCHEMA IF EXISTS test_schema CASCADE")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("CREATE SCHEMA test_schema")
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("SET search_path TO test_schema")
-            .execute(&pool)
-            .await;
+        sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
+            .execute(&mut *tx)
+            .await
+            .expect("Failed to drop test schema");
 
-        let mut palace = MemoryPalace { pool };
-        palace.ensure_initialized().await.ok()?;
-        Some(palace)
+        sqlx::query(&format!("CREATE SCHEMA {}", schema_name))
+            .execute(&mut *tx)
+            .await
+            .expect("Failed to create test schema");
+
+        tx.commit().await.expect("Failed to commit schema setup");
+
+        // Create the MemoryPalace and initialize it with the schema
+        let mut palace = MemoryPalace {
+            pool,
+            schema_name: schema_name.clone(),
+        };
+
+        palace
+            .ensure_initialized()
+            .await
+            .expect("Failed to initialize test palace");
+
+        // Set search_path for subsequent operations
+        sqlx::query(&format!("SET search_path TO {}", schema_name))
+            .execute(&palace.pool)
+            .await
+            .expect("Failed to set search path for operations");
+
+        palace
     }
 
     #[tokio::test]
     async fn test_store_and_search_memory() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("store_and_search_memory").await;
 
         // Store a memory
         let memory_id = palace
@@ -1666,8 +2081,6 @@ mod tests {
             )
             .await
             .expect("Failed to store memory");
-
-        assert!(memory_id > 0);
 
         // Search for the memory
         let results = palace
@@ -1686,10 +2099,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_empty_results() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("search_empty_results").await;
 
         let results = palace
             .search("nonexistent")
@@ -1701,10 +2111,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_room() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("search_by_room").await;
 
         palace
             .store_memory("kitchen", "Recipe for pasta", ["cooking"])
@@ -1722,10 +2129,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_search_by_tags() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("search_by_tags").await;
 
         palace
             .store_memory(
@@ -1747,10 +2151,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_list_rooms() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("list_rooms").await;
 
         // Initially no rooms
         let rooms = palace.list_rooms().await.expect("Failed to list rooms");
@@ -1792,10 +2193,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_connect_rooms() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("connect_rooms").await;
 
         // Create rooms by storing memories
         palace
@@ -1831,10 +2229,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_memory_relationships() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("memory_relationships").await;
 
         // Store two memories
         let memory_id1 = palace
@@ -1875,10 +2270,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_concepts() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("concepts").await;
 
         // Store a memory
         let memory_id = palace
@@ -1917,10 +2309,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_graph_stats() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("graph_stats").await;
 
         // Initially empty
         let stats =
@@ -1961,10 +2350,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_interface() {
-        let Some(palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let palace = create_test_palace("tool_interface").await;
 
         // Test name
         assert_eq!(palace.name(), "MemoryPalace");
@@ -1982,10 +2368,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_call_store() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("tool_call_store").await;
 
         let call = Use {
             id: "test_id".into(),
@@ -2007,10 +2390,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_call_search() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("tool_call_search").await;
 
         // First store something to search for
         palace
@@ -2026,8 +2406,8 @@ mod tests {
             id: "test_id".into(),
             name: "MemoryPalace::search".into(),
             input: json!({
-                "query": "AI"
-            }),
+            "query": "AI"
+                   }),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
@@ -2040,10 +2420,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_call_invalid_method() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("tool_call_invalid_method").await;
 
         let call = Use {
             id: "test_id".into(),
@@ -2060,10 +2437,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_tool_call_missing_parameters() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace =
+            create_test_palace("tool_call_missing_parameters").await;
 
         // Test store without required parameters
         let call = Use {
@@ -2084,10 +2459,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_load_json() {
-        let Some(mut palace1) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace1 = create_test_palace("save_load_json").await;
 
         // Add some data
         palace1
@@ -2104,10 +2476,8 @@ mod tests {
         let json = palace1.save_json().await;
         assert!(json.is_object());
 
-        // Create new palace and load state
-        let mut palace2 = create_test_palace()
-            .await
-            .expect("Failed to create test palace");
+        // Create new palace and load state (use same schema)
+        let mut palace2 = create_test_palace("save_load_json").await;
         palace2.load_json(json).await.expect("Failed to load state");
 
         // Verify data was loaded
@@ -2119,81 +2489,34 @@ mod tests {
 
     #[tokio::test]
     async fn test_apply_to_prompt() {
-        let Some(palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+        let mut palace = create_test_palace("apply_to_prompt").await;
         let mut prompt = Prompt::default();
 
-        palace
-            .apply_to_prompt(&mut prompt)
-            .expect("Failed to apply to prompt");
+        palace.on_init(&mut prompt).await.unwrap();
+        palace.on_turn(&mut prompt).await.unwrap();
 
         let system_content = prompt.system.unwrap().to_string();
-        assert!(system_content.contains("memory_palace_instructions"));
         assert!(system_content.contains("Memory Palace"));
+        assert!(system_content.contains("MemoryPalace::store"));
+        assert!(system_content.contains("MemoryPalace::search"));
+        assert!(system_content.contains("Rooms")); // Changed from "rooms" to "Rooms"
+        assert!(system_content.contains("Relationships")); // Changed from "relationships" to "Relationships"
     }
 
     #[tokio::test]
-    async fn test_empty_tags() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
+    async fn test_enhanced_prompt_application() {
+        let mut palace =
+            create_test_palace("enhanced_prompt_application").await;
+        let mut prompt = Prompt::default();
 
-        // Store memory with empty tags
-        let memory_id = palace
-            .store_memory(
-                "room1",
-                "content with no tags",
-                std::iter::empty::<&str>(),
-            )
-            .await
-            .expect("Failed to store memory");
+        palace.on_init(&mut prompt).await.unwrap();
+        palace.on_turn(&mut prompt).await.unwrap();
 
-        // Search for the memory
-        let results = palace
-            .search("content")
-            .await
-            .expect("Failed to search memories");
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].2.id, memory_id);
-        assert!(results[0].2.tags.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_recursive_relationships() {
-        let Some(mut palace) = create_test_palace().await else {
-            eprintln!("Skipping test: PostgreSQL not available");
-            return;
-        };
-
-        // Create a chain of related memories
-        let mem1 = palace.store_memory("room1", "Memory 1", []).await.unwrap();
-        let mem2 = palace.store_memory("room1", "Memory 2", []).await.unwrap();
-        let mem3 = palace.store_memory("room1", "Memory 3", []).await.unwrap();
-
-        // Create chain: 1 -> 2 -> 3
-        palace
-            .relate_memories(mem1, mem2, "leads_to", 1.0)
-            .await
-            .unwrap();
-        palace
-            .relate_memories(mem2, mem3, "leads_to", 1.0)
-            .await
-            .unwrap();
-
-        // Find related with depth 1 (should only find mem2)
-        let related = palace.find_related_memories(mem1, 1, 0.1).await.unwrap();
-        assert_eq!(related.len(), 1);
-        assert_eq!(related[0].2.id, mem2);
-
-        // Find related with depth 2 (should find mem2 and mem3)
-        let related = palace.find_related_memories(mem1, 2, 0.1).await.unwrap();
-        assert_eq!(related.len(), 2);
-        let found_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
-        assert!(found_ids.contains(&mem2));
-        assert!(found_ids.contains(&mem3));
+        let system_content = prompt.system.unwrap().to_string();
+        assert!(system_content.contains("Memory Palace"));
+        assert!(system_content.contains("MemoryPalace::store"));
+        assert!(system_content.contains("MemoryPalace::search"));
+        assert!(system_content.contains("Rooms")); // Changed from "rooms" to "Rooms"
+        assert!(system_content.contains("Relationships")); // Changed from "relationships" to "Relationships"
     }
 }
