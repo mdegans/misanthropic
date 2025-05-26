@@ -71,6 +71,73 @@ struct Connection {
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
+/// Helper struct for room listing with memory count
+#[derive(Debug, Clone, FromRow)]
+struct RoomWithCount {
+    name: String,
+    description: String,
+    memory_count: i64,
+}
+
+/// Helper struct for connection listing
+#[derive(Debug, Clone, FromRow)]
+struct RoomConnection {
+    to_room: String,
+}
+
+/// Helper struct for memory relationships
+#[derive(Debug, Clone, FromRow)]
+struct RelatedMemoryRow {
+    id: i64,
+    content: String,
+    room: String,
+    tags: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_updated: chrono::DateTime<chrono::Utc>,
+    relationship_type: String,
+    strength: f64,
+}
+
+/// Helper struct for concept-based memory search
+#[derive(Debug, Clone, FromRow)]
+struct ConceptMemoryRow {
+    id: i64,
+    content: String,
+    room: String,
+    tags: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_updated: chrono::DateTime<chrono::Utc>,
+    confidence: f64,
+}
+
+/// Helper struct for graph statistics
+#[derive(Debug, Clone, FromRow)]
+struct GraphStats {
+    total_memories: i64,
+    total_rooms: i64,
+    total_relationships: i64,
+    total_concepts: i64,
+    total_mentions: i64,
+}
+
+/// Helper struct for recent memories summary
+#[derive(Debug, Clone, FromRow)]
+struct RecentMemoryRow {
+    content: String,
+    room: String,
+    tags: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// Helper struct for top relationships summary
+#[derive(Debug, Clone, FromRow)]
+struct TopRelationshipRow {
+    from_content: String,
+    to_content: String,
+    relationship_type: String,
+    strength: f64,
+}
+
 /// A Memory Palace tool using PostgreSQL for reliable storage.
 #[derive(Debug)]
 pub struct MemoryPalace {
@@ -426,7 +493,7 @@ impl MemoryPalace {
     ) -> Result<Vec<(String, String, usize, Vec<String>)>, String> {
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let rows = sqlx::query(
+                let rooms: Vec<RoomWithCount> = sqlx::query_as(
                     r#"
                     SELECT 
                         r.name,
@@ -442,31 +509,27 @@ impl MemoryPalace {
                 .await?;
 
                 let mut results = Vec::new();
-                for row in rows {
-                    let room_name: String = row.get("name");
-                    let description: String = row.get("description");
-                    let memory_count: i64 = row.get("memory_count");
-
+                for room in rooms {
                     // Get connections for this room
-                    let connection_rows = sqlx::query(
+                    let connections: Vec<RoomConnection> = sqlx::query_as(
                         r#"
                         SELECT to_room FROM room_connections WHERE from_room = $1
                     "#,
                     )
-                    .bind(&room_name)
+                    .bind(&room.name)
                     .fetch_all(&mut **tx)
                     .await?;
 
-                    let connections: Vec<String> = connection_rows
+                    let connection_names: Vec<String> = connections
                         .into_iter()
-                        .map(|row| row.get("to_room"))
+                        .map(|conn| conn.to_room)
                         .collect();
 
                     results.push((
-                        room_name,
-                        description,
-                        memory_count as usize,
-                        connections,
+                        room.name,
+                        room.description,
+                        room.memory_count as usize,
+                        connection_names,
                     ));
                 }
 
@@ -519,7 +582,7 @@ impl MemoryPalace {
     ) -> Result<Vec<(String, String, Memory, String, f64)>, String> {
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let rows = sqlx::query(
+                let rows: Vec<RelatedMemoryRow> = sqlx::query_as(
                     r#"
                     WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
                         -- Base case: direct relationships
@@ -550,28 +613,24 @@ impl MemoryPalace {
 
                 let mut results = Vec::new();
                 for row in rows {
-                    let memory_id: i64 = row.get("id");
-                    let tags_json: serde_json::Value = row.get("tags");
                     let tags: Vec<String> =
-                        serde_json::from_value(tags_json).unwrap_or_default();
-                    let relationship_type: String = row.get("relationship_type");
-                    let strength: f64 = row.get("strength");
+                        serde_json::from_value(row.tags).unwrap_or_default();
 
                     let memory = Memory {
-                        id: memory_id,
-                        content: row.get("content"),
-                        room: row.get("room"),
+                        id: row.id,
+                        content: row.content,
+                        room: row.room.clone(),
                         tags,
-                        created_at: row.get("created_at"),
-                        last_updated: row.get("last_updated"),
+                        created_at: row.created_at,
+                        last_updated: row.last_updated,
                     };
 
                     results.push((
                         memory.room.clone(),
                         memory.id.to_string(),
                         memory,
-                        relationship_type,
-                        strength,
+                        row.relationship_type,
+                        row.strength,
                     ));
                 }
 
@@ -653,7 +712,7 @@ impl MemoryPalace {
 
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let rows = sqlx::query(
+                let rows: Vec<ConceptMemoryRow> = sqlx::query_as(
                     r#"
                     SELECT 
                         m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
@@ -671,26 +730,23 @@ impl MemoryPalace {
 
                 let mut results = Vec::new();
                 for row in rows {
-                    let memory_id: i64 = row.get("id");
-                    let tags_json: serde_json::Value = row.get("tags");
                     let tags: Vec<String> =
-                        serde_json::from_value(tags_json).unwrap_or_default();
-                    let confidence: f64 = row.get("confidence");
+                        serde_json::from_value(row.tags).unwrap_or_default();
 
                     let memory = Memory {
-                        id: memory_id,
-                        content: row.get("content"),
-                        room: row.get("room"),
+                        id: row.id,
+                        content: row.content,
+                        room: row.room.clone(),
                         tags,
-                        created_at: row.get("created_at"),
-                        last_updated: row.get("last_updated"),
+                        created_at: row.created_at,
+                        last_updated: row.last_updated,
                     };
 
                     results.push((
                         memory.room.clone(),
                         memory.id.to_string(),
                         memory,
-                        confidence,
+                        row.confidence,
                     ));
                 }
 
@@ -701,9 +757,9 @@ impl MemoryPalace {
 
     /// Get graph statistics and insights.
     pub(crate) async fn get_graph_stats(&mut self) -> Result<String, String> {
-        let stats = self.execute_with_schema(|tx| {
+        let stats: GraphStats = self.execute_with_schema(|tx| {
             Box::pin(async move {
-                sqlx::query(r#"
+                sqlx::query_as(r#"
                     SELECT 
                         (SELECT COUNT(*) FROM memories) as total_memories,
                         (SELECT COUNT(*) FROM rooms) as total_rooms,
@@ -716,12 +772,6 @@ impl MemoryPalace {
             })
         }).await?;
 
-        let total_memories: i64 = stats.get("total_memories");
-        let total_rooms: i64 = stats.get("total_rooms");
-        let total_relationships: i64 = stats.get("total_relationships");
-        let total_concepts: i64 = stats.get("total_concepts");
-        let total_mentions: i64 = stats.get("total_mentions");
-
         Ok(format!(
             "Graph Statistics:\n\
             - Total Memories: {}\n\
@@ -731,18 +781,18 @@ impl MemoryPalace {
             - Total Concept Mentions: {}\n\
             - Average Relationships per Memory: {:.2}\n\
             - Average Concepts per Memory: {:.2}",
-            total_memories,
-            total_rooms,
-            total_relationships,
-            total_concepts,
-            total_mentions,
-            if total_memories > 0 {
-                total_relationships as f64 / total_memories as f64
+            stats.total_memories,
+            stats.total_rooms,
+            stats.total_relationships,
+            stats.total_concepts,
+            stats.total_mentions,
+            if stats.total_memories > 0 {
+                stats.total_relationships as f64 / stats.total_memories as f64
             } else {
                 0.0
             },
-            if total_memories > 0 {
-                total_mentions as f64 / total_memories as f64
+            if stats.total_memories > 0 {
+                stats.total_mentions as f64 / stats.total_memories as f64
             } else {
                 0.0
             }
@@ -754,7 +804,7 @@ impl MemoryPalace {
         let (recent_memories, top_relationships) = self.execute_with_schema(|tx| {
             Box::pin(async move {
                 // Get recent memories
-                let recent_memories = sqlx::query(
+                let recent_memories: Vec<RecentMemoryRow> = sqlx::query_as(
                     r#"
                     SELECT content, room, tags, created_at
                     FROM memories 
@@ -766,7 +816,7 @@ impl MemoryPalace {
                 .await?;
 
                 // Get top relationships by strength
-                let top_relationships = sqlx::query(
+                let top_relationships: Vec<TopRelationshipRow> = sqlx::query_as(
                     r#"
                     SELECT m1.content as from_content, m2.content as to_content, 
                            mr.relationship_type, mr.strength
@@ -788,24 +838,35 @@ impl MemoryPalace {
 
         if !recent_memories.is_empty() {
             context.push_str("Recent memories:\n");
-            for row in recent_memories {
-                let content: String = row.get("content");
-                let room: String = row.get("room");
-                let tags_json: serde_json::Value = row.get("tags");
+            for memory in recent_memories {
                 let tags: Vec<String> =
-                    serde_json::from_value(tags_json).unwrap_or_default();
+                    serde_json::from_value(memory.tags).unwrap_or_default();
+
+                // Format the date to show how recent the memory is
+                let now = chrono::Utc::now();
+                let duration = now.signed_duration_since(memory.created_at);
+                let time_desc = if duration.num_days() > 0 {
+                    format!("{} days ago", duration.num_days())
+                } else if duration.num_hours() > 0 {
+                    format!("{} hours ago", duration.num_hours())
+                } else if duration.num_minutes() > 0 {
+                    format!("{} minutes ago", duration.num_minutes())
+                } else {
+                    "just now".to_string()
+                };
 
                 context.push_str(&format!(
-                    "- [{}] {}",
-                    room,
-                    if content.len() > 50 {
-                        format!("{}...", &content[..50])
+                    "- [{}] {} ({})",
+                    memory.room,
+                    if memory.content.len() > 50 {
+                        format!("{}...", &memory.content[..50])
                     } else {
-                        content
-                    }
+                        memory.content
+                    },
+                    time_desc
                 ));
                 if !tags.is_empty() {
-                    context.push_str(&format!(" ({})", tags.join(", ")));
+                    context.push_str(&format!(" [{}]", tags.join(", ")));
                 }
                 context.push('\n');
             }
@@ -813,25 +874,20 @@ impl MemoryPalace {
 
         if !top_relationships.is_empty() {
             context.push_str("\nKey relationships:\n");
-            for row in top_relationships {
-                let from_content: String = row.get("from_content");
-                let to_content: String = row.get("to_content");
-                let rel_type: String = row.get("relationship_type");
-                let strength: f64 = row.get("strength");
-
+            for rel in top_relationships {
                 context.push_str(&format!(
                     "- {} --[{}]({:.1})--> {}\n",
-                    if from_content.len() > 30 {
-                        format!("{}...", &from_content[..30])
+                    if rel.from_content.len() > 30 {
+                        format!("{}...", &rel.from_content[..30])
                     } else {
-                        from_content
+                        rel.from_content
                     },
-                    rel_type,
-                    strength,
-                    if to_content.len() > 30 {
-                        format!("{}...", &to_content[..30])
+                    rel.relationship_type,
+                    rel.strength,
+                    if rel.to_content.len() > 30 {
+                        format!("{}...", &rel.to_content[..30])
                     } else {
-                        to_content
+                        rel.to_content
                     }
                 ));
             }
@@ -1673,77 +1729,76 @@ impl Tool for MemoryPalace {
         let export_result = self
             .execute_with_schema(|tx| {
                 Box::pin(async move {
-                    let memories_result =
-                        sqlx::query("SELECT * FROM memories ORDER BY id")
+                    let memories: Vec<Memory> =
+                        sqlx::query_as("SELECT * FROM memories ORDER BY id")
                             .fetch_all(&mut **tx)
-                            .await;
+                            .await?;
 
-                    let rooms_result =
-                        sqlx::query("SELECT * FROM rooms ORDER BY id")
+                    let rooms: Vec<Room> =
+                        sqlx::query_as("SELECT * FROM rooms ORDER BY id")
                             .fetch_all(&mut **tx)
-                            .await;
+                            .await?;
 
-                    let connections_result = sqlx::query(
+                    let connections: Vec<Connection> = sqlx::query_as(
                         "SELECT * FROM room_connections ORDER BY id",
                     )
                     .fetch_all(&mut **tx)
-                    .await;
+                    .await?;
 
-                    Ok((memories_result, rooms_result, connections_result))
+                    Ok((memories, rooms, connections))
                 })
             })
             .await;
 
         match export_result {
-            Ok((Ok(memory_rows), Ok(room_rows), Ok(connection_rows))) => {
-                let memories: Vec<serde_json::Value> = memory_rows
+            Ok((memories, rooms, connections)) => {
+                let memory_values: Vec<serde_json::Value> = memories
                     .into_iter()
-                    .map(|row| {
-                        let tags_json: serde_json::Value = row.get("tags");
+                    .map(|memory| {
                         json!({
-                            "id": row.get::<i64, _>("id"),
-                            "content": row.get::<String, _>("content"),
-                            "room": row.get::<String, _>("room"),
-                            "tags": tags_json,
-                            "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
-                            "last_updated": row.get::<chrono::DateTime<chrono::Utc>, _>("last_updated").to_rfc3339(),
+                            "id": memory.id,
+                            "content": memory.content,
+                            "room": memory.room,
+                            "tags": memory.tags,
+                            "created_at": memory.created_at.to_rfc3339(),
+                            "last_updated": memory.last_updated.to_rfc3339(),
                         })
                     })
                     .collect();
 
-                let rooms: Vec<serde_json::Value> = room_rows
+                let room_values: Vec<serde_json::Value> = rooms
                     .into_iter()
-                    .map(|row| {
+                    .map(|room| {
                         json!({
-                            "id": row.get::<i64, _>("id"),
-                            "name": row.get::<String, _>("name"),
-                            "description": row.get::<String, _>("description"),
-                            "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                            "id": room.id,
+                            "name": room.name,
+                            "description": room.description,
+                            "created_at": room.created_at.to_rfc3339(),
                         })
                     })
                     .collect();
 
-                let connections: Vec<serde_json::Value> = connection_rows
+                let connection_values: Vec<serde_json::Value> = connections
                     .into_iter()
-                    .map(|row| {
+                    .map(|connection| {
                         json!({
-                            "id": row.get::<i64, _>("id"),
-                            "from_room": row.get::<String, _>("from_room"),
-                            "to_room": row.get::<String, _>("to_room"),
-                            "description": row.get::<Option<String>, _>("description"),
-                            "strength": row.get::<i32, _>("strength"),
-                            "created_at": row.get::<chrono::DateTime<chrono::Utc>, _>("created_at").to_rfc3339(),
+                            "id": connection.id,
+                            "from_room": connection.from_room,
+                            "to_room": connection.to_room,
+                            "description": connection.description,
+                            "strength": connection.strength,
+                            "created_at": connection.created_at.to_rfc3339(),
                         })
                     })
                     .collect();
 
                 json!({
-                    "memories": memories,
-                    "rooms": rooms,
-                    "connections": connections,
+                    "memories": memory_values,
+                    "rooms": room_values,
+                    "connections": connection_values,
                 })
             }
-            _ => json!({"error": "Failed to export data"}),
+            Err(_) => json!({"error": "Failed to export data"}),
         }
     }
 
