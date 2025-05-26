@@ -893,6 +893,16 @@ impl Tool for MemoryPalace {
                 .build()
                 .unwrap(),
 
+            Method::builder("MemoryPalace::summary")
+                .description("Get a summary of recent memories and key relationships for context.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }))
+                .build()
+                .unwrap(),
+
             Method::builder("MemoryPalace::connect")
                 .description("Connect two rooms in the palace to show their relationship.")
                 .schema(json!({
@@ -1097,7 +1107,25 @@ impl Tool for MemoryPalace {
                     },
                 }
             }
-
+            "summary" => {
+                match self.get_context_summary().await {
+                    Ok(summary) => super::Result {
+                        tool_use_id: call.id,
+                        content: summary.into(),
+                        is_error: false,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to get summary: {}", err)
+                            .into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
             "search" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1627,7 +1655,7 @@ impl Tool for MemoryPalace {
             _ => super::Result {
                 tool_use_id: call.id,
                 content: format!(
-                    "Method '{}' not implemented yet",
+                    "Unknown method '{}'. Available methods: store, search, summary, connect, list_rooms, relate, find_related, extract_concepts, find_by_concept, graph_stats",
                     method_name
                 )
                 .into(),
@@ -1804,126 +1832,9 @@ impl Tool for MemoryPalace {
         }
         Ok(())
     }
-
-    /// Update the Memory Palace context with recent memories and relationships.
-    async fn on_turn(
-        &mut self,
-        prompt: &mut Prompt,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Get dynamic context from database - this is the expensive part
-        let context_summary = self.get_context_summary().await.map_err(
-            |e| -> Box<dyn std::error::Error + Send + Sync> { e.into() },
-        )?;
-
-        // Only update if we have meaningful context to add
-        if !context_summary.contains("Memory palace is empty") {
-            let palace_context = format!(
-                "<memory_palace>\n{}\n</memory_palace>",
-                context_summary
-            );
-
-            if let Some(system) = &mut prompt.system {
-                self.update_palace_context(system, palace_context).await?;
-            } else {
-                let full_text = format!(
-                    "{}\n{}",
-                    MEMORY_PALACE_INSTRUCTIONS, palace_context
-                );
-                prompt.system = Some(full_text.into());
-            }
-        }
-
-        Ok(())
-    }
 }
 
 impl MemoryPalace {
-    /// Update the memory palace context block with current state
-    async fn update_palace_context<'a>(
-        &self,
-        system: &mut crate::prompt::message::Content<'a>,
-        palace_context: String,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match system {
-            crate::prompt::message::Content::SinglePart(text) => {
-                if text.contains("<memory_palace>") {
-                    // Replace existing context
-                    let parts: Vec<&str> =
-                        text.split("<memory_palace>").collect();
-                    if parts.len() >= 2 {
-                        let before = parts[0];
-                        let after_parts: Vec<&str> =
-                            parts[1].split("</memory_palace>").collect();
-                        let after = if after_parts.len() > 1 {
-                            after_parts[1]
-                        } else {
-                            ""
-                        };
-
-                        let new_text =
-                            format!("{}{}{}", before, palace_context, after);
-                        *text = new_text.into();
-                    }
-                } else {
-                    // Add context to existing content
-                    let existing_text = text.clone();
-                    *system = vec![
-                        Block::Text {
-                            text: existing_text,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        },
-                        Block::Text {
-                            text: palace_context.into(),
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        },
-                    ]
-                    .into();
-                }
-            }
-            crate::prompt::message::Content::MultiPart(blocks) => {
-                let mut found = false;
-                for block in blocks.iter_mut() {
-                    if let Block::Text { text, .. } = block {
-                        if text.contains("<memory_palace>") {
-                            let parts: Vec<&str> =
-                                text.split("<memory_palace>").collect();
-                            if parts.len() >= 2 {
-                                let before = parts[0];
-                                let after_parts: Vec<&str> = parts[1]
-                                    .split("</memory_palace>")
-                                    .collect();
-                                let after = if after_parts.len() > 1 {
-                                    after_parts[1]
-                                } else {
-                                    ""
-                                };
-
-                                let new_text = format!(
-                                    "{}{}{}",
-                                    before, palace_context, after
-                                );
-                                *text = new_text.into();
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if !found {
-                    blocks.push(Block::Text {
-                        text: palace_context.into(),
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Update or add memory palace instructions to the system content
     async fn update_or_add_instructions<'a>(
         &self,
@@ -2432,7 +2343,8 @@ mod tests {
 
         let result = palace.call(call).await;
         assert!(result.is_error);
-        assert!(result.content.to_string().contains("not implemented"));
+        assert!(result.content.to_string().contains("Unknown method"));
+        assert!(result.content.to_string().contains("Available methods"));
     }
 
     #[tokio::test]
