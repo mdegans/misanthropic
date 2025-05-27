@@ -1,7 +1,8 @@
 //! [`MemoryPalace`] tool for hierarchical knowledge organization using PostgreSQL.
 
+use crate::{prompt::message::Block, Prompt};
+
 use super::{Method, Tool, Use};
-use crate::{Prompt, prompt::message::Block};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::{FromRow, PgPool, Row};
@@ -87,7 +88,7 @@ struct RoomConnection {
 
 /// Helper struct for memory relationships
 #[derive(Debug, Clone, FromRow)]
-struct RelatedMemoryRow {
+struct RelatedMemory {
     id: i64,
     content: String,
     room: String,
@@ -100,7 +101,7 @@ struct RelatedMemoryRow {
 
 /// Helper struct for concept-based memory search
 #[derive(Debug, Clone, FromRow)]
-struct ConceptMemoryRow {
+struct ConceptMemory {
     id: i64,
     content: String,
     room: String,
@@ -122,7 +123,7 @@ struct GraphStats {
 
 /// Helper struct for recent memories summary
 #[derive(Debug, Clone, FromRow)]
-struct RecentMemoryRow {
+struct RecentMemory {
     content: String,
     room: String,
     tags: serde_json::Value,
@@ -131,11 +132,35 @@ struct RecentMemoryRow {
 
 /// Helper struct for top relationships summary
 #[derive(Debug, Clone, FromRow)]
-struct TopRelationshipRow {
+struct TopRelationship {
     from_content: String,
     to_content: String,
     relationship_type: String,
     strength: f64,
+}
+
+/// Helper struct for BFS memory discovery
+#[derive(Debug, Clone, FromRow)]
+struct BfsMemory {
+    id: i64,
+    content: String,
+    room: String,
+    tags: serde_json::Value,
+    created_at: chrono::DateTime<chrono::Utc>,
+    last_updated: chrono::DateTime<chrono::Utc>,
+    distance: i32,
+    path_strength: f64,
+}
+
+/// Helper struct for blended search results
+#[derive(Debug, Clone)]
+struct ScoredMemory {
+    memory: Memory,
+    room: String,
+    relevance_score: f64,
+    recency_score: f64,
+    relationship_score: f64,
+    final_score: f64,
 }
 
 /// A Memory Palace tool using PostgreSQL for reliable storage.
@@ -144,7 +169,7 @@ pub struct MemoryPalace {
     /// PostgreSQL connection pool.
     pub(crate) pool: PgPool,
     /// The schema name to use for all operations.
-    schema_name: String,
+    pub(crate) schema_name: String,
 }
 
 impl MemoryPalace {
@@ -171,7 +196,7 @@ impl MemoryPalace {
     }
 
     /// Initialize the database schema with proper indexes and triggers.
-    async fn ensure_initialized(&mut self) -> Result<(), String> {
+    pub(crate) async fn ensure_initialized(&mut self) -> Result<(), String> {
         // Execute schema creation statements in a transaction to ensure atomicity
         let mut tx = self
             .pool
@@ -412,7 +437,7 @@ impl MemoryPalace {
         .await
     }
 
-    /// Search for memories using full-text search and filters.
+    /// Search for memories using blended scoring that combines relevance, recency, and relationships.
     pub(crate) async fn search(
         &mut self,
         query: &str,
@@ -424,7 +449,8 @@ impl MemoryPalace {
 
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let memories: Vec<Memory> = sqlx::query_as(
+                // Get relevance-based results (top 10)
+                let relevance_memories: Vec<Memory> = sqlx::query_as(
                     r#"
                     SELECT id, content, room, tags, created_at, last_updated
                     FROM memories 
@@ -438,19 +464,124 @@ impl MemoryPalace {
                             WHEN room ILIKE $1 THEN 2
                             WHEN tags::text ILIKE $1 THEN 1
                             ELSE 0
-                        END DESC,
-                        created_at DESC
+                        END DESC
+                    LIMIT 10
                 "#,
                 )
                 .bind(&query_pattern)
                 .fetch_all(&mut **tx)
                 .await?;
 
-                let results: Vec<_> = memories
+                // Get recency-based results (top 10 most recently updated)
+                let recent_memories: Vec<Memory> = sqlx::query_as(
+                    r#"
+                    SELECT id, content, room, tags, created_at, last_updated
+                    FROM memories 
+                    WHERE 
+                        content ILIKE $1 
+                        OR room ILIKE $1 
+                        OR tags::text ILIKE $1
+                    ORDER BY last_updated DESC
+                    LIMIT 10
+                "#,
+                )
+                .bind(&query_pattern)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                // Get relationship-based results (memories connected to relevant ones)
+                let relationship_memories: Vec<Memory> = sqlx::query_as(
+                    r#"
+                    WITH relevant_memories AS (
+                        SELECT id
+                        FROM memories 
+                        WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
+                        LIMIT 5
+                    ),
+                    related_via_relationships AS (
+                        SELECT DISTINCT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                               mr.strength
+                        FROM memory_relationships mr
+                        JOIN memories m ON mr.to_memory_id = m.id
+                        JOIN relevant_memories rm ON mr.from_memory_id = rm.id
+                        WHERE mr.strength >= 0.3
+                        ORDER BY mr.strength DESC
+                        LIMIT 10
+                    )
+                    SELECT id, content, room, tags, created_at, last_updated
+                    FROM related_via_relationships
+                "#,
+                )
+                .bind(&query_pattern)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                // Combine and score all memories
+                let mut scored_memories = std::collections::HashMap::new();
+                let now = chrono::Utc::now();
+
+                // Score relevance memories
+                for (i, memory) in relevance_memories.into_iter().enumerate() {
+                    let relevance_score = (10 - i) as f64 / 10.0; // 1.0 to 0.1
+                    let recency_score = calculate_recency_score(&memory.last_updated, &now);
+                    
+                    scored_memories.insert(memory.id, ScoredMemory {
+                        room: memory.room.clone(),
+                        memory,
+                        relevance_score,
+                        recency_score,
+                        relationship_score: 0.0,
+                        final_score: 0.0, // Will calculate after
+                    });
+                }
+
+                // Boost recency scores for recent memories
+                for (i, memory) in recent_memories.into_iter().enumerate() {
+                    let recency_boost = (10 - i) as f64 / 10.0;
+                    let recency_score = calculate_recency_score(&memory.last_updated, &now);
+                    
+                    scored_memories.entry(memory.id)
+                        .and_modify(|sm| sm.recency_score = f64::max(sm.recency_score, recency_score + recency_boost * 0.3))
+                        .or_insert_with(|| ScoredMemory {
+                            room: memory.room.clone(),
+                            memory,
+                            relevance_score: 0.0,
+                            recency_score: recency_score + recency_boost * 0.3,
+                            relationship_score: 0.0,
+                            final_score: 0.0,
+                        });
+                }
+
+                // Add relationship scores
+                for (i, memory) in relationship_memories.into_iter().enumerate() {
+                    let relationship_score = (10 - i) as f64 / 10.0;
+                    
+                    scored_memories.entry(memory.id)
+                        .and_modify(|sm| sm.relationship_score = f64::max(sm.relationship_score, relationship_score))
+                        .or_insert_with(|| ScoredMemory {
+                            room: memory.room.clone(),
+                            recency_score: calculate_recency_score(&memory.last_updated, &now),
+                            memory,
+                            relevance_score: 0.0,
+                            relationship_score,
+                            final_score: 0.0,
+                        });
+                }
+
+                // Calculate final scores with weighted combination
+                let mut final_memories: Vec<_> = scored_memories.into_values().map(|mut sm| {
+                    // Weighted combination: 50% relevance, 30% recency, 20% relationships
+                    sm.final_score = sm.relevance_score * 0.5 + sm.recency_score * 0.3 + sm.relationship_score * 0.2;
+                    sm
+                }).collect();
+
+                // Sort by final score and take top results
+                final_memories.sort_by(|a, b| b.final_score.partial_cmp(&a.final_score).unwrap_or(std::cmp::Ordering::Equal));
+                final_memories.truncate(10);
+
+                let results: Vec<_> = final_memories
                     .into_iter()
-                    .map(|memory| {
-                        (memory.room.clone(), memory.id.to_string(), memory)
-                    })
+                    .map(|sm| (sm.room, sm.memory.id.to_string(), sm.memory))
                     .collect();
 
                 Ok(results)
@@ -459,8 +590,83 @@ impl MemoryPalace {
         .await
     }
 
+    /// Find memories using BFS with decay factor for distance.
+    pub(crate) async fn find_memories_bfs(
+        &mut self,
+        start_memory_id: i64,
+        max_distance: u32,
+        decay_factor: f64,
+        min_score: f64,
+    ) -> Result<Vec<(String, String, Memory, f64, i32)>, String> {
+        self.execute_with_schema(|tx| {
+            Box::pin(async move {
+                let rows: Vec<BfsMemory> = sqlx::query_as(
+                    r#"
+                    WITH RECURSIVE memory_bfs(memory_id, distance, path_strength, visited) AS (
+                        -- Base case: starting memory
+                        SELECT $1::BIGINT, 0, 1.0::FLOAT, ARRAY[$1::BIGINT]
+                        
+                        UNION
+                        
+                        -- Recursive case: explore neighbors
+                        SELECT 
+                            mr.to_memory_id,
+                            mb.distance + 1,
+                            mb.path_strength * mr.strength * $3::FLOAT, -- Apply decay factor
+                            mb.visited || mr.to_memory_id
+                        FROM memory_bfs mb
+                        JOIN memory_relationships mr ON mb.memory_id = mr.from_memory_id
+                        WHERE 
+                            mb.distance < $2::INT
+                            AND mr.to_memory_id != ALL(mb.visited) -- Avoid cycles
+                            AND mb.path_strength * mr.strength * $3::FLOAT >= $4::FLOAT -- Min score threshold
+                    )
+                    SELECT DISTINCT 
+                        m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                        mb.distance, mb.path_strength
+                    FROM memory_bfs mb
+                    JOIN memories m ON mb.memory_id = m.id
+                    WHERE mb.memory_id != $1 -- Exclude starting memory
+                    ORDER BY mb.path_strength DESC, mb.distance ASC
+                "#,
+                )
+                .bind(start_memory_id)
+                .bind(max_distance as i32)
+                .bind(decay_factor)
+                .bind(min_score)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                let mut results = Vec::new();
+                for row in rows {
+                    let tags: Vec<String> =
+                        serde_json::from_value(row.tags).unwrap_or_default();
+
+                    let memory = Memory {
+                        id: row.id,
+                        content: row.content,
+                        room: row.room.clone(),
+                        tags,
+                        created_at: row.created_at,
+                        last_updated: row.last_updated,
+                    };
+
+                    results.push((
+                        memory.room.clone(),
+                        memory.id.to_string(),
+                        memory,
+                        row.path_strength,
+                        row.distance,
+                    ));
+                }
+
+                Ok(results)
+            })
+        }).await
+    }
+
     /// Connect two rooms in the palace.
-    async fn connect_rooms(
+    pub(crate) async fn connect_rooms(
         &mut self,
         room1: impl Into<String>,
         room2: impl Into<String>,
@@ -488,7 +694,7 @@ impl MemoryPalace {
     }
 
     /// List all rooms with their memory counts and connections.
-    async fn list_rooms(
+    pub(crate) async fn list_rooms(
         &mut self,
     ) -> Result<Vec<(String, String, usize, Vec<String>)>, String> {
         self.execute_with_schema(|tx| {
@@ -573,7 +779,7 @@ impl MemoryPalace {
         Ok(okmsg)
     }
 
-    /// Find memories related to a given memory through graph traversal.
+    /// Find memories related to a given memory through graph traversal with enhanced scoring.
     pub(crate) async fn find_related_memories(
         &mut self,
         memory_id: i64,
@@ -582,7 +788,7 @@ impl MemoryPalace {
     ) -> Result<Vec<(String, String, Memory, String, f64)>, String> {
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let rows: Vec<RelatedMemoryRow> = sqlx::query_as(
+                let rows: Vec<RelatedMemory> = sqlx::query_as(
                     r#"
                     WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
                         -- Base case: direct relationships
@@ -602,7 +808,13 @@ impl MemoryPalace {
                            rm.relationship_type, rm.strength
                     FROM related_memories rm
                     JOIN memories m ON rm.memory_id = m.id
-                    ORDER BY rm.strength DESC, rm.depth ASC
+                    ORDER BY 
+                        -- Primary: Relationship strength
+                        rm.strength DESC, 
+                        -- Secondary: Recency of updates
+                        m.last_updated DESC,
+                        -- Tertiary: Graph depth (closer relationships first)
+                        rm.depth ASC
                 "#,
                 )
                 .bind(memory_id)
@@ -703,7 +915,7 @@ impl MemoryPalace {
         ))
     }
 
-    /// Find memories by concept.
+    /// Find memories by concept with enhanced relevance scoring.
     pub(crate) async fn find_memories_by_concept(
         &mut self,
         concept_name: &str,
@@ -712,7 +924,7 @@ impl MemoryPalace {
 
         self.execute_with_schema(|tx| {
             Box::pin(async move {
-                let rows: Vec<ConceptMemoryRow> = sqlx::query_as(
+                let rows: Vec<ConceptMemory> = sqlx::query_as(
                     r#"
                     SELECT 
                         m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
@@ -721,7 +933,13 @@ impl MemoryPalace {
                     JOIN memories m ON mc.memory_id = m.id
                     JOIN concepts c ON mc.concept_id = c.id
                     WHERE c.name = $1
-                    ORDER BY mc.confidence DESC
+                    ORDER BY 
+                        -- Primary: Concept confidence
+                        mc.confidence DESC,
+                        -- Secondary: Recency of updates
+                        m.last_updated DESC,
+                        -- Tertiary: Creation time
+                        m.created_at DESC
                 "#,
                 )
                 .bind(&concept_name)
@@ -803,27 +1021,29 @@ impl MemoryPalace {
     async fn get_context_summary(&mut self) -> Result<String, String> {
         let (recent_memories, top_relationships) = self.execute_with_schema(|tx| {
             Box::pin(async move {
-                // Get recent memories
-                let recent_memories: Vec<RecentMemoryRow> = sqlx::query_as(
+                // Get recent memories based on last_updated (more relevant for agents)
+                let recent_memories: Vec<RecentMemory> = sqlx::query_as(
                     r#"
                     SELECT content, room, tags, created_at
                     FROM memories 
-                    ORDER BY created_at DESC 
+                    ORDER BY last_updated DESC, created_at DESC 
                     LIMIT 5
                 "#,
                 )
                 .fetch_all(&mut **tx)
                 .await?;
 
-                // Get top relationships by strength
-                let top_relationships: Vec<TopRelationshipRow> = sqlx::query_as(
+                // Get top relationships by strength, but also consider recency
+                let top_relationships: Vec<TopRelationship> = sqlx::query_as(
                     r#"
                     SELECT m1.content as from_content, m2.content as to_content, 
                            mr.relationship_type, mr.strength
                     FROM memory_relationships mr
                     JOIN memories m1 ON mr.from_memory_id = m1.id
                     JOIN memories m2 ON mr.to_memory_id = m2.id
-                    ORDER BY mr.strength DESC
+                    ORDER BY 
+                        mr.strength DESC,
+                        GREATEST(m1.last_updated, m2.last_updated) DESC
                     LIMIT 3
                 "#,
                 )
@@ -902,56 +1122,98 @@ impl MemoryPalace {
     }
 }
 
+/// Calculate a recency score based on how recently a memory was updated.
+/// Returns a score between 0.0 and 1.0, with 1.0 being most recent.
+/// Uses exponential decay with configurable half-life.
+fn calculate_recency_score(
+    last_updated: &chrono::DateTime<chrono::Utc>,
+    now: &chrono::DateTime<chrono::Utc>,
+) -> f64 {
+    let duration = now.signed_duration_since(*last_updated);
+    let hours_ago = duration.num_minutes() as f64 / 60.0;
+    
+    // Use a 24-hour half-life for recency scoring
+    // This means memories from 24 hours ago get score 0.5
+    // Memories from 48 hours ago get score 0.25, etc.
+    let half_life_hours = 24.0;
+    
+    // Exponential decay: score = 2^(-hours_ago / half_life)
+    let score = 2_f64.powf(-hours_ago / half_life_hours);
+    
+    // Clamp to reasonable bounds
+    score.max(0.001).min(1.0)
+}
+
 #[async_trait::async_trait]
 impl Tool for MemoryPalace {
     fn name(&self) -> &str {
         Self::NAME
     }
 
+    async fn on_init(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Check if instructions are already present to avoid duplication
+        if let Some(system) = &mut prompt.system {
+            for block in system.iter_mut() {
+                if let Block::Text { text, .. } = block {
+                    if text.contains("<memory_palace_instructions>") {
+                        return Ok(()); // Already initialized
+                    }
+                }
+            }
+
+            // If not found, append the instructions
+            system.push(MEMORY_PALACE_INSTRUCTIONS);
+        }
+
+        // Add memory palace instructions to the system prompt
+        prompt.system = Some(MEMORY_PALACE_INSTRUCTIONS.into());
+        Ok(())
+    }
+
     fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
         Box::new([
             Method::builder("MemoryPalace::store")
-                .description("Store a memory in a specific room of the palace.")
+                .description("Store a new memory in the palace.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
                         "room": {
                             "type": "string",
-                            "description": "Name of the room to store the memory in."
+                            "description": "The room where the memory belongs."
                         },
                         "content": {
                             "type": "string",
-                            "description": "The knowledge/memory content to store."
+                            "description": "The content of the memory."
                         },
                         "tags": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Tags for categorizing this memory (can be empty array).",
-                            "default": []
+                            "items": { "type": "string" },
+                            "description": "Tags for categorizing the memory."
                         }
                     },
-                    "required": ["room", "content", "tags"]
+                    "required": ["room", "content"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::search")
-                .description("Search for memories using full-text search, tags, or room names.")
+                .description("Search for memories by content, room, or tags.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
                         "query": {
                             "type": "string",
-                            "description": "Search query to find relevant memories. Supports full-text search."
+                            "description": "The search query (text to find in memories)."
                         }
                     },
                     "required": ["query"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::summary")
-                .description("Get a summary of recent memories and key relationships for context.")
+                .description("Get a summary of recent and important memories.")
                 .schema(json!({
                     "type": "object",
                     "properties": {},
@@ -959,28 +1221,26 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::connect")
-                .description("Connect two rooms in the palace to show their relationship.")
+                .description("Connect two rooms in the palace.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
                         "room1": {
                             "type": "string",
-                            "description": "First room to connect."
+                            "description": "The first room to connect."
                         },
                         "room2": {
                             "type": "string",
-                            "description": "Second room to connect."
+                            "description": "The second room to connect."
                         }
                     },
                     "required": ["room1", "room2"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::list_rooms")
-                .description("List all rooms in the palace with their descriptions, memory counts, and connections.")
+                .description("List all rooms with their memory counts and connections.")
                 .schema(json!({
                     "type": "object",
                     "properties": {},
@@ -988,9 +1248,8 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::relate")
-                .description("Create a relationship between two memories for graph traversal.")
+                .description("Create or update a relationship between two memories.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
@@ -999,13 +1258,12 @@ impl Tool for MemoryPalace {
                             "description": "ID of the first memory."
                         },
                         "memory_id2": {
-                            "type": "number", 
+                            "type": "number",
                             "description": "ID of the second memory."
                         },
                         "relationship_type": {
                             "type": "string",
-                            "description": "Type of relationship (e.g., 'related', 'contradicts', 'builds_on', 'example_of').",
-                            "default": "related"
+                            "description": "Type of the relationship."
                         },
                         "strength": {
                             "type": "number",
@@ -1013,38 +1271,36 @@ impl Tool for MemoryPalace {
                             "default": 1.0
                         }
                     },
-                    "required": ["memory_id1", "memory_id2", "relationship_type", "strength"]
+                    "required": ["memory_id1", "memory_id2", "relationship_type"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::find_related")
-                .description("Find memories related to a given memory through graph traversal.")
+                .description("Find memories related to a given memory.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
                         "memory_id": {
                             "type": "number",
-                            "description": "ID of the memory to find relationships for."
+                            "description": "ID of the memory to find relations for."
                         },
                         "max_depth": {
                             "type": "number",
-                            "description": "Maximum depth for graph traversal.",
+                            "description": "Maximum depth for relationship traversal.",
                             "default": 2
                         },
                         "min_strength": {
                             "type": "number",
-                            "description": "Minimum relationship strength to include.",
+                            "description": "Minimum strength of relationships to consider.",
                             "default": 0.1
                         }
                     },
-                    "required": ["memory_id", "max_depth", "min_strength"]
+                    "required": ["memory_id"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::extract_concepts")
-                .description("Extract and link concepts from a memory for semantic organization.")
+                .description("Extract and link concepts from memory content.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
@@ -1054,36 +1310,63 @@ impl Tool for MemoryPalace {
                         },
                         "concepts": {
                             "type": "array",
-                            "items": {"type": "string"},
-                            "description": "List of concepts to extract and link to this memory."
+                            "items": { "type": "string" },
+                            "description": "List of concept names to extract."
                         }
                     },
                     "required": ["memory_id", "concepts"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::find_by_concept")
-                .description("Find memories that mention a specific concept.")
+                .description("Find memories by concept with enhanced scoring.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
-                        "concept": {
+                        "concept_name": {
                             "type": "string",
-                            "description": "Name of the concept to search for."
+                            "description": "The name of the concept to search for."
                         }
                     },
-                    "required": ["concept"]
+                    "required": ["concept_name"]
                 }))
                 .build()
                 .unwrap(),
-
             Method::builder("MemoryPalace::graph_stats")
-                .description("Get statistics about the memory graph structure.")
+                .description("Get statistics and insights about the memory graph.")
                 .schema(json!({
                     "type": "object",
                     "properties": {},
                     "required": []
+                }))
+                .build()
+                .unwrap(),
+            Method::builder("MemoryPalace::find_bfs")
+                .description("Find memories using breadth-first search with decay factor for semantic distance.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "memory_id": {
+                            "type": "number",
+                            "description": "ID of the starting memory for BFS exploration."
+                        },
+                        "max_distance": {
+                            "type": "number",
+                            "description": "Maximum distance to explore in the graph.",
+                            "default": 3
+                        },
+                        "decay_factor": {
+                            "type": "number",
+                            "description": "Decay factor for path strength (0.0 to 1.0).",
+                            "default": 0.8
+                        },
+                        "min_score": {
+                            "type": "number",
+                            "description": "Minimum path score threshold.",
+                            "default": 0.1
+                        }
+                    },
+                    "required": ["memory_id", "max_distance", "decay_factor", "min_score"]
                 }))
                 .build()
                 .unwrap(),
@@ -1109,7 +1392,7 @@ impl Tool for MemoryPalace {
                 };
 
                 let room = match input.get("room").and_then(|v| v.as_str()) {
-                    Some(room) => room.to_string(),
+                    Some(r) => r,
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
@@ -1121,62 +1404,38 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let content =
-                    match input.get("content").and_then(|v| v.as_str()) {
-                        Some(content) => content.to_string(),
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content: "Missing required 'content' parameter"
-                                    .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let content = match input.get("content").and_then(|v| v.as_str()) {
+                    Some(c) => c,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'content' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-                let tags: Vec<&str> = input
-                    .get("tags")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
+                let tags = input.get("tags").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<&str>>()
+                });
 
-                match self.store_memory(room.clone(), content, tags).await {
+                let tags_refs = tags.as_ref().map(|v| v.iter().copied()).unwrap_or_else(|| [].iter().copied());
+
+                match self.store_memory(room, content, tags_refs).await {
                     Ok(memory_id) => super::Result {
                         tool_use_id: call.id,
-                        content: format!(
-                            "Memory stored in room '{}' with ID '{}'",
-                            room, memory_id
-                        )
-                        .into(),
+                        content: format!("Memory stored with ID: {} in room '{}'", memory_id, room).into(),
                         is_error: false,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!("Failed to store memory: {}", err)
-                            .into(),
-                        is_error: true,
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    },
-                }
-            }
-            "summary" => {
-                match self.get_context_summary().await {
-                    Ok(summary) => super::Result {
-                        tool_use_id: call.id,
-                        content: summary.into(),
-                        is_error: false,
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    },
-                    Err(err) => super::Result {
-                        tool_use_id: call.id,
-                        content: format!("Failed to get summary: {}", err)
-                            .into(),
+                        content: format!("Failed to store memory: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
@@ -1198,12 +1457,11 @@ impl Tool for MemoryPalace {
                 };
 
                 let query = match input.get("query").and_then(|v| v.as_str()) {
-                    Some(query) => query,
+                    Some(q) => q,
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
-                            content: "Missing required 'query' parameter"
-                                .into(),
+                            content: "Missing required 'query' parameter".into(),
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
@@ -1216,25 +1474,21 @@ impl Tool for MemoryPalace {
                         if results.is_empty() {
                             super::Result {
                                 tool_use_id: call.id,
-                                content: format!(
-                                    "No memories found matching '{}'",
-                                    query
-                                )
-                                .into(),
+                                content: format!("No memories found for query: '{}'", query).into(),
                                 is_error: false,
                                 #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
-                            let mut response = format!(
-                                "Found {} memories matching '{}':\n\n",
-                                results.len(),
-                                query
-                            );
+                            let mut response = format!("Found {} memories for query '{}':\n\n", results.len(), query);
                             for (room_name, memory_id, memory) in results {
                                 response.push_str(&format!(
-                                    "Room: {}\nID: {}\nContent: {}\nTags: {}\n\n",
-                                    room_name, memory_id, memory.content, memory.tags.join(", ")
+                                    "Room: {}\nID: {}\nContent: {}\nTags: {}\nCreated: {}\n\n",
+                                    room_name,
+                                    memory_id,
+                                    memory.content,
+                                    memory.tags.join(", "),
+                                    memory.created_at.format("%Y-%m-%d %H:%M:%S")
                                 ));
                             }
 
@@ -1249,14 +1503,31 @@ impl Tool for MemoryPalace {
                     }
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!("Search failed: {}", err).into(),
+                        content: format!("Failed to search memories: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
-
+            "summary" => {
+                match self.get_context_summary().await {
+                    Ok(summary) => super::Result {
+                        tool_use_id: call.id,
+                        content: summary.into(),
+                        is_error: false,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to get summary: {}", err).into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
             "connect" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1272,12 +1543,11 @@ impl Tool for MemoryPalace {
                 };
 
                 let room1 = match input.get("room1").and_then(|v| v.as_str()) {
-                    Some(room) => room.to_string(),
+                    Some(r) => r,
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
-                            content: "Missing required 'room1' parameter"
-                                .into(),
+                            content: "Missing required 'room1' parameter".into(),
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
@@ -1286,12 +1556,11 @@ impl Tool for MemoryPalace {
                 };
 
                 let room2 = match input.get("room2").and_then(|v| v.as_str()) {
-                    Some(room) => room.to_string(),
+                    Some(r) => r,
                     None => {
                         return super::Result {
                             tool_use_id: call.id,
-                            content: "Missing required 'room2' parameter"
-                                .into(),
+                            content: "Missing required 'room2' parameter".into(),
                             is_error: true,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
@@ -1299,54 +1568,34 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                match self.connect_rooms(room1.clone(), room2.clone()).await {
+                match self.connect_rooms(room1, room2).await {
                     Ok(()) => super::Result {
                         tool_use_id: call.id,
-                        content: format!(
-                            "Connected rooms '{}' and '{}'",
-                            room1, room2
-                        )
-                        .into(),
+                        content: format!("Rooms '{}' and '{}' connected.", room1, room2).into(),
                         is_error: false,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: err.into(),
+                        content: format!("Failed to connect rooms: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
-
-            "list_rooms" => match self.list_rooms().await {
-                Ok(rooms) => {
-                    if rooms.is_empty() {
-                        super::Result {
-                            tool_use_id: call.id,
-                            content: "The memory palace is empty. No rooms have been created yet.".into(),
-                            is_error: false,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        }
-                    } else {
-                        let mut response = format!(
-                            "Memory Palace contains {} rooms:\n\n",
-                            rooms.len()
-                        );
-                        for (name, description, count, connections) in rooms {
+            "list_rooms" => {
+                match self.list_rooms().await {
+                    Ok(rooms) => {
+                        let mut response = String::new();
+                        for (name, description, memory_count, connections) in rooms {
                             response.push_str(&format!(
                                 "Room: {}\nDescription: {}\nMemories: {}\nConnections: {}\n\n",
                                 name,
                                 description,
-                                count,
-                                if connections.is_empty() {
-                                    "None".to_string()
-                                } else {
-                                    connections.join(", ")
-                                }
+                                memory_count,
+                                connections.join(", ")
                             ));
                         }
 
@@ -1358,16 +1607,15 @@ impl Tool for MemoryPalace {
                             cache_control: None,
                         }
                     }
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to list rooms: {}", err).into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
                 }
-                Err(err) => super::Result {
-                    tool_use_id: call.id,
-                    content: format!("Failed to list rooms: {}", err).into(),
-                    is_error: true,
-                    #[cfg(feature = "prompt-caching")]
-                    cache_control: None,
-                },
-            },
-
+            }
             "relate" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1382,78 +1630,67 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let memory_id1 =
-                    match input.get("memory_id1").and_then(|v| v.as_i64()) {
-                        Some(id) => id,
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content:
-                                    "Missing required 'memory_id1' parameter"
-                                        .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let memory_id1 = match input.get("memory_id1").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'memory_id1' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-                let memory_id2 =
-                    match input.get("memory_id2").and_then(|v| v.as_i64()) {
-                        Some(id) => id,
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content:
-                                    "Missing required 'memory_id2' parameter"
-                                        .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let memory_id2 = match input.get("memory_id2").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'memory_id2' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-                let relationship_type = input
-                    .get("relationship_type")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("related");
+                let relationship_type = match input.get("relationship_type").and_then(|v| v.as_str()) {
+                    Some(r) => r,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'relationship_type' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
                 let strength = input
                     .get("strength")
                     .and_then(|v| v.as_f64())
                     .unwrap_or(1.0);
 
-                match self
-                    .relate_memories(
-                        memory_id1,
-                        memory_id2,
-                        relationship_type.to_string(),
-                        strength,
-                    )
-                    .await
-                {
-                    Ok(message) => super::Result {
+                match self.relate_memories(memory_id1, memory_id2, relationship_type, strength).await {
+                    Ok(msg) => super::Result {
                         tool_use_id: call.id,
-                        content: message.into(),
+                        content: msg.into(),
                         is_error: false,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!(
-                            "Failed to create relationship: {}",
-                            err
-                        )
-                        .into(),
+                        content: format!("Failed to relate memories: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
-
             "find_related" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1468,21 +1705,18 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let memory_id =
-                    match input.get("memory_id").and_then(|v| v.as_i64()) {
-                        Some(id) => id,
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content:
-                                    "Missing required 'memory_id' parameter"
-                                        .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let memory_id = match input.get("memory_id").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'memory_id' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
                 let max_depth = input
                     .get("max_depth")
@@ -1495,19 +1729,12 @@ impl Tool for MemoryPalace {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.1);
 
-                match self
-                    .find_related_memories(memory_id, max_depth, min_strength)
-                    .await
-                {
+                match self.find_related_memories(memory_id, max_depth, min_strength).await {
                     Ok(results) => {
                         if results.is_empty() {
                             super::Result {
                                 tool_use_id: call.id,
-                                content: format!(
-                                    "No related memories found for ID '{}'",
-                                    memory_id
-                                )
-                                .into(),
+                                content: format!("No related memories found for ID '{}'", memory_id).into(),
                                 is_error: false,
                                 #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
@@ -1518,17 +1745,10 @@ impl Tool for MemoryPalace {
                                 results.len(),
                                 memory_id
                             );
-                            for (
-                                room_name,
-                                related_memory_id,
-                                memory,
-                                rel_type,
-                                strength,
-                            ) in results
-                            {
+                            for (room_name, related_memory_id, memory, relationship_type, strength) in results {
                                 response.push_str(&format!(
-                                    "Room: {}\nID: {}\nContent: {}\nRelationship: {} (strength: {})\n\n",
-                                    room_name, related_memory_id, memory.content, rel_type, strength
+                                    "Room: {}\nID: {}\nContent: {}\nRelationship: {} (Strength: {:.2})\n\n",
+                                    room_name, related_memory_id, memory.content, relationship_type, strength
                                 ));
                             }
 
@@ -1543,18 +1763,13 @@ impl Tool for MemoryPalace {
                     }
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!(
-                            "Failed to find related memories: {}",
-                            err
-                        )
-                        .into(),
+                        content: format!("Failed to find related memories: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
-
             "extract_concepts" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1569,47 +1784,44 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let memory_id =
-                    match input.get("memory_id").and_then(|v| v.as_i64()) {
-                        Some(id) => id,
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content:
-                                    "Missing required 'memory_id' parameter"
-                                        .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let memory_id = match input.get("memory_id").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'memory_id' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-                let concepts: Vec<&str> = input
-                    .get("concepts")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect())
-                    .unwrap_or_default();
+                let concepts = input.get("concepts").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<&str>>()
+                });
 
-                match self.extract_concepts(memory_id, concepts).await {
-                    Ok(message) => super::Result {
+                let concepts_refs = concepts.as_ref().map(|v| v.iter().copied()).unwrap_or_else(|| [].iter().copied());
+
+                match self.extract_concepts(memory_id, concepts_refs).await {
+                    Ok(msg) => super::Result {
                         tool_use_id: call.id,
-                        content: message.into(),
+                        content: msg.into(),
                         is_error: false,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!("Failed to extract concepts: {}", err)
-                            .into(),
+                        content: format!("Failed to extract concepts: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
-
             "find_by_concept" => {
                 let input = match call.input.as_object() {
                     Some(obj) => obj,
@@ -1624,31 +1836,25 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let concept =
-                    match input.get("concept").and_then(|v| v.as_str()) {
-                        Some(concept) => concept,
-                        None => {
-                            return super::Result {
-                                tool_use_id: call.id,
-                                content: "Missing required 'concept' parameter"
-                                    .into(),
-                                is_error: true,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            };
-                        }
-                    };
+                let concept_name = match input.get("concept_name").and_then(|v| v.as_str()) {
+                    Some(c) => c,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'concept_name' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-                match self.find_memories_by_concept(concept).await {
+                match self.find_memories_by_concept(concept_name).await {
                     Ok(results) => {
                         if results.is_empty() {
                             super::Result {
                                 tool_use_id: call.id,
-                                content: format!(
-                                    "No memories found for concept '{}'",
-                                    concept
-                                )
-                                .into(),
+                                content: format!("No memories found for concept: '{}'", concept_name).into(),
                                 is_error: false,
                                 #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
@@ -1657,13 +1863,11 @@ impl Tool for MemoryPalace {
                             let mut response = format!(
                                 "Found {} memories for concept '{}':\n\n",
                                 results.len(),
-                                concept
+                                concept_name
                             );
-                            for (room_name, memory_id, memory, confidence) in
-                                results
-                            {
+                            for (room_name, memory_id, memory, confidence) in results {
                                 response.push_str(&format!(
-                                    "Room: {}\nID: {}\nContent: {}\nConfidence: {}\n\n",
+                                    "Room: {}\nID: {}\nContent: {}\nConfidence: {:.2}\n\n",
                                     room_name, memory_id, memory.content, confidence
                                 ));
                             }
@@ -1679,40 +1883,120 @@ impl Tool for MemoryPalace {
                     }
                     Err(err) => super::Result {
                         tool_use_id: call.id,
-                        content: format!(
-                            "Failed to find memories by concept: {}",
-                            err
-                        )
-                        .into(),
+                        content: format!("Failed to find memories by concept: {}", err).into(),
                         is_error: true,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
             }
+            "graph_stats" => {
+                match self.get_graph_stats().await {
+                    Ok(stats) => super::Result {
+                        tool_use_id: call.id,
+                        content: stats.into(),
+                        is_error: false,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to get graph stats: {}", err).into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
+            "find_bfs" => {
+                let input = match call.input.as_object() {
+                    Some(obj) => obj,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Input must be an object".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
-            "graph_stats" => match self.get_graph_stats().await {
-                Ok(stats) => super::Result {
-                    tool_use_id: call.id,
-                    content: stats.into(),
-                    is_error: false,
-                    #[cfg(feature = "prompt-caching")]
-                    cache_control: None,
-                },
-                Err(err) => super::Result {
-                    tool_use_id: call.id,
-                    content: format!("Failed to get graph stats: {}", err)
-                        .into(),
-                    is_error: true,
-                    #[cfg(feature = "prompt-caching")]
-                    cache_control: None,
-                },
-            },
+                let memory_id = match input.get("memory_id").and_then(|v| v.as_i64()) {
+                    Some(id) => id,
+                    None => {
+                        return super::Result {
+                            tool_use_id: call.id,
+                            content: "Missing required 'memory_id' parameter".into(),
+                            is_error: true,
+                            #[cfg(feature = "prompt-caching")]
+                            cache_control: None,
+                        };
+                    }
+                };
 
+                let max_distance = input
+                    .get("max_distance")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| v as u32)
+                    .unwrap_or(3);
+
+                let decay_factor = input
+                    .get("decay_factor")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.8);
+
+                let min_score = input
+                    .get("min_score")
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.1);
+
+                match self.find_memories_bfs(memory_id, max_distance, decay_factor, min_score).await {
+                    Ok(results) => {
+                        if results.is_empty() {
+                            super::Result {
+                                tool_use_id: call.id,
+                                content: format!("No memories found within distance {} from ID '{}'", max_distance, memory_id).into(),
+                                is_error: false,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                        } else {
+                            let mut response = format!(
+                                "Found {} memories within distance {} from ID '{}':\n\n",
+                                results.len(),
+                                max_distance,
+                                memory_id
+                            );
+                            for (room_name, bfs_memory_id, memory, score, distance) in results {
+                                response.push_str(&format!(
+                                    "Room: {}\nID: {}\nContent: {}\nPath Score: {:.3}\nDistance: {} hops\n\n",
+                                    room_name, bfs_memory_id, memory.content, score, distance
+                                ));
+                            }
+
+                            super::Result {
+                                tool_use_id: call.id,
+                                content: response.into(),
+                                is_error: false,
+                                #[cfg(feature = "prompt-caching")]
+                                cache_control: None,
+                            }
+                        }
+                    }
+                    Err(err) => super::Result {
+                        tool_use_id: call.id,
+                        content: format!("Failed to find memories via BFS: {}", err).into(),
+                        is_error: true,
+                        #[cfg(feature = "prompt-caching")]
+                        cache_control: None,
+                    },
+                }
+            }
             _ => super::Result {
                 tool_use_id: call.id,
                 content: format!(
-                    "Unknown method '{}'. Available methods: store, search, summary, connect, list_rooms, relate, find_related, extract_concepts, find_by_concept, graph_stats",
+                    "Unknown method '{}'. Available methods: store, search, summary, connect, list_rooms, relate, find_related, find_bfs, extract_concepts, find_by_concept, graph_stats",
                     method_name
                 )
                 .into(),
@@ -1723,768 +2007,27 @@ impl Tool for MemoryPalace {
         }
     }
 
-    /// Save the current state of the palace to JSON.
     async fn save_json(&mut self) -> serde_json::Value {
-        // Export all data as JSON using execute_with_schema
-        let export_result = self
-            .execute_with_schema(|tx| {
-                Box::pin(async move {
-                    let memories: Vec<Memory> =
-                        sqlx::query_as("SELECT * FROM memories ORDER BY id")
-                            .fetch_all(&mut **tx)
-                            .await?;
-
-                    let rooms: Vec<Room> =
-                        sqlx::query_as("SELECT * FROM rooms ORDER BY id")
-                            .fetch_all(&mut **tx)
-                            .await?;
-
-                    let connections: Vec<Connection> = sqlx::query_as(
-                        "SELECT * FROM room_connections ORDER BY id",
-                    )
-                    .fetch_all(&mut **tx)
-                    .await?;
-
-                    Ok((memories, rooms, connections))
-                })
-            })
-            .await;
-
-        match export_result {
-            Ok((memories, rooms, connections)) => {
-                let memory_values: Vec<serde_json::Value> = memories
-                    .into_iter()
-                    .map(|memory| {
-                        json!({
-                            "id": memory.id,
-                            "content": memory.content,
-                            "room": memory.room,
-                            "tags": memory.tags,
-                            "created_at": memory.created_at.to_rfc3339(),
-                            "last_updated": memory.last_updated.to_rfc3339(),
-                        })
-                    })
-                    .collect();
-
-                let room_values: Vec<serde_json::Value> = rooms
-                    .into_iter()
-                    .map(|room| {
-                        json!({
-                            "id": room.id,
-                            "name": room.name,
-                            "description": room.description,
-                            "created_at": room.created_at.to_rfc3339(),
-                        })
-                    })
-                    .collect();
-
-                let connection_values: Vec<serde_json::Value> = connections
-                    .into_iter()
-                    .map(|connection| {
-                        json!({
-                            "id": connection.id,
-                            "from_room": connection.from_room,
-                            "to_room": connection.to_room,
-                            "description": connection.description,
-                            "strength": connection.strength,
-                            "created_at": connection.created_at.to_rfc3339(),
-                        })
-                    })
-                    .collect();
-
-                json!({
-                    "memories": memory_values,
-                    "rooms": room_values,
-                    "connections": connection_values,
-                })
-            }
-            Err(_) => json!({"error": "Failed to export data"}),
-        }
+        // Only export the schema name since the actual state lives in the database
+        json!({
+            "schema_name": self.schema_name
+        })
     }
 
-    /// Load the palace state from JSON.
-    async fn load_json(
-        &mut self,
-        json: serde_json::Value,
-    ) -> Result<(), String> {
-        self.execute_with_schema(|tx| {
-            Box::pin(async move {
-                // Clear existing data
-                sqlx::query("TRUNCATE memories, rooms, room_connections RESTART IDENTITY CASCADE")
-                    .execute(&mut **tx)
-                    .await?;
-
-                // Import data
-                if let Some(rooms) = json.get("rooms").and_then(|v| v.as_array()) {
-                    for room in rooms {
-                        if let (Some(name), Some(description)) = (
-                            room.get("name").and_then(|v| v.as_str()),
-                            room.get("description").and_then(|v| v.as_str()),
-                        ) {
-                            sqlx::query("INSERT INTO rooms (name, description) VALUES ($1, $2)")
-                                .bind(name)
-                                .bind(description)
-                                .execute(&mut **tx)
-                                .await?;
-                        }
-                    }
-                }
-
-                if let Some(memories) = json.get("memories").and_then(|v| v.as_array()) {
-                    for memory in memories {
-                        if let (Some(content), Some(room), Some(tags)) = (
-                            memory.get("content").and_then(|v| v.as_str()),
-                            memory.get("room").and_then(|v| v.as_str()),
-                            memory.get("tags"),
-                        ) {
-                            sqlx::query("INSERT INTO memories (content, room, tags) VALUES ($1, $2, $3)")
-                                .bind(content)
-                                .bind(room)
-                                .bind(tags)
-                                .execute(&mut **tx)
-                                .await?;
-                        }
-                    }
-                }
-
-                if let Some(connections) = json.get("connections").and_then(|v| v.as_array()) {
-                    for connection in connections {
-                        if let (Some(from_room), Some(to_room)) = (
-                            connection.get("from_room").and_then(|v| v.as_str()),
-                            connection.get("to_room").and_then(|v| v.as_str()),
-                        ) {
-                            let description = connection.get("description");
-                            let strength = connection
-                                .get("strength")
-                                .and_then(|v| v.as_i64())
-                                .unwrap_or(1) as i32;
-
-                            sqlx::query("INSERT INTO room_connections (from_room, to_room, description, strength) VALUES ($1, $2, $3, $4)")
-                                .bind(from_room)
-                                .bind(to_room)
-                                .bind(description)
-                                .bind(strength)
-                                .execute(&mut **tx)
-                                .await?;
-                        }
-                    }
-                }
-
-                Ok(())
-            })
-        }).await
-    }
-
-    /// Initialize the Memory Palace instructions in the prompt.
-    async fn on_init(
-        &mut self,
-        prompt: &mut Prompt,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Add the static instructions once
-        if let Some(system) = &mut prompt.system {
-            self.update_or_add_instructions(system).await?;
+    async fn load_json(&mut self, json: serde_json::Value) -> Result<(), String> {
+        let data = if let serde_json::Value::Object(obj) = json {
+            obj
         } else {
-            prompt.system = Some(MEMORY_PALACE_INSTRUCTIONS.into());
+            return Err("Input must be a JSON object".to_string());
+        };
+        
+        // Only restore the schema name - the database state persists independently
+        if let Some(schema_name) = data.get("schema_name").and_then(|v| v.as_str()) {
+            self.schema_name = schema_name.to_string();
+            // Re-initialize to ensure the schema exists
+            self.ensure_initialized().await?;
         }
+
         Ok(())
-    }
-}
-
-impl MemoryPalace {
-    /// Update or add memory palace instructions to the system content
-    async fn update_or_add_instructions<'a>(
-        &self,
-        system: &mut crate::prompt::message::Content<'a>,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        match system {
-            crate::prompt::message::Content::SinglePart(text) => {
-                if text.contains("<memory_palace_instructions>") {
-                    // Replace existing instructions
-                    let parts: Vec<&str> =
-                        text.split("<memory_palace_instructions>").collect();
-                    if parts.len() >= 2 {
-                        let before = parts[0];
-                        let after_parts: Vec<&str> = parts[1]
-                            .split("</memory_palace_instructions>")
-                            .collect();
-                        let after = if after_parts.len() > 1 {
-                            after_parts[1]
-                        } else {
-                            ""
-                        };
-
-                        let new_text = format!(
-                            "{}{}{}",
-                            before, MEMORY_PALACE_INSTRUCTIONS, after
-                        );
-                        *text = new_text.into();
-                    }
-                } else {
-                    // Add instructions to existing content
-                    let existing_text = text.clone();
-                    *system = vec![
-                        Block::Text {
-                            text: existing_text,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        },
-                        Block::Text {
-                            text: MEMORY_PALACE_INSTRUCTIONS.into(),
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        },
-                    ]
-                    .into();
-                }
-            }
-            crate::prompt::message::Content::MultiPart(blocks) => {
-                let mut found = false;
-                for block in blocks.iter_mut() {
-                    if let Block::Text { text, .. } = block {
-                        if text.contains("<memory_palace_instructions>") {
-                            let parts: Vec<&str> = text
-                                .split("<memory_palace_instructions>")
-                                .collect();
-                            if parts.len() >= 2 {
-                                let before = parts[0];
-                                let after_parts: Vec<&str> = parts[1]
-                                    .split("</memory_palace_instructions>")
-                                    .collect();
-                                let after = if after_parts.len() > 1 {
-                                    after_parts[1]
-                                } else {
-                                    ""
-                                };
-
-                                let new_text = format!(
-                                    "{}{}{}",
-                                    before, MEMORY_PALACE_INSTRUCTIONS, after
-                                );
-                                *text = new_text.into();
-                                found = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                if !found {
-                    blocks.push(Block::Text {
-                        text: MEMORY_PALACE_INSTRUCTIONS.into(),
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use sqlx::PgPool;
-
-    async fn create_test_palace(test_id: &str) -> MemoryPalace {
-        let database_url =
-            std::env::var("TEST_DATABASE_URL").unwrap_or_else(|_| {
-                "postgresql://postgres@localhost:5432/misanthropic_test"
-                    .to_string()
-            });
-
-        let pool = PgPool::connect(&database_url)
-            .await
-            .expect("Failed to connect to test database");
-
-        // Create a unique schema for this test to avoid conflicts
-        let schema_name = format!("test_{}", test_id.replace("-", "_"));
-
-        // Drop and recreate schema in a transaction
-        let mut tx = pool.begin().await.expect("Failed to begin transaction");
-
-        sqlx::query(&format!("DROP SCHEMA IF EXISTS {} CASCADE", schema_name))
-            .execute(&mut *tx)
-            .await
-            .expect("Failed to drop test schema");
-
-        sqlx::query(&format!("CREATE SCHEMA {}", schema_name))
-            .execute(&mut *tx)
-            .await
-            .expect("Failed to create test schema");
-
-        tx.commit().await.expect("Failed to commit schema setup");
-
-        // Create the MemoryPalace and initialize it with the schema
-        let mut palace = MemoryPalace {
-            pool,
-            schema_name: schema_name.clone(),
-        };
-
-        palace
-            .ensure_initialized()
-            .await
-            .expect("Failed to initialize test palace");
-
-        // Set search_path for subsequent operations
-        sqlx::query(&format!("SET search_path TO {}", schema_name))
-            .execute(&palace.pool)
-            .await
-            .expect("Failed to set search path for operations");
-
-        palace
-    }
-
-    #[tokio::test]
-    async fn test_store_and_search_memory() {
-        let mut palace = create_test_palace("store_and_search_memory").await;
-
-        // Store a memory
-        let memory_id = palace
-            .store_memory(
-                "library",
-                "The capital of France is Paris",
-                ["geography", "facts"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        // Search for the memory
-        let results = palace
-            .search("France")
-            .await
-            .expect("Failed to search memories");
-
-        assert_eq!(results.len(), 1);
-        let (room, id, memory) = &results[0];
-        assert_eq!(room, "library");
-        assert_eq!(id, &memory_id.to_string());
-        assert_eq!(memory.content, "The capital of France is Paris");
-        assert!(memory.tags.contains(&"geography".to_string()));
-        assert!(memory.tags.contains(&"facts".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_search_empty_results() {
-        let mut palace = create_test_palace("search_empty_results").await;
-
-        let results = palace
-            .search("nonexistent")
-            .await
-            .expect("Failed to search memories");
-
-        assert!(results.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_search_by_room() {
-        let mut palace = create_test_palace("search_by_room").await;
-
-        palace
-            .store_memory("kitchen", "Recipe for pasta", ["cooking"])
-            .await
-            .expect("Failed to store memory");
-
-        let results = palace
-            .search("kitchen")
-            .await
-            .expect("Failed to search memories");
-
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].0, "kitchen");
-    }
-
-    #[tokio::test]
-    async fn test_search_by_tags() {
-        let mut palace = create_test_palace("search_by_tags").await;
-
-        palace
-            .store_memory(
-                "study",
-                "Python is a programming language",
-                ["programming", "python"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        let results = palace
-            .search("programming")
-            .await
-            .expect("Failed to search memories");
-
-        assert_eq!(results.len(), 1);
-        assert!(results[0].2.tags.contains(&"programming".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_list_rooms() {
-        let mut palace = create_test_palace("list_rooms").await;
-
-        // Initially no rooms
-        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
-        assert!(rooms.is_empty());
-
-        // Add some memories to create rooms
-        palace
-            .store_memory("library", "Book about history", ["history"])
-            .await
-            .expect("Failed to store memory");
-
-        palace
-            .store_memory("kitchen", "Recipe for cookies", ["cooking"])
-            .await
-            .expect("Failed to store memory");
-
-        palace
-            .store_memory("library", "Another book", ["literature"])
-            .await
-            .expect("Failed to store memory");
-
-        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
-        assert_eq!(rooms.len(), 2);
-
-        // Find library room
-        let library_room = rooms
-            .iter()
-            .find(|(name, _, _, _)| name == "library")
-            .unwrap();
-        assert_eq!(library_room.2, 2); // 2 memories in library
-
-        // Find kitchen room
-        let kitchen_room = rooms
-            .iter()
-            .find(|(name, _, _, _)| name == "kitchen")
-            .unwrap();
-        assert_eq!(kitchen_room.2, 1); // 1 memory in kitchen
-    }
-
-    #[tokio::test]
-    async fn test_connect_rooms() {
-        let mut palace = create_test_palace("connect_rooms").await;
-
-        // Create rooms by storing memories
-        palace
-            .store_memory("library", "A book", [])
-            .await
-            .expect("Failed to store memory");
-
-        palace
-            .store_memory("study", "Study notes", [])
-            .await
-            .expect("Failed to store memory");
-
-        // Connect the rooms
-        palace
-            .connect_rooms("library", "study")
-            .await
-            .expect("Failed to connect rooms");
-
-        // Check connections
-        let rooms = palace.list_rooms().await.expect("Failed to list rooms");
-        let library_room = rooms
-            .iter()
-            .find(|(name, _, _, _)| name == "library")
-            .unwrap();
-        assert!(library_room.3.contains(&"study".to_string()));
-
-        let study_room = rooms
-            .iter()
-            .find(|(name, _, _, _)| name == "study")
-            .unwrap();
-        assert!(study_room.3.contains(&"library".to_string()));
-    }
-
-    #[tokio::test]
-    async fn test_memory_relationships() {
-        let mut palace = create_test_palace("memory_relationships").await;
-
-        // Store two memories
-        let memory_id1 = palace
-            .store_memory("science", "E = mc²", ["physics", "einstein"])
-            .await
-            .expect("Failed to store memory");
-
-        let memory_id2 = palace
-            .store_memory(
-                "science",
-                "Theory of relativity",
-                ["physics", "einstein"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        // Create a relationship
-        let result = palace
-            .relate_memories(memory_id1, memory_id2, "related_to", 0.9)
-            .await
-            .expect("Failed to create relationship");
-
-        assert!(result.contains("related_to"));
-        assert!(result.contains(&memory_id1.to_string()));
-        assert!(result.contains(&memory_id2.to_string()));
-
-        // Find related memories
-        let related = palace
-            .find_related_memories(memory_id1, 2, 0.1)
-            .await
-            .expect("Failed to find related memories");
-
-        assert_eq!(related.len(), 1);
-        assert_eq!(related[0].2.id, memory_id2);
-        assert_eq!(related[0].3, "related_to");
-        assert_eq!(related[0].4, 0.9);
-    }
-
-    #[tokio::test]
-    async fn test_concepts() {
-        let mut palace = create_test_palace("concepts").await;
-
-        // Store a memory
-        let memory_id = palace
-            .store_memory(
-                "science",
-                "Photosynthesis converts light to energy",
-                ["biology"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        // Extract concepts
-        let result = palace
-            .extract_concepts(
-                memory_id,
-                ["photosynthesis", "energy", "biology"],
-            )
-            .await
-            .expect("Failed to extract concepts");
-
-        assert!(result.contains("3 concepts"));
-        assert!(result.contains("photosynthesis"));
-        assert!(result.contains("energy"));
-        assert!(result.contains("biology"));
-
-        // Find memories by concept
-        let memories = palace
-            .find_memories_by_concept("photosynthesis")
-            .await
-            .expect("Failed to find memories by concept");
-
-        assert_eq!(memories.len(), 1);
-        assert_eq!(memories[0].2.id, memory_id);
-        assert_eq!(memories[0].3, 1.0); // confidence
-    }
-
-    #[tokio::test]
-    async fn test_graph_stats() {
-        let mut palace = create_test_palace("graph_stats").await;
-
-        // Initially empty
-        let stats =
-            palace.get_graph_stats().await.expect("Failed to get stats");
-
-        assert!(stats.contains("Total Memories: 0"));
-        assert!(stats.contains("Total Rooms: 0"));
-
-        // Add some data
-        let memory_id1 = palace
-            .store_memory("room1", "Memory 1", ["tag1"])
-            .await
-            .expect("Failed to store memory");
-
-        let memory_id2 = palace
-            .store_memory("room2", "Memory 2", ["tag2"])
-            .await
-            .expect("Failed to store memory");
-
-        palace
-            .relate_memories(memory_id1, memory_id2, "related", 1.0)
-            .await
-            .expect("Failed to relate memories");
-
-        palace
-            .extract_concepts(memory_id1, ["concept1"])
-            .await
-            .expect("Failed to extract concepts");
-
-        let stats =
-            palace.get_graph_stats().await.expect("Failed to get stats");
-
-        assert!(stats.contains("Total Memories: 2"));
-        assert!(stats.contains("Total Rooms: 2"));
-        assert!(stats.contains("Total Relationships: 1"));
-        assert!(stats.contains("Total Concepts: 1"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_interface() {
-        let palace = create_test_palace("tool_interface").await;
-
-        // Test name
-        assert_eq!(palace.name(), "MemoryPalace");
-
-        // Test methods
-        let methods: Vec<_> = palace.methods().collect();
-        assert!(!methods.is_empty());
-
-        let method_names: Vec<_> =
-            methods.iter().map(|m| m.name.as_ref()).collect();
-        assert!(method_names.contains(&"MemoryPalace::store"));
-        assert!(method_names.contains(&"MemoryPalace::search"));
-        assert!(method_names.contains(&"MemoryPalace::list_rooms"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_call_store() {
-        let mut palace = create_test_palace("tool_call_store").await;
-
-        let call = Use {
-            id: "test_id".into(),
-            name: "MemoryPalace::store".into(),
-            input: json!({
-                "room": "test_room",
-                "content": "test content",
-                "tags": ["test_tag"]
-            }),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        };
-
-        let result = palace.call(call).await;
-        assert!(!result.is_error);
-        assert!(result.content.to_string().contains("Memory stored"));
-        assert!(result.content.to_string().contains("test_room"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_call_search() {
-        let mut palace = create_test_palace("tool_call_search").await;
-
-        // First store something to search for
-        palace
-            .store_memory(
-                "library",
-                "A fascinating book about AI",
-                ["technology", "AI"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        let call = Use {
-            id: "test_id".into(),
-            name: "MemoryPalace::search".into(),
-            input: json!({
-            "query": "AI"
-                   }),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        };
-
-        let result = palace.call(call).await;
-        assert!(!result.is_error);
-        assert!(result.content.to_string().contains("Found 1 memories"));
-        assert!(result.content.to_string().contains("fascinating book"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_call_invalid_method() {
-        let mut palace = create_test_palace("tool_call_invalid_method").await;
-
-        let call = Use {
-            id: "test_id".into(),
-            name: "MemoryPalace::invalid_method".into(),
-            input: json!({}),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        };
-
-        let result = palace.call(call).await;
-        assert!(result.is_error);
-        assert!(result.content.to_string().contains("Unknown method"));
-        assert!(result.content.to_string().contains("Available methods"));
-    }
-
-    #[tokio::test]
-    async fn test_tool_call_missing_parameters() {
-        let mut palace =
-            create_test_palace("tool_call_missing_parameters").await;
-
-        // Test store without required parameters
-        let call = Use {
-            id: "test_id".into(),
-            name: "MemoryPalace::store".into(),
-            input: json!({
-                "room": "test_room"
-                // missing content and tags
-            }),
-            #[cfg(feature = "prompt-caching")]
-            cache_control: None,
-        };
-
-        let result = palace.call(call).await;
-        assert!(result.is_error);
-        assert!(result.content.to_string().contains("Missing required"));
-    }
-
-    #[tokio::test]
-    async fn test_save_load_json() {
-        let mut palace1 = create_test_palace("save_load_json").await;
-
-        // Add some data
-        palace1
-            .store_memory("room1", "content1", ["tag1"])
-            .await
-            .expect("Failed to store memory");
-
-        palace1
-            .store_memory("room2", "content2", ["tag2"])
-            .await
-            .expect("Failed to store memory");
-
-        // Save state
-        let json = palace1.save_json().await;
-        assert!(json.is_object());
-
-        // Create new palace and load state (use same schema)
-        let mut palace2 = create_test_palace("save_load_json").await;
-        palace2.load_json(json).await.expect("Failed to load state");
-
-        // Verify data was loaded
-        let results =
-            palace2.search("content1").await.expect("Failed to search");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].2.content, "content1");
-    }
-
-    #[tokio::test]
-    async fn test_apply_to_prompt() {
-        let mut palace = create_test_palace("apply_to_prompt").await;
-        let mut prompt = Prompt::default();
-
-        palace.on_init(&mut prompt).await.unwrap();
-        palace.on_turn(&mut prompt).await.unwrap();
-
-        let system_content = prompt.system.unwrap().to_string();
-        assert!(system_content.contains("Memory Palace"));
-        assert!(system_content.contains("MemoryPalace::store"));
-        assert!(system_content.contains("MemoryPalace::search"));
-        assert!(system_content.contains("Rooms")); // Changed from "rooms" to "Rooms"
-        assert!(system_content.contains("Relationships")); // Changed from "relationships" to "Relationships"
-    }
-
-    #[tokio::test]
-    async fn test_enhanced_prompt_application() {
-        let mut palace =
-            create_test_palace("enhanced_prompt_application").await;
-        let mut prompt = Prompt::default();
-
-        palace.on_init(&mut prompt).await.unwrap();
-        palace.on_turn(&mut prompt).await.unwrap();
-
-        let system_content = prompt.system.unwrap().to_string();
-        assert!(system_content.contains("Memory Palace"));
-        assert!(system_content.contains("MemoryPalace::store"));
-        assert!(system_content.contains("MemoryPalace::search"));
-        assert!(system_content.contains("Rooms")); // Changed from "rooms" to "Rooms"
-        assert!(system_content.contains("Relationships")); // Changed from "relationships" to "Relationships"
     }
 }

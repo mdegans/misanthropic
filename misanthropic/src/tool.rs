@@ -14,6 +14,8 @@ pub use toolbox::ToolBox;
 mod memory_palace;
 #[cfg(feature = "memory-palace")]
 pub use memory_palace::MemoryPalace;
+#[cfg(all(test, feature = "memory-palace"))]
+mod memory_palace_tests;
 
 #[cfg(feature = "notepad")]
 mod notepad;
@@ -67,12 +69,18 @@ pub trait Tool: Send {
     /// Takes &mut self to allow tools to update internal state during
     /// serialization if needed and because of lifetime issues with `&self`.
     ///
+    /// For tools with external persistence (like databases), this should
+    /// only serialize configuration/connection info, not the full state.
+    ///
     /// [`Value`]: serde_json::Value
     /// [`Null`]: serde_json::Value::Null
     async fn save_json(&mut self) -> serde_json::Value {
         serde_json::Value::Null
     }
     /// Deserialize state from json [`Value`] if possible.
+    ///
+    /// For tools with external persistence, this should restore configuration
+    /// and ensure the external state is accessible/initialized.
     // String is used for the message because a boxed error is not Send.
     async fn load_json(
         &mut self,
