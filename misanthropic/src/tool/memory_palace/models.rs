@@ -64,7 +64,7 @@ pub(crate) struct RelatedMemory {
 
 /// Helper struct for concept-based memory search
 #[derive(Debug, Clone, FromRow)]
-pub(crate) struct ConceptMemory {
+pub(crate) struct Concept {
     pub(crate) id: i64,
     pub(crate) content: String,
     pub(crate) room: String,

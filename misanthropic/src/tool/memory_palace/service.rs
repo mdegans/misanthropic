@@ -459,7 +459,7 @@ pub async fn find_memories_by_concept(
         schema,
         |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows: Vec<ConceptMemory> = sqlx::query_as(
+            let rows: Vec<Concept> = sqlx::query_as(
                 r#"
                 SELECT 
                     m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,

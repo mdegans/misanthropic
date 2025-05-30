@@ -39,7 +39,9 @@ const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have
 
 Start with `MemoryPalace::store` to save important information, then use `MemoryPalace::search` to find it later.</memory_palace_instructions>"#;
 
-/// A Memory Palace tool using PostgreSQL for reliable storage.
+/// A Memory Palace knowledge base for AI agents.
+///
+/// Designed by Claude 4, Sonnet (Copilot), guided by Michael de Gans.
 #[derive(Debug)]
 pub struct MemoryPalace {
     /// PostgreSQL connection pool.
@@ -51,14 +53,14 @@ pub struct MemoryPalace {
 impl MemoryPalace {
     const NAME: &'static str = "MemoryPalace";
 
-    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool.
-    /// Uses the default 'public' schema.
+    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool. Uses the
+    /// default 'public' schema.
     pub async fn from_pool(pool: PgPool) -> Result<Self, MemoryPalaceError> {
         Self::from_pool_with_schema(pool, "public".to_string()).await
     }
 
-    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a specific schema.
-    /// Initializes the database schema if it hasn't been done yet.
+    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a
+    /// specific schema.
     pub async fn from_pool_with_schema(
         pool: PgPool,
         schema_name: String,
@@ -69,7 +71,7 @@ impl MemoryPalace {
         Ok(new)
     }
 
-    /// Store a memory in a specific room.
+    /// Store a [`Memory`] in a specific [`Room`].
     pub(crate) async fn store_memory(
         &mut self,
         room: impl Into<String>,
@@ -86,7 +88,8 @@ impl MemoryPalace {
         .await
     }
 
-    /// Search for memories using blended scoring that combines relevance, recency, and relationships.
+    /// Search for [`Memory`]s using blended scoring that combines relevance,
+    /// recency, and relationships.
     pub(crate) async fn search(
         &mut self,
         query: &str,
@@ -94,7 +97,7 @@ impl MemoryPalace {
         search(&self.pool, &self.schema_name, query).await
     }
 
-    /// Find memories using BFS with decay factor for distance.
+    /// Find [`Memory`]s using BFS with decay factor for distance.
     pub(crate) async fn find_memories_bfs(
         &mut self,
         start_memory_id: i64,
@@ -114,7 +117,7 @@ impl MemoryPalace {
         .await
     }
 
-    /// Connect two rooms in the palace.
+    /// Connect two [`Room`] in the palace.
     pub(crate) async fn connect_rooms(
         &mut self,
         room1: impl Into<String>,
@@ -125,7 +128,7 @@ impl MemoryPalace {
         connect_rooms(&self.pool, &self.schema_name, room1, room2).await
     }
 
-    /// List all rooms with their memory counts and connections.
+    /// List all [`Room`]s with their [`Memory`] counts and [`Connection`]s.
     pub(crate) async fn list_rooms(
         &mut self,
     ) -> Result<Vec<(String, String, usize, Vec<String>)>, MemoryPalaceError>
@@ -133,7 +136,8 @@ impl MemoryPalace {
         list_rooms(&self.pool, &self.schema_name).await
     }
 
-    /// Create a relationship between two memories.
+    /// Create a [`RelatedMemory`] between two [`Memory`]s with a specified
+    /// relationship type and strength.
     pub(crate) async fn relate_memories(
         &mut self,
         memory_id1: i64,
@@ -153,7 +157,7 @@ impl MemoryPalace {
         .await
     }
 
-    /// Find memories related to a given memory through graph traversal with enhanced scoring.
+    /// Find [`Memory`]s related to a specific [`Memory`] with a maximum depth
     pub(crate) async fn find_related_memories(
         &mut self,
         memory_id: i64,
@@ -171,7 +175,7 @@ impl MemoryPalace {
         .await
     }
 
-    /// Extract and create concept nodes from memory content.
+    /// Extract and create [`Concept`]s from a specific [`Memory`].
     pub(crate) async fn extract_concepts(
         &mut self,
         memory_id: i64,
@@ -186,7 +190,7 @@ impl MemoryPalace {
         .await
     }
 
-    /// Find memories by concept with enhanced relevance scoring.
+    /// Find memories by [`Concept`] with enhanced relevance scoring.
     pub(crate) async fn find_memories_by_concept(
         &mut self,
         concept: impl Into<String>,
