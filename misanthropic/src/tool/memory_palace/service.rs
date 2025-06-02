@@ -456,7 +456,7 @@ pub async fn find_related_memories(
                     WHERE rm.depth < $2 AND mr.strength >= $3
                 )
                 SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-                       rm.relationship_type, rm.strength
+                       rm.relationship_type as "relationship_type!", rm.strength as "strength!"
                 FROM related_memories rm
                 JOIN memories m ON rm.memory_id = m.id
                 ORDER BY rm.strength DESC, rm.depth ASC
@@ -486,8 +486,8 @@ pub async fn find_related_memories(
                     memory.room.clone(),
                     memory.id.to_string(),
                     memory,
-                    row.relationship_type.unwrap_or_else(|| "unknown".to_string()),
-                    row.strength.unwrap_or(0.0),
+                    row.relationship_type,
+                    row.strength,
                 ));
             }
 
