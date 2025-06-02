@@ -1,4 +1,5 @@
 /// Insert or no-op room
+/// Parameters: $1: &str (room name), $2: &str (description)
 pub const INSERT_ROOM: &str = r#"
     INSERT INTO rooms (name, description)
     VALUES ($1, $2)
@@ -6,6 +7,7 @@ pub const INSERT_ROOM: &str = r#"
 "#;
 
 /// Insert memory and return id
+/// Parameters: $1: &str (content), $2: &str (room), $3: serde_json::Value (tags)
 pub const INSERT_MEMORY_RETURNING_ID: &str = r#"
     INSERT INTO memories (content, room, tags)
     VALUES ($1, $2, $3)
@@ -13,6 +15,7 @@ pub const INSERT_MEMORY_RETURNING_ID: &str = r#"
 "#;
 
 /// Relevance-based search fragment
+/// Parameters: $1: &str (search pattern)
 pub const SEARCH_RELEVANCE: &str = r#"
     SELECT id, content, room, tags, created_at, last_updated
     FROM memories 
@@ -29,6 +32,7 @@ pub const SEARCH_RELEVANCE: &str = r#"
 "#;
 
 /// Recency-based search fragment
+/// Parameters: $1: &str (search pattern)
 pub const SEARCH_RECENCY: &str = r#"
     SELECT id, content, room, tags, created_at, last_updated
     FROM memories 
@@ -38,6 +42,7 @@ pub const SEARCH_RECENCY: &str = r#"
 "#;
 
 /// Relationship-based search CTE
+/// Parameters: $1: &str (search pattern)
 pub const SEARCH_RELATIONSHIPS: &str = r#"
     WITH related_memories AS (
         SELECT DISTINCT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated
@@ -56,6 +61,7 @@ pub const SEARCH_RELATIONSHIPS: &str = r#"
 "#;
 
 /// Find related memories using BFS
+/// Parameters: $1: i64 (start_memory_id), $2: i32 (max_distance), $3: f64 (decay_factor), $4: f64 (min_score)
 pub const FIND_MEMORIES_BFS: &str = r#"
     WITH RECURSIVE memory_bfs AS (
         -- Base case: start with the given memory
@@ -99,6 +105,7 @@ pub const FIND_MEMORIES_BFS: &str = r#"
 "#;
 
 /// Query for `find_related_memories` function
+/// Parameters: $1: i64 (memory_id), $2: i32 (max_depth), $3: f64 (min_strength)
 pub const FIND_RELATED_MEMORIES: &str = r#"
     WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
         -- Base case: direct relationships
