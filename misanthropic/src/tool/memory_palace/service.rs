@@ -31,8 +31,10 @@ pub async fn store(
     schema: &str,
     room: String,
     content: String,
-    tags_json: serde_json::Value,
+    tags: Vec<String>,
 ) -> Result<i64, MemoryPalaceError> {
+    let tags_json = serde_json::to_value(&tags)?;
+
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // Ensure room exists

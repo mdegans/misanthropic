@@ -16,17 +16,15 @@ pub const INSERT_MEMORY_RETURNING_ID: &str = r#"
 pub const SEARCH_RELEVANCE: &str = r#"
     SELECT id, content, room, tags, created_at, last_updated
     FROM memories 
-    WHERE 
-        content ILIKE $1 
-        OR room ILIKE $1 
-        OR tags::text ILIKE $1
-    ORDER BY
+    WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
+    ORDER BY 
         CASE 
             WHEN content ILIKE $1 THEN 3
             WHEN room ILIKE $1 THEN 2
             WHEN tags::text ILIKE $1 THEN 1
             ELSE 0
-        END DESC
+        END DESC,
+        created_at DESC
     LIMIT 10
 "#;
 
@@ -34,64 +32,70 @@ pub const SEARCH_RELEVANCE: &str = r#"
 pub const SEARCH_RECENCY: &str = r#"
     SELECT id, content, room, tags, created_at, last_updated
     FROM memories 
-    WHERE
-        content ILIKE $1 
-        OR room ILIKE $1 
-        OR tags::text ILIKE $1
+    WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
     ORDER BY last_updated DESC
     LIMIT 10
 "#;
 
 /// Relationship-based search CTE
 pub const SEARCH_RELATIONSHIPS: &str = r#"
-    WITH relevant_memories AS (
-        SELECT id
-        FROM memories 
-        WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
-        LIMIT 5
-    ),
-    related_via_relationships AS (
-        SELECT DISTINCT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-               mr.strength
-        FROM memory_relationships mr
-        JOIN memories m ON mr.to_memory_id = m.id
-        JOIN relevant_memories rm ON mr.from_memory_id = rm.id
-        WHERE mr.strength >= 0.3
-        ORDER BY mr.strength DESC
-        LIMIT 10
+    WITH related_memories AS (
+        SELECT DISTINCT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated
+        FROM memories m
+        JOIN memory_relationships mr ON (m.id = mr.from_memory_id OR m.id = mr.to_memory_id)
+        JOIN memories search_mem ON (
+            (mr.from_memory_id = search_mem.id AND search_mem.content ILIKE $1) OR
+            (mr.to_memory_id = search_mem.id AND search_mem.content ILIKE $1)
+        )
+        WHERE m.content ILIKE $1 OR m.room ILIKE $1 OR m.tags::text ILIKE $1
     )
     SELECT id, content, room, tags, created_at, last_updated
-    FROM related_via_relationships
+    FROM related_memories
+    ORDER BY created_at DESC
+    LIMIT 10
 "#;
 
 /// Find related memories using BFS
 pub const FIND_MEMORIES_BFS: &str = r#"
-    WITH RECURSIVE memory_bfs(memory_id, distance, path_strength, visited) AS (
-        -- Base case: starting memory
-        SELECT $1::BIGINT, 0, 1.0::FLOAT, ARRAY[$1::BIGINT]
-        
-        UNION
-        
-        -- Recursive case: explore neighbors
+    WITH RECURSIVE memory_bfs AS (
+        -- Base case: start with the given memory
         SELECT 
-            mr.to_memory_id,
-            mb.distance + 1,
-            mb.path_strength * mr.strength * $3::FLOAT, -- Apply decay factor
-            mb.visited || mr.to_memory_id
+            $1::bigint as memory_id,
+            1.0::double precision as path_strength,
+            0 as distance,
+            ARRAY[$1::bigint] as path
+        
+        UNION ALL
+        
+        -- Recursive case: explore relationships
+        SELECT 
+            CASE 
+                WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                ELSE mr.from_memory_id
+            END as memory_id,
+            mb.path_strength * mr.strength * ($3::double precision) as path_strength,
+            mb.distance + 1 as distance,
+            mb.path || CASE 
+                WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                ELSE mr.from_memory_id
+            END as path
         FROM memory_bfs mb
-        JOIN memory_relationships mr ON mb.memory_id = mr.from_memory_id
+        JOIN memory_relationships mr ON (mr.from_memory_id = mb.memory_id OR mr.to_memory_id = mb.memory_id)
         WHERE 
-            mb.distance < $2::INT
-            AND mr.to_memory_id != ALL(mb.visited) -- Avoid cycles
-            AND mb.path_strength * mr.strength * $3::FLOAT >= $4::FLOAT -- Min score threshold
+            mb.distance < $2
+            AND mb.path_strength * mr.strength * ($3::double precision) >= ($4::double precision)
+            AND NOT (CASE 
+                WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                ELSE mr.from_memory_id
+            END = ANY(mb.path))
     )
-    SELECT DISTINCT 
+    SELECT DISTINCT ON (mb.memory_id)
         m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-        mb.distance, mb.path_strength
+        mb.path_strength, mb.distance
     FROM memory_bfs mb
     JOIN memories m ON mb.memory_id = m.id
-    WHERE mb.memory_id != $1 -- Exclude starting memory
-    ORDER BY mb.path_strength DESC, mb.distance ASC
+    WHERE mb.memory_id != $1
+    ORDER BY mb.memory_id, mb.path_strength DESC, mb.distance ASC
 "#;
 
 /// Query for `find_related_memories` function
@@ -111,14 +115,8 @@ pub const FIND_RELATED_MEMORIES: &str = r#"
         WHERE rm.depth < $2 AND mr.strength >= $3
     )
     SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-            rm.relationship_type, rm.strength
+           rm.relationship_type, rm.strength
     FROM related_memories rm
     JOIN memories m ON rm.memory_id = m.id
-    ORDER BY 
-        -- Primary: Relationship strength
-        rm.strength DESC, 
-        -- Secondary: Recency of updates
-        m.last_updated DESC,
-        -- Tertiary: Graph depth (closer relationships first)
-        rm.depth ASC
+    ORDER BY rm.strength DESC, rm.depth ASC
 "#;
