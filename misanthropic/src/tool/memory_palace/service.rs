@@ -1,8 +1,7 @@
 use crate::tool::memory_palace::{
     MemoryPalaceError, PgPool, Postgres, Transaction, db::execute_with_schema,
-    models::*, queries::*,
+    models::*,
 };
-use sqlx::Row;
 
 /// Calculate a recency score based on how recently a memory was updated.
 /// Returns a score between 0.0 and 1.0, with 1.0 being most recent.
@@ -38,20 +37,24 @@ pub async fn store(
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // Ensure room exists
-            sqlx::query(INSERT_ROOM)
-                .bind(&room)
-                .bind(format!("Room for {}", room))
-                .execute(&mut **tx)
-                .await?;
+            sqlx::query!(
+                "INSERT INTO rooms (name, description) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
+                &room,
+                format!("Room for {}", room)
+            )
+            .execute(&mut **tx)
+            .await?;
 
-            let row = sqlx::query(INSERT_MEMORY_RETURNING_ID)
-                .bind(&content)
-                .bind(&room)
-                .bind(&tags_json)
-                .fetch_one(&mut **tx)
-                .await?;
+            let row = sqlx::query!(
+                "INSERT INTO memories (content, room, tags) VALUES ($1, $2, $3) RETURNING id",
+                &content,
+                &room,
+                &tags_json
+            )
+            .fetch_one(&mut **tx)
+            .await?;
 
-            Ok(row.get("id"))
+            Ok(row.id)
         })
     })
     .await
@@ -65,21 +68,63 @@ pub async fn search(
     let pattern = format!("%{}%", query.trim());
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
-            // relevance
-            let rel = sqlx::query_as::<_, Memory>(SEARCH_RELEVANCE)
-                .bind(&pattern)
-                .fetch_all(&mut **tx)
-                .await?;
+            // relevance - using runtime query_as to work with #[sqlx(json)]
+            let rel = sqlx::query_as::<_, Memory>(
+                r#"
+                SELECT id, content, room, tags, created_at, last_updated
+                FROM memories 
+                WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
+                ORDER BY 
+                    CASE 
+                        WHEN content ILIKE $1 THEN 3
+                        WHEN room ILIKE $1 THEN 2
+                        WHEN tags::text ILIKE $1 THEN 1
+                        ELSE 0
+                    END DESC,
+                    created_at DESC
+                LIMIT 10
+                "#,
+            )
+            .bind(&pattern)
+            .fetch_all(&mut **tx)
+            .await?;
+
             // recency
-            let rec = sqlx::query_as::<_, Memory>(SEARCH_RECENCY)
-                .bind(&pattern)
-                .fetch_all(&mut **tx)
-                .await?;
+            let rec = sqlx::query_as::<_, Memory>(
+                r#"
+                SELECT id, content, room, tags, created_at, last_updated
+                FROM memories 
+                WHERE content ILIKE $1 OR room ILIKE $1 OR tags::text ILIKE $1
+                ORDER BY last_updated DESC
+                LIMIT 10
+                "#,
+            )
+            .bind(&pattern)
+            .fetch_all(&mut **tx)
+            .await?;
+
             // relationships
-            let rels = sqlx::query_as::<_, Memory>(SEARCH_RELATIONSHIPS)
-                .bind(&pattern)
-                .fetch_all(&mut **tx)
-                .await?;
+            let rels = sqlx::query_as::<_, Memory>(
+                r#"
+                WITH related_memories AS (
+                    SELECT DISTINCT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated
+                    FROM memories m
+                    JOIN memory_relationships mr ON (m.id = mr.from_memory_id OR m.id = mr.to_memory_id)
+                    JOIN memories search_mem ON (
+                        (mr.from_memory_id = search_mem.id AND search_mem.content ILIKE $1) OR
+                        (mr.to_memory_id = search_mem.id AND search_mem.content ILIKE $1)
+                    )
+                    WHERE m.content ILIKE $1 OR m.room ILIKE $1 OR m.tags::text ILIKE $1
+                )
+                SELECT id, content, room, tags, created_at, last_updated
+                FROM related_memories
+                ORDER BY created_at DESC
+                LIMIT 10
+                "#,
+            )
+            .bind(&pattern)
+            .fetch_all(&mut **tx)
+            .await?;
 
             // Combine and score all memories
             let mut scored_memories = std::collections::HashMap::new();
@@ -192,18 +237,60 @@ pub async fn find_memories_bfs(
 ) -> Result<Vec<(String, String, Memory, f64, i32)>, MemoryPalaceError> {
     execute_with_schema(&pool, &schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows: Vec<BfsMemory> = sqlx::query_as(FIND_MEMORIES_BFS)
-                .bind(start_memory_id)
-                .bind(max_distance as i32)
-                .bind(decay_factor)
-                .bind(min_score)
-                .fetch_all(&mut **tx)
-                .await?;
+            let rows = sqlx::query!(
+                r#"
+                WITH RECURSIVE memory_bfs AS (
+                    -- Base case: start with the given memory
+                    SELECT 
+                        $1::bigint as memory_id,
+                        1.0::double precision as path_strength,
+                        0 as distance,
+                        ARRAY[$1::bigint] as path
+                    
+                    UNION ALL
+                    
+                    -- Recursive case: explore relationships
+                    SELECT 
+                        CASE 
+                            WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                            ELSE mr.from_memory_id
+                        END as memory_id,
+                        mb.path_strength * mr.strength * ($3::double precision) as path_strength,
+                        mb.distance + 1 as distance,
+                        mb.path || CASE 
+                            WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                            ELSE mr.from_memory_id
+                        END as path
+                    FROM memory_bfs mb
+                    JOIN memory_relationships mr ON (mr.from_memory_id = mb.memory_id OR mr.to_memory_id = mb.memory_id)
+                    WHERE 
+                        mb.distance < $2
+                        AND mb.path_strength * mr.strength * ($3::double precision) >= ($4::double precision)
+                        AND NOT (CASE 
+                            WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
+                            ELSE mr.from_memory_id
+                        END = ANY(mb.path))
+                )
+                SELECT DISTINCT ON (mb.memory_id)
+                    m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                    mb.path_strength, mb.distance
+                FROM memory_bfs mb
+                JOIN memories m ON mb.memory_id = m.id
+                WHERE mb.memory_id != $1
+                ORDER BY mb.memory_id, mb.path_strength DESC, mb.distance ASC
+                "#,
+                start_memory_id,
+                max_distance as i32,
+                decay_factor,
+                min_score
+            )
+            .fetch_all(&mut **tx)
+            .await?;
 
             let mut results = Vec::new();
             for row in rows {
                 let tags: Vec<String> =
-                    serde_json::from_value(row.tags).unwrap_or_default();
+                    serde_json::from_value(row.tags.clone()).unwrap_or_default();
 
                 let memory = Memory {
                     id: row.id,
@@ -218,8 +305,8 @@ pub async fn find_memories_bfs(
                     memory.room.clone(),
                     memory.id.to_string(),
                     memory,
-                    row.path_strength,
-                    row.distance,
+                    row.path_strength.unwrap_or(0.0),
+                    row.distance.unwrap_or(0),
                 ));
             }
 
@@ -237,15 +324,15 @@ pub async fn connect_rooms(
 ) -> Result<(), MemoryPalaceError> {
     execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            sqlx::query(
+            sqlx::query!(
                 r#"
                 INSERT INTO room_connections (from_room, to_room, strength) 
                 VALUES ($1, $2, 1), ($2, $1, 1)
                 ON CONFLICT (from_room, to_room) DO NOTHING
             "#,
+                &room1,
+                &room2
             )
-            .bind(room1)
-            .bind(room2)
             .execute(&mut **tx)
             .await?;
 
@@ -323,16 +410,18 @@ pub async fn relate_memories(
                 relationship_type, memory_id1, memory_id2, strength
             );
 
-            sqlx::query(r#"
+            sqlx::query!(
+                r#"
                 INSERT INTO memory_relationships (from_memory_id, to_memory_id, relationship_type, strength)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (from_memory_id, to_memory_id) 
                 DO UPDATE SET relationship_type = $3, strength = $4
-            "#)
-            .bind(memory_id1)
-            .bind(memory_id2)
-            .bind(&relationship_type)
-            .bind(strength)
+                "#,
+                memory_id1,
+                memory_id2,
+                &relationship_type,
+                strength
+            )
             .execute(&mut **tx)
             .await?;
 
@@ -350,18 +439,39 @@ pub async fn find_related_memories(
 ) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError> {
     execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows: Vec<RelatedMemory> =
-                sqlx::query_as(FIND_RELATED_MEMORIES)
-                    .bind(memory_id)
-                    .bind(max_depth as i32)
-                    .bind(min_strength)
-                    .fetch_all(&mut **tx)
-                    .await?;
+            let rows = sqlx::query!(
+                r#"
+                WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
+                    -- Base case: direct relationships
+                    SELECT mr.to_memory_id, mr.relationship_type, mr.strength, 1 as depth
+                    FROM memory_relationships mr
+                    WHERE mr.from_memory_id = $1 AND mr.strength >= $3
+                    
+                    UNION
+                    
+                    -- Recursive case: follow relationships up to max_depth
+                    SELECT mr.to_memory_id, mr.relationship_type, mr.strength, rm.depth + 1
+                    FROM memory_relationships mr
+                    JOIN related_memories rm ON mr.from_memory_id = rm.memory_id
+                    WHERE rm.depth < $2 AND mr.strength >= $3
+                )
+                SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                       rm.relationship_type, rm.strength
+                FROM related_memories rm
+                JOIN memories m ON rm.memory_id = m.id
+                ORDER BY rm.strength DESC, rm.depth ASC
+                "#,
+                memory_id,
+                max_depth as i32,
+                min_strength
+            )
+            .fetch_all(&mut **tx)
+            .await?;
 
             let mut results = Vec::new();
             for row in rows {
                 let tags: Vec<String> =
-                    serde_json::from_value(row.tags).unwrap_or_default();
+                    serde_json::from_value(row.tags.clone()).unwrap_or_default();
 
                 let memory = Memory {
                     id: row.id,
@@ -376,8 +486,8 @@ pub async fn find_related_memories(
                     memory.room.clone(),
                     memory.id.to_string(),
                     memory,
-                    row.relationship_type,
-                    row.strength,
+                    row.relationship_type.unwrap_or_else(|| "unknown".to_string()),
+                    row.strength.unwrap_or(0.0),
                 ));
             }
 
@@ -402,38 +512,36 @@ pub async fn extract_concepts(
 
             for concept in &concepts {
                 // Create or get concept
-                let concept_row = sqlx::query(
-                    r#"
-                    INSERT INTO concepts (name) VALUES ($1)
-                    ON CONFLICT (name) DO NOTHING
-                    RETURNING id
-                "#,
+                let concept_row = sqlx::query!(
+                    "INSERT INTO concepts (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id",
+                    concept
                 )
-                .bind(concept)
                 .fetch_optional(&mut **tx)
                 .await?;
 
                 let concept_id: i64 = if let Some(row) = concept_row {
-                    row.get("id")
+                    row.id
                 } else {
                     // Concept already exists, get its ID
-                    sqlx::query("SELECT id FROM concepts WHERE name = $1")
-                        .bind(concept)
-                        .fetch_one(&mut **tx)
-                        .await?
-                        .get("id")
+                    sqlx::query!(
+                        "SELECT id FROM concepts WHERE name = $1",
+                        concept
+                    )
+                    .fetch_one(&mut **tx)
+                    .await?
+                    .id
                 };
 
                 // Link memory to concept
-                sqlx::query(
+                sqlx::query!(
                     r#"
                     INSERT INTO memory_concepts (memory_id, concept_id, confidence)
                     VALUES ($1, $2, 1.0)
                     ON CONFLICT (memory_id, concept_id) DO NOTHING
-                "#,
+                    "#,
+                    memory_id,
+                    concept_id
                 )
-                .bind(memory_id)
-                .bind(concept_id)
                 .execute(&mut **tx)
                 .await?;
 
@@ -514,19 +622,21 @@ pub async fn get_graph_stats(
     pool: &PgPool,
     schema: &str,
 ) -> Result<String, MemoryPalaceError> {
-    let stats: GraphStats = execute_with_schema(
+    let stats = execute_with_schema(
         pool,
         schema,
         |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            sqlx::query_as(r#"
+            sqlx::query!(
+                r#"
                 SELECT 
                     (SELECT COUNT(*) FROM memories) as total_memories,
                     (SELECT COUNT(*) FROM rooms) as total_rooms,
                     (SELECT COUNT(*) FROM memory_relationships) as total_relationships,
                     (SELECT COUNT(*) FROM concepts) as total_concepts,
                     (SELECT COUNT(*) FROM memory_concepts) as total_mentions
-            "#)
+                "#
+            )
             .fetch_one(&mut **tx)
             .await
         })
@@ -541,18 +651,20 @@ pub async fn get_graph_stats(
         - Total Concept Mentions: {}\n\
         - Average Relationships per Memory: {:.2}\n\
         - Average Concepts per Memory: {:.2}",
-        stats.total_memories,
-        stats.total_rooms,
-        stats.total_relationships,
-        stats.total_concepts,
-        stats.total_mentions,
-        if stats.total_memories > 0 {
-            stats.total_relationships as f64 / stats.total_memories as f64
+        stats.total_memories.unwrap_or(0),
+        stats.total_rooms.unwrap_or(0),
+        stats.total_relationships.unwrap_or(0),
+        stats.total_concepts.unwrap_or(0),
+        stats.total_mentions.unwrap_or(0),
+        if stats.total_memories.unwrap_or(0) > 0 {
+            stats.total_relationships.unwrap_or(0) as f64
+                / stats.total_memories.unwrap_or(1) as f64
         } else {
             0.0
         },
-        if stats.total_memories > 0 {
-            stats.total_mentions as f64 / stats.total_memories as f64
+        if stats.total_memories.unwrap_or(0) > 0 {
+            stats.total_mentions.unwrap_or(0) as f64
+                / stats.total_memories.unwrap_or(1) as f64
         } else {
             0.0
         }

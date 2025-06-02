@@ -15,9 +15,6 @@ use db::ensure_initialized;
 mod service;
 use service::*;
 
-/// [`MemoryPalace`] SQL queries.
-mod queries;
-
 /// [`MemoryPalace`] error handling.
 mod error;
 pub use error::MemoryPalaceError;

@@ -49,19 +49,6 @@ pub(crate) struct RoomConnection {
     pub(crate) to_room: String,
 }
 
-/// Helper struct for memory relationships
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct RelatedMemory {
-    pub(crate) id: i64,
-    pub(crate) content: String,
-    pub(crate) room: String,
-    pub(crate) tags: Value,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) last_updated: DateTime<Utc>,
-    pub(crate) relationship_type: String,
-    pub(crate) strength: f64,
-}
-
 /// Helper struct for concept-based memory search
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct Concept {
@@ -72,16 +59,6 @@ pub(crate) struct Concept {
     pub(crate) created_at: DateTime<Utc>,
     pub(crate) last_updated: DateTime<Utc>,
     pub(crate) confidence: f64,
-}
-
-/// Helper struct for graph statistics
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct GraphStats {
-    pub(crate) total_memories: i64,
-    pub(crate) total_rooms: i64,
-    pub(crate) total_relationships: i64,
-    pub(crate) total_concepts: i64,
-    pub(crate) total_mentions: i64,
 }
 
 /// Helper struct for recent memories summary
@@ -100,19 +77,6 @@ pub(crate) struct TopRelationship {
     pub(crate) to_content: String,
     pub(crate) relationship_type: String,
     pub(crate) strength: f64,
-}
-
-/// Helper struct for BFS memory discovery
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct BfsMemory {
-    pub(crate) id: i64,
-    pub(crate) content: String,
-    pub(crate) room: String,
-    pub(crate) tags: Value,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) last_updated: DateTime<Utc>,
-    pub(crate) distance: i32,
-    pub(crate) path_strength: f64,
 }
 
 /// Helper struct for blended search results
