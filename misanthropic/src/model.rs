@@ -237,7 +237,7 @@ mod tests {
     #[cfg(feature = "client")]
     use crate::Client;
     #[cfg(feature = "client")]
-    use crate::{prompt::message::Role, Prompt};
+    use crate::{Prompt, prompt::message::Role};
 
     #[cfg(feature = "client")]
     const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");

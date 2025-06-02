@@ -6,8 +6,8 @@ use std::borrow::Cow;
 use derive_more::derive::Deref;
 
 use crate::prompt::{
-    message::{Block, Content},
     Message,
+    message::{Block, Content},
 };
 
 /// Supported start tags for [`Thought`]s.
@@ -484,7 +484,7 @@ mod tests {
     fn test_thoughts_and_speech_to_html() {
         test_thoughts_and_speech_to_html_helper(
             "<thinking>Oh dear, it's this schmuck again :/</thinking>It's a pleasure to hear from you again, dear user!<thinking>That was sarcasm.</thinking>Such a treat!",
-            "<h5 class=\"thought\">Thought</h5>\n<p>Oh dear, it's this schmuck again :/</p>\n<h5 class=\"speech\">Speech</h5>\n<p>It's a pleasure to hear from you again, dear user!</p>\n<h5 class=\"thought\">Thought</h5>\n<p>That was sarcasm.</p>\n<h5 class=\"speech\">Speech</h5>\n<p>Such a treat!</p>\n"
+            "<h5 class=\"thought\">Thought</h5>\n<p>Oh dear, it's this schmuck again :/</p>\n<h5 class=\"speech\">Speech</h5>\n<p>It's a pleasure to hear from you again, dear user!</p>\n<h5 class=\"thought\">Thought</h5>\n<p>That was sarcasm.</p>\n<h5 class=\"speech\">Speech</h5>\n<p>Such a treat!</p>\n",
         );
     }
 }

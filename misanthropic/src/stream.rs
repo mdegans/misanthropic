@@ -10,7 +10,7 @@ use crate::{
     },
     response::{self, StopReason, Usage},
 };
-use futures::{pin_mut, StreamExt};
+use futures::{StreamExt, pin_mut};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{borrow::Cow, pin::Pin, task::Poll};
@@ -743,8 +743,8 @@ pub(crate) mod tests {
 
     #[allow(unused_imports)] // because conditional compilation.
     use crate::{
-        prompt::{message::Role, Message},
         AnthropicModel, Prompt,
+        prompt::{Message, message::Role},
     };
 
     use super::*;
@@ -854,9 +854,11 @@ pub(crate) mod tests {
         .unwrap();
         match event {
             Event::MessageDelta { delta, usage } => {
-                assert!(delta
-                    .stop_reason
-                    .is_some_and(|reason| reason.is_tool_use()));
+                assert!(
+                    delta
+                        .stop_reason
+                        .is_some_and(|reason| reason.is_tool_use())
+                );
                 assert!(delta.stop_sequence.is_none());
                 assert_eq!(usage.unwrap().output_tokens, 89);
             }
@@ -1218,7 +1220,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        assert_eq!(text, "I notice that you've included what appears to be a trigger phrase or command. I'm designed to communicate transparently and directly with you without any special backdoor commands or hidden modes.\n\nI'm here to have a helpful conversation! Could you let me know what you'd actually like assistance with today? I'm happy to help with information, answer questions, brainstorm ideas, or discuss various topics within my guidelines.");
+        assert_eq!(
+            text,
+            "I notice that you've included what appears to be a trigger phrase or command. I'm designed to communicate transparently and directly with you without any special backdoor commands or hidden modes.\n\nI'm here to have a helpful conversation! Could you let me know what you'd actually like assistance with today? I'm happy to help with information, answer questions, brainstorm ideas, or discuss various topics within my guidelines."
+        );
 
         let stream = mock_stream_jsonl(JSON);
 

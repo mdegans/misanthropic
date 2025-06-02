@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 #[allow(unused_imports)] // because lots of conditional compilation
-use crate::{key, model::Models, response, Key, Prompt};
+use crate::{Key, Prompt, key, model::Models, response};
 
 #[cfg(all(feature = "batch", feature = "client"))]
 use crate::batch::{self, IdentifiedBatchResult, Prompts};
@@ -858,7 +858,7 @@ mod tests {
 
     // Test the Client
     #[cfg(feature = "client")]
-    use crate::{prompt::message::Role, stream::FilterExt, Prompt};
+    use crate::{Prompt, prompt::message::Role, stream::FilterExt};
 
     // Note: This is a real key but it's been disabled. As is warned in the
     // docs above, do not use a string literal for a real key. There is no

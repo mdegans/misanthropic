@@ -3,9 +3,9 @@ use std::{collections::HashMap, num::NonZeroU16, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use reqwest::Url;
-use serde::{ser::SerializeSeq, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, ser::SerializeSeq};
 
-use crate::{client, response, Prompt};
+use crate::{Prompt, client, response};
 
 /// An immutable map of [`Id`] to [`Prompt`]. Part of a [`Batch`] returned by
 /// [`Client::batch`]. Unordered. O(1) lookup by [`Id`].
@@ -405,11 +405,7 @@ impl<'a> Ready<'a> {
             .iter()
             .filter_map(
                 |(id, result)| {
-                    if result.is_ok() {
-                        Some(*id)
-                    } else {
-                        None
-                    }
+                    if result.is_ok() { Some(*id) } else { None }
                 },
             )
             .collect();
@@ -476,11 +472,7 @@ impl<'a> Ready<'a> {
             .iter()
             .filter_map(
                 |(id, result)| {
-                    if result.is_error() {
-                        Some(*id)
-                    } else {
-                        None
-                    }
+                    if result.is_error() { Some(*id) } else { None }
                 },
             )
             .collect();
@@ -588,11 +580,7 @@ impl<'a> Ready<'a> {
             .iter()
             .filter_map(
                 |(id, result)| {
-                    if result.is_expired() {
-                        Some(*id)
-                    } else {
-                        None
-                    }
+                    if result.is_expired() { Some(*id) } else { None }
                 },
             )
             .collect();
@@ -693,7 +681,7 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        model, prompt::message::Content, response::Usage, AnthropicModel,
+        AnthropicModel, model, prompt::message::Content, response::Usage,
     };
 
     use super::*;
@@ -864,8 +852,7 @@ mod tests {
     }
 
     const PENDING_ID: &str = "msgbatch_013Zva2CMHLNnXjNJJKqJ2EF";
-    const PENDING_RESULTS_URL: &str =
-        "https://api.anthropic.com/v1/messages/batches/msgbatch_013Zva2CMHLNnXjNJJKqJ2EF/results";
+    const PENDING_RESULTS_URL: &str = "https://api.anthropic.com/v1/messages/batches/msgbatch_013Zva2CMHLNnXjNJJKqJ2EF/results";
     const PENDING_STATS: Stats = Stats {
         processing: 100,
         succeeded: 50,

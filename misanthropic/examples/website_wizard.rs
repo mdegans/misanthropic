@@ -7,9 +7,9 @@
 
 use clap::Parser;
 use futures::TryStreamExt;
-use misanthropic::{json, prompt::message::Role, stream::FilterExt, Client};
+use misanthropic::{Client, json, prompt::message::Role, stream::FilterExt};
 use std::{
-    io::{stdin, BufRead},
+    io::{BufRead, stdin},
     path::PathBuf,
 };
 

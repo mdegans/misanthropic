@@ -4,7 +4,7 @@ use pulldown_cmark::html::push_html;
 
 use crate::markdown::ToMarkdown;
 
-pub use crate::markdown::{Options, DEFAULT_OPTIONS, VERBOSE_OPTIONS};
+pub use crate::markdown::{DEFAULT_OPTIONS, Options, VERBOSE_OPTIONS};
 
 /// Immutable wrapper around a [`String`]. Guaranteed to be valid HTML.
 #[derive(derive_more::Display)]
@@ -175,7 +175,7 @@ mod tests {
     use serde_json::json;
 
     use crate::{
-        prompt::{message::Role, Message},
+        prompt::{Message, message::Role},
         tool::{self, Method},
     };
 

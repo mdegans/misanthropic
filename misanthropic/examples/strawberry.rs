@@ -10,11 +10,10 @@ use std::io::BufRead;
 
 use clap::Parser;
 use misanthropic::{
-    json,
+    Client, Prompt, json,
     markdown::ToMarkdown,
-    prompt::{message::Role, Message},
+    prompt::{Message, message::Role},
     tool::{self, Method},
-    Client, Prompt,
 };
 
 /// Count the number of letters in a word (or any string). An example of tool

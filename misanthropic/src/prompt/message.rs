@@ -6,7 +6,7 @@
 
 use std::borrow::Cow;
 
-use base64::engine::{general_purpose, Engine as _};
+use base64::engine::{Engine as _, general_purpose};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -166,11 +166,7 @@ impl Message<'_> {
             }
         }
 
-        if self.is_empty() {
-            None
-        } else {
-            Some(self)
-        }
+        if self.is_empty() { None } else { Some(self) }
     }
 }
 
@@ -255,11 +251,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
                     return Box::new(std::iter::empty());
                 }
 
-                if *is_error {
-                    "Error"
-                } else {
-                    "Tool"
-                }
+                if *is_error { "Error" } else { "Tool" }
             }
             Some(Block::ToolUse { .. }) => {
                 if !options.tool_use {

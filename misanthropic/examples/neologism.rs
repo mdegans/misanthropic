@@ -5,8 +5,8 @@
 // and `stdin().lock()`. In a real application, these should *usually* be
 // replaced with async alternatives.
 use clap::Parser;
-use misanthropic::{prompt::message::Role, Client, Prompt};
-use std::io::{stdin, BufRead};
+use misanthropic::{Client, Prompt, prompt::message::Role};
+use std::io::{BufRead, stdin};
 
 /// Invent new words and provide their definitions based on user-provided
 /// concepts or ideas.
