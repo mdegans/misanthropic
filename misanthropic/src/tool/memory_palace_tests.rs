@@ -551,9 +551,336 @@ mod tests {
         };
 
         let result = palace.call(call).await;
+        dbg!(&result);
         assert!(!result.is_error);
         assert!(result.content.to_string().contains("Found 1 memories"));
         assert!(result.content.to_string().contains("Record results"));
         assert!(result.content.to_string().contains("Path Score"));
+    }
+
+    #[tokio::test]
+    async fn test_find_related_memories_comprehensive() {
+        let mut palace =
+            create_test_palace("find_related_memories_comprehensive").await;
+
+        // Create a complex network of related memories
+        let memory_id1 = palace
+            .store_memory(
+                "physics",
+                "Quantum mechanics",
+                ["science", "physics"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id2 = palace
+            .store_memory(
+                "physics",
+                "Wave function",
+                ["science", "physics", "quantum"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id3 = palace
+            .store_memory(
+                "physics",
+                "Superposition",
+                ["science", "physics", "quantum"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id4 = palace
+            .store_memory(
+                "chemistry",
+                "Molecular orbitals",
+                ["science", "chemistry"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id5 = palace
+            .store_memory(
+                "history",
+                "Einstein biography",
+                ["history", "people"],
+            )
+            .await
+            .expect("Failed to store memory");
+
+        // Create relationships with different strengths
+        palace
+            .relate_memories(memory_id1, memory_id2, "defines", 0.9)
+            .await
+            .expect("Failed to create relationship");
+
+        palace
+            .relate_memories(memory_id2, memory_id3, "exhibits", 0.8)
+            .await
+            .expect("Failed to create relationship");
+
+        palace
+            .relate_memories(memory_id1, memory_id4, "relates_to", 0.3) // weak relationship
+            .await
+            .expect("Failed to create relationship");
+
+        palace
+            .relate_memories(memory_id3, memory_id5, "discovered_by", 0.7)
+            .await
+            .expect("Failed to create relationship");
+
+        // Test 1: Find direct relationships only (depth 1)
+        let related = palace
+            .find_related_memories(memory_id1, 1, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 2); // Should find memory2 and memory4
+        let memory_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+        assert!(memory_ids.contains(&memory_id2));
+        assert!(memory_ids.contains(&memory_id4));
+
+        // Test 2: Find with higher minimum strength (should filter out weak relationship)
+        let related = palace
+            .find_related_memories(memory_id1, 1, 0.5)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 1); // Should only find memory2 (strength 0.9)
+        assert_eq!(related[0].2.id, memory_id2);
+        assert_eq!(related[0].3, "defines");
+        assert_eq!(related[0].4, 0.9);
+
+        // Test 3: Find with depth 2 (should include indirect relationships)
+        let related = palace
+            .find_related_memories(memory_id1, 2, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 3); // Should find memory2, memory3, memory4
+        let memory_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+        assert!(memory_ids.contains(&memory_id2));
+        assert!(memory_ids.contains(&memory_id3));
+        assert!(memory_ids.contains(&memory_id4));
+
+        // Verify ordering of
+        assert!(related[0].4 >= related[1].4);
+        assert!(related[1].4 >= related[2].4);
+
+        // Test 4: Find with depth 3 (should include Einstein biography)
+        let related = palace
+            .find_related_memories(memory_id1, 3, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 4); // Should find all connected memories
+        let memory_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+        assert!(memory_ids.contains(&memory_id2));
+        assert!(memory_ids.contains(&memory_id3));
+        assert!(memory_ids.contains(&memory_id4));
+        assert!(memory_ids.contains(&memory_id5));
+
+        // Test 5: Non-existent memory ID
+        let related = palace
+            .find_related_memories(99999, 2, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 0); // Should find nothing
+
+        // Test 6: Very high minimum strength (should find nothing)
+        let related = palace
+            .find_related_memories(memory_id1, 2, 0.99)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 0); // No relationships strong enough
+
+        // Test 7: Zero depth (should find nothing)
+        let related = palace
+            .find_related_memories(memory_id1, 0, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 0); // No traversal allowed
+    }
+
+    #[tokio::test]
+    async fn test_find_related_memories_edge_cases() {
+        let mut palace =
+            create_test_palace("find_related_memories_edge_cases").await;
+
+        // Test with circular relationships
+        let memory_id1 = palace
+            .store_memory("loop", "Memory A", ["test"])
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id2 = palace
+            .store_memory("loop", "Memory B", ["test"])
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id3 = palace
+            .store_memory("loop", "Memory C", ["test"])
+            .await
+            .expect("Failed to store memory");
+
+        // Create circular relationships: A -> B -> C -> A
+        palace
+            .relate_memories(memory_id1, memory_id2, "leads_to", 0.8)
+            .await
+            .expect("Failed to create relationship");
+
+        palace
+            .relate_memories(memory_id2, memory_id3, "leads_to", 0.8)
+            .await
+            .expect("Failed to create relationship");
+
+        palace
+            .relate_memories(memory_id3, memory_id1, "leads_to", 0.8)
+            .await
+            .expect("Failed to create relationship");
+
+        // Should handle circular relationships without infinite loops
+        let related = palace
+            .find_related_memories(memory_id1, 5, 0.1) // high depth
+            .await
+            .expect("Failed to find related memories");
+
+        // Should find each memory only once despite circular relationships
+        assert_eq!(related.len(), 2); // Should find memory2 and memory3, not memory1 again
+        let memory_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+        assert!(memory_ids.contains(&memory_id2));
+        assert!(memory_ids.contains(&memory_id3));
+        assert!(!memory_ids.contains(&memory_id1)); // Should not include starting memory
+
+        // Test with isolated memory (no relationships)
+        let isolated_memory = palace
+            .store_memory("isolated", "Lonely memory", ["isolated"])
+            .await
+            .expect("Failed to store memory");
+
+        let related = palace
+            .find_related_memories(isolated_memory, 2, 0.1)
+            .await
+            .expect("Failed to find related memories");
+
+        assert_eq!(related.len(), 0); // Should find nothing
+
+        // Test with self-referential relationship (if allowed by DB constraints)
+        // This might fail depending on DB constraints, so we'll test gracefully
+        let self_ref_result = palace
+            .relate_memories(memory_id1, memory_id1, "self_ref", 1.0)
+            .await;
+
+        // If self-referential relationships are allowed, test that they don't break the query
+        if self_ref_result.is_ok() {
+            let related = palace
+                .find_related_memories(memory_id1, 1, 0.1)
+                .await
+                .expect("Failed to find related memories");
+
+            // Should still work and not include the memory itself
+            let memory_ids: Vec<i64> = related.iter().map(|r| r.2.id).collect();
+            assert!(!memory_ids.contains(&memory_id1));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_find_related_memories_tool_call() {
+        let mut palace =
+            create_test_palace("find_related_memories_tool_call").await;
+
+        // Set up some test data
+        let memory_id1 = palace
+            .store_memory("test", "Root memory", ["test"])
+            .await
+            .expect("Failed to store memory");
+
+        let memory_id2 = palace
+            .store_memory("test", "Related memory", ["test"])
+            .await
+            .expect("Failed to store memory");
+
+        palace
+            .relate_memories(memory_id1, memory_id2, "connected", 0.8)
+            .await
+            .expect("Failed to create relationship");
+
+        // Test valid tool call
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::find_related".into(),
+            input: json!({
+                "memory_id": memory_id1,
+                "max_depth": 2,
+                "min_strength": 0.1
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(!result.is_error);
+        assert!(result.content.to_string().contains("Found 1 related"));
+        assert!(result.content.to_string().contains("Related memory"));
+
+        // Test with missing required parameter
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::find_related".into(),
+            input: json!({
+                "max_depth": 2,
+                "min_strength": 0.1
+                // missing memory_id
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("Missing required"));
+
+        // Test with invalid memory_id type
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::find_related".into(),
+            input: json!({
+                "memory_id": "not_a_number",
+                "max_depth": 2,
+                "min_strength": 0.1
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(result.is_error);
+        assert!(result.content.to_string().contains("Missing required"));
+
+        // Test with non-existent memory_id
+        let call = Use {
+            id: "test_id".into(),
+            name: "MemoryPalace::find_related".into(),
+            input: json!({
+                "memory_id": 99999,
+                "max_depth": 2,
+                "min_strength": 0.1
+            }),
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        };
+
+        let result = palace.call(call).await;
+        assert!(!result.is_error);
+        assert!(
+            result
+                .content
+                .to_string()
+                .contains("No related memories found")
+        );
     }
 }

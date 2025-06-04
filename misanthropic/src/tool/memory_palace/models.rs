@@ -49,18 +49,6 @@ pub(crate) struct RoomConnection {
     pub(crate) to_room: String,
 }
 
-/// Helper struct for concept-based memory search
-#[derive(Debug, Clone, FromRow)]
-pub(crate) struct Concept {
-    pub(crate) id: i64,
-    pub(crate) content: String,
-    pub(crate) room: String,
-    pub(crate) tags: Value,
-    pub(crate) created_at: DateTime<Utc>,
-    pub(crate) last_updated: DateTime<Utc>,
-    pub(crate) confidence: f64,
-}
-
 /// Helper struct for recent memories summary
 #[derive(Debug, Clone, FromRow)]
 pub(crate) struct RecentMemory {

@@ -37,20 +37,25 @@ pub async fn store(
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // Ensure room exists
-            sqlx::query!(
+            sqlx::query(
                 "INSERT INTO rooms (name, description) VALUES ($1, $2) ON CONFLICT (name) DO NOTHING",
-                &room,
-                format!("Room for {}", room)
             )
+            .bind(&room)
+            .bind(format!("Room for {}", room))
             .execute(&mut **tx)
             .await?;
 
-            let row = sqlx::query!(
+            #[derive(sqlx::FromRow)]
+            struct IdRow {
+                id: i64,
+            }
+
+            let row: IdRow = sqlx::query_as(
                 "INSERT INTO memories (content, room, tags) VALUES ($1, $2, $3) RETURNING id",
-                &content,
-                &room,
-                &tags_json
             )
+            .bind(&content)
+            .bind(&room)
+            .bind(&tags_json)
             .fetch_one(&mut **tx)
             .await?;
 
@@ -144,7 +149,7 @@ pub async fn search(
                         relevance_score,
                         recency_score,
                         relationship_score: 0.0,
-                        final_score: 0.0, // Will calculate after
+                        final_score: 0.0 // Will calculate after
                     },
                 );
             }
@@ -237,12 +242,24 @@ pub async fn find_memories_bfs(
 ) -> Result<Vec<(String, String, Memory, f64, i32)>, MemoryPalaceError> {
     execute_with_schema(&pool, &schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows = sqlx::query!(
+            #[derive(sqlx::FromRow)]
+            struct BfsRow {
+                id: i64,
+                content: String,
+                room: String,
+                tags: serde_json::Value,
+                created_at: chrono::DateTime<chrono::Utc>,
+                last_updated: chrono::DateTime<chrono::Utc>,
+                path_strength: Option<f64>,
+                distance: Option<i32>,
+            }
+
+            let rows: Vec<BfsRow> = sqlx::query_as(
                 r#"
                 WITH RECURSIVE memory_bfs AS (
                     -- Base case: start with the given memory
                     SELECT 
-                        $1::bigint as memory_id,
+                        $1 as memory_id,
                         1.0::double precision as path_strength,
                         0 as distance,
                         ARRAY[$1::bigint] as path
@@ -255,7 +272,7 @@ pub async fn find_memories_bfs(
                             WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
                             ELSE mr.from_memory_id
                         END as memory_id,
-                        mb.path_strength * mr.strength * ($3::double precision) as path_strength,
+                        mb.path_strength * mr.strength * $3 as path_strength,
                         mb.distance + 1 as distance,
                         mb.path || CASE 
                             WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
@@ -264,8 +281,8 @@ pub async fn find_memories_bfs(
                     FROM memory_bfs mb
                     JOIN memory_relationships mr ON (mr.from_memory_id = mb.memory_id OR mr.to_memory_id = mb.memory_id)
                     WHERE 
-                        mb.distance < $2
-                        AND mb.path_strength * mr.strength * ($3::double precision) >= ($4::double precision)
+                        mb.distance < $2 
+                        AND mb.path_strength * mr.strength * $3 >= $4
                         AND NOT (CASE 
                             WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
                             ELSE mr.from_memory_id
@@ -279,11 +296,11 @@ pub async fn find_memories_bfs(
                 WHERE mb.memory_id != $1
                 ORDER BY mb.memory_id, mb.path_strength DESC, mb.distance ASC
                 "#,
-                start_memory_id,
-                max_distance as i32,
-                decay_factor,
-                min_score
             )
+            .bind(start_memory_id)
+            .bind(max_distance as i32)
+            .bind(decay_factor)
+            .bind(min_score)
             .fetch_all(&mut **tx)
             .await?;
 
@@ -324,15 +341,15 @@ pub async fn connect_rooms(
 ) -> Result<(), MemoryPalaceError> {
     execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 INSERT INTO room_connections (from_room, to_room, strength) 
                 VALUES ($1, $2, 1), ($2, $1, 1)
                 ON CONFLICT (from_room, to_room) DO NOTHING
             "#,
-                &room1,
-                &room2
             )
+            .bind(&room1)
+            .bind(&room2)
             .execute(&mut **tx)
             .await?;
 
@@ -410,18 +427,18 @@ pub async fn relate_memories(
                 relationship_type, memory_id1, memory_id2, strength
             );
 
-            sqlx::query!(
+            sqlx::query(
                 r#"
                 INSERT INTO memory_relationships (from_memory_id, to_memory_id, relationship_type, strength)
                 VALUES ($1, $2, $3, $4)
                 ON CONFLICT (from_memory_id, to_memory_id) 
                 DO UPDATE SET relationship_type = $3, strength = $4
                 "#,
-                memory_id1,
-                memory_id2,
-                &relationship_type,
-                strength
             )
+            .bind(memory_id1)
+            .bind(memory_id2)
+            .bind(&relationship_type)
+            .bind(strength)
             .execute(&mut **tx)
             .await?;
 
@@ -439,32 +456,66 @@ pub async fn find_related_memories(
 ) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError> {
     execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows = sqlx::query!(
+            #[derive(sqlx::FromRow)]
+            struct RelatedMemoryRow {
+                id: i64,
+                content: String,
+                room: String,
+                tags: serde_json::Value,
+                created_at: chrono::DateTime<chrono::Utc>,
+                last_updated: chrono::DateTime<chrono::Utc>,
+                relationship_type: String,
+                strength: f64,
+            }
+
+            // Return empty results if max_depth is 0
+            if max_depth == 0 {
+                return Ok(Vec::new());
+            }
+
+            let rows: Vec<RelatedMemoryRow> = sqlx::query_as(
                 r#"
-                WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth) AS (
-                    -- Base case: direct relationships
-                    SELECT mr.to_memory_id, mr.relationship_type, mr.strength, 1 as depth
+                WITH RECURSIVE related_memories(memory_id, relationship_type, strength, depth, path) AS (
+                    -- Base case: direct relationships from the starting memory
+                    SELECT 
+                        mr.to_memory_id as memory_id,
+                        mr.relationship_type,
+                        mr.strength,
+                        1 as depth,
+                        ARRAY[$1::bigint, mr.to_memory_id] as path
                     FROM memory_relationships mr
-                    WHERE mr.from_memory_id = $1 AND mr.strength >= $3
+                    WHERE mr.from_memory_id = $1 
+                        AND mr.to_memory_id != $1  -- Exclude self-references
+                        AND mr.strength >= $3
+                        AND $2 >= 1  -- Only include if max_depth allows
                     
                     UNION
                     
                     -- Recursive case: follow relationships up to max_depth
-                    SELECT mr.to_memory_id, mr.relationship_type, mr.strength, rm.depth + 1
+                    SELECT 
+                        mr.to_memory_id as memory_id,
+                        mr.relationship_type,
+                        mr.strength,
+                        rm.depth + 1 as depth,
+                        rm.path || mr.to_memory_id as path
                     FROM memory_relationships mr
                     JOIN related_memories rm ON mr.from_memory_id = rm.memory_id
-                    WHERE rm.depth < $2 AND mr.strength >= $3
+                    WHERE rm.depth < $2  -- Continue only if we haven't reached max_depth
+                        AND mr.to_memory_id != mr.from_memory_id  -- No self-references
+                        AND mr.strength >= $3
+                        AND NOT mr.to_memory_id = ANY(rm.path)  -- Prevent cycles
                 )
-                SELECT m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-                       rm.relationship_type as "relationship_type!", rm.strength as "strength!"
+                SELECT DISTINCT ON (m.id) 
+                    m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
+                    rm.relationship_type, rm.strength
                 FROM related_memories rm
                 JOIN memories m ON rm.memory_id = m.id
-                ORDER BY rm.strength DESC, rm.depth ASC
+                ORDER BY m.id, rm.strength DESC, rm.depth ASC
                 "#,
-                memory_id,
-                max_depth as i32,
-                min_strength
             )
+            .bind(memory_id)
+            .bind(max_depth as i32)
+            .bind(min_strength)
             .fetch_all(&mut **tx)
             .await?;
 
@@ -512,36 +563,40 @@ pub async fn extract_concepts(
 
             for concept in &concepts {
                 // Create or get concept
-                let concept_row = sqlx::query!(
-                    "INSERT INTO concepts (name) VALUES ($1) ON CONFLICT (name) DO NOTHING RETURNING id",
-                    concept
+                #[derive(sqlx::FromRow)]
+                struct ConceptRow {
+                    id: i64,
+                }
+
+                let concept_row: Option<ConceptRow> = sqlx::query_as(
+                    "SELECT id FROM concepts WHERE name = $1"
                 )
+                .bind(concept)
                 .fetch_optional(&mut **tx)
                 .await?;
 
                 let concept_id: i64 = if let Some(row) = concept_row {
                     row.id
                 } else {
-                    // Concept already exists, get its ID
-                    sqlx::query!(
-                        "SELECT id FROM concepts WHERE name = $1",
-                        concept
+                    let new_row: ConceptRow = sqlx::query_as(
+                        "INSERT INTO concepts (name) VALUES ($1) RETURNING id"
                     )
+                    .bind(concept)
                     .fetch_one(&mut **tx)
-                    .await?
-                    .id
+                    .await?;
+                    new_row.id
                 };
 
                 // Link memory to concept
-                sqlx::query!(
+                sqlx::query(
                     r#"
                     INSERT INTO memory_concepts (memory_id, concept_id, confidence)
                     VALUES ($1, $2, 1.0)
                     ON CONFLICT (memory_id, concept_id) DO NOTHING
-                    "#,
-                    memory_id,
-                    concept_id
+                    "#
                 )
+                .bind(memory_id)
+                .bind(concept_id)
                 .execute(&mut **tx)
                 .await?;
 
@@ -569,7 +624,18 @@ pub async fn find_memories_by_concept(
         schema,
         |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            let rows: Vec<Concept> = sqlx::query_as(
+            #[derive(sqlx::FromRow)]
+            struct ConceptMemoryRow {
+                id: i64,
+                content: String,
+                room: String,
+                tags: serde_json::Value,
+                created_at: chrono::DateTime<chrono::Utc>,
+                last_updated: chrono::DateTime<chrono::Utc>,
+                confidence: f64,
+            }
+
+            let rows: Vec<ConceptMemoryRow> = sqlx::query_as(
                 r#"
                 SELECT 
                     m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
@@ -579,11 +645,7 @@ pub async fn find_memories_by_concept(
                 JOIN concepts c ON mc.concept_id = c.id
                 WHERE c.name = $1
                 ORDER BY 
-                    -- Primary: Concept confidence
                     mc.confidence DESC,
-                    -- Secondary: Recency of updates
-                    m.last_updated DESC,
-                    -- Tertiary: Creation time
                     m.created_at DESC
             "#,
             )
@@ -594,7 +656,7 @@ pub async fn find_memories_by_concept(
             let mut results = Vec::new();
             for row in rows {
                 let tags: Vec<String> =
-                    serde_json::from_value(row.tags).unwrap_or_default();
+                    serde_json::from_value(row.tags.clone()).unwrap_or_default();
 
                 let memory = Memory {
                     id: row.id,
@@ -627,7 +689,16 @@ pub async fn get_graph_stats(
         schema,
         |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
-            sqlx::query!(
+            #[derive(sqlx::FromRow)]
+            struct StatsRow {
+                total_memories: Option<i64>,
+                total_rooms: Option<i64>,
+                total_relationships: Option<i64>,
+                total_concepts: Option<i64>,
+                total_mentions: Option<i64>,
+            }
+
+            let stats: StatsRow = sqlx::query_as(
                 r#"
                 SELECT 
                     (SELECT COUNT(*) FROM memories) as total_memories,
@@ -638,7 +709,9 @@ pub async fn get_graph_stats(
                 "#
             )
             .fetch_one(&mut **tx)
-            .await
+            .await?;
+
+            Ok(stats)
         })
     }).await?;
 
