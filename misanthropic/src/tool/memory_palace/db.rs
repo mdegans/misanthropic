@@ -12,7 +12,7 @@ pub async fn ensure_initialized(
         Box::pin(async move {
             // Execute schema creation statements individually using sqlx::query!
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS rooms (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS rooms (
                 id BIGSERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT NOT NULL,
@@ -21,7 +21,7 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS memories (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memories (
                 id BIGSERIAL PRIMARY KEY,
                 content TEXT NOT NULL,
                 room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
@@ -32,7 +32,7 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS room_connections (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_connections (
                 id BIGSERIAL PRIMARY KEY,
                 from_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
                 to_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
@@ -44,7 +44,7 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS memory_relationships (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_relationships (
                 id BIGSERIAL PRIMARY KEY,
                 from_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 to_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
@@ -56,7 +56,7 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS concepts (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS concepts (
                 id BIGSERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT,
@@ -65,7 +65,7 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TABLE IF NOT EXISTS memory_concepts (
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_concepts (
                 id BIGSERIAL PRIMARY KEY,
                 memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 concept_id BIGINT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
@@ -77,7 +77,7 @@ pub async fn ensure_initialized(
             .await?;
 
             // Functions and triggers
-            sqlx::query!(r#"CREATE OR REPLACE FUNCTION update_last_updated_column()
+            sqlx::query(r#"CREATE OR REPLACE FUNCTION update_last_updated_column()
                 RETURNS TRIGGER AS $$
                 BEGIN
                     NEW.last_updated = NOW();
@@ -87,11 +87,11 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("DROP TRIGGER IF EXISTS update_memories_last_updated ON memories")
+            sqlx::query("DROP TRIGGER IF EXISTS update_memories_last_updated ON memories")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!(r#"CREATE TRIGGER update_memories_last_updated
+            sqlx::query(r#"CREATE TRIGGER update_memories_last_updated
                 BEFORE UPDATE ON memories
                 FOR EACH ROW
                 EXECUTE FUNCTION update_last_updated_column()"#)
@@ -99,31 +99,31 @@ pub async fn ensure_initialized(
             .await?;
 
             // Indexes
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memories_room ON memories(room)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_room ON memories(room)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memories_content_gin ON memories USING gin(to_tsvector('english', content))")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_content_gin ON memories USING gin(to_tsvector('english', content))")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memories_tags_gin ON memories USING gin(tags)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_tags_gin ON memories USING gin(tags)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_room_connections_from ON room_connections(from_room)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_room_connections_from ON room_connections(from_room)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memory_relationships_from ON memory_relationships(from_memory_id)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_relationships_from ON memory_relationships(from_memory_id)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memory_concepts_memory ON memory_concepts(memory_id)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_concepts_memory ON memory_concepts(memory_id)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query!("CREATE INDEX IF NOT EXISTS idx_memory_concepts_concept ON memory_concepts(concept_id)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_concepts_concept ON memory_concepts(concept_id)")
             .execute(&mut **tx)
             .await?;
 
@@ -148,8 +148,15 @@ where
 {
     let mut tx = pool.begin().await?;
 
-    // Set search_path for this transaction
-    sqlx::query(&format!("SET search_path TO {}", schema_name))
+    // Create the schema if it doesn't exist using dynamic SQL
+    sqlx::query("DO $$ BEGIN EXECUTE 'CREATE SCHEMA IF NOT EXISTS ' || quote_ident($1); END $$")
+        .bind(schema_name)
+        .execute(&mut *tx)
+        .await?;
+
+    // Set the search path to the schema
+    sqlx::query("SELECT set_config('search_path', quote_ident($1), true)")
+        .bind(schema_name)
         .execute(&mut *tx)
         .await?;
 

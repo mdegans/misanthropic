@@ -27,9 +27,18 @@ impl From<InvalidKeyLength> for shuttle_runtime::Error {
 /// whatever you write it to**. The key is zeroized on drop.
 ///
 /// [`Display`]: std::fmt::Display
-#[derive(Debug, ZeroizeOnDrop)]
+#[derive(ZeroizeOnDrop)]
+#[repr(transparent)] // why not
 pub struct Key {
     mem: Arr,
+}
+
+impl std::fmt::Debug for Key {
+    /// Write out the key in debug format. This is not recommended for production
+    /// use as it will leak the key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Key { <unencrypted> }")
+    }
 }
 
 impl Key {

@@ -194,7 +194,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             AnthropicModel::Haiku30
         })
-        .add_tool(Method {
+        .add_method(Method {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({

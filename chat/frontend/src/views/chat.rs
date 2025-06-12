@@ -56,7 +56,7 @@ fn make_prompt() -> Prompt<'static> {
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(Method {
+        .add_method(Method {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({
@@ -314,7 +314,7 @@ pub fn Chat() -> Element {
                             }
                             Ok(Success::Prompt(mut new)) => {
                                 // Update tools.
-                                new.functions = Some(specs.read().clone());
+                                new.methods = Some(specs.read().clone());
 
                                 // Update the prompt with the tools.
                                 if let Err(e) =
@@ -551,10 +551,10 @@ pub fn Chat() -> Element {
                                     // tools that don't exist, and may have
                                     // changed since the original prompt was
                                     // created. This is always overwritten.
-                                    new_prompt.functions.replace(specs.read().clone());
+                                    new_prompt.methods.replace(specs.read().clone());
 
                                     // Update tools.
-                                    new_prompt.functions = Some(specs.read().clone());
+                                    new_prompt.methods = Some(specs.read().clone());
 
                                     // Update the prompt with the tools.
                                     if let Err(e) = toolbox.write().on_init(&mut new_prompt).await {

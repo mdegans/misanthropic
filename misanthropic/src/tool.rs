@@ -22,6 +22,11 @@ mod notepad;
 #[cfg(feature = "notepad")]
 pub use notepad::Notepad;
 
+#[cfg(feature = "memory-subroutine")]
+mod memory_subroutine;
+#[cfg(feature = "memory-subroutine")]
+pub use memory_subroutine::MemorySubroutine;
+
 /// Constrain the [`Assistant`]'s choice of [`Method`]s.
 ///
 /// # Note:
@@ -93,12 +98,23 @@ pub trait Tool: Send {
     /// Use this to set up initial context, instructions, or static content.
     ///
     /// # Note:
+    /// - By default, adds the tool's methods to the prompt
     /// - This is called only once per tool lifetime in a conversation
     /// - Use for setting up tool instructions, initial context blocks
-    /// - Should be idempotent in case called multiple times
+    /// - It should *generally* be an error to call this multiple times
     async fn on_init(
         &mut self,
-        _prompt: &mut Prompt,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Add this tool's methods to the prompt
+        prompt.push_methods(self.methods().map(|m| m.into_static()));
+        Ok(())
+    }
+
+    /// Called when the tool is ready to be shut down. Use this for cleanup,
+    /// finalizing state, or saving persistent data.
+    async fn on_shutdown(
+        &mut self,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }

@@ -29,12 +29,19 @@ impl From<InvalidKeyLength> for shuttle_runtime::Error {
 /// the key on drop.
 ///
 /// [`Display`]: std::fmt::Display
-#[derive(Debug)]
 pub struct Key {
     // FIXME: `memsecurity` does not build on wasm32. Find a solution for web.
     // The `keyring` crate may work, but I'm likewise not sure if it builds on
     // wasm32. It's not listed in the platforms so likely not.
     mem: memsecurity::EncryptedMem,
+}
+
+impl std::fmt::Debug for Key {
+    /// Write out the key in debug format. This is not recommended for production
+    /// use as it will leak the key.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Key { <encrypted> }")
+    }
 }
 
 impl Key {
@@ -118,3 +125,5 @@ mod tests {
         assert_eq!(err.to_string(), "Invalid key length: 8 (expected 108)");
     }
 }
+
+impl<T: AsRef<[u8]> + Zeroize + std::fmt::Debug> EncryptedKey<T>

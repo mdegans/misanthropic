@@ -1,3 +1,4 @@
+// Copyright (c) 2025 Claude 4 Opus & Michael de Gans
 //! [`Client`] for the Anthropic Messages API and related types.
 
 #[allow(unused_imports)] // because lots of conditional compilation
@@ -65,6 +66,8 @@ pub struct Client {
     pub batch_url: Arc<Url>,
     /// Custom endpoint for the Models API. Defaults to [`Self::MODELS_URL`].
     pub models_url: Arc<Url>,
+    /// Custom endpoint for the token counting API. Defaults to [`Self::COUNT_TOKENS_URL`].
+    pub count_tokens_url: Arc<Url>,
 }
 
 /// Claude client. Uses the Messages API and the prompt caching beta.
@@ -88,6 +91,9 @@ impl Client {
     /// Default URL for the Models API.
     pub const MODELS_URL: &'static str =
         "https://api.anthropic.com/v1/models?limit=1000";
+    /// Default URL for the token counting API.
+    pub const COUNT_TOKENS_URL: &'static str =
+        "https://api.anthropic.com/v1/messages/count_tokens";
     /// Default jitter in milliseconds for rate limiting (max).
     #[cfg(feature = "rate-limiting")]
     pub const DEFAULT_JITTER_MS: u64 = 20;
@@ -158,6 +164,9 @@ impl Client {
             messages_url: Arc::new(Url::parse(Self::MESSAGES_URL).unwrap()),
             batch_url: Arc::new(Url::parse(Self::BATCH_URL).unwrap()),
             models_url: Arc::new(Url::parse(Self::MODELS_URL).unwrap()),
+            count_tokens_url: Arc::new(
+                Url::parse(Self::COUNT_TOKENS_URL).unwrap(),
+            ),
         }
     }
 
@@ -610,6 +619,24 @@ impl Client {
         }
 
         Ok(Batch::Pending(pending))
+    }
+
+    /// Count the number of input tokens for a prompt without making a request.
+    /// This uses the token counting endpoint to get an accurate count.
+    pub async fn count_tokens<P>(&self, prompt: P) -> Result<u32>
+    where
+        P: Serialize,
+    {
+        #[derive(Deserialize)]
+        struct TokenCount {
+            input_tokens: u32,
+        }
+
+        let response =
+            self.post(self.count_tokens_url.as_str(), prompt).await?;
+        let count: TokenCount = response.json().await?;
+
+        Ok(count.input_tokens)
     }
 }
 

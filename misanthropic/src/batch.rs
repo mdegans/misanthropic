@@ -168,6 +168,33 @@ impl Serialize for Prompts<'_> {
     }
 }
 
+impl<'de> Deserialize<'de> for Prompts<'_> {
+    /// Deserialize the [`Prompts`] from a list of Requests, which is what
+    /// the API returns.
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Outer wrapper to match { "requests": [ ... ] }
+        #[derive(Deserialize)]
+        struct Outer<'a> {
+            requests: Vec<OwnedRequest<'a>>,
+        }
+
+        // Deserialize the outer structure
+        let outer = Outer::deserialize(deserializer)?;
+
+        // Convert Vec<OwnedRequest> into HashMap<Id, Prompt>
+        let prompts = outer
+            .requests
+            .into_iter()
+            .map(|req| (req.id, req.prompt))
+            .collect();
+
+        Ok(Prompts { prompts })
+    }
+}
+
 /// [`Id`] of a [`Prompt`] in [`Prompts`]. Wrapper around a [`uuid::Uuid`].
 #[derive(
     Clone,
@@ -221,6 +248,15 @@ struct Request<'r, 'a> {
     id: &'r Id,
     #[serde(rename = "params")]
     prompt: &'r Prompt<'a>,
+}
+
+/// Owned version of [`Request`] for deserialization.
+#[derive(Deserialize)]
+struct OwnedRequest<'a> {
+    #[serde(rename = "custom_id")]
+    id: Id,
+    #[serde(rename = "params")]
+    prompt: Prompt<'a>,
 }
 
 /// An Anthropic `message_batch` response with [`Batch`] metadata.
@@ -288,7 +324,7 @@ pub struct Stats {
 /// [`Client::batch_poll`]: crate::Client::batch_poll
 /// [`Batch::is_ready`].
 // Anthropic should really add a webhook or something.
-#[derive(Serialize, derive_more::IsVariant)]
+#[derive(Serialize, Deserialize, derive_more::IsVariant)]
 pub enum Batch<'a> {
     /// Needs more [`Client::batch_poll`]ing.
     Pending(Pending<'a>),
@@ -308,7 +344,7 @@ pub enum Batch<'a> {
 ///
 /// [`Client::batch`]: crate::Client::batch
 /// [`Client::batch_poll`]: crate::Client::batch_poll
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Pending<'a> {
     pub(crate) prompts: Prompts<'a>,
@@ -360,7 +396,7 @@ impl<'a> Pending<'a> {
 }
 
 /// A completed batch of [`Prompts`] with [`BatchResult`]s.
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Ready<'a> {
     /// The [`Prompts`] that were processed. It is guaranteed that every [`Id`] in
     /// `results` is in `pending.prompts`.
@@ -374,6 +410,11 @@ pub struct Ready<'a> {
 }
 
 impl<'a> Ready<'a> {
+    /// Get the [`Id`] of the batch.
+    pub fn id(&self) -> &str {
+        &self.pending.meta.id
+    }
+
     /// Get the result for a specific [`Prompt`] by its [`Id`].
     pub fn get_result(&self, id: Id) -> Option<&BatchResult<'a>> {
         self.results.get(&id)
@@ -399,54 +440,45 @@ impl<'a> Ready<'a> {
 
     /// Remove all [`Prompt`]s and [`response::Message`]s from the batch with
     /// successful results. This is a one-way operation.
-    pub fn remove_ok(&mut self) -> Vec<(Prompt<'a>, response::Message<'a>)> {
-        let ids: Vec<_> = self
+    // Credit for iterator version to 4o-mini (GitHub Copilot)
+    pub fn drain_ok(
+        &mut self,
+    ) -> impl Iterator<Item = (Prompt<'a>, response::Message<'a>)> + '_ {
+        // gather all IDs with Ok results in one scan
+        let ids: Vec<Id> = self
             .results
             .iter()
-            .filter_map(
-                |(id, result)| {
-                    if result.is_ok() { Some(*id) } else { None }
-                },
-            )
+            .filter_map(|(&id, r)| if r.is_ok() { Some(id) } else { None })
             .collect();
 
-        let mut results = Vec::with_capacity(ids.len());
-        for id in ids {
-            let succeeded =
-                match self.pending.meta.stats.succeeded.checked_sub(1) {
-                    Some(s) => s,
-                    None => {
-                        // Either our code is broken or Anthropic is lying.
-                        #[cfg(feature = "log")]
-                        log::error!(
-                            "meta.stats.succeeded underflowed for batch: {}",
-                            self.pending.meta.id
-                        );
-                        0
-                    }
-                };
-            self.pending.meta.stats.succeeded = succeeded;
-
-            let prompt = self
+        // stream removals over the collected IDs
+        ids.into_iter().map(move |id| {
+            // decrement stats safely
+            self.pending.meta.stats.succeeded = self
                 .pending
-                .prompts
-                .prompts
-                .remove(&id)
-                // Every Id in results should be in prompts, but not necessarily
-                // the other way around, because some can fail to deserialize.
-                // This is guaranteed in `Client::batch_poll`.
-                .expect("Class invariant violated: Ready prompts missing ID");
-            let result = self.results.remove(&id);
-
-            if let Some(BatchResult::Ok(msg)) = result {
-                results.push((prompt, msg));
-            } else {
-                // Impossible because we just checked for it.
-                panic!("Code above does not check result.is_ok()");
+                .meta
+                .stats
+                .succeeded
+                .checked_sub(1)
+                .unwrap_or_else(|| {
+                    #[cfg(feature = "log")]
+                    log::error!(
+                        "meta.stats.succeeded underflowed for batch: {}",
+                        self.pending.meta.id
+                    );
+                    0
+                });
+            // remove the prompt
+            let prompt =
+                self.pending.prompts.prompts.remove(&id).expect(
+                    "Class invariant violated: Ready prompts missing ID",
+                );
+            // extract the message
+            match self.results.remove(&id).unwrap() {
+                BatchResult::Ok(msg) => (prompt, msg),
+                _ => unreachable!("Expected Ok variant"),
             }
-        }
-
-        results
+        })
     }
 
     /// Iterate over errored [`Prompt`]s and their [`client::AnthropicError`]s.
@@ -462,50 +494,41 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch with
-    /// errors. This is a one-way operation.
-    pub fn remove_errors(
+    /// Remove all errored [`Prompt`]s and their errors.
+    // Credit for iterator version to 4o-mini (GitHub Copilot)
+    pub fn drain_errors(
         &mut self,
-    ) -> Vec<(Prompt<'a>, client::AnthropicError)> {
-        let ids: Vec<_> = self
+    ) -> impl Iterator<Item = (Prompt<'a>, client::AnthropicError)> + '_ {
+        let ids: Vec<Id> = self
             .results
             .iter()
-            .filter_map(
-                |(id, result)| {
-                    if result.is_error() { Some(*id) } else { None }
-                },
-            )
+            .filter_map(|(&id, r)| if r.is_error() { Some(id) } else { None })
             .collect();
 
-        let mut results = Vec::with_capacity(ids.len());
-        for id in ids {
-            let errored = match self.pending.meta.stats.errored.checked_sub(1) {
-                Some(s) => s,
-                None => {
+        ids.into_iter().map(move |id| {
+            self.pending.meta.stats.errored = self
+                .pending
+                .meta
+                .stats
+                .errored
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.errored underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
-            self.pending.meta.stats.errored = errored;
-
+                });
             let prompt =
                 self.pending.prompts.prompts.remove(&id).expect(
                     "Class invariant violated: Ready prompts missing ID",
                 );
-            let result = self.results.remove(&id);
-
-            if let Some(BatchResult::Error(e)) = result {
-                results.push((prompt, e));
-            } else {
-                // Impossible because we just checked for it.
-                panic!("Code above does not check result.is_error()");
+            match self.results.remove(&id).unwrap() {
+                BatchResult::Error(e) => (prompt, e),
+                _ => unreachable!("Expected Error variant"),
             }
-        }
-        results
+        })
     }
 
     /// Iterate over canceled [`Prompt`]s.
@@ -519,46 +542,39 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch that
-    /// were canceled. This is a one-way operation.
-    pub fn remove_canceled(&mut self) -> Vec<Prompt<'a>> {
-        let ids: Vec<_> = self
+    /// Remove all canceled [`Prompt`]s.
+    // Credit for iterator version to 4o-mini (GitHub Copilot)
+    pub fn drain_canceled(&mut self) -> impl Iterator<Item = Prompt<'a>> + '_ {
+        let ids: Vec<Id> = self
             .results
             .iter()
-            .filter_map(|(id, result)| {
-                if result.is_canceled() {
-                    Some(*id)
-                } else {
-                    None
-                }
-            })
+            .filter_map(
+                |(&id, r)| if r.is_canceled() { Some(id) } else { None },
+            )
             .collect();
 
-        let mut results = Vec::with_capacity(ids.len());
-        for id in ids {
-            let canceled = match self.pending.meta.stats.canceled.checked_sub(1)
-            {
-                Some(s) => s,
-                None => {
+        ids.into_iter().map(move |id| {
+            self.pending.meta.stats.canceled = self
+                .pending
+                .meta
+                .stats
+                .canceled
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.canceled underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
-            self.pending.meta.stats.canceled = canceled;
-
+                });
             let prompt =
                 self.pending.prompts.prompts.remove(&id).expect(
                     "Class invariant violated: Ready prompts missing ID",
                 );
             self.results.remove(&id);
-
-            results.push(prompt);
-        }
-        results
+            prompt
+        })
     }
 
     /// Iterate over expired [`Prompt`]s.
@@ -572,43 +588,37 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch that
-    /// expired. This is a one-way operation.
-    pub fn remove_expired(&mut self) -> Vec<Prompt<'a>> {
-        let ids: Vec<_> = self
+    /// Remove all expired [`Prompt`]s.
+    // Credit for iterator version to 4o-mini (GitHub Copilot)
+    pub fn drain_expired(&mut self) -> impl Iterator<Item = Prompt<'a>> + '_ {
+        let ids: Vec<Id> = self
             .results
             .iter()
-            .filter_map(
-                |(id, result)| {
-                    if result.is_expired() { Some(*id) } else { None }
-                },
-            )
+            .filter_map(|(&id, r)| if r.is_expired() { Some(id) } else { None })
             .collect();
 
-        let mut results = Vec::with_capacity(ids.len());
-        for id in ids {
-            let expired = match self.pending.meta.stats.expired.checked_sub(1) {
-                Some(s) => s,
-                None => {
+        ids.into_iter().map(move |id| {
+            self.pending.meta.stats.expired = self
+                .pending
+                .meta
+                .stats
+                .expired
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.expired underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
-            self.pending.meta.stats.expired = expired;
-
+                });
             let prompt =
                 self.pending.prompts.prompts.remove(&id).expect(
                     "Class invariant violated: Ready prompts missing ID",
                 );
             self.results.remove(&id);
-
-            results.push(prompt);
-        }
-        results
+            prompt
+        })
     }
 
     /// Iterate over all [`Prompt`]s and their [`BatchResult`]s.
@@ -741,6 +751,51 @@ mod tests {
   ]
 }"#
         );
+    }
+
+    #[test]
+    fn test_prompts_deserialize() {
+        let json = r#"{
+  "requests": [
+    {
+      "custom_id": "00000000-0000-0000-0000-000000000000",
+      "params": {
+        "model": "claude-3-haiku-20240307",
+        "messages": [],
+        "max_tokens": 4096
+      }
+    }
+  ]
+}"#;
+
+        let prompts: Prompts = serde_json::from_str(json).unwrap();
+        assert_eq!(prompts.len(), 1);
+
+        let id: Id = Uuid::nil().into();
+        assert_eq!(prompts.get_id(id), Some(&Prompt::default()));
+    }
+
+    #[test]
+    fn test_prompts_serde_roundtrip() {
+        let id1: Id = Uuid::nil().into();
+        let id2: Id = Uuid::max().into();
+
+        let original = Prompts {
+            prompts: [(id1, Prompt::default()), (id2, Prompt::default())]
+                .into_iter()
+                .collect(),
+        };
+
+        // Serialize
+        let json = serde_json::to_string(&original).unwrap();
+
+        // Deserialize
+        let deserialized: Prompts = serde_json::from_str(&json).unwrap();
+
+        // Check that we got the same data back
+        assert_eq!(deserialized.len(), 2);
+        assert_eq!(deserialized.get_id(id1), Some(&Prompt::default()));
+        assert_eq!(deserialized.get_id(id2), Some(&Prompt::default()));
     }
 
     #[test]
@@ -1014,7 +1069,7 @@ mod tests {
     fn test_ready_remove_ok() {
         let (_, mut ready) = gen_ready();
         assert!(ready.results.len() == 4);
-        let (prompt, msg) = ready.remove_ok().pop().unwrap();
+        let (prompt, msg) = ready.drain_ok().next().unwrap();
         assert_eq!(prompt, Prompt::default());
         assert_eq!(msg.id, PENDING_ID);
         assert_eq!(msg.inner, Content::from("Hello roboto!").into());
@@ -1041,7 +1096,7 @@ mod tests {
     fn test_ready_remove_errors() {
         let (_, mut ready) = gen_ready();
         assert!(ready.results.len() == 4);
-        let (prompt, err) = ready.remove_errors().pop().unwrap();
+        let (prompt, err) = ready.drain_errors().next().unwrap();
         assert_eq!(prompt, Prompt::default());
         assert_eq!(
             err,
@@ -1066,7 +1121,7 @@ mod tests {
     fn test_ready_remove_canceled() {
         let (_, mut ready) = gen_ready();
         assert!(ready.results.len() == 4);
-        let prompt = ready.remove_canceled().pop().unwrap();
+        let prompt = ready.drain_canceled().next().unwrap();
         assert_eq!(prompt, Prompt::default());
         assert_eq!(ready.pending.meta.stats.canceled, 9);
         assert_eq!(ready.results.len(), 3);
@@ -1085,7 +1140,7 @@ mod tests {
     fn test_ready_remove_expired() {
         let (_, mut ready) = gen_ready();
         assert!(ready.results.len() == 4);
-        let prompt = ready.remove_expired().pop().unwrap();
+        let prompt = ready.drain_expired().next().unwrap();
         assert_eq!(prompt, Prompt::default());
         assert_eq!(ready.pending.meta.stats.expired, 9);
         assert_eq!(ready.results.len(), 3);

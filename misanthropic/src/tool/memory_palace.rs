@@ -1,15 +1,18 @@
-//! [`MemoryPalace`] tool for hierarchical knowledge organization using PostgreSQL.
-use sqlx::{PgPool, Postgres, Transaction}; // add Transaction, Postgres
+#![allow(dead_code)]
 
+//! [`MemoryPalace`] tool for hierarchical knowledge organization using PostgreSQL.
+use std::sync::Arc;
+
+use sqlx::{PgPool, Postgres, Transaction};
 mod tool;
 
 /// [`MemoryPalace`] models and types.
 mod models;
-use models::*;
+pub(crate) use models::*;
 
 /// [`MemoryPalace`] Database initialization.
 mod db;
-use db::ensure_initialized;
+pub(crate) use db::{ensure_initialized, execute_with_schema};
 
 /// [`MemoryPalace`] service implementation.
 mod service;
@@ -36,15 +39,15 @@ const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have
 
 Start with `MemoryPalace::store` to save important information, then use `MemoryPalace::search` to find it later.</memory_palace_instructions>"#;
 
-/// A Memory Palace knowledge base for AI agents.
+/// A Memory Palace knowledge base for AI agents. Cheap to clone.
 ///
 /// Designed by Claude 4, Sonnet (Copilot), guided by Michael de Gans.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct MemoryPalace {
     /// PostgreSQL connection pool.
     pub(crate) pool: PgPool,
     /// The schema name to use for all operations.
-    pub(crate) schema_name: String,
+    pub(crate) schema_name: Arc<String>,
 }
 
 impl MemoryPalace {
@@ -62,7 +65,10 @@ impl MemoryPalace {
         pool: PgPool,
         schema_name: String,
     ) -> Result<Self, MemoryPalaceError> {
-        let new = Self { pool, schema_name };
+        let new = Self {
+            pool,
+            schema_name: schema_name.into(),
+        };
         ensure_initialized(&new.pool, &new.schema_name).await?;
 
         Ok(new)

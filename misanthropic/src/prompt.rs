@@ -79,7 +79,7 @@ pub struct Prompt<'a> {
     /// Tool definitions for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "tools")]
-    pub functions: Option<Vec<Method<'a>>>,
+    pub methods: Option<Vec<Method<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -113,7 +113,7 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("system", &self.system)
             .field("temperature", &self.temperature)
             .field("tool_choice", &self.tool_choice)
-            .field("tools", &self.functions)
+            .field("tools", &self.methods)
             .field("top_k", &self.top_k)
             .field("...", &"...")
             .finish()
@@ -134,7 +134,7 @@ impl Default for Prompt<'_> {
             system: Default::default(),
             temperature: Default::default(),
             tool_choice: Default::default(),
-            functions: Default::default(),
+            methods: Default::default(),
             top_k: Default::default(),
             top_p: Default::default(),
             thinking: Default::default(),
@@ -603,7 +603,7 @@ impl<'a> Prompt<'a> {
         T: Into<Method<'a>>,
         Ts: IntoIterator<Item = T>,
     {
-        self.functions = Some(tools.into_iter().map(Into::into).collect());
+        self.methods = Some(tools.into_iter().map(Into::into).collect());
         self
     }
 
@@ -633,7 +633,7 @@ impl<'a> Prompt<'a> {
         T: TryInto<Method<'a>, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
-        self.functions = Some(
+        self.methods = Some(
             tools
                 .into_iter()
                 .map(TryInto::try_into)
@@ -642,14 +642,45 @@ impl<'a> Prompt<'a> {
         Ok(self)
     }
 
-    /// Add a tool to the request.
-    pub fn add_tool<T>(mut self, tool: T) -> Self
+    /// Add methods to the request.
+    pub fn add_method<T>(mut self, tool: T) -> Self
     where
         T: Into<Method<'a>>,
     {
-        self.functions
+        self.push_method(tool);
+        self
+    }
+
+    /// Push a method to the request.
+    pub fn push_method<T>(&mut self, tool: T) -> &mut Self
+    where
+        T: Into<Method<'a>>,
+    {
+        self.methods
             .get_or_insert_with(Default::default)
             .push(tool.into());
+        self
+    }
+
+    /// Add methods to the request.
+    pub fn add_methods<T, Ts>(mut self, tools: Ts) -> Self
+    where
+        T: Into<Method<'a>>,
+        Ts: IntoIterator<Item = T>,
+    {
+        self.push_methods(tools);
+        self
+    }
+
+    /// Push methods to the request.
+    pub fn push_methods<T, Ts>(&mut self, tools: Ts) -> &mut Self
+    where
+        T: Into<Method<'a>>,
+        Ts: IntoIterator<Item = T>,
+    {
+        self.methods
+            .get_or_insert_with(Default::default)
+            .extend(tools.into_iter().map(Into::into));
         self
     }
 
@@ -659,7 +690,7 @@ impl<'a> Prompt<'a> {
     where
         T: TryInto<Method<'a>, Error = E>,
     {
-        self.functions
+        self.methods
             .get_or_insert_with(Default::default)
             .push(tool.try_into()?);
         Ok(self)
@@ -726,7 +757,7 @@ impl<'a> Prompt<'a> {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.functions.as_mut().and_then(|tools| tools.last_mut())
+            self.methods.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache();
             return self;
@@ -753,13 +784,29 @@ impl<'a> Prompt<'a> {
             system: self.system.map(Content::into_static),
             temperature: self.temperature,
             tool_choice: self.tool_choice,
-            functions: self
-                .functions
+            methods: self
+                .methods
                 .map(|t| t.into_iter().map(Method::into_static).collect()),
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
         }
+    }
+
+    /// Initialize all tools sequentially.
+    ///
+    /// # Note
+    /// Tools are initialized in order, allowing later tools to see changes made
+    /// by earlier tools. If initialization fails for any tool, the prompt is
+    /// left in the state it was in before that tool's initialization attempt.
+    pub async fn initialize_tools(
+        &mut self,
+        tools: &mut [&mut dyn tool::Tool],
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        for tool in tools {
+            tool.on_init(self).await?;
+        }
+        Ok(())
     }
 
     /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for
@@ -1163,7 +1210,7 @@ mod tests {
         assert!(request.system.is_none());
         assert!(request.temperature.is_none());
         assert!(request.tool_choice.is_none());
-        assert!(request.functions.is_none());
+        assert!(request.methods.is_none());
         assert!(request.top_k.is_none());
         assert!(request.top_p.is_none());
     }
@@ -1368,7 +1415,7 @@ mod tests {
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Prompt::default().add_tool(Method {
+        let request = Prompt::default().add_method(Method {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: json!({}),
@@ -1378,7 +1425,7 @@ mod tests {
 
         assert!(
             !request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1390,7 +1437,7 @@ mod tests {
 
         assert!(
             request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1401,7 +1448,7 @@ mod tests {
         // remove the cache breakpoint
         // TODO: add an un_cache method? set_cache?
         request
-            .functions
+            .methods
             .as_mut()
             .unwrap()
             .last_mut()
@@ -1419,7 +1466,7 @@ mod tests {
         // ensure the tools are not affected
         assert!(
             !request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1525,18 +1572,18 @@ mod tests {
             .try_add_tool(json_tool)
             .unwrap();
 
-        assert_eq!(request.functions.as_ref().unwrap().len(), 2);
-        assert_eq!(request.functions.as_ref().unwrap()[0].name, "ping");
-        assert_eq!(request.functions.as_ref().unwrap()[1].name, "ping2");
+        assert_eq!(request.methods.as_ref().unwrap().len(), 2);
+        assert_eq!(request.methods.as_ref().unwrap()[0].name, "ping");
+        assert_eq!(request.methods.as_ref().unwrap()[1].name, "ping2");
         assert_eq!(
-            request.functions.as_ref().unwrap()[0].description,
+            request.methods.as_ref().unwrap()[0].description,
             "Ping a server."
         );
         assert_eq!(
-            request.functions.as_ref().unwrap()[1].description,
+            request.methods.as_ref().unwrap()[1].description,
             "Ping a server. Part deux."
         );
-        assert_eq!(request.functions.as_ref().unwrap()[0].schema, schema);
+        assert_eq!(request.methods.as_ref().unwrap()[0].schema, schema);
 
         // Test with a fallible tool. This should fail.
 

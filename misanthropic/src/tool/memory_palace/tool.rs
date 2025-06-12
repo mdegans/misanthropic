@@ -10,26 +10,34 @@ impl Tool for MemoryPalace {
         Self::NAME
     }
 
+    /// Initialize the [`MemoryPalace`]. Idempotent.
     async fn on_init(
         &mut self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Check if instructions are already present to avoid duplication
+        // Only add instructions if they are not already present
         if let Some(system) = &mut prompt.system {
-            for block in system.iter_mut() {
+            if system.iter_mut().any(|block| {
                 if let Block::Text { text, .. } = block {
-                    if text.contains("<memory_palace_instructions>") {
-                        return Ok(()); // Already initialized
-                    }
+                    text.contains("<memory_palace_instructions>")
+                } else {
+                    false
                 }
+            }) {
+                // Already initialized
+                return Ok(());
+            } else {
+                system.push(super::MEMORY_PALACE_INSTRUCTIONS);
             }
+        } else {
+            prompt.system = Some(super::MEMORY_PALACE_INSTRUCTIONS.into());
+        };
+        // Instructions have been added, which means this is the first call
+        // whihc means we should also call the default initialization which
+        // adds tool methods to the prompt.
 
-            // If not found, append the instructions
-            system.push(super::MEMORY_PALACE_INSTRUCTIONS);
-        }
+        Tool::on_init(self, prompt).await?;
 
-        // Add memory palace instructions to the system prompt
-        prompt.system = Some(super::MEMORY_PALACE_INSTRUCTIONS.into());
         Ok(())
     }
 
@@ -888,7 +896,7 @@ impl Tool for MemoryPalace {
         if let Some(schema_name) =
             data.get("schema_name").and_then(|v| v.as_str())
         {
-            self.schema_name = schema_name.to_string();
+            self.schema_name = schema_name.to_string().into();
             // Re-initialize to ensure the schema exists
             ensure_initialized(&self.pool, &self.schema_name)
                 .await
