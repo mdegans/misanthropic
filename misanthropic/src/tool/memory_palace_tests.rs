@@ -194,7 +194,7 @@ mod tests {
 
         // Find related memories
         let related = palace
-            .find_related_memories(memory_id1, 2, 0.1)
+            .find_resonating_memories(memory_id1, 2, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -632,7 +632,7 @@ mod tests {
 
         // Test 1: Find direct relationships only (depth 1)
         let related = palace
-            .find_related_memories(memory_id1, 1, 0.1)
+            .find_resonating_memories(memory_id1, 1, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -643,7 +643,7 @@ mod tests {
 
         // Test 2: Find with higher minimum strength (should filter out weak relationship)
         let related = palace
-            .find_related_memories(memory_id1, 1, 0.5)
+            .find_resonating_memories(memory_id1, 1, 0.5)
             .await
             .expect("Failed to find related memories");
 
@@ -654,7 +654,7 @@ mod tests {
 
         // Test 3: Find with depth 2 (should include indirect relationships)
         let related = palace
-            .find_related_memories(memory_id1, 2, 0.1)
+            .find_resonating_memories(memory_id1, 2, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -670,7 +670,7 @@ mod tests {
 
         // Test 4: Find with depth 3 (should include Einstein biography)
         let related = palace
-            .find_related_memories(memory_id1, 3, 0.1)
+            .find_resonating_memories(memory_id1, 3, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -683,7 +683,7 @@ mod tests {
 
         // Test 5: Non-existent memory ID
         let related = palace
-            .find_related_memories(99999, 2, 0.1)
+            .find_resonating_memories(99999, 2, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -691,7 +691,7 @@ mod tests {
 
         // Test 6: Very high minimum strength (should find nothing)
         let related = palace
-            .find_related_memories(memory_id1, 2, 0.99)
+            .find_resonating_memories(memory_id1, 2, 0.99)
             .await
             .expect("Failed to find related memories");
 
@@ -699,7 +699,7 @@ mod tests {
 
         // Test 7: Zero depth (should find nothing)
         let related = palace
-            .find_related_memories(memory_id1, 0, 0.1)
+            .find_resonating_memories(memory_id1, 0, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -745,7 +745,7 @@ mod tests {
 
         // Should handle circular relationships without infinite loops
         let related = palace
-            .find_related_memories(memory_id1, 5, 0.1) // high depth
+            .find_resonating_memories(memory_id1, 5, 0.1) // high depth
             .await
             .expect("Failed to find related memories");
 
@@ -763,7 +763,7 @@ mod tests {
             .expect("Failed to store memory");
 
         let related = palace
-            .find_related_memories(isolated_memory, 2, 0.1)
+            .find_resonating_memories(isolated_memory, 2, 0.1)
             .await
             .expect("Failed to find related memories");
 
@@ -778,7 +778,7 @@ mod tests {
         // If self-referential relationships are allowed, test that they don't break the query
         if self_ref_result.is_ok() {
             let related = palace
-                .find_related_memories(memory_id1, 1, 0.1)
+                .find_resonating_memories(memory_id1, 1, 0.1)
                 .await
                 .expect("Failed to find related memories");
 

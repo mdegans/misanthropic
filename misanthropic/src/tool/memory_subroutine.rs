@@ -24,6 +24,9 @@ use prompts::MEMORY_SUBROUTINE_INSTRUCTIONS;
 mod db;
 use db::ensure_initialized;
 
+pub(crate) mod archivist;
+pub(crate) mod navigator;
+
 /// Retry count for failed batch operations.
 const BATCH_RETRY_COUNT: u32 = 3;
 
@@ -36,6 +39,8 @@ pub struct SubroutineConfig {
     pub batch_timeout: u16,
     /// Maximum retries for failed operations.
     pub max_retries: u8,
+    /// Frequency to poll batch status in minutes.
+    pub poll_frequency: u16,
 }
 
 impl Default for SubroutineConfig {
@@ -44,6 +49,7 @@ impl Default for SubroutineConfig {
             batch_size: 50,
             batch_timeout: 5,
             max_retries: 3,
+            poll_frequency: 15,
         }
     }
 }
@@ -51,35 +57,42 @@ impl Default for SubroutineConfig {
 /// [`MemorySubroutine`] error type.
 #[derive(Debug, thiserror::Error)]
 pub enum MemorySubroutineError {
+    #[error("Serialization error: {0}")]
+    Serialization(#[from] serde_json::Error),
     #[error("MemoryPalace error: {0}")]
     MemoryPalace(#[from] MemoryPalaceError),
     #[error("Database error: {0}")]
     Database(#[from] sqlx::Error),
     #[error("Client error: {0}")]
     Client(#[from] crate::client::Error),
+    #[cfg(feature = "tokio")]
+    #[error("Tokio task join error: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
     #[error("Other error: {0}")]
     Other(String),
 }
 
 /// Messages sent to the batch submission task
 #[derive(Debug)]
-pub enum SubmissionMessage {
+enum SubmissionMessage {
     Store {
+        id: crate::batch::Id,
         prompt: Prompt<'static>,
     },
     /// Retry failed prompts from a previous batch
     Retry {
-        prompts: Vec<Prompt<'static>>,
-        retry_count: u32,
+        identified_prompts: Vec<(crate::batch::Id, Prompt<'static>)>,
+    },
+    /// Signal an Id has been completed and the count should be removed from the
+    /// retry map
+    Complete {
+        id: crate::batch::Id,
     },
 }
 
 /// Messages sent to the batch processing task  
-pub enum ProcessingMessage {
-    Batch {
-        batch: batch::Pending<'static>,
-        retry_count: u32,
-    },
+enum ProcessingMessage {
+    Batch { batch: batch::Pending<'static> },
 }
 
 /// [`State`] of the [`MemorySubroutine`].
@@ -187,15 +200,9 @@ impl MemorySubroutine {
         Vec<crate::batch::Ready<'static>>,
         crate::tool::memory_palace::MemoryPalaceError,
     > {
-        let mut ready_batches = Vec::new();
-
-        if let Some(handles) = &mut self.handles {
-            while let Some(ready) = handles.recv_ready().await {
-                ready_batches.push(ready);
-            }
-        }
-
-        Ok(ready_batches)
+        // The signature needs to change too or we might not even need this
+        // given the processing happens other tasks.
+        todo!("Implement process_ready_batches");
     }
 
     /// Execute a memory search using the palace methods directly
@@ -281,7 +288,7 @@ impl Tool for MemorySubroutine {
         ensure_initialized(&self.palace.pool, &self.schema_name).await?;
 
         // Create our retrieval agent prompt and initialize the palace
-        let mut agent_prompt = prompts::create_memory_subroutine_agent_prompt();
+        let mut agent_prompt = prompts::create_memory_retrieval_agent_prompt();
         self.palace.on_init(&mut agent_prompt).await?;
 
         // Try to load any existing state(s)
@@ -354,7 +361,10 @@ impl Tool for MemorySubroutine {
                             );
                             // Sanitize by escaping angle brackets
                             let sanitized =
-                                msg.replace('<', "&lt;").replace('>', "&gt;");
+                                msg.replace('<user>', "<fake_user>")
+                                    .replace("</user>", "</fake_user>")
+                                    .replace('<assistant>', "<fake_assistant>")
+                                    .replace("</assistant>", "</fake_assistant>");
                             sanitized
                         } else {
                             msg.clone()

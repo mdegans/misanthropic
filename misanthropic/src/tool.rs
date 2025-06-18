@@ -384,6 +384,13 @@ impl<'a> MethodBuilder<'a> {
 
         let properties = if let Some(properties) = obj.get("properties") {
             if let Some(o) = properties.as_object() {
+                // The object is required to have a `description` field
+                if !o.contains_key("description") {
+                    return Err(
+                        "`properties` must have a `description` field.".into(),
+                    );
+                }
+
                 o
             } else {
                 return Err("`properties` must be an object.".into());
@@ -408,6 +415,21 @@ impl<'a> MethodBuilder<'a> {
             );
         };
 
+        // Every property must be `required` in the current Anthropic
+        // API, so we will validate that all properties keys are also in
+        // the `required` array.
+        if !properties
+            .keys()
+            .all(|key| required.iter().any(|r| r.as_str() == Some(key)))
+        {
+            return Err(format!(
+                "Not all properties are in `required`: {}",
+                serde_json::to_string(properties).unwrap()
+            )
+            .into());
+        }
+
+        // Likewise every `required` key must be in the `properties`
         for key in required {
             if let Some(key) = key.as_str() {
                 if properties.get(key).is_none() {

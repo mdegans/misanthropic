@@ -51,7 +51,7 @@ pub struct SaveState {
     pub id: Uuid,
     pub shutdown_date: DateTime<Utc>,
     #[sqlx(json)]
-    pub pending_submissions: Vec<(DateTime<Utc>, Prompt<'static>)>,
+    pub pending_submissions: Vec<(crate::batch::Id, Prompt<'static>)>,
     #[sqlx(json)]
     pub pending_batches: Vec<batch::Pending<'static>>,
 }
@@ -248,17 +248,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_load_with_submissions() {
+        use crate::batch::Id;
+
         let pool = create_test_pool().await;
         let schema_name = stringify!(test_save_and_load_with_submissions);
 
         ensure_initialized(&pool, schema_name).await.unwrap();
 
         let submissions = vec![
-            (Utc::now(), create_test_prompt()),
-            (
-                Utc::now() + chrono::Duration::minutes(5),
-                create_test_prompt(),
-            ),
+            (Id::default(), create_test_prompt()),
+            (Id::default(), create_test_prompt()),
         ];
 
         let state = SaveState {
@@ -312,17 +311,16 @@ mod tests {
 
     #[tokio::test]
     async fn test_save_and_load_complex_state() {
+        use crate::batch::Id;
+
         let pool = create_test_pool().await;
         let schema_name = stringify!(test_save_and_load_complex_state);
 
         ensure_initialized(&pool, schema_name).await.unwrap();
 
         let submissions = vec![
-            (Utc::now(), create_test_prompt()),
-            (
-                Utc::now() + chrono::Duration::minutes(10),
-                create_test_prompt(),
-            ),
+            (Id::default(), create_test_prompt()),
+            (Id::default(), create_test_prompt()),
         ];
 
         let batches = vec![create_test_batch()];
@@ -348,6 +346,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_multiple_states_ordered_by_date() {
+        use crate::batch::Id;
+
         let pool = create_test_pool().await;
         let schema_name = stringify!(test_multiple_states_ordered_by_date);
 
@@ -360,7 +360,7 @@ mod tests {
         let state1 = SaveState {
             id: id1,
             shutdown_date: base_time - chrono::Duration::hours(2),
-            pending_submissions: vec![(base_time, create_test_prompt())],
+            pending_submissions: vec![(Id::default(), create_test_prompt())],
             pending_batches: vec![],
         };
 
@@ -376,7 +376,7 @@ mod tests {
         let state3 = SaveState {
             id: id3,
             shutdown_date: base_time,
-            pending_submissions: vec![(base_time, create_test_prompt())],
+            pending_submissions: vec![(Id::default(), create_test_prompt())],
             pending_batches: vec![create_test_batch()],
         };
 
@@ -410,6 +410,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_prompt_with_special_characters() {
+        use crate::batch::Id;
+
         let pool = create_test_pool().await;
         let schema_name = "test_special_chars";
 
@@ -425,7 +427,7 @@ mod tests {
         let state = SaveState {
             id: Uuid::new_v4(),
             shutdown_date: Utc::now(),
-            pending_submissions: vec![(Utc::now(), prompt)],
+            pending_submissions: vec![(Id::default(), prompt)],
             pending_batches: vec![],
         };
 

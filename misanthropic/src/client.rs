@@ -510,11 +510,28 @@ impl Client {
         P: IntoIterator<Item = Prompt<'a>>,
     {
         let prompts: Prompts<'a> = prompts.into_iter().collect();
-        let meta = self
-            .post(self.batch_url.as_str(), &prompts)
-            .await?
-            .json()
-            .await?;
+
+        let resp = match self.post(self.batch_url.as_str(), &prompts).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: Some(prompts.into_static()),
+                    submitted: None,
+                    cause: Box::new(e),
+                });
+            }
+        };
+
+        let meta = match resp.json().await {
+            Ok(meta) => meta,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: Some(prompts.into_static()),
+                    submitted: None,
+                    cause: Box::new(e.into()),
+                });
+            }
+        };
 
         Ok(batch::Pending { prompts, meta })
     }
@@ -531,11 +548,28 @@ impl Client {
         Id: Into<batch::Id>,
     {
         let prompts: Prompts<'a> = prompts.into_iter().collect();
-        let meta = self
-            .post(self.batch_url.as_str(), &prompts)
-            .await?
-            .json()
-            .await?;
+
+        let resp = match self.post(self.batch_url.as_str(), &prompts).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: Some(prompts.into_static()),
+                    submitted: None,
+                    cause: Box::new(e),
+                });
+            }
+        };
+
+        let meta = match resp.json().await {
+            Ok(meta) => meta,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: Some(prompts.into_static()),
+                    submitted: None,
+                    cause: Box::new(e.into()),
+                });
+            }
+        };
 
         Ok(batch::Pending { prompts, meta })
     }
@@ -558,18 +592,59 @@ impl Client {
             .join(pending.meta.id.as_str())
             .unwrap();
 
+        // Get the response
+        let resp = match self.get(url).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: None,
+                    submitted: Some(pending.into_static()),
+                    cause: Box::new(e),
+                });
+            }
+        };
+
         // Update the metadata with the latest status.
-        pending.meta = self.get(url).await?.json().await?;
+        pending.meta = match resp.json().await {
+            Ok(meta) => meta,
+            Err(e) => {
+                return Err(Error::Batch {
+                    unsubmitted: None,
+                    submitted: Some(pending.into_static()),
+                    cause: Box::new(e.into()),
+                });
+            }
+        };
 
         // Check if we're done.
         if let Some(url) = pending.results_url() {
             // Download the json lines file with `IdentifiedBatchResult`s.
-            let response = self.get(url.clone()).await?.text().await?;
+            let resp = match self.get(url.clone()).await {
+                Ok(resp) => resp,
+                Err(e) => {
+                    return Err(Error::Batch {
+                        unsubmitted: None,
+                        submitted: Some(pending.into_static()),
+                        cause: Box::new(e),
+                    });
+                }
+            };
+
+            let text = match resp.text().await {
+                Ok(text) => text,
+                Err(e) => {
+                    return Err(Error::Batch {
+                        unsubmitted: None,
+                        submitted: Some(pending.into_static()),
+                        cause: Box::new(e.into()),
+                    });
+                }
+            };
 
             // Create a new hashmap to store the results.
             let mut results = HashMap::new();
 
-            for line in response.lines() {
+            for line in text.lines() {
                 match serde_json::from_str(line) {
                     Ok(IdentifiedBatchResult { id, result }) => {
                         // We do need to check for this to maintain the Ready
@@ -601,6 +676,12 @@ impl Client {
                                 e
                             );
                         }
+
+                        return Err(Error::Batch {
+                            unsubmitted: None,
+                            submitted: Some(pending.into_static()),
+                            cause: Box::new(e.into()),
+                        });
                     }
                 }
             }
@@ -665,6 +746,15 @@ pub enum Error {
     #[error("Unexpected response: {message}")]
     #[allow(missing_docs)]
     UnexpectedResponse { message: &'static str },
+    /// Batch error. This is used to indicate that a batch request failed and
+    /// includes the error message and batch itself.
+    #[cfg(feature = "batch")]
+    #[error("Batch error: {cause}")]
+    Batch {
+        unsubmitted: Option<batch::Prompts<'static>>,
+        submitted: Option<batch::Pending<'static>>,
+        cause: Box<Error>,
+    },
 }
 
 /// Some of the errors don't implment `Serialize` so we need to do it manually.
@@ -693,6 +783,18 @@ impl Serialize for Error {
                 json!({ "type": "unexpected_response", "message": message })
                     .serialize(serializer)
             }
+            #[cfg(feature = "batch")]
+            Self::Batch {
+                unsubmitted,
+                submitted,
+                cause,
+            } => json!({
+                "type": "batch",
+                "message": cause.to_string(),
+                "unsubmitted": unsubmitted,
+                "submitted": submitted,
+            })
+            .serialize(serializer),
         }
     }
 }

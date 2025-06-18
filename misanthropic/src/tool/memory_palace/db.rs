@@ -16,6 +16,8 @@ pub async fn ensure_initialized(
                 id BIGSERIAL PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT NOT NULL,
+                atmosphere TEXT,
+                centroid_embedding VECTOR(1536) NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"#)
             .execute(&mut **tx)
@@ -25,7 +27,10 @@ pub async fn ensure_initialized(
                 id BIGSERIAL PRIMARY KEY,
                 content TEXT NOT NULL,
                 room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+                placement VARCHAR(255) NOT NULL default 'shelf',
+                placement_description TEXT,
                 tags JSONB NOT NULL DEFAULT '[]',
+                embedding VECTOR(1536) NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"#)
@@ -36,6 +41,7 @@ pub async fn ensure_initialized(
                 id BIGSERIAL PRIMARY KEY,
                 from_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
                 to_room VARCHAR(255) NOT NULL REFERENCES rooms(name) ON DELETE CASCADE,
+                passage_type VARCHAR(100) NOT NULL DEFAULT 'hallway',
                 description TEXT,
                 strength INTEGER NOT NULL DEFAULT 1,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -127,6 +133,22 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
+            // Ensure bidirectional uniqueness constraint
+            sqlx::query(r#"
+DO $$ 
+BEGIN
+    ALTER TABLE room_connections 
+    ADD CONSTRAINT room_connections_bidirectional_unique 
+    CHECK (from_room < to_room);
+EXCEPTION
+    WHEN duplicate_object THEN 
+        -- Constraint already exists, that's fine
+        NULL;
+END $$;
+"#)
+        .execute(&mut **tx)
+        .await?;
+
             Ok(())
         })
     })
@@ -143,7 +165,7 @@ where
     F: for<'c> FnOnce(
         &'c mut Transaction<'_, sqlx::Postgres>,
     ) -> Pin<
-        Box<dyn Future<Output = Result<R, sqlx::Error>> + Send + 'c>,
+        Box<dyn Future<Output = Result<R, MemoryPalaceError>> + Send + 'c>,
     >,
 {
     let mut tx = pool.begin().await?;

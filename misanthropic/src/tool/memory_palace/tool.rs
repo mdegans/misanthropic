@@ -62,7 +62,7 @@ impl Tool for MemoryPalace {
                             "description": "Tags for categorizing the memory."
                         }
                     },
-                    "required": ["room", "content"]
+                    "required": ["room", "content", "tags"]
                 }))
                 .build()
                 .unwrap(),
@@ -136,10 +136,9 @@ impl Tool for MemoryPalace {
                         "strength": {
                             "type": "number",
                             "description": "Strength of the relationship (0.0 to 1.0).",
-                            "default": 1.0
                         }
                     },
-                    "required": ["memory_id1", "memory_id2", "relationship_type"]
+                    "required": ["memory_id1", "memory_id2", "relationship_type", "strength"]
                 }))
                 .build()
                 .unwrap(),
@@ -155,15 +154,13 @@ impl Tool for MemoryPalace {
                         "max_depth": {
                             "type": "number",
                             "description": "Maximum depth for relationship traversal.",
-                            "default": 2
                         },
                         "min_strength": {
                             "type": "number",
                             "description": "Minimum strength of relationships to consider.",
-                            "default": 0.1
                         }
                     },
-                    "required": ["memory_id"]
+                    "required": ["memory_id", "max_depth", "min_strength"]
                 }))
                 .build()
                 .unwrap(),
@@ -179,7 +176,6 @@ impl Tool for MemoryPalace {
                         "concepts": {
                             "type": "array",
                             "items": { "type": "string" },
-                            "description": "List of concept names to extract."
                         }
                     },
                     "required": ["memory_id", "concepts"]
@@ -191,12 +187,12 @@ impl Tool for MemoryPalace {
                 .schema(json!({
                     "type": "object",
                     "properties": {
-                        "concept_name": {
+                        "concept": {
                             "type": "string",
                             "description": "The name of the concept to search for."
                         }
                     },
-                    "required": ["concept_name"]
+                    "required": ["concept"]
                 }))
                 .build()
                 .unwrap(),
@@ -221,17 +217,14 @@ impl Tool for MemoryPalace {
                         "max_distance": {
                             "type": "number",
                             "description": "Maximum distance to explore in the graph.",
-                            "default": 3
                         },
                         "decay_factor": {
                             "type": "number",
                             "description": "Decay factor for path strength (0.0 to 1.0).",
-                            "default": 0.8
                         },
                         "min_score": {
                             "type": "number",
                             "description": "Minimum path score threshold.",
-                            "default": 0.1
                         }
                     },
                     "required": ["memory_id", "max_distance", "decay_factor", "min_score"]
@@ -597,7 +590,7 @@ impl Tool for MemoryPalace {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.1);
 
-                match self.find_related_memories(memory_id, max_depth, min_strength).await {
+                match self.find_resonating_memories(memory_id, max_depth, min_strength).await {
                     Ok(results) => {
                         if results.is_empty() {
                             tool::Result {

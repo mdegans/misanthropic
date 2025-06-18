@@ -125,5 +125,3 @@ mod tests {
         assert_eq!(err.to_string(), "Invalid key length: 8 (expected 108)");
     }
 }
-
-impl<T: AsRef<[u8]> + Zeroize + std::fmt::Debug> EncryptedKey<T>

@@ -289,7 +289,7 @@ pub struct Meta {
 }
 
 /// Anthropic `processing_status` for [`Prompts`]. Member of [`Meta`]data.
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -351,7 +351,28 @@ pub struct Pending<'a> {
     pub(crate) meta: Meta,
 }
 
+impl std::fmt::Debug for Pending<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pending")
+            .field("id", &self.id())
+            .field("len", &self.len())
+            .field("status", &self.status())
+            .field("results_url", &self.results_url())
+            .finish()
+    }
+}
+
 impl<'a> Pending<'a> {
+    /// Get the [`Id`] of the batch.
+    pub fn id(&self) -> &str {
+        &self.meta.id
+    }
+
+    /// Get the number of [`Prompts`] in the batch.
+    pub fn len(&self) -> usize {
+        self.prompts.len()
+    }
+
     /// Returns the `message_batch` [`Meta`]data of the batch.
     pub fn meta(&self) -> &Meta {
         &self.meta
@@ -413,6 +434,35 @@ impl<'a> Ready<'a> {
     /// Get the [`Id`] of the batch.
     pub fn id(&self) -> &str {
         &self.pending.meta.id
+    }
+
+    /// Get the number of [`Ok`] results in the batch (O(n)).
+    pub fn count_ok(&self) -> usize {
+        self.iter_ok().count()
+    }
+
+    /// Get the number of errored results in the batch (O(n)).
+    pub fn count_error(&self) -> usize {
+        self.iter_errors().count()
+    }
+
+    /// Count (ok, error, canceled, expired) results in the batch.
+    pub fn count(&self) -> (usize, usize, usize, usize) {
+        let mut ok = 0;
+        let mut error = 0;
+        let mut canceled = 0;
+        let mut expired = 0;
+
+        for result in self.results.values() {
+            match result {
+                BatchResult::Ok(_) => ok += 1,
+                BatchResult::Error(_) => error += 1,
+                BatchResult::Canceled => canceled += 1,
+                BatchResult::Expired => expired += 1,
+            }
+        }
+
+        (ok, error, canceled, expired)
     }
 
     /// Get the result for a specific [`Prompt`] by its [`Id`].

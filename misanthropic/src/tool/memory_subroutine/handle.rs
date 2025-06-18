@@ -1,22 +1,18 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use chrono::{DateTime, Utc};
-use futures::{SinkExt, StreamExt, channel::mpsc};
+use chrono::Utc;
+use futures::{SinkExt, channel::mpsc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 #[cfg(feature = "tokio")]
 use crate::{Client, tool::memory_subroutine::db::SaveState};
 use crate::{
-    Prompt,
-    batch::{self, Batch},
-    tool::{
-        memory_palace::MemoryPalaceError,
-        memory_subroutine::{
-            BATCH_RETRY_COUNT, ProcessingMessage, SubmissionMessage,
-            SubroutineConfig,
-        },
+    Prompt, batch,
+    tool::memory_subroutine::{
+        MemorySubroutineError, ProcessingMessage, SubmissionMessage,
+        SubroutineConfig,
     },
 };
 
@@ -32,8 +28,8 @@ pub struct BackgroundTasks {
         Box<
             dyn Future<
                     Output = Result<
-                        Vec<(DateTime<Utc>, Prompt<'static>)>,
-                        MemoryPalaceError,
+                        Vec<(batch::Id, Prompt<'static>)>,
+                        MemorySubroutineError,
                     >,
                 > + Send,
         >,
@@ -47,21 +43,21 @@ pub struct BackgroundTasks {
             dyn Future<
                     Output = Result<
                         Vec<batch::Pending<'static>>,
-                        MemoryPalaceError,
+                        MemorySubroutineError,
                     >,
                 > + Send,
         >,
     >,
-    /// Channel to get [`Ready`] [`Batch`]es from the processing task.
-    ///
-    /// [`Ready`]: batch::Ready
-    pub(crate) from_processing: mpsc::Receiver<batch::Ready<'static>>,
+    /// Archival task that handles the tool calls to insert memories and
+    /// operates the actual [`MemoryPalace`].
+    archival:
+        Pin<Box<dyn Future<Output = Result<(), MemorySubroutineError>> + Send>>,
 }
 
 /// A spawner that returns a handle to the spawned task
 pub trait Spawn: Clone + Send + 'static {
     /// The handle type returned by the spawner
-    type Handle<T: Send + 'static>: Future<Output = Result<T, Box<dyn std::error::Error + Send>>>
+    type Handle<T: Send + 'static>: Future<Output = Result<T, MemorySubroutineError>>
         + Send;
 
     /// Spawn a future and return a handle
@@ -78,12 +74,8 @@ pub struct TokioSpawn;
 
 #[cfg(feature = "tokio")]
 impl Spawn for TokioSpawn {
-    type Handle<T: Send + 'static> = Pin<
-        Box<
-            dyn Future<Output = Result<T, Box<dyn std::error::Error + Send>>>
-                + Send,
-        >,
-    >;
+    type Handle<T: Send + 'static> =
+        Pin<Box<dyn Future<Output = Result<T, MemorySubroutineError>> + Send>>;
 
     fn spawn<F, T>(&self, future: F) -> Self::Handle<T>
     where
@@ -91,11 +83,7 @@ impl Spawn for TokioSpawn {
         T: Send + 'static,
     {
         let handle = tokio::spawn(future);
-        Box::pin(async move {
-            handle
-                .await
-                .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
-        })
+        Box::pin(async move { Ok(handle.await?) })
     }
 }
 
@@ -108,20 +96,23 @@ impl BackgroundTasks {
         schema: String,
         spawn: S,
         states: Vec<SaveState>,
-    ) -> Result<Self, MemoryPalaceError> {
-        let (tx_submission, rx_submission) = mpsc::channel(100);
-        let (tx_processing, rx_processing) = mpsc::channel(100);
+    ) -> Result<Self, MemorySubroutineError> {
+        let (mut tx_submission, rx_submission) = mpsc::channel(100);
+        let (mut tx_processing, rx_processing) = mpsc::channel(100);
+        let (tx_dead_letter, rx_dead_letter) = mpsc::channel(100);
         let (tx_ready, rx_ready) = mpsc::channel(10);
 
         // Create submission task
         let client1 = client.clone();
         let config1 = config.clone();
+        let tx_processing1 = tx_processing.clone();
         let submission_handle = spawn.spawn(async move {
             super::tasks::batch_submission_task(
                 client1,
                 config1,
                 rx_submission,
-                tx_processing.clone(),
+                tx_processing1,
+                tx_dead_letter,
             )
             .await
         });
@@ -129,12 +120,27 @@ impl BackgroundTasks {
         // Create processing task
         let client2 = client;
         let config2 = config.clone();
+        let tx_submission2 = tx_submission.clone();
         let processing_handle = spawn.spawn(async move {
             super::tasks::batch_processing_task(
                 client2,
                 config2,
                 rx_processing,
+                tx_submission2,
                 tx_ready,
+            )
+            .await
+        });
+
+        // Create archival task
+        let config3 = config.clone();
+        let archival_handle = spawn.spawn(async move {
+            super::tasks::batch_archival_task(
+                config3,
+                pool,
+                schema,
+                rx_ready,
+                rx_dead_letter,
             )
             .await
         });
@@ -149,12 +155,9 @@ impl BackgroundTasks {
         for state in states {
             // Create a stream from the pending submissions
             let mut submission_stream = futures::stream::iter(
-                state.pending_submissions.into_iter().map(
-                    |(timestamp, prompt)| {
-                        // Always returns Ok b/c `send_all` wants `TryStream`
-                        Ok(SubmissionMessage::Store { prompt })
-                    },
-                ),
+                state.pending_submissions.into_iter().map(|(id, prompt)| {
+                    Ok(SubmissionMessage::Store { id, prompt })
+                }),
             );
 
             // Send all pending submissions
@@ -164,14 +167,10 @@ impl BackgroundTasks {
                 .unwrap(); // Impossible because the stream always returns Ok
 
             // Push pending batches
-            let mut processing_stream = futures::stream::iter(
-                state.pending_batches.into_iter().map(|pending| {
-                    Ok(ProcessingMessage::Batch {
-                        batch: pending,
-                        retry_count: BATCH_RETRY_COUNT,
-                    })
-                }),
-            );
+            let mut processing_stream =
+                futures::stream::iter(state.pending_batches.into_iter().map(
+                    |pending| Ok(ProcessingMessage::Batch { batch: pending }),
+                ));
 
             tx_processing
                 .send_all(&mut processing_stream)
@@ -181,23 +180,26 @@ impl BackgroundTasks {
 
         Ok(Self {
             to_submission: tx_submission,
-            submission: Box::pin(submission_handle),
-            processing: Box::pin(processing_handle),
-            from_processing: rx_ready,
+            submission: Box::pin(async move { submission_handle.await? }),
+            processing: Box::pin(async move { processing_handle.await? }),
+            archival: Box::pin(async move { archival_handle.await? }),
         })
     }
 
     /// Initiate shutdown and wait for tasks to return their data
     #[must_use = "Discarding SaveState may drop pending submissions/batches and cause data loss"]
-    pub async fn shutdown(self) -> Result<SaveState, MemoryPalaceError> {
+    pub async fn shutdown(self) -> Result<SaveState, MemorySubroutineError> {
         // Close the submission channel to signal shutdown
         drop(self.to_submission);
 
-        let (submission_result, processing_result) =
-            futures::join!(self.submission, self.processing);
+        let (submission_result, processing_result, archival_result) =
+            futures::join!(self.submission, self.processing, self.archival);
 
+        // TODO: Think about whether propagating is the right thing to do since
+        // we could lose data if *any* of these tasks fail.
         let pending_submissions = submission_result?;
         let pending_batches = processing_result?;
+        archival_result?;
 
         Ok(SaveState {
             id: Uuid::new_v4(),
@@ -205,12 +207,6 @@ impl BackgroundTasks {
             pending_submissions,
             pending_batches,
         })
-    }
-
-    /// Await the next [`Ready`] batch. These should have tool calls to insert
-    /// relevant memories into the [`MemoryPalace`].
-    pub async fn recv_ready(&mut self) -> Option<batch::Ready<'static>> {
-        self.from_processing.next().await
     }
 }
 
@@ -223,7 +219,7 @@ impl BackgroundTasks {
         pool: PgPool,
         schema: String,
         states: Vec<SaveState>,
-    ) -> Result<Self, MemoryPalaceError> {
+    ) -> Result<Self, MemorySubroutineError> {
         Self::spawn(client, config, pool, schema, TokioSpawn, states).await
     }
 }

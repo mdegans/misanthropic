@@ -12,4 +12,10 @@ pub enum MemoryPalaceError {
 
     #[error("{0}")]
     Other(String),
+
+    #[error("Many errors occurred.")]
+    Many(Vec<MemoryPalaceError>),
+
+    #[error("Room not found: {0}")]
+    RoomNotFound(String),
 }

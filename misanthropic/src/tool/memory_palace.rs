@@ -1,3 +1,4 @@
+// Copyright (c) 2024 Michael de Gans, Claude Sonnet 4, and Claude Opus 4
 #![allow(dead_code)]
 
 //! [`MemoryPalace`] tool for hierarchical knowledge organization using PostgreSQL.
@@ -14,6 +15,10 @@ pub(crate) use models::*;
 mod db;
 pub(crate) use db::{ensure_initialized, execute_with_schema};
 
+/// [`MemoryPalace`] specific [`tool::Use`] operations.
+mod m_use;
+pub(crate) use m_use::Use;
+
 /// [`MemoryPalace`] service implementation.
 mod service;
 use service::*;
@@ -21,6 +26,10 @@ use service::*;
 /// [`MemoryPalace`] error handling.
 mod error;
 pub use error::MemoryPalaceError;
+
+use crate::tool::memory_subroutine::{
+    archivist::ArchivistUse, navigator::NavigatorUse,
+};
 
 const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system that helps you store, organize, and retrieve knowledge across conversations.
 
@@ -89,6 +98,27 @@ impl MemoryPalace {
             tags.into_iter().map(|s| s.to_string()).collect(),
         )
         .await
+    }
+
+    /// Handle batches of [`tool::Use`]
+    pub(crate) async fn batch_call_archivist(
+        &mut self,
+        calls: Vec<ArchivistUse>,
+    ) -> Result<(), MemoryPalaceError> {
+        let mut tx = self.pool.begin().await?;
+        let mut errors = Vec::new();
+
+        for archivist in calls {
+            archivist.archive(self, tx).await?;
+        }
+
+        tx.commit().await?;
+
+        if !errors.is_empty() {
+            return Err(MemoryPalaceError::Many(errors));
+        }
+
+        Ok(())
     }
 
     /// Search for [`Memory`]s using blended scoring that combines relevance,
@@ -161,14 +191,14 @@ impl MemoryPalace {
     }
 
     /// Find [`Memory`]s related to a specific [`Memory`] with a maximum depth
-    pub(crate) async fn find_related_memories(
+    pub(crate) async fn find_resonating_memories(
         &mut self,
         memory_id: i64,
         max_depth: u32,
         min_strength: f64,
     ) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError>
     {
-        find_related_memories(
+        find_resonating_memories(
             &self.pool,
             &self.schema_name,
             memory_id,
@@ -176,6 +206,45 @@ impl MemoryPalace {
             min_strength,
         )
         .await
+    }
+
+    /// Semantic search across all rooms using an embedding.
+    pub(crate) async fn semantic_search_all_rooms(
+        &mut self,
+        embedding: &[f32],
+        limit: usize,
+    ) -> Result<Vec<Memory>, MemoryPalaceError> {
+        semantic_search_all_rooms(
+            &self.pool,
+            &self.schema_name,
+            embedding,
+            limit,
+        )
+        .await
+    }
+
+    /// Get rooms within N hops of current room
+    pub async fn get_rooms_within_radius(
+        &self,
+        start_room: &str,
+        radius: u32,
+    ) -> Result<Vec<(String, String, u32)>, MemoryPalaceError> {
+        get_rooms_within_radius(
+            &self.pool,
+            &self.schema_name,
+            start_room,
+            radius,
+        )
+        .await
+    }
+
+    /// Get a hint about what kind of memories are in a room
+    pub async fn get_room_character_hint(
+        pool: &PgPool,
+        schema: &str,
+        room_name: &str,
+    ) -> Result<String, MemoryPalaceError> {
+        get_room_character_hint(pool, schema, room_name).await
     }
 
     /// Extract and create [`Concept`]s from a specific [`Memory`].
@@ -214,5 +283,85 @@ impl MemoryPalace {
         &mut self,
     ) -> Result<String, MemoryPalaceError> {
         get_context_summary(&self.pool, &self.schema_name).await
+    }
+
+    /// Get all memories in a specific room
+    pub async fn get_room_memories(
+        &self,
+        room_name: &str,
+    ) -> Result<Vec<Memory>, MemoryPalaceError> {
+        // Query memories WHERE room = room_name
+        // Format with placement info from tags
+        crate::tool::memory_subroutine::navigator::get_room_memories(
+            &self.pool,
+            &self.schema_name,
+            room_name,
+        )
+        .await
+    }
+
+    /// Search within a specific room only
+    pub async fn search_in_room(
+        &self,
+        room_name: &str,
+        query: &str,
+    ) -> Result<Vec<Memory>, MemoryPalaceError> {
+        // Like search() but filtered to one room
+        crate::tool::memory_subroutine::navigator::search_in_room(
+            &self.pool,
+            &self.schema_name,
+            room_name,
+            query,
+        )
+        .await
+    }
+
+    /// Get adjacent rooms with semantic distances
+    pub async fn get_adjacent_rooms_sorted(
+        &self,
+        current_room: &str,
+        radius: u32,
+        mission: Option<&String>,
+    ) -> Result<Vec<(String, String, f32)>, MemoryPalaceError> {
+        // Use room_connections + centroid embeddings
+        // Return (direction, room_name, distance_meters)
+        crate::tool::memory_subroutine::navigator::get_adjacent_rooms_sorted(
+            &self.pool,
+            &self.schema_name,
+            current_room,
+            radius,
+            mission,
+        )
+        .await
+    }
+
+    /// Follow a passage to get the destination room
+    pub async fn follow_passage(
+        &self,
+        from_room: &str,
+        direction: &str,
+    ) -> Result<String, MemoryPalaceError> {
+        // Parse direction, find matching connection
+        crate::tool::memory_subroutine::navigator::follow_passage(
+            &self.pool,
+            &self.schema_name,
+            from_room,
+            direction,
+        )
+        .await
+    }
+
+    /// Get rich description of a room
+    pub async fn get_room_description(
+        &self,
+        room_name: String,
+    ) -> Result<String, MemoryPalaceError> {
+        // Format room with memory count, connections, atmosphere
+        crate::tool::memory_subroutine::navigator::get_room_description(
+            &self.pool,
+            &self.schema_name,
+            room_name,
+        )
+        .await
     }
 }
