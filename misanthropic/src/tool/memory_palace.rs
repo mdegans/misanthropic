@@ -61,11 +61,22 @@ pub struct MemoryPalace {
 
 impl MemoryPalace {
     const NAME: &'static str = "MemoryPalace";
+    const EMBEDDING_SIZE: usize = 1536;
+
+    /// Palace schema name.
+    pub fn schema(&self) -> &str {
+        &self.schema_name
+    }
 
     /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool. Uses the
     /// default 'public' schema.
     pub async fn from_pool(pool: PgPool) -> Result<Self, MemoryPalaceError> {
         Self::from_pool_with_schema(pool, "public".to_string()).await
+    }
+
+    /// Get the embedding size for this Memory Palace.
+    pub const fn embedding_size() -> usize {
+        Self::EMBEDDING_SIZE
     }
 
     /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a
@@ -340,7 +351,7 @@ impl MemoryPalace {
         &self,
         from_room: &str,
         direction: &str,
-    ) -> Result<String, MemoryPalaceError> {
+    ) -> Result<Room, MemoryPalaceError> {
         // Parse direction, find matching connection
         crate::tool::memory_subroutine::navigator::follow_passage(
             &self.pool,

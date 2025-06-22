@@ -10,6 +10,9 @@ use crate::prompt::message::Content;
 mod toolbox;
 pub use toolbox::ToolBox;
 
+#[cfg(feature = "embedding")]
+pub(crate) mod embedding;
+
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
 #[cfg(feature = "memory-palace")]
@@ -620,14 +623,12 @@ impl TryFrom<serde_json::Value> for Method<'static> {
         value: serde_json::Value,
     ) -> std::result::Result<Self, Self::Error> {
         let builder: MethodBuilder<'static> = serde_json::from_value(value)?;
-        builder
-            .build()
-            .map_err(|e| serde::de::Error::custom(e.to_string()))
+        builder.build().map_err(|e| serde::de::Error::custom(e))
     }
 }
 
-/// `Method` [`Use`] of the model. This should be handled and a response sent
-/// back in a [`Block::ToolResult`].
+/// `Method` [`Use`] of the model (a tool `call` by convention). This should be
+/// handled and a response sent back in a [`Block::ToolResult`].
 ///
 /// [`Block::ToolResult`]: crate::prompt::message::Block::ToolResult
 #[cfg_attr(

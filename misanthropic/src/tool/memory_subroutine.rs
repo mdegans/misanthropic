@@ -26,6 +26,7 @@ use db::ensure_initialized;
 
 pub(crate) mod archivist;
 pub(crate) mod navigator;
+pub(crate) mod wanderer;
 
 /// Retry count for failed batch operations.
 const BATCH_RETRY_COUNT: u32 = 3;
@@ -68,6 +69,8 @@ pub enum MemorySubroutineError {
     #[cfg(feature = "tokio")]
     #[error("Tokio task join error: {0}")]
     JoinError(#[from] tokio::task::JoinError),
+    #[error("Embedding error: {0}")]
+    Embedding(#[from] crate::tool::embedding::EmbeddingError),
     #[error("Other error: {0}")]
     Other(String),
 }
@@ -167,21 +170,22 @@ impl MemorySubroutine {
         matches!(self.state(), State::Ready)
     }
 
-    /// Submit a prompt for memory extraction
-    pub async fn submit_prompt(
+    /// Submit a prompt with id for memory storage.
+    pub async fn submit_prompt_with_id(
         &mut self,
         prompt: Prompt<'static>,
-    ) -> Result<(), crate::tool::memory_palace::MemoryPalaceError> {
+        id: batch::Id,
+    ) -> Result<(), MemorySubroutineError> {
         if !self.is_ready() {
             return Err(crate::tool::memory_palace::MemoryPalaceError::Other(
                 "MemorySubroutine is not ready".to_string(),
-            ));
+            ).into());
         }
 
         if let Some(handles) = &mut self.handles {
             handles
                 .to_submission
-                .send(SubmissionMessage::Store { prompt })
+                .send(SubmissionMessage::Store { prompt, id })
                 .await
                 .map_err(|e| {
                     crate::tool::memory_palace::MemoryPalaceError::Other(
@@ -192,6 +196,17 @@ impl MemorySubroutine {
 
         Ok(())
     }
+
+    /// Submit prompt for storage and get an ID back
+    pub async fn submit_prompt(
+        &mut self,
+        prompt: Prompt<'static>,
+    ) -> Result<batch::Id, MemorySubroutineError> {
+        let id = batch::Id::default();
+        self.submit_prompt_with_id(prompt, id).await?;
+        Ok(id)
+    }
+
 
     /// Check for and process any ready batches
     pub async fn process_ready_batches(

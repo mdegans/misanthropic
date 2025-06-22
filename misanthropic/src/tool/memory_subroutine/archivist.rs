@@ -4,56 +4,103 @@
 /// [`Tool`]: crate::tool::Tool
 mod tool;
 
-// Copyright (c) 2025 Claude 4 Opus
-
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "name", content = "input", rename_all = "snake_case")]
 pub enum ArchivistUse {
-    /// Store a memory in specified room (creates room if needed)
-    Archive {
+    // Navigation tools (shared with Navigator)
+    Map {
+        radius: u32,
+    },
+    Walk {
+        direction: String,
+    },
+    Examine {
+        focus: String,
+    },
+    Recall {
+        topic: String,
+        depth: u32,
+    },
+
+    // Archivist-specific tools
+    Store {
         content: String,
-        room: String,
         placement: String,
         keywords: Vec<String>,
     },
-
-    /// Create a passage between rooms
+    CreateRoom {
+        name: String,
+        description: String,
+        atmosphere: String,
+    },
     Connect {
         room1: String,
         room2: String,
         passage_type: String,
-    },
-
-    /// Mark memories as related
-    Relate {
-        memory_id1: i64,
-        memory_id2: i64,
-        relationship: String,
-    },
-
-    /// Move a memory to a different room/placement
-    Relocate {
-        memory_id: i64,
-        new_room: String,
-        new_placement: String,
+        description: Option<String>,
     },
 }
 
 impl ArchivistUse {
-    pub async fn archive(
+    pub async fn execute(
         &self,
         palace: &mut MemoryPalace,
-        tx: &mut Transaction<'_, Postgres>,
-    ) -> Result<(), MemoryPalaceError> {
+        state: &ArchivistState,
+    ) -> Result<String, MemorySubroutineError> {
         match self {
-            ArchivistUse::Archive {
+            // Shared navigation tools delegate to palace methods
+            ArchivistUse::Map { radius } => {
+                // Same as Navigator::Map
+            }
+            ArchivistUse::Walk { direction } => {
+                // Same as Navigator::Walk
+            }
+            // Archivist-specific tools
+            ArchivistUse::Store {
                 content,
-                room,
                 placement,
                 keywords,
             } => {
-                palace
-                    .store_with_tx(tx, room, content, placement, keywords)
+                let memory_id = palace
+                    .store_memory(
+                        &state.current_room,
+                        content,
+                        placement,
+                        keywords,
+                    )
                     .await?;
-            } // etc.
+
+                Ok(format!(
+                    "Memory successfully placed on the {}. It glows with fresh importance.",
+                    placement
+                ))
+            }
+
+            ArchivistUse::CreateRoom {
+                name,
+                description,
+                atmosphere,
+            } => {
+                palace.create_room(name, description, atmosphere).await?;
+                Ok(format!(
+                    "The {} materializes, connected to the {} by a new passage.",
+                    name, state.current_room
+                ))
+            }
+
+            ArchivistUse::Connect {
+                room1,
+                room2,
+                passage_type,
+                description,
+            } => {
+                palace.connect_rooms(room1, room2, passage_type).await?;
+                Ok(format!(
+                    "A {} shimmers into existence, bridging {} and {}.",
+                    passage_type, room1, room2
+                ))
+            }
+            _ => todo!("Other shared tools like Examine, Recall, etc."),
         }
     }
 }

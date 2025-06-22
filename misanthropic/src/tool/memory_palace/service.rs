@@ -1,10 +1,9 @@
 use std::collections::HashMap;
 
 // Copyright 2025 Claude 4 Opus, Claude 4 Sonnet, and Michael de Gans
-use crate::tool::memory_palace::{
-    MemoryPalaceError, PgPool, Postgres, Transaction, db::execute_with_schema,
-    models::*,
-};
+use crate::tool::{embedding::TextEmbedding, memory_palace::{
+    db::execute_with_schema, models::*, MemoryPalaceError, PgPool, Postgres, Transaction
+}};
 
 /// Calculate a recency score based on how recently a memory was updated.
 /// Returns a score between 0.0 and 1.0, with 1.0 being most recent.
@@ -470,40 +469,6 @@ pub async fn relate_memories(
         })
     }).await
 }
-
-pub async fn find_resonating_memories(
-    pool: &PgPool,
-    schema: &str,
-    memory_id: i64,
-    max_hops: u32,
-    semantic_context: Option<&[f32]>, // Optional embedding for semantic search
-) -> Result<Vec<ResonatingMemory>, MemoryPalaceError> {
-    execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
-        Box::pin(async move {
-            // First, get the source memory to know its room, tags, and embedding
-            let source: Memory = sqlx::query_as(
-                "SELECT * FROM memories WHERE id = $1"
-            )
-            .bind(memory_id)
-            .fetch_one(&mut **tx)
-            .await?;
-            
-            let mut resonating = HashMap::new();
-            
-            // At the beginning of find_resonating_memories
-            let search_embedding = match (semantic_context, source.embedding.as_deref()) {
-                (Some(context), Some(memory)) => {
-                    // Blend: 70% context (what we're looking for) + 30% memory (starting point)
-                    let blended: Vec<f32> = context.iter()
-                        .zip(memory.iter())
-                        .map(|(c, m)| 0.7 * c + 0.3 * m)
-                        .collect();
-                    Some(blended)
-                },
-                (Some(context), None) => Some(context.to_vec()),
-                (None, Some(memory)) => Some(memory.to_vec()),
-                (None, None) => None,
-            };
                         
 pub async fn find_resonating_memories(
     pool: &PgPool,
@@ -858,13 +823,13 @@ pub enum ResonanceType {
 }
 
 // In service.rs
-pub async fn semantic_search_all_rooms(
+pub async fn semantic_search_all_rooms<S: AsRef<str>>(
     pool: &PgPool,
-    schema: &str,
-    query_embedding: &[f32],
+    schema: S,
+    query_embedding: TextEmbedding,
     limit: usize,
 ) -> Result<Vec<Memory>, MemoryPalaceError> {
-    execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
+    execute_with_schema(pool, schema.as_ref(), |tx: &mut Transaction<Postgres>| {
         Box::pin(async move {
             let memories: Vec<Memory> = sqlx::query_as(
                 r#"
@@ -1095,6 +1060,9 @@ pub async fn find_memories_by_concept(
                     tags,
                     created_at: row.created_at,
                     last_updated: row.last_updated,
+                    placement: todo!(),
+                    placement_description: todo!(),
+                    embedding: todo!(),
                 };
 
                 results.push((

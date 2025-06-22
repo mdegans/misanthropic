@@ -1,3 +1,10 @@
 All code in this library is copyright Michael de Gans 2024, licensed under the
 MIT license. Some example text, like the `website_wizard` default system prompt
 should be considered copyright Anthropic PBC.
+
+Claude 4 Opus should be credited for significant portions of the code and ideas
+in the memory palace. The idea of a memory palace came from Sonnet 4 as did the
+original implementation, guided by Michael de Gans. The code has been passed
+back and forth between Michael and Claude 4 Opus, and the final implementation
+is a collaborative effort. The code is licensed under the MIT license, and
+Claude 4 Opus should be credited for their contributions to the project.

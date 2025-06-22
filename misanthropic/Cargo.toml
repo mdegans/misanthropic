@@ -57,7 +57,7 @@ reqwest = { version = "0.12", features = [
     "json",
     "stream",
     "http2",
-], default-features = false }
+], default-features = false, optional = true }
 # Because of a strange issue wiht reqwest::Url missing Deserialize
 url = { version = "2", features = ["serde"] }
 # What else would we use? Ok there are options, but this is a good one.
@@ -175,13 +175,13 @@ shuttle = ["dep:shuttle-runtime"]
 batch = ["client"]
 # Enable the actual client. This can be off for wasm because eventsource-stream
 # requires Sync on some things and that's not possible in wasm.
-client = []
+client = ["dep:reqwest"]
 # Enables some Dioxus support. This is not necessary for the client.
 dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes.
 notepad = []
 # MemoryPalace tool for the assistant to store and retrieve memories.
-memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx"]
+memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx", "embedding"]
 # MemorySubroutine agent. Uses the MemoryPalace for a primary agent.
 memory-subroutine = [
     "batch",
@@ -199,6 +199,8 @@ tokio-sqlx = ["sqlx/runtime-tokio-rustls"]
 kv-mem = []
 # Tokio support. This is necessary for tokio support in a few tools.
 tokio = ["dep:tokio"]
+# Embedding support for the `misanthropic` crate. This is used by various tools.
+embedding = ["dep:reqwest"]
 
 
 [[example]]

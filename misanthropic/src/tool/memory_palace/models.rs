@@ -10,7 +10,7 @@ pub struct Room {
     pub name: String,
     pub description: String,
     pub atmosphere: Option<String>,
-    pub centroid_embedding: Option<Vec<f32>>,
+    pub centroid: Option<Vec<f32>>,
     pub created_at: DateTime<Utc>,
 }
 /// A memory item stored in the palace.
