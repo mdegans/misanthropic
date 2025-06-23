@@ -205,45 +205,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_concepts() {
-        let mut palace = create_test_palace("concepts").await;
-
-        // Store a memory
-        let memory_id = palace
-            .store_memory(
-                "science",
-                "Photosynthesis converts light to energy",
-                ["biology"],
-            )
-            .await
-            .expect("Failed to store memory");
-
-        // Extract concepts
-        let result = palace
-            .extract_concepts(
-                memory_id,
-                ["photosynthesis", "energy", "biology"],
-            )
-            .await
-            .expect("Failed to extract concepts");
-
-        assert!(result.contains("3 concepts"));
-        assert!(result.contains("photosynthesis"));
-        assert!(result.contains("energy"));
-        assert!(result.contains("biology"));
-
-        // Find memories by concept
-        let memories = palace
-            .find_memories_by_concept("photosynthesis")
-            .await
-            .expect("Failed to find memories by concept");
-
-        assert_eq!(memories.len(), 1);
-        assert_eq!(memories[0].2.id, memory_id);
-        assert_eq!(memories[0].3, 1.0); // confidence
-    }
-
-    #[tokio::test]
     async fn test_graph_stats() {
         let mut palace = create_test_palace("graph_stats").await;
 
@@ -269,11 +230,6 @@ mod tests {
             .relate_memories(memory_id1, memory_id2, "related", 1.0)
             .await
             .expect("Failed to relate memories");
-
-        palace
-            .extract_concepts(memory_id1, ["concept1"])
-            .await
-            .expect("Failed to extract concepts");
 
         let stats =
             palace.get_graph_stats().await.expect("Failed to get stats");

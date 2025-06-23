@@ -164,38 +164,6 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::extract_concepts")
-                .description("Extract and link concepts from memory content.")
-                .schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "memory_id": {
-                            "type": "number",
-                            "description": "ID of the memory to extract concepts from."
-                        },
-                        "concepts": {
-                            "type": "array",
-                            "items": { "type": "string" },
-                        }
-                    },
-                    "required": ["memory_id", "concepts"]
-                }))
-                .build()
-                .unwrap(),
-            Method::builder("MemoryPalace::find_by_concept")
-                .description("Find memories by concept with enhanced scoring.")
-                .schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "concept": {
-                            "type": "string",
-                            "description": "The name of the concept to search for."
-                        }
-                    },
-                    "required": ["concept"]
-                }))
-                .build()
-                .unwrap(),
             Method::builder("MemoryPalace::graph_stats")
                 .description("Get statistics and insights about the memory graph.")
                 .schema(json!({
@@ -631,126 +599,6 @@ impl Tool for MemoryPalace {
                     },
                 }
             }
-            "extract_concepts" => {
-                let input = match call.input.as_object() {
-                    Some(obj) => obj,
-                    None => {
-                        return tool::Result {
-                            tool_use_id: call.id,
-                            content: "Input must be an object".into(),
-                            is_error: true,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        };
-                    }
-                };
-
-                let memory_id = match input.get("memory_id").and_then(|v| v.as_i64()) {
-                    Some(id) => id,
-                    None => {
-                        return tool::Result {
-                            tool_use_id: call.id,
-                            content: "Missing required 'memory_id' parameter".into(),
-                            is_error: true,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        };
-                    }
-                };
-
-                let concepts = input.get("concepts").and_then(|v| v.as_array()).map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str())
-                        .collect::<Vec<&str>>()
-                });
-
-                let concepts_refs = concepts.as_ref().map(|v| v.iter().copied()).unwrap_or_else(|| [].iter().copied());
-
-                match self.extract_concepts(memory_id, concepts_refs).await {
-                    Ok(msg) => tool::Result {
-                        tool_use_id: call.id,
-                        content: msg.into(),
-                        is_error: false,
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    },
-                    Err(err) => tool::Result {
-                        tool_use_id: call.id,
-                        content: format!("Failed to extract concepts: {}", err).into(),
-                        is_error: true,
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    },
-                }
-            }
-            "find_by_concept" => {
-                let input = match call.input.as_object() {
-                    Some(obj) => obj,
-                    None => {
-                        return tool::Result {
-                            tool_use_id: call.id,
-                            content: "Input must be an object".into(),
-                            is_error: true,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        };
-                    }
-                };
-
-                let concept_name = match input.get("concept_name").and_then(|v| v.as_str()) {
-                    Some(c) => c,
-                    None => {
-                        return tool::Result {
-                            tool_use_id: call.id,
-                            content: "Missing required 'concept_name' parameter".into(),
-                            is_error: true,
-                            #[cfg(feature = "prompt-caching")]
-                            cache_control: None,
-                        };
-                    }
-                };
-
-                match self.find_memories_by_concept(concept_name).await {
-                    Ok(results) => {
-                        if results.is_empty() {
-                            tool::Result {
-                                tool_use_id: call.id,
-                                content: format!("No memories found for concept: '{}'", concept_name).into(),
-                                is_error: false,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            }
-                        } else {
-                            let mut response = format!(
-                                "Found {} memories for concept '{}':\n\n",
-                                results.len(),
-                                concept_name
-                            );
-                            for (room_name, memory_id, memory, confidence) in results {
-                                response.push_str(&format!(
-                                    "Room: {}\nID: {}\nContent: {}\nConfidence: {:.2}\n\n",
-                                    room_name, memory_id, memory.content, confidence
-                                ));
-                            }
-
-                            tool::Result {
-                                tool_use_id: call.id,
-                                content: response.into(),
-                                is_error: false,
-                                #[cfg(feature = "prompt-caching")]
-                                cache_control: None,
-                            }
-                        }
-                    }
-                    Err(err) => tool::Result {
-                        tool_use_id: call.id,
-                        content: format!("Failed to find memories by concept: {}", err).into(),
-                        is_error: true,
-                        #[cfg(feature = "prompt-caching")]
-                        cache_control: None,
-                    },
-                }
-            }
             "graph_stats" => {
                 match self.get_graph_stats().await {
                     Ok(stats) => tool::Result {
@@ -857,7 +705,7 @@ impl Tool for MemoryPalace {
             _ => tool::Result {
                 tool_use_id: call.id,
                 content: format!(
-                    "Unknown method '{}'. Available methods: store, search, summary, connect, list_rooms, relate, find_related, find_bfs, extract_concepts, find_by_concept, graph_stats",
+                    "Unknown method '{}'. Available methods: store, search, summary, connect, list_rooms, relate, find_related, find_bfs, graph_stats",
                     method_name
                 )
                 .into(),

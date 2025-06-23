@@ -103,8 +103,8 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
-# SurrealDB support - pinned to 1.x for edition 2021 compatibility
-sqlx = { version = "0.8", optional = true }
+# For the `MemoryPalace` tool.
+sqlx = { version = "0.8", features = ["chrono"], optional = true }
 # Atomic enum for various things like tool state.
 atomic_enum = { version = "0.3.0", optional = true }
 # Timer for futures
@@ -125,8 +125,6 @@ itertools = "0.13"
 # for the python example
 subprocess = "0.2"
 tempfile = "3.12"
-# for the memory-palace example
-sqlx = { version = "0.8", features = ["sqlite", "chrono"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.

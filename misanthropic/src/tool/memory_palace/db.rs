@@ -18,7 +18,6 @@ pub async fn ensure_initialized(
                 name VARCHAR(255) NOT NULL UNIQUE,
                 description TEXT NOT NULL,
                 atmosphere TEXT,
-                centroid_embedding VECTOR(1536) NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 last_visited TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 visit_count INTEGER NOT NULL DEFAULT 0,
@@ -28,7 +27,6 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Memories table with room_id instead of room name
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memories (
                 id BIGSERIAL PRIMARY KEY,
                 content JSONB NOT NULL,
@@ -36,7 +34,6 @@ pub async fn ensure_initialized(
                 placement VARCHAR(255) NOT NULL DEFAULT 'shelf',
                 placement_description TEXT,
                 tags JSONB NOT NULL DEFAULT '[]',
-                embedding VECTOR(1536) NULL,
                 importance FLOAT NOT NULL DEFAULT 0.5 CHECK (importance >= 0 AND importance <= 1),
                 access_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -71,26 +68,6 @@ pub async fn ensure_initialized(
                 strength FLOAT NOT NULL DEFAULT 1.0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 UNIQUE(from_memory_id, to_memory_id)
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS concepts (
-                id BIGSERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
-                description TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_concepts (
-                id BIGSERIAL PRIMARY KEY,
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                concept_id BIGINT NOT NULL REFERENCES concepts(id) ON DELETE CASCADE,
-                confidence FLOAT NOT NULL DEFAULT 1.0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(memory_id, concept_id)
             )"#)
             .execute(&mut **tx)
             .await?;
@@ -212,31 +189,34 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Function to find similar memories using vector similarity
             sqlx::query(r#"CREATE OR REPLACE FUNCTION find_similar_memories(
                 target_memory_id BIGINT,
                 similarity_threshold FLOAT DEFAULT 0.85,
-                max_results INT DEFAULT 10
+                max_results INT DEFAULT 10,
+                embedding_model VARCHAR DEFAULT NULL
             )
             RETURNS TABLE(
                 memory_id BIGINT,
                 similarity_score FLOAT,
-                content TEXT,
+                content JSONB,
                 room_id BIGINT
             ) AS $$
             BEGIN
                 RETURN QUERY
                 SELECT 
                     m2.id as memory_id,
-                    1 - (m1.embedding <=> m2.embedding) as similarity_score,
+                    1 - (e1.embedding <=> e2.embedding) as similarity_score,
                     m2.content,
                     m2.room_id
                 FROM memories m1
-                JOIN memories m2 ON m1.id != m2.id
+                JOIN memory_embeddings me1 ON m1.id = me1.memory_id
+                JOIN embeddings e1 ON me1.embedding_id = e1.id
+                JOIN memory_embeddings me2 ON me1.memory_id != me2.memory_id
+                JOIN embeddings e2 ON me2.embedding_id = e2.id AND e1.model_name = e2.model_name
+                JOIN memories m2 ON me2.memory_id = m2.id
                 WHERE m1.id = target_memory_id
-                AND m1.embedding IS NOT NULL
-                AND m2.embedding IS NOT NULL
-                AND 1 - (m1.embedding <=> m2.embedding) >= similarity_threshold
+                AND (embedding_model IS NULL OR e1.model_name = embedding_model)
+                AND 1 - (e1.embedding <=> e2.embedding) >= similarity_threshold
                 ORDER BY similarity_score DESC
                 LIMIT max_results;
             END;
@@ -269,14 +249,33 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Vector similarity search indexes
-            // Note: HNSW is better for recall but requires pgvector 0.5.0+
-            // For now we'll stick with IVFFlat for compatibility
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_embedding_ivfflat ON memories USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)")
+            // Vector similarity search indexes on embeddings table
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_embeddings_vector_ivfflat ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_rooms_centroid_embedding_ivfflat ON rooms USING ivfflat (centroid_embedding vector_cosine_ops) WITH (lists = 50)")
+            // Indexes for junction tables
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_embeddings_memory_id ON memory_embeddings(memory_id)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_embeddings_embedding_id ON memory_embeddings(embedding_id)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_prompt_embeddings_prompt_id ON prompt_embeddings(prompt_id)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_prompt_embeddings_embedding_id ON prompt_embeddings(embedding_id)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_room_embeddings_room_id ON room_embeddings(room_id)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_room_embeddings_embedding_id ON room_embeddings(embedding_id)")
             .execute(&mut **tx)
             .await?;
 
@@ -313,11 +312,10 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Prompts table for storing entire conversation contexts
+            // Prompts table without embedding column
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompts (
                 id BIGSERIAL PRIMARY KEY,
                 content JSONB NOT NULL,
-                embedding VECTOR(1536) NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )"#)
             .execute(&mut **tx)
@@ -374,8 +372,34 @@ END $$;
             .execute(&mut **tx)
             .await?;
 
-            // Index for fast embedding lookups
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_embeddings_lookup ON embeddings (model_name, content_hash)")
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_embeddings (
+                id BIGSERIAL PRIMARY KEY,
+                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(memory_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompt_embeddings (
+                id BIGSERIAL PRIMARY KEY,
+                prompt_id BIGINT NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(prompt_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_embeddings (
+                id BIGSERIAL PRIMARY KEY,
+                room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                is_centroid BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                UNIQUE(room_id, embedding_id)
+            )"#)
             .execute(&mut **tx)
             .await?;
 

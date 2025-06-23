@@ -1,18 +1,12 @@
-use crate::{
-    prompt::{
-        self, Citation, UserMessage,
-        message::{Block, Content, Image, Message, MessagePair, Role},
-    },
-    tool,
-};
+use crate::prompt::message::{Content, Message, MessagePair, Role};
 use chrono::{DateTime, Utc};
-use dioxus::html::{form, g::format, meta::content};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::FromRow;
-use std::{borrow::Cow, fmt, vec};
 
-/// Citation for memory palace references
+/// Citation for [`MemoryPalace`] references
+///
+/// [`MemoryPalace`]: super::MemoryPalace
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryCitation {
     /// The memory being cited
@@ -41,7 +35,7 @@ impl MemoryCitation {
     }
 }
 
-/// Newtype wrappers for type safety
+/// Id of a [`Room`]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
@@ -49,6 +43,7 @@ impl MemoryCitation {
 #[serde(transparent)]
 pub struct RoomId(pub i64);
 
+/// Id of a [`Memory`]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
@@ -56,6 +51,9 @@ pub struct RoomId(pub i64);
 #[serde(transparent)]
 pub struct MemoryId(pub i64);
 
+/// Id of a [`Prompt`]
+///
+/// crate::Prompt
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
@@ -63,19 +61,13 @@ pub struct MemoryId(pub i64);
 #[serde(transparent)]
 pub struct PromptId(pub i64); // u because Citation document id is unsigned
 
+/// Id of a [`Connection`] between two [`Room`]s
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
 #[sqlx(transparent)]
 #[serde(transparent)]
 pub struct ConnectionId(pub i64);
-
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
-)]
-#[sqlx(transparent)]
-#[serde(transparent)]
-pub struct ConceptId(pub i64);
 
 /// A room in the memory palace.
 #[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
@@ -84,8 +76,6 @@ pub struct Room {
     pub name: String,
     pub description: String,
     pub atmosphere: Option<String>,
-    #[sqlx(rename = "centroid_embedding")]
-    pub centroid: Option<pgvector::Vector>,
     pub created_at: DateTime<Utc>,
     pub last_visited: DateTime<Utc>,
     pub visit_count: i32,
@@ -107,7 +97,6 @@ pub enum Memory {
         /// A note, if any, filed either by the assistant or Archivist
         note: Option<String>,
     },
-
     /// A [`MessagePair`] with a (user, assistant) exchange, in that order.
     Pair {
         pair: MessagePair<'static>, // Messages exchanged
@@ -118,21 +107,18 @@ pub enum Memory {
         /// A note, if any, filed either by the assistant or Archivist
         note: Option<String>,
     },
-
     /// Just a note, explicitly created by the primary agent.
     Note {
         text: String,
         tags: Vec<String>,
         title: String,
     },
-
     /// Summary of a longer conversation
     ConversationSummary {
         prompt: PromptId,
-        summary: Content,
+        summary: Content<'static>,
         title: String,
     },
-
     /// Security-related insight. The user cannot turn this off.
     Report {
         /// Content of the report, filed by the assistant
@@ -354,15 +340,6 @@ pub struct Connection {
     pub traversal_count: i32,
     pub created_at: DateTime<Utc>,
     pub last_traversed: Option<DateTime<Utc>>,
-}
-
-/// A concept that can be associated with memories
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Concept {
-    pub id: ConceptId,
-    pub name: String,
-    pub description: Option<String>,
-    pub created_at: DateTime<Utc>,
 }
 
 /// Helper struct for room navigation view
