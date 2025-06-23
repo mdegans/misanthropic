@@ -269,8 +269,6 @@ pub async fn batch_processing_task(
     Ok(pending_batches)
 }
 
-// ...existing code...
-
 /// The archival task that archives completed batches
 pub async fn batch_archival_task(
     config: SubroutineConfig,

@@ -27,6 +27,8 @@ use service::*;
 mod error;
 pub use error::MemoryPalaceError;
 
+use crate::Prompt;
+use crate::tool::embedding::{EmbeddingClient, EmbeddingError};
 use crate::tool::memory_subroutine::{
     archivist::ArchivistUse, navigator::NavigatorUse,
 };
@@ -57,11 +59,15 @@ pub struct MemoryPalace {
     pub(crate) pool: PgPool,
     /// The schema name to use for all operations.
     pub(crate) schema_name: Arc<String>,
+    /// Embedding client for generating embeddings
+    pub(crate) embedding_client: Option<Box<dyn EmbeddingClient>>,
 }
 
 impl MemoryPalace {
     const NAME: &'static str = "MemoryPalace";
     const EMBEDDING_SIZE: usize = 1536;
+    const MAX_TRAVERSAL_DEPTH: u32 = 10; // Safety limit for graph traversal
+    const MAX_RESULTS_PER_QUERY: usize = 100; // Limit result set sizes
 
     /// Palace schema name.
     pub fn schema(&self) -> &str {
@@ -88,27 +94,186 @@ impl MemoryPalace {
         let new = Self {
             pool,
             schema_name: schema_name.into(),
+            embedding_client: None,
         };
         ensure_initialized(&new.pool, &new.schema_name).await?;
 
         Ok(new)
     }
 
-    /// Store a [`Memory`] in a specific [`Room`].
-    pub(crate) async fn store_memory(
-        &mut self,
-        room: impl Into<String>,
-        content: impl Into<String>,
-        tags: impl IntoIterator<Item = &str>,
-    ) -> Result<i64, MemoryPalaceError> {
-        store(
+    /// Set the embedding client for this palace
+    pub fn with_embedding_client(
+        mut self,
+        client: Box<dyn EmbeddingClient>,
+    ) -> Self {
+        self.embedding_client = Some(client);
+        self
+    }
+
+    /// Get or compute an embedding for the given text
+    async fn get_or_compute_embedding(
+        &self,
+        text: &str,
+    ) -> Result<Option<Vec<f32>>, MemoryPalaceError> {
+        let Some(client) = &self.embedding_client else {
+            return Ok(None);
+        };
+
+        // Compute hash of the content
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(text.as_bytes());
+        let content_hash = hasher.finalize().to_vec();
+
+        // Check if we already have this embedding
+        let existing: Option<pgvector::Vector> =
+            execute_with_schema(&self.pool, &self.schema_name, |tx| {
+                Box::pin(async move {
+                    sqlx::query_scalar(
+                        r#"
+                        SELECT embedding 
+                        FROM embeddings 
+                        WHERE model_name = $1 AND content_hash = $2
+                        "#,
+                    )
+                    .bind(client.model().as_str())
+                    .bind(&content_hash)
+                    .fetch_optional(&mut **tx)
+                    .await
+                })
+            })
+            .await?;
+
+        if let Some(embedding) = existing {
+            return Ok(Some(embedding.to_vec()));
+        }
+
+        // Compute new embedding
+        let text_embedding = client
+            .get_embedding(text)
+            .await
+            .map_err(|e| MemoryPalaceError::Other(e.to_string()))?;
+
+        // Store for future use
+        execute_with_schema(
             &self.pool,
             &self.schema_name,
-            room.into(),
-            content.into(),
-            tags.into_iter().map(|s| s.to_string()).collect(),
+            |tx| {
+                Box::pin(async move {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO embeddings (model_name, model_size, content_hash, embedding)
+                        VALUES ($1, $2, $3, $4)
+                        ON CONFLICT (model_name, content_hash) DO NOTHING
+                        "#
+                    )
+                    .bind(client.model().as_str())
+                    .bind(client.embedding_size() as i32)
+                    .bind(&content_hash)
+                    .bind(pgvector::Vector::from(text_embedding.embedding.as_ref().clone()))
+                    .execute(&mut **tx)
+                    .await
+                })
+            },
         )
+        .await?;
+
+        Ok(Some(text_embedding.embedding.to_vec()))
+    }
+
+    /// Store a [`Memory`] in a specific [`Room`].
+    pub async fn store_memory(
+        &self,
+        room_name: &str,
+        memory: Memory,
+        placement: &str,
+        placement_description: Option<&str>,
+        tags: Vec<String>,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<MemoryId, MemoryPalaceError> {
+        let room_name = room_name.to_string();
+        let placement = placement.to_string();
+        let placement_description =
+            placement_description.map(|s| s.to_string());
+
+        // Generate embedding if not provided
+        let embedding = match embedding {
+            Some(emb) => Some(emb),
+            None => {
+                if let Some(content) =
+                    memory.format_for_navigator(MemoryId(0), RoomId(0))
+                {
+                    self.get_or_compute_embedding(&content.to_string()).await?
+                } else {
+                    None
+                }
+            }
+        };
+
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                // Get room ID
+                let room_id: RoomId = sqlx::query_scalar(
+                    "SELECT id FROM rooms WHERE name = $1"
+                )
+                .bind(&room_name)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|_| MemoryPalaceError::RoomNotFound(room_name.clone()))?;
+
+                // Update room visit tracking
+                sqlx::query(
+                    "UPDATE rooms SET last_visited = NOW(), visit_count = visit_count + 1 WHERE id = $1"
+                )
+                .bind(room_id)
+                .execute(&mut **tx)
+                .await?;
+
+                // Store the memory
+                let memory_id: MemoryId = sqlx::query_scalar(
+                    r#"INSERT INTO memories (content, room_id, placement, placement_description, tags, embedding, importance)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                       RETURNING id"#,
+                )
+                .bind(serde_json::to_value(&memory)?)
+                .bind(room_id)
+                .bind(&placement)
+                .bind(&placement_description)
+                .bind(serde_json::to_value(&tags)?)
+                .bind(embedding.map(pgvector::Vector::from))
+                .bind(importance)
+                .fetch_one(&mut **tx)
+                .await?;
+
+                Ok(memory_id)
+            })
+        })
         .await
+    }
+
+    /// Search for memories with proper type handling
+    pub async fn search(
+        &self,
+        query: &str,
+    ) -> Result<Vec<ScoredMemory>, MemoryPalaceError> {
+        let results =
+            service::search(&self.pool, &self.schema_name, query).await?;
+
+        // Convert MemoryRow to ScoredMemory with proper Memory types
+        Ok(results
+            .into_iter()
+            .map(|r| {
+                let memory_row = r.memory;
+                ScoredMemory {
+                    memory: memory_row,
+                    room: r.room,
+                    relevance_score: r.relevance_score,
+                    recency_score: r.recency_score,
+                    relationship_score: r.relationship_score,
+                    final_score: r.final_score,
+                }
+            })
+            .collect())
     }
 
     /// Handle batches of [`tool::Use`]
@@ -132,72 +297,107 @@ impl MemoryPalace {
         Ok(())
     }
 
-    /// Search for [`Memory`]s using blended scoring that combines relevance,
-    /// recency, and relationships.
-    pub(crate) async fn search(
-        &mut self,
-        query: &str,
-    ) -> Result<Vec<(String, String, Memory)>, MemoryPalaceError> {
-        search(&self.pool, &self.schema_name, query).await
-    }
+    /// Get a memory by its ID
+    pub async fn get_memory_by_id(
+        &self,
+        memory_id: MemoryId,
+    ) -> Result<MemoryRow, MemoryPalaceError> {
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let memory: MemoryRow = sqlx::query_as(
+                    "SELECT * FROM memories WHERE id = $1"
+                )
+                .bind(memory_id)
+                .fetch_one(&mut **tx)
+                .await
+                .map_err(|_| MemoryPalaceError::MemoryNotFound(memory_id))?;
 
-    /// Find [`Memory`]s using BFS with decay factor for distance.
-    pub(crate) async fn find_memories_bfs(
-        &mut self,
-        start_memory_id: i64,
-        max_distance: u32,
-        decay_factor: f64,
-        min_score: f64,
-    ) -> Result<Vec<(String, String, Memory, f64, i32)>, MemoryPalaceError>
-    {
-        find_memories_bfs(
-            &self.pool,
-            &self.schema_name,
-            start_memory_id,
-            max_distance,
-            decay_factor,
-            min_score,
-        )
+                // Update access tracking
+                sqlx::query(
+                    "UPDATE memories SET last_accessed = NOW(), access_count = access_count + 1 WHERE id = $1"
+                )
+                .bind(memory_id)
+                .execute(&mut **tx)
+                .await?;
+
+                Ok(memory)
+            })
+        })
         .await
     }
 
-    /// Connect two [`Room`] in the palace.
-    pub(crate) async fn connect_rooms(
-        &mut self,
-        room1: impl Into<String>,
-        room2: impl Into<String>,
-    ) -> Result<(), MemoryPalaceError> {
-        let room1 = room1.into();
-        let room2 = room2.into();
-        connect_rooms(&self.pool, &self.schema_name, room1, room2).await
+    /// Get a room by its ID
+    pub async fn get_room_by_id(
+        &self,
+        room_id: RoomId,
+    ) -> Result<Room, MemoryPalaceError> {
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let room: Room =
+                    sqlx::query_as("SELECT * FROM rooms WHERE id = $1")
+                        .bind(room_id)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_err(|_| {
+                            MemoryPalaceError::RoomNotFound(room_id.to_string())
+                        })?;
+
+                Ok(room)
+            })
+        })
+        .await
     }
 
-    /// List all [`Room`]s with their [`Memory`] counts and [`Connection`]s.
-    pub(crate) async fn list_rooms(
-        &mut self,
-    ) -> Result<Vec<(String, String, usize, Vec<String>)>, MemoryPalaceError>
-    {
-        list_rooms(&self.pool, &self.schema_name).await
+    /// Get a room by its name
+    pub async fn get_room_by_name(
+        &self,
+        room_name: &str,
+    ) -> Result<Room, MemoryPalaceError> {
+        let room_name = room_name.to_string();
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let room: Room =
+                    sqlx::query_as("SELECT * FROM rooms WHERE name = $1")
+                        .bind(&room_name)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_err(|_| {
+                            MemoryPalaceError::RoomNotFound(room_name)
+                        })?;
+
+                Ok(room)
+            })
+        })
+        .await
     }
 
-    /// Create a [`RelatedMemory`] between two [`Memory`]s with a specified
-    /// relationship type and strength.
-    pub(crate) async fn relate_memories(
-        &mut self,
-        memory_id1: i64,
-        memory_id2: i64,
-        relationship_type: impl Into<String>,
-        strength: f64,
-    ) -> Result<String, MemoryPalaceError> {
-        let relationship_type = relationship_type.into();
-        relate_memories(
-            &self.pool,
-            &self.schema_name,
-            memory_id1,
-            memory_id2,
-            relationship_type,
-            strength,
-        )
+    /// Create a new room
+    pub async fn create_room(
+        &self,
+        name: &str,
+        description: &str,
+        atmosphere: Option<&str>,
+    ) -> Result<RoomId, MemoryPalaceError> {
+        let name = name.to_string();
+        let description = description.to_string();
+        let atmosphere = atmosphere.map(|s| s.to_string());
+
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let room_id: RoomId = sqlx::query_scalar(
+                    r#"INSERT INTO rooms (name, description, atmosphere)
+                       VALUES ($1, $2, $3)
+                       RETURNING id"#,
+                )
+                .bind(&name)
+                .bind(&description)
+                .bind(&atmosphere)
+                .fetch_one(&mut **tx)
+                .await?;
+
+                Ok(room_id)
+            })
+        })
         .await
     }
 
@@ -207,13 +407,16 @@ impl MemoryPalace {
         memory_id: i64,
         max_depth: u32,
         min_strength: f64,
-    ) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError>
+    ) -> Result<Vec<(String, String, MemoryRow, String, f64)>, MemoryPalaceError>
     {
+        // Enforce safety limit
+        let safe_depth = max_depth.min(Self::MAX_TRAVERSAL_DEPTH);
+
         find_resonating_memories(
             &self.pool,
             &self.schema_name,
             memory_id,
-            max_depth,
+            safe_depth,
             min_strength,
         )
         .await
@@ -224,7 +427,7 @@ impl MemoryPalace {
         &mut self,
         embedding: &[f32],
         limit: usize,
-    ) -> Result<Vec<Memory>, MemoryPalaceError> {
+    ) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
         semantic_search_all_rooms(
             &self.pool,
             &self.schema_name,
@@ -239,12 +442,15 @@ impl MemoryPalace {
         &self,
         start_room: &str,
         radius: u32,
-    ) -> Result<Vec<(String, String, u32)>, MemoryPalaceError> {
-        get_rooms_within_radius(
+    ) -> Result<Vec<RoomWithDistance>, MemoryPalaceError> {
+        // Enforce safety limit
+        let safe_radius = radius.min(Self::MAX_TRAVERSAL_DEPTH);
+
+        service::get_rooms_within_radius(
             &self.pool,
             &self.schema_name,
             start_room,
-            radius,
+            safe_radius,
         )
         .await
     }
@@ -277,7 +483,7 @@ impl MemoryPalace {
     pub(crate) async fn find_memories_by_concept(
         &mut self,
         concept: impl Into<String>,
-    ) -> Result<Vec<(String, String, Memory, f64)>, MemoryPalaceError> {
+    ) -> Result<Vec<(String, String, MemoryRow, f64)>, MemoryPalaceError> {
         find_memories_by_concept(&self.pool, &self.schema_name, concept.into())
             .await
     }
@@ -296,27 +502,12 @@ impl MemoryPalace {
         get_context_summary(&self.pool, &self.schema_name).await
     }
 
-    /// Get all memories in a specific room
-    pub async fn get_room_memories(
-        &self,
-        room_name: &str,
-    ) -> Result<Vec<Memory>, MemoryPalaceError> {
-        // Query memories WHERE room = room_name
-        // Format with placement info from tags
-        crate::tool::memory_subroutine::navigator::get_room_memories(
-            &self.pool,
-            &self.schema_name,
-            room_name,
-        )
-        .await
-    }
-
     /// Search within a specific room only
     pub async fn search_in_room(
         &self,
         room_name: &str,
         query: &str,
-    ) -> Result<Vec<Memory>, MemoryPalaceError> {
+    ) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
         // Like search() but filtered to one room
         crate::tool::memory_subroutine::navigator::search_in_room(
             &self.pool,
@@ -331,17 +522,13 @@ impl MemoryPalace {
     pub async fn get_adjacent_rooms_sorted(
         &self,
         current_room: &str,
-        radius: u32,
-        mission: Option<&String>,
-    ) -> Result<Vec<(String, String, f32)>, MemoryPalaceError> {
-        // Use room_connections + centroid embeddings
-        // Return (direction, room_name, distance_meters)
+        limit: Option<usize>,
+    ) -> Result<Vec<(String, Room, f32)>, MemoryPalaceError> {
         crate::tool::memory_subroutine::navigator::get_adjacent_rooms_sorted(
             &self.pool,
             &self.schema_name,
             current_room,
-            radius,
-            mission,
+            limit.unwrap_or(10),
         )
         .await
     }
@@ -352,7 +539,6 @@ impl MemoryPalace {
         from_room: &str,
         direction: &str,
     ) -> Result<Room, MemoryPalaceError> {
-        // Parse direction, find matching connection
         crate::tool::memory_subroutine::navigator::follow_passage(
             &self.pool,
             &self.schema_name,
@@ -365,13 +551,226 @@ impl MemoryPalace {
     /// Get rich description of a room
     pub async fn get_room_description(
         &self,
-        room_name: String,
+        room_name: &str,
     ) -> Result<String, MemoryPalaceError> {
-        // Format room with memory count, connections, atmosphere
         crate::tool::memory_subroutine::navigator::get_room_description(
             &self.pool,
             &self.schema_name,
             room_name,
+        )
+        .await
+    }
+
+    /// Find similar memories to a given memory
+    pub async fn find_similar_memories(
+        &self,
+        memory_id: MemoryId,
+        similarity_threshold: Option<f32>,
+        max_results: Option<i32>,
+    ) -> Result<Vec<SimilarMemory>, MemoryPalaceError> {
+        // ...existing code...
+    }
+
+    /// Get memories that are candidates for consolidation
+    pub async fn get_consolidation_candidates(
+        &self,
+        min_cluster_size: Option<i32>,
+        similarity_threshold: Option<f32>,
+    ) -> Result<Vec<MemoryCluster>, MemoryPalaceError> {
+        // ...existing code...
+    }
+
+    /// Store a [`Prompt`] and return its ID for citation purposes
+    pub async fn store_prompt(
+        &self,
+        prompt: &Prompt<'static>,
+        embedding: Option<Vec<f32>>,
+    ) -> Result<PromptId, MemoryPalaceError> {
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let prompt_id: PromptId = sqlx::query_scalar(
+                    r#"INSERT INTO prompts (content, embedding)
+                       VALUES ($1, $2)
+                       RETURNING id"#,
+                )
+                .bind(serde_json::to_value(prompt)?)
+                .bind(embedding.map(pgvector::Vector::from))
+                .fetch_one(&mut **tx)
+                .await?;
+
+                Ok(prompt_id)
+            })
+        })
+        .await
+    }
+
+    /// Retrieve a [`Prompt`] by its ID
+    pub async fn get_prompt(
+        &self,
+        prompt_id: PromptId,
+    ) -> Result<Prompt<'static>, MemoryPalaceError> {
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let row: (serde_json::Value,) =
+                    sqlx::query_as("SELECT content FROM prompts WHERE id = $1")
+                        .bind(prompt_id)
+                        .fetch_one(&mut **tx)
+                        .await
+                        .map_err(|_| {
+                            MemoryPalaceError::Other(format!(
+                                "Prompt {} not found",
+                                prompt_id.0
+                            ))
+                        })?;
+
+                let prompt: Prompt<'static> = serde_json::from_value(row.0)?;
+                Ok(prompt)
+            })
+        })
+        .await
+    }
+
+    /// Store a memory from a message with prompt context
+    pub async fn store_message_memory(
+        &self,
+        room_name: &str,
+        message: Message<'static>,
+        prompt_id: Option<PromptId>,
+        message_index: Option<usize>,
+        note: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<MemoryId, MemoryPalaceError> {
+        let memory = Memory::Message {
+            message,
+            prompt: prompt_id,
+            index: message_index,
+            note,
+        };
+
+        // Generate embedding from the message content
+        let embedding = if let Some(content) =
+            memory.format_for_navigator(MemoryId(0), RoomId(0))
+        {
+            self.get_or_compute_embedding(&content.to_string()).await?
+        } else {
+            None
+        };
+
+        self.store_memory(
+            room_name,
+            memory,
+            "message_shelf",
+            Some("A preserved exchange"),
+            tags,
+            embedding,
+        )
+        .await
+    }
+
+    /// Store a memory from a message pair with prompt context
+    pub async fn store_pair_memory(
+        &self,
+        room_name: &str,
+        pair: MessagePair<'static>,
+        prompt_id: Option<PromptId>,
+        message_index: Option<usize>,
+        note: Option<String>,
+        tags: Vec<String>,
+    ) -> Result<MemoryId, MemoryPalaceError> {
+        let memory = Memory::Pair {
+            pair,
+            prompt: prompt_id,
+            index: message_index,
+            note,
+        };
+
+        // The embedding will be generated by store_memory
+        self.store_memory(
+            room_name,
+            memory,
+            "conversation_shelf",
+            Some("A meaningful exchange"),
+            tags,
+            None, // Let store_memory handle embedding generation
+        )
+        .await
+    }
+
+    /// Store a conversation summary
+    pub async fn store_conversation_summary(
+        &self,
+        room_name: &str,
+        prompt_id: PromptId,
+        summary: Content<'static>,
+        title: String,
+        tags: Vec<String>,
+    ) -> Result<MemoryId, MemoryPalaceError> {
+        let memory = Memory::ConversationSummary {
+            prompt: prompt_id,
+            summary,
+            title,
+        };
+
+        // The embedding will be generated by store_memory
+        self.store_memory(
+            room_name,
+            memory,
+            "summary_alcove",
+            Some("A distilled understanding"),
+            tags,
+            None, // Let store_memory handle embedding generation
+        )
+        .await
+    }
+
+    /// Find memories related to a specific prompt
+    pub async fn find_memories_by_prompt(
+        &self,
+        prompt_id: PromptId,
+    ) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
+        execute_with_schema(&self.pool, &self.schema_name, |tx| {
+            Box::pin(async move {
+                let memories: Vec<MemoryRow> = sqlx::query_as(
+                    r#"
+                    SELECT m.*
+                    FROM memories m
+                    WHERE 
+                        (m.content->>'prompt')::bigint = $1
+                        OR (m.content->'data'->>'prompt')::bigint = $1
+                    ORDER BY 
+                        (m.content->'data'->>'index')::int,
+                        m.created_at
+                    "#,
+                )
+                .bind(prompt_id.0)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                Ok(memories)
+            })
+        })
+        .await
+    }
+
+    /// Find memories using breadth-first search with depth and score limits
+    pub async fn find_memories_bfs(
+        &self,
+        start_memory_id: i64,
+        max_depth: u32,
+        decay_factor: f64,
+        min_score: f64,
+    ) -> Result<Vec<(String, String, MemoryRow, f64, i32)>, MemoryPalaceError>
+    {
+        // Enforce safety limit
+        let safe_depth = max_depth.min(Self::MAX_TRAVERSAL_DEPTH);
+
+        service::find_memories_bfs(
+            &self.pool,
+            &self.schema_name,
+            start_memory_id,
+            safe_depth,
+            decay_factor,
+            min_score,
         )
         .await
     }

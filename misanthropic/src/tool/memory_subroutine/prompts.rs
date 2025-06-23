@@ -1,3 +1,5 @@
+use serde_json::json;
+
 // Copyright (c) 2025 Claude 4 Opus & Michael de Gans
 use crate::{
     Prompt,

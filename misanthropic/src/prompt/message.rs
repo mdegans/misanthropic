@@ -4,12 +4,14 @@
 //! [`response::Message`]: crate::response::Message
 //! [`prompt::Message`]: crate::prompt::Message
 
-use std::borrow::Cow;
+use std::{borrow::Cow, vec};
 
 use base64::engine::{Engine as _, general_purpose};
+use derive_more::derive;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    prompt::Citation,
     response,
     stream::{ContentMismatch, Delta, DeltaError},
     tool,
@@ -220,6 +222,7 @@ impl<'a> IntoIterator for Message<'a> {
         match self.content {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: vec![],
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -401,6 +404,7 @@ pub struct NotTheAssistant;
     Serialize,
 )]
 #[serde(try_from = "Message<'_>", into = "Message<'_>")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{}", inner)]
 pub struct UserMessage<'a> {
     inner: Message<'a>, // Invariant: role == Role::User
@@ -481,6 +485,7 @@ impl<'a> IntoIterator for UserMessage<'a> {
         match self.inner.content {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: vec![],
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -559,6 +564,17 @@ impl From<NotTheUser> for Cow<'static, str> {
     }
 }
 
+/// A [`MessagePair`] is a pair of [`UserMessage`] and [`AssistantMessage`].
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[display("{}\n{}", user, assistant)]
+pub struct MessagePair<'a> {
+    /// The user message (first).
+    pub user: UserMessage<'a>,
+    /// The assistant message (second).
+    pub assistant: AssistantMessage<'a>,
+}
+
 /// Content of a [`Message`].
 #[derive(
     Clone, Debug, Serialize, Deserialize, Hash, derive_more::IsVariant,
@@ -574,6 +590,11 @@ pub enum Content<'a> {
 }
 
 impl<'a> Content<'a> {
+    /// Create new, empty, [`MultiPart`] content.
+    pub const fn new() -> Self {
+        Self::MultiPart(vec![])
+    }
+
     /// Const constructor for static text content. Not available with the
     /// `langsan` feature.
     #[cfg(not(feature = "langsan"))]
@@ -615,6 +636,7 @@ impl<'a> Content<'a> {
             #[cfg(feature = "prompt-caching")]
             Self::SinglePart(text) => Block::Text {
                 text,
+                citations: vec![],
                 cache_control: None,
             },
             #[cfg(not(feature = "prompt-caching"))]
@@ -757,6 +779,7 @@ impl<'a> Content<'a> {
                     Content::SinglePart(text) => {
                         Box::new(std::iter::once(Block::Text {
                             text,
+                            citations: vec![],
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         }))
@@ -810,6 +833,7 @@ impl<'a> IntoIterator for Content<'a> {
         match self {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: vec![],
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -929,6 +953,7 @@ where
 
         *self = Self::MultiPart(vec![Block::Text {
             text,
+            citations: vec![],
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }]);
@@ -984,6 +1009,9 @@ pub enum Block<'a> {
     Text {
         /// The actual text content.
         text: crate::CowStr<'a>,
+        /// Optional [`Citation`]s
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        citations: Vec<Citation>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1089,6 +1117,7 @@ impl<'a> Block<'a> {
     {
         Self::Text {
             text: text.into(),
+            citations: vec![],
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1304,6 +1333,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text {
                 text,
+                citations,
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             } => Block::Text {
@@ -1311,6 +1341,7 @@ impl<'a> Block<'a> {
                 text: std::borrow::Cow::Owned(text.into_owned()),
                 #[cfg(feature = "langsan")]
                 text: text.into_static(),
+                citations,
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
@@ -1440,6 +1471,7 @@ impl From<String> for Block<'_> {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
+            citations: vec![],
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1450,6 +1482,7 @@ impl<'a> From<crate::CowStr<'a>> for Block<'a> {
     fn from(text: crate::CowStr<'a>) -> Self {
         Self::Text {
             text,
+            citations: vec![],
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1917,6 +1950,7 @@ mod tests {
         }];
         let mut block = Block::Text {
             text: "Hello, world!".into(),
+            citations: vec![],
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };

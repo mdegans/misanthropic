@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 
 use crate::batch;
 use crate::prompt::message::Block;
-use crate::tool::memory_palace::{Memory, MemoryPalaceError};
+use crate::tool::memory_palace::{MemoryRow, MemoryPalaceError};
 use crate::tool::{self, Use};
 use crate::{
     Client, Key, Prompt,
@@ -224,7 +224,7 @@ impl MemorySubroutine {
     async fn execute_search(
         &mut self,
         query: &str,
-    ) -> Result<Vec<(String, String, Memory)>, MemoryPalaceError> {
+    ) -> Result<Vec<(String, String, MemoryRow)>, MemoryPalaceError> {
         self.palace.search(query).await
     }
 

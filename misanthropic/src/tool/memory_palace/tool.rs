@@ -206,7 +206,7 @@ impl Tool for MemoryPalace {
                 .build()
                 .unwrap(),
             Method::builder("MemoryPalace::find_bfs")
-                .description("Find memories using breadth-first search with decay factor for semantic distance.")
+                .description("Find memories using breadth-first search with decay factor for path strength.")
                 .schema(json!({
                     "type": "object",
                     "properties": {
@@ -214,9 +214,9 @@ impl Tool for MemoryPalace {
                             "type": "number",
                             "description": "ID of the starting memory for BFS exploration."
                         },
-                        "max_distance": {
+                        "max_depth": {
                             "type": "number",
-                            "description": "Maximum distance to explore in the graph.",
+                            "description": "Maximum depth to explore in the graph.",
                         },
                         "decay_factor": {
                             "type": "number",
@@ -227,7 +227,7 @@ impl Tool for MemoryPalace {
                             "description": "Minimum path score threshold.",
                         }
                     },
-                    "required": ["memory_id", "max_distance", "decay_factor", "min_score"]
+                    "required": ["memory_id", "max_depth", "decay_factor", "min_score"]
                 }))
                 .build()
                 .unwrap(),
@@ -796,8 +796,8 @@ impl Tool for MemoryPalace {
                     }
                 };
 
-                let max_distance = input
-                    .get("max_distance")
+                let max_depth = input
+                    .get("max_depth")
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32)
                     .unwrap_or(3);
@@ -812,27 +812,27 @@ impl Tool for MemoryPalace {
                     .and_then(|v| v.as_f64())
                     .unwrap_or(0.1);
 
-                match self.find_memories_bfs(memory_id, max_distance, decay_factor, min_score).await {
+                match self.find_memories_bfs(memory_id, max_depth, decay_factor, min_score).await {
                     Ok(results) => {
                         if results.is_empty() {
                             tool::Result {
                                 tool_use_id: call.id,
-                                content: format!("No memories found within distance {} from ID '{}'", max_distance, memory_id).into(),
+                                content: format!("No memories found within depth {} from ID '{}'", max_depth, memory_id).into(),
                                 is_error: false,
                                 #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
                             let mut response = format!(
-                                "Found {} memories within distance {} from ID '{}':\n\n",
+                                "Found {} memories within depth {} from ID '{}':\n\n",
                                 results.len(),
-                                max_distance,
+                                max_depth,
                                 memory_id
                             );
-                            for (room_name, bfs_memory_id, memory, score, distance) in results {
+                            for (room_name, bfs_memory_id, memory, score, depth) in results {
                                 response.push_str(&format!(
-                                    "Room: {}\nID: {}\nContent: {}\nPath Score: {:.3}\nDistance: {} hops\n\n",
-                                    room_name, bfs_memory_id, memory.content, score, distance
+                                    "Room: {}\nID: {}\nContent: {}\nPath Score: {:.3}\nDepth: {} hops\n\n",
+                                    room_name, bfs_memory_id, memory.content, score, depth
                                 ));
                             }
 

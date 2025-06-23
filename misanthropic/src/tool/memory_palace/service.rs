@@ -240,22 +240,45 @@ pub async fn find_memories_bfs(
     pool: &PgPool,
     schema: &str,
     start_memory_id: i64,
-    max_distance: u32,
+    max_depth: u32,  // Renamed from max_distance
     decay_factor: f64,
     min_score: f64,
-) -> Result<Vec<(String, String, Memory, f64, i32)>, MemoryPalaceError> {
-    execute_with_schema(&pool, &schema, |tx: &mut Transaction<Postgres>| {
+) -> Result<Vec<(String, String, MemoryRow, f64, i32)>, MemoryPalaceError> {
+    // Early return for invalid inputs
+    if max_depth == 0 {
+        return Ok(vec![]);
+    }
+    
+    execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
+            // First verify the starting memory exists
+            let _: MemoryId = sqlx::query_scalar(
+                "SELECT id FROM memories WHERE id = $1"
+            )
+            .bind(start_memory_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| MemoryPalaceError::MemoryNotFound(MemoryId(start_memory_id)))?;
+            
             #[derive(sqlx::FromRow)]
             struct BfsRow {
                 id: i64,
-                content: String,
-                room: String,
-                tags: serde_json::Value,
+                #[sqlx(json)]
+                content: Memory,
+                room_id: i64,
+                placement: String,
+                placement_description: Option<String>,
+                #[sqlx(json)]
+                tags: Vec<String>,
+                embedding: Option<pgvector::Vector>,
+                importance: f32,
+                access_count: i32,
                 created_at: chrono::DateTime<chrono::Utc>,
                 last_updated: chrono::DateTime<chrono::Utc>,
+                last_accessed: chrono::DateTime<chrono::Utc>,
                 path_strength: Option<f64>,
-                distance: Option<i32>,
+                depth: Option<i32>,  // Renamed from distance
+                room_name: String,
             }
 
             let rows: Vec<BfsRow> = sqlx::query_as(
@@ -263,9 +286,9 @@ pub async fn find_memories_bfs(
                 WITH RECURSIVE memory_bfs AS (
                     -- Base case: start with the given memory
                     SELECT 
-                        $1 as memory_id,
+                        $1::bigint as memory_id,
                         1.0::double precision as path_strength,
-                        0 as distance,
+                        0 as depth,
                         ARRAY[$1::bigint] as path
                     
                     UNION ALL
@@ -277,15 +300,17 @@ pub async fn find_memories_bfs(
                             ELSE mr.from_memory_id
                         END as memory_id,
                         mb.path_strength * mr.strength * $3 as path_strength,
-                        mb.distance + 1 as distance,
+                        mb.depth + 1 as depth,
                         mb.path || CASE 
                             WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
                             ELSE mr.from_memory_id
                         END as path
                     FROM memory_bfs mb
-                    JOIN memory_relationships mr ON (mr.from_memory_id = mb.memory_id OR mr.to_memory_id = mb.memory_id)
+                    JOIN memory_relationships mr ON (
+                        mr.from_memory_id = mb.memory_id OR mr.to_memory_id = mb.memory_id
+                    )
                     WHERE 
-                        mb.distance < $2 
+                        mb.depth < $2 
                         AND mb.path_strength * mr.strength * $3 >= $4
                         AND NOT (CASE 
                             WHEN mr.from_memory_id = mb.memory_id THEN mr.to_memory_id
@@ -293,16 +318,20 @@ pub async fn find_memories_bfs(
                         END = ANY(mb.path))
                 )
                 SELECT DISTINCT ON (mb.memory_id)
-                    m.id, m.content, m.room, m.tags, m.created_at, m.last_updated,
-                    mb.path_strength, mb.distance
+                    m.*, 
+                    r.name as room_name,
+                    mb.path_strength, 
+                    mb.depth
                 FROM memory_bfs mb
                 JOIN memories m ON mb.memory_id = m.id
+                JOIN rooms r ON m.room_id = r.id
                 WHERE mb.memory_id != $1
-                ORDER BY mb.memory_id, mb.path_strength DESC, mb.distance ASC
+                ORDER BY mb.memory_id, mb.path_strength DESC, mb.depth ASC
+                LIMIT 50  -- Hard limit to prevent runaway queries
                 "#,
             )
             .bind(start_memory_id)
-            .bind(max_distance as i32)
+            .bind(max_depth as i32)
             .bind(decay_factor)
             .bind(min_score)
             .fetch_all(&mut **tx)
@@ -310,27 +339,27 @@ pub async fn find_memories_bfs(
 
             let mut results = Vec::new();
             for row in rows {
-                let tags: Vec<String> =
-                    serde_json::from_value(row.tags.clone()).unwrap_or_default();
-
-                let memory = Memory {
-                    id: row.id,
+                let memory_row = MemoryRow {
+                    id: MemoryId(row.id),
                     content: row.content,
-                    room: row.room.clone(),
-                    placement: String::new(), // No placement in BFS results
-                    placement_description: None,
-                    embedding: None,
-                    tags,
+                    room_id: RoomId(row.room_id),
+                    placement: row.placement,
+                    placement_description: row.placement_description,
+                    tags: row.tags,
+                    embedding: row.embedding,
+                    importance: row.importance,
+                    access_count: row.access_count,
                     created_at: row.created_at,
                     last_updated: row.last_updated,
+                    last_accessed: row.last_accessed,
                 };
 
                 results.push((
-                    memory.room.clone(),
-                    memory.id.to_string(),
-                    memory,
+                    row.room_name,
+                    memory_row.id.0.to_string(),
+                    memory_row,
                     row.path_strength.unwrap_or(0.0),
-                    row.distance.unwrap_or(0),
+                    row.depth.unwrap_or(0),
                 ));
             }
 
@@ -474,434 +503,250 @@ pub async fn find_resonating_memories(
     pool: &PgPool,
     schema: &str,
     memory_id: i64,
-    max_hops: u32,
-    semantic_context: Option<&[f32]>, // Optional embedding for semantic search
-) -> Result<Vec<ResonatingMemory>, MemoryPalaceError> {
-    execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
+    max_depth: u32,
+    min_strength: f64,
+) -> Result<Vec<(String, String, MemoryRow, String, f64)>, MemoryPalaceError>
+{
+    // Early return for invalid inputs
+    if max_depth == 0 {
+        return Ok(vec![]);
+    }
+    
+    execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
-            // First, get the source memory to know its room, tags, and embedding
-            let source: Memory = sqlx::query_as(
+            // First, get the source memory to validate it exists
+            let source: MemoryRow = sqlx::query_as(
                 "SELECT * FROM memories WHERE id = $1"
             )
             .bind(memory_id)
-            .fetch_one(&mut **tx)
-            .await?;
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| MemoryPalaceError::MemoryNotFound(MemoryId(memory_id)))?;
             
-            let mut resonating = HashMap::new();
-            
-            // At the beginning of find_resonating_memories
-            let search_embedding = match (semantic_context, source.embedding.as_deref()) {
-                (Some(context), Some(memory)) => {
-                    // Blend: 70% context (what we're looking for) + 30% memory (starting point)
-                    let blended: Vec<f32> = context.iter()
-                        .zip(memory.iter())
-                        .map(|(c, m)| 0.7 * c + 0.3 * m)
-                        .collect();
-                    Some(blended)
-                },
-                (Some(context), None) => Some(context.to_vec()),
-                (None, Some(memory)) => Some(memory.to_vec()),
-                (None, None) => None,
-            };
-                        
-            // 1. Same room memories (strongest spatial resonance)
-            let same_room_query = if let Some(embedding) = &search_embedding {
-                // Semantic + spatial: order by embedding similarity
-                sqlx::query_as::<_, Memory>(
-                    r#"
-                    SELECT * FROM memories 
-                    WHERE room = $1 AND id != $2 AND embedding IS NOT NULL
-                    ORDER BY embedding <=> $3::vector
-                    LIMIT 5
-                    "#
-                )
-                .bind(&source.room)
-                .bind(memory_id)
-                .bind(embedding)
-                .fetch_all(&mut **tx)
-                .await?
-            } else {
-                // Fallback to recency-based ordering
-                sqlx::query_as::<_, Memory>(
-                    r#"
-                    SELECT * FROM memories 
-                    WHERE room = $1 AND id != $2
-                    ORDER BY last_updated DESC
-                    LIMIT 5
-                    "#
-                )
-                .bind(&source.room)
-                .bind(memory_id)
-                .fetch_all(&mut **tx)
-                .await?
-            };
-            
-            for memory in same_room_query {
-                let semantic_similarity = if let (Some(embedding), Some(mem_embedding)) = 
-                    (&search_embedding, &memory.embedding) {
-                    // Calculate cosine similarity (1 - cosine distance)
-                    1.0 - calculate_cosine_distance(embedding, mem_embedding)
-                } else {
-                    0.5 // Default neutral similarity
-                };
-                
-                resonating.insert(memory.id, ResonatingMemory {
-                    memory,
-                    resonance_type: ResonanceType::SameRoom,
-                    strength: 0.7 + (0.3 * semantic_similarity as f64), // 70% spatial, 30% semantic
-                    distance: 0,
-                });
+            // Use the recursive CTE with proper depth limiting
+            #[derive(sqlx::FromRow)]
+            struct RelatedMemoryRow {
+                room_name: String,
+                memory_id: i64,
+                #[sqlx(json)]
+                content: Memory,
+                room_id: i64,
+                placement: String,
+                placement_description: Option<String>,
+                #[sqlx(json)]
+                tags: Vec<String>,
+                embedding: Option<pgvector::Vector>,
+                importance: f32,
+                access_count: i32,
+                created_at: DateTime<Utc>,
+                last_updated: DateTime<Utc>,
+                last_accessed: DateTime<Utc>,
+                relationship_type: String,
+                strength: f64,
+                depth: i32,
             }
             
-            // 2. Nearby room memories with semantic boost
-            if max_hops > 0 {
-                let nearby_rooms: Vec<(String, i32)> = sqlx::query_as(
-                    r#"
-                    WITH RECURSIVE room_paths AS (
-                        SELECT $1::varchar as room, 0 as distance
-                        UNION
-                        SELECT 
-                            CASE 
-                                WHEN rc.from_room = rp.room THEN rc.to_room
-                                ELSE rc.from_room
-                            END as room,
-                            rp.distance + 1 as distance
-                        FROM room_paths rp
-                        JOIN room_connections rc ON (
-                            rc.from_room = rp.room OR rc.to_room = rp.room
-                        )
-                        WHERE rp.distance < $2
-                    )
-                    SELECT DISTINCT room, MIN(distance) as distance
-                    FROM room_paths
-                    WHERE room != $1
-                    GROUP BY room
-                    "#
-                )
-                .bind(&source.room)
-                .bind(max_hops as i32)
-                .fetch_all(&mut **tx)
-                .await?;
-                
-                for (room, distance) in nearby_rooms {
-                    let room_memories = if let Some(embedding) = &search_embedding {
-                        sqlx::query_as::<_, Memory>(
-                            r#"
-                            SELECT * FROM memories 
-                            WHERE room = $1 AND embedding IS NOT NULL
-                            ORDER BY embedding <=> $2::vector
-                            LIMIT 3
-                            "#
-                        )
-                        .bind(&room)
-                        .bind(embedding)
-                        .fetch_all(&mut **tx)
-                        .await?
-                    } else {
-                        sqlx::query_as::<_, Memory>(
-                            "SELECT * FROM memories WHERE room = $1 LIMIT 3"
-                        )
-                        .bind(&room)
-                        .fetch_all(&mut **tx)
-                        .await?
-                    };
-                    
-                    for memory in room_memories {
-                        let spatial_strength = 0.8_f64.powf(distance as f64);
-                        let semantic_similarity = if let (Some(embedding), Some(mem_embedding)) = 
-                            (&search_embedding, &memory.embedding) {
-                            1.0 - calculate_cosine_distance(embedding, mem_embedding)
-                        } else {
-                            0.5
-                        };
-                        
-                        let resonance = resonating.entry(memory.id).or_insert_with(|| ResonatingMemory {
-                            memory,
-                            resonance_type: ResonanceType::NearbyRoom,
-                            strength: spatial_strength * (0.5 + (0.5 * semantic_similarity as f64)),
-                            distance: Some(distance),
-                        });
-
-                        // Update strength if this memory is stronger
-                        if resonance.strength < spatial_strength * (0.5 + (0.5 * semantic_similarity as f64)) {
-                            resonance.strength = spatial_strength * (0.5 + (0.5 * semantic_similarity as f64));
-                            resonance.resonance_type = ResonanceType::NearbyRoom;
-                            resonance.distance = Some(distance);
-                        }
-                    }
-                }
-            }
-            
-            // 3. Pure semantic resonance (can be very distant)
-            if let Some(embedding) = &search_embedding {
-                let semantic_memories: Vec<(Memory, f32)> = sqlx::query_as(
-                    r#"
-                    SELECT *, (embedding <=> $1::vector) as distance
-                    FROM memories
-                    WHERE id != $2 
-                        AND embedding IS NOT NULL
-                        AND (embedding <=> $1::vector) < 0.3  -- Cosine distance < 0.3
-                    ORDER BY distance
-                    LIMIT 5
-                    "#
-                )
-                .bind(embedding)
-                .bind(memory_id)
-                .fetch_all(&mut **tx)
-                .await?;
-                
-                for (memory, distance) in semantic_memories {
-                    let similarity = 1.0 - distance as f64;
-                    let resonance = resonating.entry(memory.id).or_insert_with(|| ResonatingMemory {
-                        memory,
-                        resonance_type: ResonanceType::SemanticEcho,
-                        strength: 0.5 + (0.5 * similarity), // 50% base, 50% semantic similarity
-                        distance: None, // Unknown spatial distance
-                    });
-
-                    // Update strength and type if this memory is stronger
-                    if resonance.strength < 0.5 + (0.5 * similarity) {
-                        resonance.strength = 0.5 + (0.5 * similarity);
-                        resonance.resonance_type = ResonanceType::SemanticEcho;
-                    }
-                }
-            }
-            
-            // 4. NEW: Bridge memories - using union search
-            if let (Some(context), Some(memory_embedding)) = (semantic_context, source.embedding.as_deref()) {
-                #[derive(sqlx::FromRow)]
-                struct BridgeMemory {
-                    #[sqlx(flatten)]
-                    memory: Memory,
-                    distance: f32,
-                }
-                
-                let bridge_memories: Vec<BridgeMemory> = sqlx::query_as(
-                    r#"
-                    SELECT *,
-                        LEAST(
-                            embedding <=> $1::vector,
-                            embedding <=> $2::vector
-                        ) as distance
-                    FROM memories
-                    WHERE id != $3 
-                        AND embedding IS NOT NULL
-                        AND (
-                            (embedding <=> $1::vector) < 0.4 OR
-                            (embedding <=> $2::vector) < 0.4
-                        )
-                        AND id NOT IN (
-                            SELECT id FROM memories WHERE room = $4
-                        )
-                    ORDER BY distance
-                    LIMIT 5
-                    "#
-                )
-                .bind(context)
-                .bind(memory_embedding)
-                .bind(memory_id)
-                .bind(&source.room)
-                .fetch_all(&mut **tx)
-                .await?;
-                
-                for bridge_mem in bridge_memories {
-                    // Calculate distances to both vectors
-                    let context_distance = calculate_cosine_distance(context, &bridge_mem.memory.embedding.as_ref().unwrap());
-                    let memory_distance = calculate_cosine_distance(memory_embedding, &bridge_mem.memory.embedding.as_ref().unwrap());
-                    
-                    // Determine if it's a true bridge (close to both) or just close to one
-                    let (resonance_type, strength) = if context_distance < 0.3 && memory_distance < 0.3 {
-                        // True bridge - close to both
-                        let bridge_strength = (1.0 - context_distance as f64) * (1.0 - memory_distance as f64);
-                        (ResonanceType::MemoryBridge, bridge_strength * 0.8)
-                    } else if context_distance < memory_distance {
-                        // Closer to context
-                        (ResonanceType::ContextualDrift, (1.0 - context_distance as f64) * 0.5)
-                    } else {
-                        // Closer to memory
-                        (ResonanceType::AssociativeLink, (1.0 - memory_distance as f64) * 0.5)
-                    };
-                    
-                    let resonance = resonating.insert(bridge_mem.memory.id, ResonatingMemory {
-                        memory: bridge_mem.memory,
-                        resonance_type,
-                        strength,
-                        distance: None, // Unknown spatial distance
-                    });
-
-                    // Update strength if this memory is stronger
-                    if let Some(existing) = resonance {
-                        if existing.strength < strength {
-                            existing.strength = strength;
-                            existing.resonance_type = resonance_type;
-                            // We can keep the distance since if it exists is
-                            // correct
-                        }
-                    }
-                }
-            }
-            
-            // 5. Keyword resonance (weakest, but still useful)
-            if !source.tags.is_empty() && resonating.len() < 20 {
-                let tag_pattern = source.tags.join("|");
-                let keyword_memories: Vec<Memory> = sqlx::query_as(
-                    r#"
-                    SELECT * FROM memories
-                    WHERE id != $1 
-                        AND tags::text ~* $2
-                        AND id NOT IN (SELECT id FROM memories WHERE room = $3)
-                    LIMIT 3
-                    "#
-                )
-                .bind(memory_id)
-                .bind(&tag_pattern)
-                .bind(&source.room)
-                .fetch_all(&mut **tx)
-                .await?;
-                
-                for memory in keyword_memories {
-                    if resonating.iter().any(|r| r.memory.id == memory.id) {
-                        continue;
-                    }
-                    
-                    let resonance = resonating.entry(memory.id).or_insert_with(|| ResonatingMemory {
-                        memory,
-                        resonance_type: ResonanceType::SharedKeywords,
-                        strength: 0.2, // Weak keyword resonance
-                        distance: None, // Unknown spatial distance
-                    });
-
-                    // Update strength if this memory is stronger
-                    if resonance.strength < 0.2 {
-                        resonance.strength = 0.2;
-                        resonance.resonance_type = ResonanceType::SharedKeywords;
-                    }
-                }
-            }
-            
-            let mut resonating: Vec<_> = resonating.into_values().collect();
-
-            // Sort by strength then recency
-            resonating.sort_by(|a, b| {
-                b.strength.partial_cmp(&a.strength)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| b.memory.last_updated.cmp(&a.memory.last_updated))
-            });
-            
-            Ok(resonating)
-        })
-    })
-    .await
-}
-
-// Helper function to calculate cosine distance
-fn calculate_cosine_distance(a: &[f32], b: &[f32]) -> f32 {
-    // Assuming vectors are already normalized (which they should be for embeddings)
-    // If not, we'd need to normalize them first
-    let dot_product: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
-    1.0 - dot_product
-}
-
-#[derive(Debug, Clone)]
-pub struct ResonatingMemory {
-    pub memory: Memory,
-    pub resonance_type: ResonanceType,
-    pub strength: f64,
-    pub distance: Option<u32>, // Spatial distance if known
-}
-
-// Enhanced resonance types
-#[derive(Debug, Clone)]
-pub enum ResonanceType {
-    SameRoom,              // Spatially co-located
-    NearbyRoom(u32),       // Spatially near (with distance)
-    SemanticEcho,          // Semantically similar (via embeddings)
-    SharedKeywords,        // Tag-based similarity
-    MemoryBridge,          // NEW: Close to both context and memory (true bridge)
-    ContextualDrift,       // NEW: Closer to context than memory
-    AssociativeLink,       // NEW: Closer to memory than context
-}
-
-// In service.rs
-pub async fn semantic_search_all_rooms<S: AsRef<str>>(
-    pool: &PgPool,
-    schema: S,
-    query_embedding: TextEmbedding,
-    limit: usize,
-) -> Result<Vec<Memory>, MemoryPalaceError> {
-    execute_with_schema(pool, schema.as_ref(), |tx: &mut Transaction<Postgres>| {
-        Box::pin(async move {
-            let memories: Vec<Memory> = sqlx::query_as(
+            let rows: Vec<RelatedMemoryRow> = sqlx::query_as(
                 r#"
-                SELECT * 
-                FROM memories
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> $1::vector
-                LIMIT $2
-                "#
+                WITH RECURSIVE related_memories AS (
+                    -- Base case: direct relationships
+                    SELECT 
+                        m.*, 
+                        r.name as room_name,
+                        mr.relationship_type,
+                        mr.strength,
+                        1 as depth,
+                        ARRAY[m.id] as visited
+                    FROM memory_relationships mr
+                    JOIN memories m ON (
+                        CASE 
+                            WHEN mr.from_memory_id = $1 THEN mr.to_memory_id 
+                            ELSE mr.from_memory_id 
+                        END = m.id
+                    )
+                    JOIN rooms r ON m.room_id = r.id
+                    WHERE (mr.from_memory_id = $1 OR mr.to_memory_id = $1)
+                        AND mr.strength >= $3
+                    
+                    UNION ALL
+                    
+                    -- Recursive case: indirect relationships
+                    SELECT 
+                        m.*, 
+                        r.name as room_name,
+                        mr.relationship_type,
+                        rm.strength * mr.strength as strength,
+                        rm.depth + 1 as depth,
+                        rm.visited || m.id as visited
+                    FROM related_memories rm
+                    JOIN memory_relationships mr ON (
+                        (mr.from_memory_id = rm.id OR mr.to_memory_id = rm.id)
+                        AND mr.from_memory_id != ALL(rm.visited)
+                        AND mr.to_memory_id != ALL(rm.visited)
+                    )
+                    JOIN memories m ON (
+                        CASE 
+                            WHEN mr.from_memory_id = rm.id THEN mr.to_memory_id 
+                            ELSE mr.from_memory_id 
+                        END = m.id
+                    )
+                    JOIN rooms r ON m.room_id = r.id
+                    WHERE rm.depth < $2
+                        AND rm.strength * mr.strength >= $3
+                        AND NOT (m.id = ANY(rm.visited))
+                )
+                SELECT DISTINCT ON (id) 
+                    room_name, id, content, room_id, placement, placement_description,
+                    tags, embedding, importance, access_count, created_at, last_updated,
+                    last_accessed, relationship_type, strength, depth
+                FROM related_memories
+                ORDER BY id, strength DESC, depth ASC
+                LIMIT 50  -- Hard limit to prevent runaway queries
+                "#,
             )
-            .bind(query_embedding)
-            .bind(limit as i64)
+            .bind(memory_id)
+            .bind(max_depth as i32)
+            .bind(min_strength)
             .fetch_all(&mut **tx)
             .await?;
             
-            Ok(memories)
+            // Convert to expected format
+            let results: Vec<(String, String, MemoryRow, String, f64)> = rows
+                .into_iter()
+                .map(|row| {
+                    let memory_row = MemoryRow {
+                        id: MemoryId(row.memory_id),
+                        content: row.content,
+                        room_id: RoomId(row.room_id),
+                        placement: row.placement,
+                        placement_description: row.placement_description,
+                        tags: row.tags,
+                        embedding: row.embedding,
+                        importance: row.importance,
+                        access_count: row.access_count,
+                        created_at: row.created_at,
+                        last_updated: row.last_updated,
+                        last_accessed: row.last_accessed,
+                    };
+                    
+                    (
+                        row.room_name,
+                        memory_row.id.0.to_string(),
+                        memory_row,
+                        row.relationship_type,
+                        row.strength,
+                    )
+                })
+                .collect();
+            
+            Ok(results)
         })
     })
     .await
 }
 
-// In service.rs
-
-/// Get rooms within N hops of current room
+/// Get rooms within N hops of current room with safety limits
 pub async fn get_rooms_within_radius(
     pool: &PgPool,
     schema: &str,
     start_room: &str,
     radius: u32,
-) -> Result<Vec<(String, String, u32)>, MemoryPalaceError> {
-    execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
+) -> Result<Vec<RoomWithDistance>, MemoryPalaceError> {
+    // Validate radius
+    if radius == 0 {
+        return Ok(vec![]);
+    }
+    
+    execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
-            let rooms: Vec<(String, String, i32)> = sqlx::query_as(
+            // First verify the starting room exists
+            let start_room_id: Option<RoomId> = sqlx::query_scalar(
+                "SELECT id FROM rooms WHERE name = $1"
+            )
+            .bind(start_room)
+            .fetch_optional(&mut **tx)
+            .await?;
+            
+            let start_room_id = start_room_id
+                .ok_or_else(|| MemoryPalaceError::RoomNotFound(start_room.to_string()))?;
+            
+            #[derive(sqlx::FromRow)]
+            struct RoomDistanceRow {
+                id: i64,
+                name: String,
+                description: String,
+                atmosphere: Option<String>,
+                centroid_embedding: Option<pgvector::Vector>,
+                created_at: DateTime<Utc>,
+                last_visited: DateTime<Utc>,
+                visit_count: i32,
+                memory_count: i32,
+                distance: i32,
+                path: Vec<i64>,
+            }
+            
+            let rows: Vec<RoomDistanceRow> = sqlx::query_as(
                 r#"
                 WITH RECURSIVE room_graph AS (
                     -- Start room
-                    SELECT $1::varchar as room, ''::varchar as direction, 0 as distance
+                    SELECT 
+                        r.*,
+                        0 as distance,
+                        ARRAY[r.id] as path
+                    FROM rooms r
+                    WHERE r.id = $1
                     
-                    UNION
+                    UNION ALL
                     
                     -- Connected rooms
                     SELECT 
-                        CASE 
-                            WHEN rc.from_room = rg.room THEN rc.to_room
-                            ELSE rc.from_room
-                        END as room,
-                        CASE 
-                            WHEN rc.from_room = rg.room THEN rc.passage_type
-                            ELSE rc.passage_type || ' (back)'
-                        END as direction,
-                        rg.distance + 1 as distance
+                        r.*,
+                        rg.distance + 1 as distance,
+                        rg.path || r.id as path
                     FROM room_graph rg
                     JOIN room_connections rc ON (
-                        rc.from_room = rg.room OR rc.to_room = rg.room
+                        (rc.from_room_id = rg.id AND rc.to_room_id = r.id) OR
+                        (rc.to_room_id = rg.id AND rc.from_room_id = r.id)
                     )
+                    JOIN rooms r ON r.id = CASE 
+                        WHEN rc.from_room_id = rg.id THEN rc.to_room_id
+                        ELSE rc.from_room_id
+                    END
                     WHERE rg.distance < $2
+                        AND NOT (r.id = ANY(rg.path))  -- Prevent cycles
                 )
-                SELECT DISTINCT room, MIN(direction) as direction, MIN(distance) as distance
+                SELECT DISTINCT ON (id) *
                 FROM room_graph
-                WHERE room != $1 AND direction != ''
-                GROUP BY room
-                ORDER BY distance, room
+                WHERE id != $1
+                ORDER BY id, distance ASC
+                LIMIT 100  -- Hard limit
                 "#
             )
-            .bind(start_room)
+            .bind(start_room_id)
             .bind(radius as i32)
             .fetch_all(&mut **tx)
             .await?;
             
-            Ok(rooms.into_iter()
-                .map(|(room, dir, dist)| (dir, room, dist as u32))
-                .collect())
+            let results: Vec<RoomWithDistance> = rows
+                .into_iter()
+                .map(|row| RoomWithDistance {
+                    room: Room {
+                        id: RoomId(row.id),
+                        name: row.name,
+                        description: row.description,
+                        atmosphere: row.atmosphere,
+                        centroid: row.centroid_embedding,
+                        created_at: row.created_at,
+                        last_visited: row.last_visited,
+                        visit_count: row.visit_count,
+                        memory_count: row.memory_count,
+                    },
+                    distance: row.distance as u32,
+                    path: row.path.into_iter().map(RoomId).collect(),
+                })
+                .collect();
+            
+            Ok(results)
         })
     })
     .await
@@ -1248,4 +1093,270 @@ pub async fn get_context_summary(
     }
 
     Ok(context)
+}
+
+/// Search for prompts by content or metadata
+pub async fn search_prompts(
+    pool: &PgPool,
+    schema: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(PromptId, DateTime<Utc>)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            let pattern = format!("%{}%", query);
+            
+            let results: Vec<(PromptId, DateTime<Utc>)> = sqlx::query_as(
+                r#"
+                SELECT id, created_at
+                FROM prompts
+                WHERE content::text ILIKE $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                "#
+            )
+            .bind(&pattern)
+            .bind(limit as i64)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            Ok(results)
+        })
+    })
+    .await
+}
+
+/// Get prompts within a time range
+pub async fn get_prompts_in_range(
+    pool: &PgPool,
+    schema: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Vec<(PromptId, Prompt<'static>)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            let results: Vec<(PromptId, serde_json::Value)> = sqlx::query_as(
+                r#"
+                SELECT id, content
+                FROM prompts
+                WHERE created_at >= $1 AND created_at <= $2
+                ORDER BY created_at DESC
+                "#
+            )
+            .bind(start)
+            .bind(end)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            let prompts = results
+                .into_iter()
+                .map(|(id, value)| {
+                    let prompt: Prompt<'static> = serde_json::from_value(value)?;
+                    Ok((id, prompt))
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>()?;
+
+            Ok(prompts)
+        })
+    })
+    .await
+}
+
+/// Find similar prompts based on embeddings
+pub async fn find_similar_prompts(
+    pool: &PgPool,
+    schema: &str,
+    prompt_id: PromptId,
+    limit: usize,
+) -> Result<Vec<(PromptId, f32)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            // First get the embedding of the target prompt
+            let embedding: Option<pgvector::Vector> = sqlx::query_scalar(
+                "SELECT embedding FROM prompts WHERE id = $1"
+            )
+            .bind(prompt_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            if let Some(embedding) = embedding {
+                let results: Vec<(PromptId, f32)> = sqlx::query_as(
+                    r#"
+                    SELECT 
+                        p.id,
+                        1 - (p.embedding <=> $1) as similarity
+                    FROM prompts p
+                    WHERE p.id != $2 AND p.embedding IS NOT NULL
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#
+                )
+                .bind(&embedding)
+                .bind(prompt_id)
+                .bind(limit as i64)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                Ok(results)
+            } else {
+                Ok(vec![])
+            }
+        })
+    })
+    .await
+}
+                "- [{}] {} ({})",
+                memory.room,
+                if memory.content.len() > 50 {
+                    format!("{}...", &memory.content[..50])
+                } else {
+                    memory.content
+                },
+                time_desc
+            ));
+            if !tags.is_empty() {
+                context.push_str(&format!(" [{}]", tags.join(", ")));
+            }
+            context.push('\n');
+        }
+    }
+
+    if !top_relationships.is_empty() {
+        context.push_str("\nKey relationships:\n");
+        for rel in top_relationships {
+            context.push_str(&format!(
+                "- {} --[{}]({:.1})--> {}\n",
+                if rel.from_content.len() > 30 {
+                    format!("{}...", &rel.from_content[..30])
+                } else {
+                    rel.from_content
+                },
+                rel.relationship_type,
+                rel.strength,
+                if rel.to_content.len() > 30 {
+                    format!("{}...", &rel.to_content[..30])
+                } else {
+                    rel.to_content
+                }
+            ));
+        }
+    }
+
+    if context.is_empty() {
+        context = "Memory palace is empty - ready to store new knowledge!"
+            .to_string();
+    }
+
+    Ok(context)
+}
+
+/// Search for prompts by content or metadata
+pub async fn search_prompts(
+    pool: &PgPool,
+    schema: &str,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(PromptId, DateTime<Utc>)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            let pattern = format!("%{}%", query);
+            
+            let results: Vec<(PromptId, DateTime<Utc>)> = sqlx::query_as(
+                r#"
+                SELECT id, created_at
+                FROM prompts
+                WHERE content::text ILIKE $1
+                ORDER BY created_at DESC
+                LIMIT $2
+                "#
+            )
+            .bind(&pattern)
+            .bind(limit as i64)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            Ok(results)
+        })
+    })
+    .await
+}
+
+/// Get prompts within a time range
+pub async fn get_prompts_in_range(
+    pool: &PgPool,
+    schema: &str,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<Vec<(PromptId, Prompt<'static>)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            let results: Vec<(PromptId, serde_json::Value)> = sqlx::query_as(
+                r#"
+                SELECT id, content
+                FROM prompts
+                WHERE created_at >= $1 AND created_at <= $2
+                ORDER BY created_at DESC
+                "#
+            )
+            .bind(start)
+            .bind(end)
+            .fetch_all(&mut **tx)
+            .await?;
+
+            let prompts = results
+                .into_iter()
+                .map(|(id, value)| {
+                    let prompt: Prompt<'static> = serde_json::from_value(value)?;
+                    Ok((id, prompt))
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>()?;
+
+            Ok(prompts)
+        })
+    })
+    .await
+}
+
+/// Find similar prompts based on embeddings
+pub async fn find_similar_prompts(
+    pool: &PgPool,
+    schema: &str,
+    prompt_id: PromptId,
+    limit: usize,
+) -> Result<Vec<(PromptId, f32)>, MemoryPalaceError> {
+    execute_with_schema(pool, schema, |tx| {
+        Box::pin(async move {
+            // First get the embedding of the target prompt
+            let embedding: Option<pgvector::Vector> = sqlx::query_scalar(
+                "SELECT embedding FROM prompts WHERE id = $1"
+            )
+            .bind(prompt_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+
+            if let Some(embedding) = embedding {
+                let results: Vec<(PromptId, f32)> = sqlx::query_as(
+                    r#"
+                    SELECT 
+                        p.id,
+                        1 - (p.embedding <=> $1) as similarity
+                    FROM prompts p
+                    WHERE p.id != $2 AND p.embedding IS NOT NULL
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#
+                )
+                .bind(&embedding)
+                .bind(prompt_id)
+                .bind(limit as i64)
+                .fetch_all(&mut **tx)
+                .await?;
+
+                Ok(results)
+            } else {
+                Ok(vec![])
+            }
+        })
+    })
+    .await
 }

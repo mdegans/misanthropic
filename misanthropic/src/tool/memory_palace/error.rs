@@ -1,3 +1,5 @@
+use crate::tool::embedding::EmbeddingError;
+use crate::tool::memory_palace::{MemoryId, RoomId};
 use serde_json;
 use sqlx;
 use thiserror::Error;
@@ -18,4 +20,16 @@ pub enum MemoryPalaceError {
 
     #[error("Not found: {0:?}")]
     RoomNotFound(RoomId),
+
+    #[error("Memory not found: {0}")]
+    MemoryNotFound(MemoryId),
+
+    #[error("Room ID not found: {0}")]
+    RoomIdNotFound(RoomId),
+
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
+    #[error("Embedding error: {0}")]
+    Embedding(#[from] EmbeddingError),
 }
