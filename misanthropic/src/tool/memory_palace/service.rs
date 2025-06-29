@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
@@ -207,7 +207,7 @@ pub async fn find_resonating_memories(
     memory_id: i64,
     max_depth: u32,
     min_strength: f64,
-) -> Result<Vec<(String, String, MemoryRow, String, f64)>, MemoryPalaceError>
+) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError>
 {
     // Early return for invalid inputs
     if max_depth == 0 {
@@ -217,7 +217,7 @@ pub async fn find_resonating_memories(
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // First, get the source memory to validate it exists
-            let source: MemoryRow = sqlx::query_as(
+            let source: Memory = sqlx::query_as(
                 "SELECT * FROM memories WHERE id = $1"
             )
             .bind(memory_id)
@@ -231,13 +231,13 @@ pub async fn find_resonating_memories(
                 room_name: String,
                 memory_id: i64,
                 #[sqlx(json)]
-                content: Memory,
+                content: MemoryContent,
                 room_id: i64,
                 placement: String,
                 placement_description: Option<String>,
                 #[sqlx(json)]
                 tags: Vec<String>,
-                embedding: Option<pgvector::Vector>,
+                embedding: Option<Vec<f32>>,
                 importance: f32,
                 access_count: i32,
                 created_at: DateTime<Utc>,
@@ -313,17 +313,16 @@ pub async fn find_resonating_memories(
             .await?;
             
             // Convert to expected format
-            let results: Vec<(String, String, MemoryRow, String, f64)> = rows
+            let results: Vec<(String, String, Memory, String, f64)> = rows
                 .into_iter()
                 .map(|row| {
-                    let memory_row = MemoryRow {
+                    let memory_row = Memory {
                         id: MemoryId(row.memory_id),
                         content: row.content,
                         room_id: RoomId(row.room_id),
                         placement: row.placement,
                         placement_description: row.placement_description,
                         tags: row.tags,
-                        embedding: row.embedding,
                         importance: row.importance,
                         access_count: row.access_count,
                         created_at: row.created_at,
@@ -353,7 +352,7 @@ pub async fn get_rooms_within_radius(
     schema: &str,
     start_room: &str,
     radius: u32,
-) -> Result<Vec<RoomWithDistance>, MemoryPalaceError> {
+) -> Result<Vec<RoomWithJourney>, MemoryPalaceError> {
     // Validate radius
     if radius == 0 {
         return Ok(vec![]);
@@ -378,7 +377,6 @@ pub async fn get_rooms_within_radius(
                 name: String,
                 description: String,
                 atmosphere: Option<String>,
-                centroid_embedding: Option<pgvector::Vector>,
                 created_at: DateTime<Utc>,
                 last_visited: DateTime<Utc>,
                 visit_count: i32,
@@ -387,7 +385,7 @@ pub async fn get_rooms_within_radius(
                 path: Vec<i64>,
             }
             
-            let rows: Vec<RoomDistanceRow> = sqlx::query_as(
+            let rows: BTreeSet<RoomDistanceRow> = sqlx::query_as(
                 r#"
                 WITH RECURSIVE room_graph AS (
                     -- Start room
@@ -429,9 +427,9 @@ pub async fn get_rooms_within_radius(
             .fetch_all(&mut **tx)
             .await?;
             
-            let results: Vec<RoomWithDistance> = rows
+            let results: Vec<RoomWithJourney> = rows
                 .into_iter()
-                .map(|row| RoomWithDistance {
+                .map(|row| RoomWithJourney {
                     room: Room {
                         id: RoomId(row.id),
                         name: row.name,
@@ -462,9 +460,9 @@ pub async fn get_context_summary(
         execute_with_schema(pool, schema, |tx: &mut Transaction<Postgres>| {
             Box::pin(async move {
                 // Get recent memories based on last_updated (more relevant for agents)
-                let recent_memories: Vec<RecentMemory> = sqlx::query_as(
+                let recent_memories: Vec<Memory> = sqlx::query_as(
                     r#"
-                SELECT content, room, tags, created_at
+                SELECT *
                 FROM memories 
                 ORDER BY last_updated DESC, created_at DESC 
                 LIMIT 5

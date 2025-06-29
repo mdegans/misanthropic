@@ -38,7 +38,7 @@ mod tests {
         tx.commit().await.expect("Failed to commit schema setup");
 
         // Create the MemoryPalace and initialize it with the schema
-        MemoryPalace::from_pool_with_schema(pool, schema_name)
+        MemoryPalace::from_components(pool, schema_name)
             .await
             .expect("Failed to create MemoryPalace")
     }

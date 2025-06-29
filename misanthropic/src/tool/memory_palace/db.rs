@@ -1,148 +1,343 @@
+// Copyright 2025 Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
+//
+// The initial idea was Sonnet. Opus helped refine it into what it is now in a
+// collaborative effort. The code is a result of human and AI collaboration.
 use crate::tool::memory_palace::MemoryPalaceError;
 use sqlx::{PgPool, Postgres, Transaction};
 use std::future::Future;
 use std::pin::Pin;
 
-/// Initialize the database schema with proper indexes and triggers.
+/// Initialize the database schema. Idempotent.
 pub async fn ensure_initialized(
     pool: &PgPool,
     schema_name: &str,
 ) -> Result<(), MemoryPalaceError> {
     execute_with_schema(pool, schema_name, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
-            // Execute schema creation statements individually
+            // Users table stores (minimal) user information. `pro` users are
+            // paying users who can access more models and features.
+            //
+            // `karma` is a simple integer to track user behavior. On reaching
+            // -1000 karma, the user is automatically banned. The user can, at
+            // that point only read chats and delete their account if they want
+            // their data deleted.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                pro BOOLEAN NOT NULL DEFAULT FALSE,
+                banned BOOLEAN NOT NULL DEFAULT FALSE,
+                karma SMALLINT NOT NULL DEFAULT 0,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )"#)
+            .execute(&mut **tx)
+            .await?;
 
-            // Rooms table with better metadata
+            // Rooms in the MemoryPalace are logical groupings for memories with
+            // narrative context. Creative writing powers the palace.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS rooms (
-                id BIGSERIAL PRIMARY KEY,
-                name VARCHAR(255) NOT NULL UNIQUE,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                name VARCHAR(128) NOT NULL,
                 description TEXT NOT NULL,
-                atmosphere TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_visited TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_visited TIMESTAMPTZ NOT NULL DEFAULT now(),
+                strength FLOAT8 NOT NULL DEFAULT 0.5,
                 visit_count INTEGER NOT NULL DEFAULT 0,
                 memory_count INTEGER NOT NULL DEFAULT 0,
-                CONSTRAINT room_name_length CHECK (char_length(name) >= 3)
+                UNIQUE(user_id, name),
+                CONSTRAINT room_name_length CHECK (char_length(name) >= 3),
+                CONSTRAINT valid_last_visited CHECK (last_visited >= created_at),
+                CONSTRAINT strength_range CHECK (strength >= 0 AND strength <= 1),
+                CONSTRAINT visit_count_non_negative CHECK (visit_count >= 0),
+                CONSTRAINT memory_count_non_negative CHECK (memory_count >= 0)
             )"#)
             .execute(&mut **tx)
             .await?;
 
+            // Memories represent notes, messages, summaries, images, and so on
+            // that agents can recall. They are the core of the MemoryPalace.
+            //
+            // They are stored in JSONB format for flexibility. Most, but not
+            // all memories will refer to a `Prompt`. For example, a `Report`
+            // is not deleted even if the `Prompt` it refers to is deleted.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memories (
-                id BIGSERIAL PRIMARY KEY,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 content JSONB NOT NULL,
-                room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                placement VARCHAR(255) NOT NULL DEFAULT 'shelf',
+                room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                prompt_id UUID REFERENCES prompts(id) ON DELETE SET NULL,
+                prompt_index INTEGER,
+                placement VARCHAR(64) NOT NULL DEFAULT 'shelf',
                 placement_description TEXT,
                 tags JSONB NOT NULL DEFAULT '[]',
-                importance FLOAT NOT NULL DEFAULT 0.5 CHECK (importance >= 0 AND importance <= 1),
+                strength FLOAT8 NOT NULL DEFAULT 0.5,
                 access_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_updated TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                last_accessed TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_accessed TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_updated TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT content_not_empty CHECK (jsonb_typeof(content) = 'object' AND jsonb_array_length(content) > 0),
+                CONSTRAINT tags_is_array CHECK (jsonb_typeof(tags) = 'array'),
+                CONSTRAINT prompt_index_non_negative CHECK (prompt_index IS NULL OR prompt_index >= 0),
+                CONSTRAINT no_index_without_prompt CHECK (
+                    (prompt_id IS NULL AND prompt_index IS NULL) OR
+                    (prompt_id IS NOT NULL AND prompt_index IS NOT NULL)
+                ),
+                CONSTRAINT strength_range CHECK (strength >= 0 AND strength <= 1),
+                CONSTRAINT access_count_non_negative CHECK (access_count >= 0),
+                CONSTRAINT valid_last_updated CHECK (last_updated >= created_at),
+                CONSTRAINT valid_last_accessed CHECK (last_accessed >= created_at)
             )"#)
             .execute(&mut **tx)
             .await?;
 
-            // Room connections with proper ID references
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_connections (
-                id BIGSERIAL PRIMARY KEY,
-                from_room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                to_room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                passage_type VARCHAR(100) NOT NULL DEFAULT 'hallway',
+            // Connections between rooms hint to the agent how to navigate
+            // between them. They can represent hallways, doors, or other
+            // passage types. They should lead to related rooms. Traversals will
+            // increase the strength of the connection forming neural pathways
+            // in the palace.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS pathways (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                room_a UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                room_b UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                passage_type VARCHAR(64) NOT NULL DEFAULT 'hallway',
                 description TEXT,
-                strength INTEGER NOT NULL DEFAULT 1 CHECK (strength >= 0 AND strength <= 10),
+                strength FLOAT8 NOT NULL DEFAULT 0.5,
                 traversal_count INTEGER NOT NULL DEFAULT 0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 last_traversed TIMESTAMPTZ,
                 UNIQUE(from_room_id, to_room_id),
-                CONSTRAINT no_self_connection CHECK (from_room_id != to_room_id)
+                CONSTRAINT bidirectional_unique CHECK (
+                    from_room_id < to_room_id
+                ),
+                CONSTRAINT strength_range CHECK (
+                    strength >= 0 AND strength <= 1
+                ),
+                CONSTRAINT valid_traversal_count CHECK (traversal_count >= 0),
+                CONSTRAINT valid_last_traversed CHECK (
+                    last_traversed IS NULL OR last_traversed >= created_at
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
 
+            // Relationships are directed edges between memories. They represent
+            // relationships like "related", "caused", "inspired", etc.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_relationships (
-                id BIGSERIAL PRIMARY KEY,
-                from_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                to_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                from_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                to_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 relationship_type VARCHAR(100) NOT NULL DEFAULT 'related',
-                strength FLOAT NOT NULL DEFAULT 1.0,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(from_memory_id, to_memory_id)
+                strength FLOAT NOT NULL DEFAULT 0.5,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(from_memory_id, to_memory_id),
+                CONSTRAINT strength_range CHECK (
+                    strength >= 0 AND strength <= 1
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
 
-            // New table for tracking memory access patterns
+            // The memory access log tracks now memories are accessed and can be
+            // used to analyze memory usage patterns or to rebuild `strength`.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_access_log (
-                id BIGSERIAL PRIMARY KEY,
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                access_type VARCHAR(50) NOT NULL DEFAULT 'read',
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                -- Access type: 'c' for create, 'r' for read, 'u' for update, 'd' for delete
+                access_type CHAR(1) NOT NULL,
+                -- The agent or user who accessed the memory (e.g. Archivist, Janitor)
+                accessed_by VARCHAR(64) NOT NULL,
                 context TEXT,
-                accessed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                path JSONB NOT NULL,
+                accessed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT valid_access_type CHECK (
+                    access_type IN ('c', 'r', 'u', 'd')
+                ),
+                CONSTRAINT valid_path CHECK (
+                    jsonb_typeof(path) = 'array' AND
+                    jsonb_array_length(path) > 0
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
 
-            // New table for room themes/categories
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_themes (
-                id BIGSERIAL PRIMARY KEY,
-                room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                theme VARCHAR(100) NOT NULL,
-                strength FLOAT NOT NULL DEFAULT 1.0 CHECK (strength >= 0 AND strength <= 1),
-                UNIQUE(room_id, theme)
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            // Table for tracking memory similarity clusters
+            // Table for clustering similar memories based on embeddings or
+            // other similarity measures. This allows agents to group related
+            // memories together for easier recall and consolidation.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_similarity_clusters (
-                id BIGSERIAL PRIMARY KEY,
-                cluster_id UUID NOT NULL DEFAULT gen_random_uuid(),
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                similarity_score FLOAT NOT NULL CHECK (similarity_score >= 0 AND similarity_score <= 1),
-                is_primary BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(memory_id)
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(cluster_id, memory_id),
+                CONSTRAINT valid_similarity_score CHECK (
+                    similarity_score >= 0 AND similarity_score <= 1
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
 
-            // Table for memory consolidation history
+            // Table for memory consolidation history. Too many similar memories
+            // clutter the palace and waste agents' time and context. The
+            // Janitor agent consolidates similar memories by merging them. It
+            // is not guaranteed that all `origial_memory_ids` exist. They may
+            // be forgotten permanently in some cases.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_consolidations (
-                id BIGSERIAL PRIMARY KEY,
-                consolidated_memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                original_memory_ids BIGINT[] NOT NULL,
-                consolidation_type VARCHAR(50) NOT NULL DEFAULT 'merge',
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                consolidated_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 agent_notes TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT valid_original_memory_ids_elements CHECK (
+                    array_length(original_memory_ids, 1) > 1 AND
+                    array_length(original_memory_ids, 1) <= 5
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
 
-            // Table for memory decay tracking
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_decay_log (
-                id BIGSERIAL PRIMARY KEY,
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                previous_importance FLOAT NOT NULL,
-                new_importance FLOAT NOT NULL,
-                decay_reason VARCHAR(100) NOT NULL,
-                decayed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            // Consolidated memories associate original memories with the
+            // consolidated memory. This allows agents to see the history of
+            // consolidation and access original memories if needed.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS consolidated_memory_ids (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                consolidated_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                original_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(consolidated_memory_id, original_memory_id),
+                CONSTRAINT valid_original_memory_id CHECK (
+                    original_memory_id != consolidated_memory_id
+                )
             )"#)
             .execute(&mut **tx)
             .await?;
+
+            // Table for memory decay tracking. This is purely for debugging
+            // purposes, logging when and why memory strength is decayed. More
+            // frequently accessed memories increase in strength while over time
+            // unused memories decay. This is a time-based decay, not a
+            // similarity-based decay.
+            //
+            // The decay is applied periodically, e.g. once a week across all
+            // memories. The decay rate is configurable, but the default is 1%
+            // per week. We don't record per-memory decay, rather the batch
+            // event is logged here. It is applied across the palace to all user
+            // memories.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_decay_log (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                decay_date TIMESTAMPTZ NOT NULL DEFAULT now(),
+                decay_reason VARCHAR(100) NOT NULL
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Prompts table stores entire Prompts which memories usually refer
+            // to. On new message, this is updated with the latest version.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompts (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                content JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                last_updated TIMESTAMPTZ NOT NULL DEFAULT now(),
+                CONSTRAINT content_not_empty CHECK (
+                    jsonb_typeof(content) = 'object'
+                    AND jsonb_array_length(content) > 0
+                ),
+                -- If the content is a note, it cannot contain "<note>" or "</note>"
+                CONSTRAINT content_does_not_contain_forbidden_note_tags CHECK (
+                    NOT (content @> '{"type": "note"}' AND
+                        (content->'data'->>'text') LIKE '%<note>%' OR
+                        (content->'data'->>'text') LIKE '%</note>%')
+                ),
+                CONSTRAINT valid_last_updated CHECK (last_updated >= created_at)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Embeddings cache table. This cache is shared between users since
+            // there may be cache hits for small messages like greetings.
+            // Embeddings are attached to memories, prompts, rooms, clusters,
+            // and so on. They are used for similarity search and clustering.
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                model_name VARCHAR(255) NOT NULL,
+                model_size INTEGER NOT NULL,
+                content_hash BYTEA NOT NULL,
+                embedding VECTOR NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(model_name, content_hash),
+                constraint model_name_length CHECK (
+                    char_length(model_name) >= 3
+                ),
+                constraint valid_model_size CHECK (model_size > 0)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // ## Junction tables for embeddings
+
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                embedding_id UUID NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(memory_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompt_embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                prompt_id UUID NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
+                embedding_id UUID NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(prompt_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Room centroids
+            // TODO: Centroid update trigger
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                room_id UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
+                embedding_id UUID NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(room_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Embedding cluster centroids
+            // TODO: Cluster update trigger
+            sqlx::query(r#"CREATE TABLE IF NOT EXISTS cluster_embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                cluster_id UUID NOT NULL DEFAULT gen_random_uuid(),
+                embedding_id UUID NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                UNIQUE(cluster_id, embedding_id)
+            )"#)
+            .execute(&mut **tx)
+            .await?;
+
 
             // Functions and triggers
             sqlx::query(r#"CREATE OR REPLACE FUNCTION update_last_updated_column()
                 RETURNS TRIGGER AS $$
                 BEGIN
-                    NEW.last_updated = NOW();
+                    NEW.last_updated = now();
                     RETURN NEW;
                 END;
                 $$ language 'plpgsql'"#)
             .execute(&mut **tx)
             .await?;
 
-            // Function to update room memory count
+            // Called on memory update
             sqlx::query(r#"CREATE OR REPLACE FUNCTION update_room_memory_count()
                 RETURNS TRIGGER AS $$
                 BEGIN
@@ -157,7 +352,8 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Function to calculate memory decay based on access patterns
+            // TODO: Call this. It's currently unused. Either we call this
+            // periodically or we find another solution to decay memories.
             sqlx::query(r#"CREATE OR REPLACE FUNCTION calculate_memory_decay()
                 RETURNS VOID AS $$
                 DECLARE
@@ -170,9 +366,9 @@ pub async fn ensure_initialized(
                         UPDATE memories
                         SET importance = GREATEST(
                             min_importance,
-                            importance * (1 - decay_rate * EXTRACT(EPOCH FROM (NOW() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
+                            importance * (1 - decay_rate * EXTRACT(EPOCH FROM (now() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
                         )
-                        WHERE last_accessed < NOW() - decay_period
+                        WHERE last_accessed < now() - decay_period
                         AND importance > min_importance
                         RETURNING id, importance
                     )
@@ -190,16 +386,16 @@ pub async fn ensure_initialized(
             .await?;
 
             sqlx::query(r#"CREATE OR REPLACE FUNCTION find_similar_memories(
-                target_memory_id BIGINT,
+                target_memory_id UUID,
                 similarity_threshold FLOAT DEFAULT 0.85,
                 max_results INT DEFAULT 10,
                 embedding_model VARCHAR DEFAULT NULL
             )
             RETURNS TABLE(
-                memory_id BIGINT,
+                memory_id UUID,
                 similarity_score FLOAT,
                 content JSONB,
-                room_id BIGINT
+                room_id UUID
             ) AS $$
             BEGIN
                 RETURN QUERY
@@ -312,15 +508,6 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Prompts table without embedding column
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompts (
-                id BIGSERIAL PRIMARY KEY,
-                content JSONB NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
             // Index for prompt creation time
             sqlx::query("CREATE INDEX IF NOT EXISTS idx_prompts_created_at ON prompts (created_at DESC)")
             .execute(&mut **tx)
@@ -356,50 +543,6 @@ END $$;
                 FROM room_connections rc
                 JOIN rooms r1 ON rc.from_room_id = r1.id
                 JOIN rooms r2 ON rc.to_room_id = r2.id"#)
-            .execute(&mut **tx)
-            .await?;
-
-            // Embeddings cache table
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS embeddings (
-                id BIGSERIAL PRIMARY KEY,
-                model_name VARCHAR(255) NOT NULL,
-                model_size INTEGER NOT NULL,
-                content_hash BYTEA NOT NULL,
-                embedding VECTOR NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(model_name, content_hash)
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_embeddings (
-                id BIGSERIAL PRIMARY KEY,
-                memory_id BIGINT NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
-                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(memory_id, embedding_id)
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS prompt_embeddings (
-                id BIGSERIAL PRIMARY KEY,
-                prompt_id BIGINT NOT NULL REFERENCES prompts(id) ON DELETE CASCADE,
-                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(prompt_id, embedding_id)
-            )"#)
-            .execute(&mut **tx)
-            .await?;
-
-            sqlx::query(r#"CREATE TABLE IF NOT EXISTS room_embeddings (
-                id BIGSERIAL PRIMARY KEY,
-                room_id BIGINT NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                embedding_id BIGINT NOT NULL REFERENCES embeddings(id) ON DELETE CASCADE,
-                is_centroid BOOLEAN NOT NULL DEFAULT FALSE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                UNIQUE(room_id, embedding_id)
-            )"#)
             .execute(&mut **tx)
             .await?;
 

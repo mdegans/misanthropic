@@ -5,7 +5,7 @@
 mod tool;
 
 use crate::prompt::message::{Message, Role};
-use crate::tool::memory_palace::{Memory, MemoryId, RoomId};
+use crate::tool::memory_palace::{MemoryContent, MemoryId, RoomId};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(tag = "name", content = "input", rename_all = "snake_case")]
@@ -65,34 +65,35 @@ impl ArchivistUse {
                 keywords,
             } => {
                 // Determine what type of memory this is from context
-                let memory = if let Some(pending) =
-                    state.pending_memories.first()
-                {
-                    match &pending.memory_type {
-                        PendingMemoryType::Exchange(messages) => Memory::Pair {
-                            messages: messages.clone(),
-                            summary: Some(content.clone()),
-                        },
-                        PendingMemoryType::Note => Memory::Note {
+                let memory =
+                    if let Some(pending) = state.pending_memories.first() {
+                        match &pending.memory_type {
+                            PendingMemoryType::Exchange(messages) => {
+                                MemoryContent::Pair {
+                                    messages: messages.clone(),
+                                    summary: Some(content.clone()),
+                                }
+                            }
+                            PendingMemoryType::Note => MemoryContent::Note {
+                                content: content.clone(),
+                                tags: keywords.clone(),
+                            },
+                            PendingMemoryType::Insight {
+                                source_ids,
+                                confidence,
+                            } => MemoryContent::Insight {
+                                content: content.clone(),
+                                source_memories: source_ids.clone(),
+                                confidence: *confidence,
+                            },
+                        }
+                    } else {
+                        // Default to note if no pending memory
+                        MemoryContent::Note {
                             content: content.clone(),
                             tags: keywords.clone(),
-                        },
-                        PendingMemoryType::Insight {
-                            source_ids,
-                            confidence,
-                        } => Memory::Insight {
-                            content: content.clone(),
-                            source_memories: source_ids.clone(),
-                            confidence: *confidence,
-                        },
-                    }
-                } else {
-                    // Default to note if no pending memory
-                    Memory::Note {
-                        content: content.clone(),
-                        tags: keywords.clone(),
-                    }
-                };
+                        }
+                    };
 
                 let memory_id = palace
                     .store_memory(

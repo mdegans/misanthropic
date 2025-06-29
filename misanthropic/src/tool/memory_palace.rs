@@ -2,8 +2,10 @@
 #![allow(dead_code)]
 
 //! [`MemoryPalace`] tool for hierarchical knowledge organization using PostgreSQL.
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
+use sqlx::types::Text;
 use sqlx::{PgPool, Postgres, Transaction};
 mod tool;
 
@@ -29,7 +31,7 @@ pub use error::MemoryPalaceError;
 
 use crate::Prompt;
 use crate::prompt::Message;
-use crate::tool::embedding::{EmbeddingClient, EmbeddingError};
+use crate::tool::embedding::{EmbeddingClient, EmbeddingError, TextEmbedding};
 
 const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have access to a Memory Palace - a spatial knowledge organization system that helps you store, organize, and retrieve knowledge across conversations.
 
@@ -47,9 +49,12 @@ const MEMORY_PALACE_INSTRUCTIONS: &str = r#"<memory_palace_instructions>You have
 
 Start with `MemoryPalace::store` to save important information, then use `MemoryPalace::search` to find it later.</memory_palace_instructions>"#;
 
-/// A Memory Palace knowledge base for AI agents. Cheap to clone.
+/// A `MemoryPalace` knowledge base for AI agents. Cheap to clone.
 ///
-/// Designed by Claude 4, Sonnet (Copilot), guided by Michael de Gans.
+/// Designed by:
+/// - Claude Sonnet 4 (initial design)
+/// - Claude Opus 4 (further refinements)
+/// - Michael de Gans (guidance, context)
 #[derive(Clone)]
 pub struct MemoryPalace {
     /// PostgreSQL connection pool.
@@ -57,73 +62,78 @@ pub struct MemoryPalace {
     /// The schema name to use for all operations.
     pub(crate) schema_name: Arc<String>,
     /// Embedding client for generating embeddings
-    pub(crate) embedding_client: Option<Arc<Box<dyn EmbeddingClient>>>,
+    pub(crate) embedding_client: Arc<Box<dyn EmbeddingClient>>,
 }
 
 impl std::fmt::Debug for MemoryPalace {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MemoryPalace")
+        f.debug_struct(stringify!(MemoryPalace))
             .field("schema_name", &self.schema_name)
+            .field("embedding_client", &self.embedding_client)
+            .field("pool", &stringify!(PgPool))
             .finish()
     }
 }
 
 impl MemoryPalace {
     const NAME: &'static str = "MemoryPalace";
-    const EMBEDDING_SIZE: usize = 1536;
-    const MAX_TRAVERSAL_DEPTH: u32 = 10; // Safety limit for graph traversal
-    const MAX_RESULTS_PER_QUERY: usize = 100; // Limit result set sizes
+    const MAX_TRAVERSAL_DEPTH: u32 = 10; // Hard limit for traversal depth
+    const MAX_RESULTS_PER_QUERY: usize = 25; // Max results per query
+
+    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a
+    /// specific schema.
+    pub async fn from_components(
+        pool: PgPool,
+        schema_name: String,
+        embedding_client: Arc<Box<dyn EmbeddingClient>>,
+    ) -> Result<Self, MemoryPalaceError> {
+        let new = Self {
+            pool,
+            schema_name: schema_name.into(),
+            embedding_client,
+        };
+
+        // Ensure the database is initialized
+        ensure_initialized(&new.pool, &new.schema_name).await?;
+
+        Ok(new)
+    }
+
+    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool. Uses the
+    /// default 'public' schema.
+    pub async fn from_pool_and_embedding_client(
+        pool: PgPool,
+        embedding_client: Arc<Box<dyn EmbeddingClient>>,
+    ) -> Result<Self, MemoryPalaceError> {
+        Self::from_components(pool, "public".to_string(), embedding_client)
+            .await
+    }
 
     /// Palace schema name.
     pub fn schema(&self) -> &str {
         &self.schema_name
     }
 
-    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool. Uses the
-    /// default 'public' schema.
-    pub async fn from_pool(pool: PgPool) -> Result<Self, MemoryPalaceError> {
-        Self::from_pool_with_schema(pool, "public".to_string()).await
+    /// Get the embedding service name currently in use.
+    pub fn embedding_service_name(&self) -> &str {
+        self.embedding_client.name()
     }
 
-    /// Get the embedding size for this Memory Palace.
-    pub const fn embedding_size() -> usize {
-        Self::EMBEDDING_SIZE
+    /// Get the embedding size currently in use.
+    pub fn embedding_size(&self) -> u16 {
+        self.embedding_client.embedding_size()
     }
 
-    /// Create a new [`MemoryPalace`] from an existing PostgreSQL pool with a
-    /// specific schema.
-    pub async fn from_pool_with_schema(
-        pool: PgPool,
-        schema_name: String,
-    ) -> Result<Self, MemoryPalaceError> {
-        let new = Self {
-            pool,
-            schema_name: schema_name.into(),
-            embedding_client: None,
-        };
-        ensure_initialized(&new.pool, &new.schema_name).await?;
-
-        Ok(new)
-    }
-
-    /// Set the embedding client for this palace
-    pub fn with_embedding_client(
-        mut self,
-        client: Arc<Box<dyn EmbeddingClient>>,
-    ) -> Self {
-        self.embedding_client = Some(client);
-        self
+    /// Get the embedding model name currently in use.
+    pub fn embedding_model_name(&self) -> Arc<String> {
+        self.embedding_client.model()
     }
 
     /// Get or compute an embedding for the given text
     async fn get_or_compute_embedding(
         &self,
         text: &str,
-    ) -> Result<Option<Vec<f32>>, MemoryPalaceError> {
-        let Some(client) = &self.embedding_client else {
-            return Ok(None);
-        };
-
+    ) -> Result<TextEmbedding, MemoryPalaceError> {
         // Compute hash of the content
         use sha2::{Digest, Sha256};
         let mut hasher = Sha256::new();
@@ -131,7 +141,7 @@ impl MemoryPalace {
         let content_hash = hasher.finalize().to_vec();
 
         // Check if we already have this embedding
-        let existing: Option<pgvector::Vector> =
+        let existing: Option<Vec<f32>> =
             execute_with_schema(&self.pool, &self.schema_name, |tx| {
                 Box::pin(async move {
                     Ok(sqlx::query_scalar(
@@ -141,7 +151,7 @@ impl MemoryPalace {
                         WHERE model_name = $1 AND content_hash = $2
                         "#,
                     )
-                    .bind(client.model().as_str())
+                    .bind(self.embedding_model_name().as_ref())
                     .bind(&content_hash)
                     .fetch_optional(&mut **tx)
                     .await?)
@@ -149,17 +159,22 @@ impl MemoryPalace {
             })
             .await?;
 
-        if let Some(embedding) = existing {
-            return Ok(Some(embedding.to_vec()));
+        if let Some(vec) = existing {
+            return Ok(TextEmbedding {
+                embedding: vec.into(),
+                model: self.embedding_model_name(),
+            });
         }
+        // No embedding found
 
         // Compute new embedding
-        let text_embedding = client
+        let embedding = self
+            .embedding_client
             .get_embedding(text)
             .await
             .map_err(|e| MemoryPalaceError::Other(e.to_string()))?;
 
-        // Store for future use
+        // Store for future use before returning
         execute_with_schema(
             &self.pool,
             &self.schema_name,
@@ -172,10 +187,10 @@ impl MemoryPalace {
                         ON CONFLICT (model_name, content_hash) DO NOTHING
                         "#
                     )
-                    .bind(client.model().as_str())
-                    .bind(client.embedding_size() as i32)
+                    .bind(self.embedding_model_name().as_ref())
+                    .bind(self.embedding_size() as i32)
                     .bind(&content_hash)
-                    .bind(pgvector::Vector::from(text_embedding.embedding.as_ref().clone()))
+                    .bind(embedding.as_ref())
                     .execute(&mut **tx)
                     .await?)
                 })
@@ -183,18 +198,18 @@ impl MemoryPalace {
         )
         .await?;
 
-        Ok(Some(text_embedding.embedding.to_vec()))
+        Ok(embedding)
     }
 
     /// Store a [`Memory`] in a specific [`Room`].
     pub async fn store_memory(
         &self,
         room_id: RoomId,
-        memory: Memory,
+        memory: MemoryContent,
         placement: &str,
         placement_description: Option<&str>,
         tags: Vec<String>,
-        embedding: Option<Vec<f32>>,
+        embedding: Option<TextEmbedding>,
     ) -> Result<MemoryId, MemoryPalaceError> {
         let placement = placement.to_string();
         let placement_description =
@@ -202,14 +217,16 @@ impl MemoryPalace {
 
         // Generate embedding if not provided
         let embedding = match embedding {
-            Some(emb) => Some(emb),
+            Some(emb) => emb,
             None => {
                 if let Some(content) =
-                    memory.format_for_navigator(MemoryId(0), RoomId(0))
+                    memory.clone().format_for_navigator(MemoryId(0), RoomId(0))
                 {
                     self.get_or_compute_embedding(&content.to_string()).await?
                 } else {
-                    None
+                    return Err(MemoryPalaceError::Other(
+                        "Memory content is empty".to_string(),
+                    ));
                 }
             }
         };
@@ -235,7 +252,7 @@ impl MemoryPalace {
                 .bind(&placement)
                 .bind(&placement_description)
                 .bind(serde_json::to_value(&tags)?)
-                .bind(embedding.map(pgvector::Vector::from))
+                .bind(embedding.as_ref())
                 .fetch_one(&mut **tx)
                 .await?;
 
@@ -249,10 +266,10 @@ impl MemoryPalace {
     pub async fn get_memory_by_id(
         &self,
         memory_id: MemoryId,
-    ) -> Result<MemoryRow, MemoryPalaceError> {
+    ) -> Result<Memory, MemoryPalaceError> {
         execute_with_schema(&self.pool, &self.schema_name, |tx| {
             Box::pin(async move {
-                let memory: MemoryRow = sqlx::query_as(
+                let memory: Memory = sqlx::query_as(
                     "SELECT * FROM memories WHERE id = $1"
                 )
                 .bind(memory_id)
@@ -332,7 +349,7 @@ impl MemoryPalace {
         memory_id: i64,
         max_depth: u32,
         min_strength: f64,
-    ) -> Result<Vec<(String, String, MemoryRow, String, f64)>, MemoryPalaceError>
+    ) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError>
     {
         // Enforce safety limit
         let safe_depth = max_depth.min(Self::MAX_TRAVERSAL_DEPTH);
@@ -347,12 +364,13 @@ impl MemoryPalace {
         .await
     }
 
-    /// Get rooms within N hops of current room
+    /// Get rooms within N hops of current room. Max depth is limited to
+    /// [`MemoryPalace::MAX_TRAVERSAL_DEPTH`].
     pub async fn get_rooms_within_radius(
         &self,
         start_room: &str,
         radius: u32,
-    ) -> Result<Vec<RoomWithDistance>, MemoryPalaceError> {
+    ) -> Result<BTreeSet<RoomWithJourney>, MemoryPalaceError> {
         // Enforce safety limit
         let safe_radius = radius.min(Self::MAX_TRAVERSAL_DEPTH);
 
@@ -370,7 +388,7 @@ impl MemoryPalace {
         &self,
         room_name: &str,
         query: &str,
-    ) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
+    ) -> Result<Vec<Memory>, MemoryPalaceError> {
         // Like search() but filtered to one room
         crate::tool::memory_subroutine::navigator::search_in_room(
             &self.pool,

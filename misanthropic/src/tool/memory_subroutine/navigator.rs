@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use crate::tool::{
     self, 
     embedding::{EmbeddingClient, TextEmbedding}, 
-    memory_palace::{MemoryRow, MemoryId, MemoryPalaceError, Room, RoomId, MemoryWithRoom, ScoredMemory}, 
+    memory_palace::{execute_with_schema, MemoryId, MemoryPalaceError, Memory, Room, RoomId}, 
     memory_subroutine::MemorySubroutineError, 
     MemoryPalace, 
     Method, 
@@ -25,7 +25,7 @@ pub struct Navigator {
     /// Context for the current mission. Query driving navigation.
     mission_context: String,
     /// [`Memory`]s for delivery to the primary agent.
-    basket: MemoryBasket,
+    basket: Vec<CollectedMemory>,
     /// Embedding client (for looking up embeddings of context and memories).
     emb_client: Box<dyn EmbeddingClient>,
 }
@@ -336,7 +336,7 @@ fn format_tags(tags: &[String]) -> String {
 }
 
 /// Extract placement from memory (now from the placement field directly)
-fn extract_placement(memory: &MemoryRow) -> String {
+fn extract_placement(memory: &Memory) -> String {
     memory.placement.clone()
 }
 
@@ -421,13 +421,13 @@ pub async fn get_room_memories(
     pool: &PgPool,
     schema: &str,
     room_name: &str,
-) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
+) -> Result<Vec<Memory>, MemoryPalaceError> {
     let room_name = room_name.to_string();
     execute_with_schema(
         pool,
         schema,
         |tx| Box::pin(async move {
-            let memories: Vec<MemoryRow> = sqlx::query_as(
+            let memories: Vec<Memory> = sqlx::query_as(
                 r#"
                 SELECT m.*
                 FROM memories m
@@ -451,7 +451,7 @@ pub async fn search_in_room(
     schema: &str,
     room_name: &str,
     query: &str,
-) -> Result<Vec<MemoryRow>, MemoryPalaceError> {
+) -> Result<Vec<Memory>, MemoryPalaceError> {
     let pattern = format!("%{}%", query.trim());
     let room_name = room_name.to_string();
     
@@ -459,7 +459,7 @@ pub async fn search_in_room(
         pool,
         schema,
         |tx| Box::pin(async move {
-            let memories: Vec<MemoryRow> = sqlx::query_as(
+            let memories: Vec<Memory> = sqlx::query_as(
                 r#"
                 SELECT m.*
                 FROM memories m
@@ -776,7 +776,7 @@ fn format_direction(passage_type: &str, destination: &str) -> String {
 }
 
 /// Format memories found in a room for display
-fn format_room_contents(room: &Room, memories: Vec<MemoryRow>) -> String {
+fn format_room_contents(room: &Room, memories: Vec<Memory>) -> String {
     if memories.is_empty() {
         return format!(
             "You examine {}. The room is empty, waiting for memories to be stored.",
@@ -790,7 +790,7 @@ fn format_room_contents(room: &Room, memories: Vec<MemoryRow>) -> String {
     );
     
     // Group memories by placement
-    let mut by_placement: std::collections::HashMap<String, Vec<&MemoryRow>> = 
+    let mut by_placement: std::collections::HashMap<String, Vec<&Memory>> = 
         std::collections::HashMap::new();
     
     for memory in &memories {

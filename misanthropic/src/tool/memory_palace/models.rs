@@ -1,39 +1,170 @@
+// Copyright 2025 Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
+//! Models for the [`MemoryPalace`] [`Tool`], including [`User`], [`Room`],
+//! [`Memory`], [`Pathway`], and related types.
+//!
+//! ## Notes
+//!
+//! - `strength` fields in the models are used to indicate the strength of a
+//!   memory, room, or pathway. They range from 0.0 (weak) to 1.0 (strong). When
+//!   a memory is retrieved, the path it took to get there is also increased in
+//!   strength. This is meant to form neural pathways in the Agent's mind. The
+//!   strength of a memory also decays over time.
+//!
+//! [`MemoryPalace`]: super::MemoryPalace
+//! [`Tool`]: crate::Tool
 use crate::prompt::message::{Content, Message, MessagePair, Role};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
+use uuid::Uuid;
 
-/// Citation for [`MemoryPalace`] references
+// ## Utilities
+
+/// A [`Path`] taken through the [`MemoryPalace`], containing the full rows
+/// of [`PathMember`]s, which can be a [`Room`], a [`Pathway`], or a
+/// [`Memory`]. The path is guaranteed to end with a [`Memory`], which is the
+/// destination of the path.
 ///
 /// [`MemoryPalace`]: super::MemoryPalace
+#[derive(Debug, Clone, derive_more::Deref, Serialize)]
+#[serde(transparent)]
+pub struct Path(Vec<PathMember>);
+
+impl Path {
+    /// From an iterable of [`PathMember`]s
+    pub fn from_members(
+        members: impl IntoIterator<Item = PathMember>,
+    ) -> Result<Self, &'static str> {
+        let members: Vec<PathMember> = members.into_iter().collect();
+        let index = members
+            .iter()
+            .position(|m| matches!(m, PathMember::Memory(_)))
+            .ok_or_else(|| "Path must contain a Memory")?;
+
+        // Index should be the last member
+        if index != members.len() - 1 {
+            return Err("Path must end with a Memory");
+        }
+
+        Ok(Path(members))
+    }
+}
+
+impl<'de> Deserialize<'de> for Path {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let members = Vec::<PathMember>::deserialize(deserializer)?;
+        Self::from_members(members).map_err(serde::de::Error::custom)
+    }
+}
+
+impl IntoIterator for Path {
+    type Item = PathMember;
+    type IntoIter = std::vec::IntoIter<PathMember>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Path {
+    type Item = &'a PathMember;
+    type IntoIter = std::slice::Iter<'a, PathMember>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MemoryCitation {
-    /// The memory being cited
-    pub memory: MemoryId,
-    /// The room containing the memory
-    pub room: RoomId,
-    /// The role of the message author
-    pub role: String,
-    /// The prompt containing the original message, if any
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub prompt: Option<PromptId>,
-    /// The index of the message in the prompt, if any
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub index: Option<usize>,
+pub enum PathMember {
+    /// A [`Room`] in the path
+    Room(Room),
+    /// A [`Pathway`] between two [`Room`]s in the path
+    Pathway(Pathway),
+    /// A [`Memory`] in the path (destination)
+    Memory(Memory),
 }
 
-impl MemoryCitation {
-    /// Parse a citation from a `<cite>` tag content
-    pub fn from_tag_content(content: &str) -> Result<Self, serde_json::Error> {
-        serde_json::from_str(content)
-    }
+/// A member in a [`Path`] taken through the [`MemoryPalace`], by id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum PathMemberIds {
+    /// A [`Room`] in the path
+    Room(RoomId),
+    /// A [`Pathway`] between two [`Room`]s in the path
+    Pathway(PathwayId),
+    /// A [`Memory`] in the path (destination)
+    Memory(MemoryId),
+}
 
-    /// Format as a `<cite>` tag
-    pub fn to_tag(&self) -> String {
-        format!("<cite>{}</cite>", serde_json::to_string(self).unwrap())
+/// The journey an agent takes through the [`MemoryPalace`]. Guaranteed to
+/// contain exactly one [`Memory`] at the end, which is the destination of the
+/// path. The path is a sequence of [`PathMemberIds`], which
+/// [`RoomId`], [`PathwayId`], or [`MemoryId`].
+#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Deref, Serialize)]
+#[serde(transparent)]
+pub struct PathById(Vec<PathMemberIds>);
+
+impl PathById {
+    /// From an iterable of [`PathMemberIds`]s
+    pub fn from_members(
+        members: impl IntoIterator<Item = PathMemberIds>,
+    ) -> Result<Self, &'static str> {
+        let members: Vec<PathMemberIds> = members.into_iter().collect();
+        let index = members
+            .iter()
+            .position(|m| matches!(m, PathMemberIds::Memory(_)))
+            .ok_or_else(|| "Path must contain a Memory")?;
+
+        // Index should be the last member
+        if index != members.len() - 1 {
+            return Err("Path must end with a Memory");
+        }
+
+        Ok(PathById(members))
     }
 }
+
+impl<'de> Deserialize<'de> for PathById {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let members = Vec::<PathMemberIds>::deserialize(deserializer)?;
+        Self::from_members(members).map_err(serde::de::Error::custom)
+    }
+}
+
+impl IntoIterator for PathById {
+    type Item = PathMemberIds;
+    type IntoIter = std::vec::IntoIter<PathMemberIds>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a PathById {
+    type Item = &'a PathMemberIds;
+    type IntoIter = std::slice::Iter<'a, PathMemberIds>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+// ## Ids
+
+/// Id of a [`User`]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
+)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct UserId(pub Uuid);
 
 /// Id of a [`Room`]
 #[derive(
@@ -41,7 +172,7 @@ impl MemoryCitation {
 )]
 #[sqlx(transparent)]
 #[serde(transparent)]
-pub struct RoomId(pub i64);
+pub struct RoomId(pub Uuid);
 
 /// Id of a [`Memory`]
 #[derive(
@@ -49,7 +180,15 @@ pub struct RoomId(pub i64);
 )]
 #[sqlx(transparent)]
 #[serde(transparent)]
-pub struct MemoryId(pub i64);
+pub struct MemoryId(pub Uuid);
+
+/// Id of a [`MemoryAccess`]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
+)]
+#[sqlx(transparent)]
+#[serde(transparent)]
+pub struct MemoryAccessId(pub Uuid);
 
 /// Id of a [`Prompt`]
 ///
@@ -59,49 +198,214 @@ pub struct MemoryId(pub i64);
 )]
 #[sqlx(transparent)]
 #[serde(transparent)]
-pub struct PromptId(pub i64); // u because Citation document id is unsigned
+pub struct PromptId(pub Uuid);
 
-/// Id of a [`Connection`] between two [`Room`]s
+/// Id of a [`Pathway`] between two [`Room`]s
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
 #[sqlx(transparent)]
 #[serde(transparent)]
-pub struct ConnectionId(pub i64);
+pub struct PathwayId(pub Uuid);
 
-/// A room in the memory palace.
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Room {
-    pub id: RoomId,
-    pub name: String,
-    pub description: String,
-    pub atmosphere: Option<String>,
+// ## Rows
+
+/// `User` of the [`MemoryPalace`]
+///
+/// [`MemoryPalace`]: super::MemoryPalace
+pub struct User {
+    /// User id
+    pub id: UserId,
+    /// Pro features enabled (better models)
+    pub pro: bool,
+    /// Is the user banned?
+    pub banned: bool,
+    /// User Karma. At -1000, the user is auto-banned. It's suggested to use the
+    /// [`Report`] tool to mutate this value. Over time this value will recover.
+    pub karma: i16,
+    /// Date the user was created
     pub created_at: DateTime<Utc>,
+}
+
+/// A `Room` in the [`MemoryPalace`]
+///
+/// [`MemoryPalace`]: super::MemoryPalace
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow, PartialEq)]
+pub struct Room {
+    /// Room id
+    pub id: RoomId,
+    /// [`User`] associated with the room
+    pub user_id: UserId,
+    /// A short name for the room
+    pub name: String,
+    /// A sentence or two on the atmosphere or purpose of the room
+    pub description: String,
+    /// Date the room was created
+    pub created_at: DateTime<Utc>,
+    /// Date the room was last visited
     pub last_visited: DateTime<Utc>,
+    /// Strength of the room, from 0.0 (weak) to 1.0 (strong)
+    pub strength: f64,
+    /// Number of times the room has been visited
     pub visit_count: i32,
+    /// Number of memories in the room
     pub memory_count: i32,
 }
 
-/// A memory item stored in the palace - can be various types of content
+/// A `Memory` item stored in the palace with metadata
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Memory {
+    /// [`Memory`] id
+    pub id: MemoryId,
+    /// [`User`] id
+    pub user_id: UserId,
+    #[sqlx(json)]
+    /// The actual [`MemoryContent`] stored as JSONB
+    pub content: MemoryContent, // The actual memory content as JSONB
+    /// [`Room`] the [`Memory`] is stored in
+    pub room_id: RoomId,
+    /// The id of the [`Prompt`] the [`Memory`] was created in, if any
+    ///
+    /// [`Prompt`]: crate::Prompt
+    // This is here rather than in `Memory` to make it easier to query
+    pub prompt_id: Option<PromptId>,
+    /// Index of the [`Memory`] in the [`Prompt`], if any
+    ///
+    /// [`Prompt`]: crate::Prompt
+    pub prompt_index: Option<u32>,
+    /// Placement of the [`Memory`] in the [`Room`] (e.g. "chest", "wall")
+    pub placement: String,
+    /// A description of the placement, if any (e.g. "on the desk near the window")
+    pub placement_description: Option<String>,
+    /// Tags associated with the [`Memory`]
+    #[sqlx(json)]
+    pub tags: Vec<String>,
+    /// Strength of the [`Memory`], from 0.0 (weak) to 1.0 (strong)
+    pub strength: f64,
+    /// Number of times the [`Memory`] has been accessed
+    pub access_count: i32,
+    /// Date the [`Memory`] was created
+    pub created_at: DateTime<Utc>,
+    /// Date the [`Memory`] was last accessed (put in the basket for return)
+    pub last_accessed: DateTime<Utc>,
+}
+
+/// A bidirectional connection between two [`Room`]s in the palace
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Pathway {
+    /// Pathway id
+    pub id: PathwayId,
+    /// [`User`] id
+    pub user_id: UserId,
+    /// A connected [`Room`]
+    pub room_a: RoomId,
+    /// A connected [`Room`]
+    pub room_b: RoomId,
+    /// Passage type (e.g. "hallway", "door", "staircase")
+    pub passage_type: String,
+    /// A description of the passage, if any (e.g. "a long hallway with
+    /// paintings")
+    pub description: Option<String>,
+    /// Strength of the pathway, from 0.0 (weak) to 1.0 (strong)
+    pub strength: i64,
+    /// Number of times the connection has been traversed. Incremented only if
+    /// the traversal led to the return of a [`Memory`].
+    pub traversal_count: i32,
+    /// Date the connection was created
+    pub created_at: DateTime<Utc>,
+    /// Date the connection was last traversed. Counts only if the traversal led
+    /// to the return of a [`Memory`].
+    pub last_traversed: Option<DateTime<Utc>>,
+}
+
+/// A direct relationship between two [`Memory`]s in the palace.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct MemoryRelationship {
+    /// Relationship id
+    pub id: Uuid,
+    /// [`User`] id
+    pub user_id: UserId,
+    /// The [`Memory`] this relationship is from
+    pub from_memory_id: MemoryId,
+    /// The [`Memory`] this relationship is to
+    pub to_memory_id: MemoryId,
+    /// Type of the relationship (e.g. "related", "caused", "inspired",
+    /// "marriage", "friendship", "love", "enemy")
+    pub relationship_type: String,
+    /// Strength of the relationship, from 0.0 (weak) to 1.0 (strong).
+    pub strength: f64,
+    /// Date the relationship was created
+    pub created_at: DateTime<Utc>,
+}
+
+/// A [`Memory`] access log entry. This represents the access of a [`Memory`]
+/// by a user, including the type of access (create, read, update, delete),
+/// context of the access, and the path taken to access the memory.
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+
+pub struct MemoryAccess {
+    /// [`MemoryAccess`] id
+    pub id: MemoryAccessId,
+    /// [`User`] id
+    pub user_id: UserId,
+    /// [`Memory`] id
+    pub memory_id: MemoryId,
+    /// 'c' for create, 'r' for read, 'u' for update, 'd' for delete
+    pub access_type: char,
+    /// Who accessed the memory, e.g. "Navigator", "Archivist", "Janitor"
+    pub accessed_by: String,
+    /// Context of the access, e.g. "looking for memories about Bob"
+    pub context: Option<String>,
+    /// Path taken to access the memory, represented as a JSONB array of
+    /// [`PathMember`]s.
+    #[sqlx(json)]
+    pub path: PathById,
+    /// Date the memory was accessed
+    pub accessed_at: DateTime<Utc>,
+}
+
+/// An agent `Memory` stored in the [`MemoryPalace`]. All [`Content`] supported
+/// by [`Message`]s is supported here, including [`Text`], [`Image`], or any
+/// future [`Content`] [`Block`] types that may be added.
+///
+/// [`Text`]: crate::prompt::message::Block::Text
+/// [`Image`]: crate::prompt::message::Block::Image
+/// [`Block`]: crate::prompt::message::Block
+/// [`MemoryPalace`]: super::MemoryPalace
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", content = "data")]
-pub enum Memory {
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
+pub enum MemoryContent {
     /// A single [`Message`]
     Message {
         /// A copy of the message
         message: Message<'static>,
-        /// The [`Prompt`] that contains the memory, if any
-        prompt: Option<PromptId>,
-        /// The index of the message in the prompt, if any
+        /// The index of the message in the [`Prompt`], if any.
+        ///
+        /// [`Prompt`]: crate::Prompt
         index: Option<usize>,
         /// A note, if any, filed either by the assistant or Archivist
         note: Option<String>,
     },
+    /// A person. This represents the view of a person in the agent's mind and
+    /// is updated by the primary agent over time as the agent learns more
+    /// about the person. In the narrative, a person is a represented as a
+    /// character in the story, with a name, photo, biography, and notes.
+    ///
+    /// The agent understands that a person is not a real entity, but rather a
+    /// representation of a person in the agent's mind.
+    Person {
+        /// Name of the person
+        name: String,
+        /// Photo of the person, if any
+        photo: Option<crate::prompt::message::Image<'static>>,
+        /// Biography of the person (this gets updated over time)
+        biography: String,
+        /// Notes about the person
+        notes: Vec<String>,
+    },
     /// A [`MessagePair`] with a (user, assistant) exchange, in that order.
     Pair {
         pair: MessagePair<'static>, // Messages exchanged
-        /// The [`Prompt`] that contains the memory, if any
-        prompt: Option<PromptId>,
         /// The index of the message in the prompt, if any
         index: Option<usize>,
         /// A note, if any, filed either by the assistant or Archivist
@@ -109,30 +413,35 @@ pub enum Memory {
     },
     /// Just a note, explicitly created by the primary agent.
     Note {
+        /// Text of the note
         text: String,
+        /// Tags associated with the note
         tags: Vec<String>,
+        /// The index of the note in the prompt, if any
         title: String,
     },
     /// Summary of a longer conversation
     ConversationSummary {
-        prompt: PromptId,
         summary: Content<'static>,
         title: String,
     },
-    /// Security-related insight. The user cannot turn this off.
+    /// Security-related insight. The user cannot turn this off without entirely
+    /// deleting their account, and they only get one (ideally).
     Report {
-        /// Content of the report, filed by the assistant
+        /// `Content` of the report, filed by the assistant
         content: Content<'static>,
         /// Title of the report
         title: String,
-        /// Prompt that triggered the report
-        prompt: Option<PromptId>,
-        /// Index of the reported message in the prompt
+        /// Karma value of the report (neg = bad user, pos = good user).
+        /// [`User::karma`] accumulates this value.
+        karma: i8,
+        /// Index of the reported message in the prompt. This may refer to a
+        /// single message or the entire conversation.
         index: Option<usize>,
     },
 }
 
-impl Memory {
+impl MemoryContent {
     /// Extract [`Content`] for navigator display.
     ///
     /// # Note:
@@ -147,6 +456,7 @@ impl Memory {
         self,
         id: MemoryId,
         room: RoomId,
+        prompt: Option<PromptId>,
     ) -> Option<Content<'static>> {
         // Add just citation metadata to the content.
         let add_cite = |mut content, role, prompt, index| {
@@ -193,10 +503,9 @@ impl Memory {
         };
 
         let mut content: Content<'static> = match self {
-            Memory::Message {
+            MemoryContent::Message {
                 message,
                 note,
-                prompt,
                 index,
             } => {
                 // Existing content should come first
@@ -208,21 +517,16 @@ impl Memory {
                     note,
                     prompt,
                     index,
-                );
+                )
             }
-            Memory::Pair {
-                pair,
-                prompt,
-                index,
-                note,
-            } => {
+            MemoryContent::Pair { pair, index, note } => {
                 let MessagePair { user, assistant } = pair;
                 let mut content = Content::new();
                 content.push("<user>");
-                content.push(user.content);
+                content.extend(user.content);
                 content.push("</user>");
                 content.push("<assistant>");
-                content.push(assistant.content);
+                content.extend(assistant.content);
                 content.push("</assistant>");
 
                 add_note_and_cite(
@@ -231,18 +535,16 @@ impl Memory {
                     note.unwrap_or_default(),
                     prompt,
                     index,
-                );
+                )
             }
-            Memory::Note { text, tags, .. } => {
+            MemoryContent::Note { text, tags, .. } => {
                 let mut content = Content::new();
                 content.push(format!("<note>{text}</note>"));
                 content.push(format!("<tags>{}</tags>", tags.join(",")));
                 // Only the assistant takes notes
                 add_cite(content, Role::Assistant.as_lowercase(), None, None)
             }
-            Memory::ConversationSummary {
-                prompt, summary, ..
-            } => {
+            MemoryContent::ConversationSummary { summary, .. } => {
                 let mut content = Content::new();
                 content.push(format!("<summary>{summary}</summary>"));
                 add_cite(
@@ -252,11 +554,37 @@ impl Memory {
                     Some(0), // Refers to entire conversation
                 )
             }
-            Memory::Report {
-                mut content,
-                prompt,
-                index,
-                ..
+            MemoryContent::Person {
+                name,
+                photo,
+                biography,
+                notes,
+            } => {
+                let mut content = Content::new();
+                if let Some(photo) = photo {
+                    content.push(photo);
+                }
+                content.push(format!("<name>{name}</name>"));
+                content.push(format!("<biography>{biography}</biography>"));
+                if !notes.is_empty() {
+                    let mut note_str = String::new();
+                    note_str.push_str("<notes>");
+                    for note in notes {
+                        if note.contains("<note>") || note.contains("</note>") {
+                            "<error>Note contains invalid tags</error>"
+                                .to_string();
+                            continue;
+                        }
+                        note_str.push_str(&format!("<note>{}</note>", note));
+                    }
+                    note_str.push_str("</notes>");
+
+                    content.push(note_str);
+                }
+                add_cite(content, Role::Assistant.as_lowercase(), None, None)
+            }
+            MemoryContent::Report {
+                mut content, index, ..
             } => {
                 let mut content = Content::new();
                 add_cite(content, Role::Assistant.as_lowercase(), prompt, index)
@@ -276,123 +604,54 @@ impl Memory {
     }
 
     /// Get a brief description if available
-    pub fn brief_description(
-        &self,
-        id: MemoryId,
-        room: RoomId,
-    ) -> Option<String> {
+    pub fn brief_description(&self) -> Option<String> {
         match self {
-            Memory::Message { note, .. } => {
-                note.map(|n| format!("Message with note: {n}"))
+            MemoryContent::Message { note, .. } => {
+                note.as_ref().map(|n| format!("Message with note: {n}"))
             }
-            Memory::Pair { note, .. } => {
-                note.map(|n| format!("Message pair with note: {n}"))
-            }
-            Memory::Note { tags, .. } => {
+            MemoryContent::Pair { note, .. } => note
+                .as_ref()
+                .map(|n| format!("Message pair with note: {n}")),
+            MemoryContent::Note { tags, .. } => {
                 Some(format!("Note with tags: {}", tags.join(", ")).into())
             }
-            Memory::ConversationSummary { title, .. } => {
+            MemoryContent::ConversationSummary { title, .. } => {
                 Some(format!("Summary of conversation titled: {title}").into())
             }
-            Memory::Report {
-                content,
-                prompt,
-                index,
-                title,
-            } => Some(format!("Report on the user titled: {title}").into()),
+            MemoryContent::Report { title, .. } => {
+                Some(format!("Report on the user titled: {title}").into())
+            }
+            MemoryContent::Person {
+                name,
+                photo,
+                biography,
+                notes,
+            } => {
+                let photo_desc = if photo.is_empty() {
+                    "no photo".to_string()
+                } else {
+                    "with a photo".to_string()
+                };
+                let notes_desc = if notes.is_empty() {
+                    "no notes".to_string()
+                } else {
+                    format!("with {} notes", notes.len())
+                };
+                Some(format!(
+                    "Person: {name}, {photo_desc}, biography: {biography}, {notes_desc}"
+                ))
+            }
         }
     }
-
-    /// Estimate importance based on content type and characteristics
-    pub fn estimate_importance(&self) -> f32 {
-        // Suggest using semantic distance for this.
-    }
 }
 
-/// A memory item stored in the palace with metadata
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct MemoryRow {
-    pub id: MemoryId,
-    #[sqlx(json)]
-    pub content: Memory, // The actual memory content as JSONB
-    pub room_id: RoomId,
-    pub placement: String,
-    pub placement_description: Option<String>,
-    #[sqlx(json)]
-    pub tags: Vec<String>,
-    pub embedding: Option<pgvector::Vector>,
-    pub importance: f32,
-    pub access_count: i32,
-    pub created_at: DateTime<Utc>,
-    pub last_updated: DateTime<Utc>,
-    pub last_accessed: DateTime<Utc>,
-}
-
-/// A connection between two rooms.
-#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
-pub struct Connection {
-    pub id: ConnectionId,
-    pub from_room_id: RoomId,
-    pub to_room_id: RoomId,
-    pub passage_type: String,
-    pub description: Option<String>,
-    pub strength: i32,
-    pub traversal_count: i32,
-    pub created_at: DateTime<Utc>,
-    pub last_traversed: Option<DateTime<Utc>>,
-}
-
-/// Helper struct for room navigation view
-#[derive(Debug, Clone, FromRow)]
-pub struct RoomNavigation {
-    pub id: ConnectionId,
-    pub from_room_name: String,
-    pub to_room_name: String,
-    pub passage_type: String,
-    pub description: Option<String>,
-    pub strength: i32,
-    pub traversal_count: i32,
-    pub last_traversed: Option<DateTime<Utc>>,
-}
-
-/// A memory with its room information
-#[derive(Debug, Clone)]
-pub struct MemoryWithRoom {
-    pub memory: MemoryRow,
-    pub room: Room,
-}
-
-/// Search result with scoring information
+/// Search result with scoring information and path to the memory
 #[derive(Debug, Clone)]
 pub struct ScoredMemory {
-    pub memory: MemoryRow,
-    pub room: Room,
+    pub memory: Memory,
+    pub journey: PathById,
     pub relevance_score: f64,
     pub recency_score: f64,
     pub relationship_score: f64,
     pub final_score: f64,
-}
-
-/// Room with distance information for navigation
-#[derive(Debug, Clone)]
-pub struct RoomWithDistance {
-    pub room: Room,
-    pub distance: u32,
-    pub path: Vec<RoomId>,
-}
-
-/// Memory similarity result
-#[derive(Debug, Clone)]
-pub struct SimilarMemory {
-    pub memory: MemoryRow,
-    pub similarity_score: f32,
-}
-
-/// Memory cluster for deduplication
-#[derive(Debug, Clone)]
-pub struct MemoryCluster {
-    pub cluster_id: uuid::Uuid,
-    pub memory_ids: Vec<MemoryId>,
-    pub avg_similarity: f32,
-    pub room_names: Vec<String>,
 }

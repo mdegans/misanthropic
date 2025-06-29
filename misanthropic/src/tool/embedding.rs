@@ -10,8 +10,9 @@ use zeroize::Zeroizing;
 pub const DEFAULT_OPENAI_MODEL: &str = "text-embedding-ada-002";
 
 /// A text embedding, A wrapper around a vector of floats.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, derive_more::Deref)]
 pub struct TextEmbedding {
+    #[deref]
     pub embedding: Arc<Vec<f32>>,
     pub model: Arc<String>,
 }
@@ -36,12 +37,11 @@ fn error_to_string(err: &dyn std::error::Error) -> String {
 
 /// Error for embedding retrieval.
 #[allow(missing_docs)] // because very short and common, self describing, names.
-#[derive(Debug, thiserror::Error, Serialize)]
+#[derive(Debug, thiserror::Error)]
 #[error("Embedding error: {cause}")]
 pub enum EmbeddingError {
     /// Reqwest error, such as network issues or invalid input.
     #[error("Request error: {0}")]
-    #[serde(serialize_with = "error_to_string")]
     ReqwestError(#[from] reqwest::Error),
     /// Error caused by the embedding service, such as invalid API key or model.
     #[error("{} service error: {}", match is_fatal {
@@ -63,20 +63,30 @@ impl Into<Box<dyn std::error::Error + Send>> for EmbeddingError {
 
 /// Trait for getting embeddings from a text.
 #[async_trait]
-pub trait EmbeddingClient: Send {
+pub trait EmbeddingClient: Send + Sync {
     /// Get the embedding for a given text.
     async fn get_embedding(
         &self,
         text: &str,
     ) -> Result<TextEmbedding, EmbeddingError>;
     /// Get the name of the embedding client.
-    fn name(&self) -> &'static str;
+    fn name(&self) -> &str;
     /// Get the embedding size for the client.
-    fn embedding_size(&self) -> usize;
+    fn embedding_size(&self) -> u16;
     /// Get the model used by the client.
     fn model(&self) -> Arc<String>;
 }
 static_assertions::assert_obj_safe!(EmbeddingClient);
+
+impl std::fmt::Debug for dyn EmbeddingClient {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct(stringify!(EmbeddingClient))
+            .field("name", &self.name())
+            .field("embedding_size", &self.embedding_size())
+            .field("model", &self.model())
+            .finish()
+    }
+}
 
 /// OpenAI embedding client.
 #[derive(Clone)]
@@ -84,7 +94,7 @@ pub struct OpenAI {
     pub client: reqwest::Client,
     api_key: Arc<Zeroizing<String>>,
     pub model: Arc<String>,
-    pub embedding_size: usize,
+    pub embedding_size: u16,
 }
 
 impl OpenAI {
@@ -93,7 +103,7 @@ impl OpenAI {
     ///
     /// # Panics
     /// - The first time called if the size is not correct.
-    pub fn new(api_key: String, model: String, size: usize) -> Self {
+    pub fn new(api_key: String, model: String, size: u16) -> Self {
         OpenAI {
             client: reqwest::Client::new(),
             api_key: Zeroizing::new(api_key).into(),
@@ -139,7 +149,7 @@ impl EmbeddingClient for OpenAI {
                 .and_then(|v| v.get("embedding"))
                 .and_then(|v| {
                     v.as_array().and_then(|arr| {
-                        if arr.len() == self.embedding_size {
+                        if arr.len() == self.embedding_size as usize {
                             Some(arr)
                         } else {
                             None
@@ -170,17 +180,14 @@ impl EmbeddingClient for OpenAI {
         }
     }
 
-    #[doc = " Get the name of the embedding client."]
-    fn name(&self) -> &'static str {
+    fn name(&self) -> &str {
         "OpenAI"
     }
 
-    #[doc = " Get the embedding size for the client."]
-    fn embedding_size(&self) -> usize {
+    fn embedding_size(&self) -> u16 {
         self.embedding_size
     }
 
-    #[doc = " Get the model used by the client."]
     fn model(&self) -> Arc<String> {
         self.model.clone()
     }

@@ -282,8 +282,7 @@ pub async fn batch_archival_task(
     mut rx_dead_letter: mpsc::Receiver<(Id, Prompt<'static>)>,
 ) -> Result<(), MemorySubroutineError> {
     let mut palace =
-        MemoryPalace::from_pool_with_schema(pool.clone(), schema.clone())
-            .await?;
+        MemoryPalace::from_components(pool.clone(), schema.clone()).await?;
 
     // Accumulate tool calls for batch processing
     let mut pending_calls: Vec<Use<'static>> = Vec::new();
