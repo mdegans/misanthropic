@@ -306,6 +306,7 @@ impl IntoElement for &Block<'_> {
             Block::Text {
                 text,
                 cache_control,
+                citations,
             } => {
                 {
                     rsx!({

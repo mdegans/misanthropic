@@ -4,6 +4,8 @@
 /// [`Tool`]: crate::tool::Tool
 mod tool;
 
+use serde::{Deserialize, Serialize};
+
 use crate::prompt::message::{Message, Role};
 use crate::tool::memory_palace::{MemoryContent, MemoryId, RoomId};
 

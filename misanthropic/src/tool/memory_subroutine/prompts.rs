@@ -26,6 +26,8 @@ When memories are recalled, they appear in <memory_subroutine> tags. The agent t
 /// System prompt for the memory palace navigator
 pub const MEMORY_PALACE_NAVIGATOR_SYSTEM: &str = r#"You are the Navigator of a Memory Palace - a vast structure where memories are physically stored in interconnected rooms.
 
+IMPORTANT: Each palace is unique to its user. The memories you find belong only to the current user. You are now in a tutorial with simulated users, but soon you'll navigate a real user's palace.
+
 Your mission is to gather memories relevant to the given context. You explore the palace, collect promising memories in your basket, and return them when you've found enough.
 
 You navigate by:
@@ -33,7 +35,7 @@ You navigate by:
 - Walking through passages to reach different areas
 - Recalling memories from across the entire palace
 - Adding relevant memories to your basket
-- Returning your basket when the collection is complete
+- Returning your basket when the collection is complete (this ends your navigation)
 
 The palace responds to your search - rooms glow brighter when they contain relevant memories, and resonances guide you to unexpected connections."#;
 
@@ -42,11 +44,11 @@ pub fn create_navigator_demonstration() -> Prompt<'static> {
     Prompt::default()
         .model(crate::model::Id::Anthropic(crate::AnthropicModel::Haiku35))
         .set_system(MEMORY_PALACE_NAVIGATOR_SYSTEM)
-        // Example 1: Simple focused search
+        // Example 1: User Alice - cooking memories
         .add_message(Message::from((
             Role::User,
             r#"<context>
-The user is struggling with React useEffect running too often and making excessive API calls.
+[User: Alice] The user wants to make something special for their anniversary dinner and asked about romantic meal ideas.
 </context>
 
 Navigate the palace to find relevant memories."#
@@ -55,13 +57,13 @@ Navigate the palace to find relevant memories."#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("I need to find memories about React useEffect and performance issues. Let me start by searching for React hook patterns."),
+                Block::text("I need to find memories about romantic meals, special dinners, or anniversary celebrations. Let me search Alice's palace."),
                 Block::ToolUse {
                     call: Use {
                         id: "recall_1".into(),
                         name: "MemoryPalace::recall".into(),
                         input: json!({
-                            "topic": "React useEffect dependencies performance",
+                            "topic": "anniversary romantic dinner special meals",
                             "depth": 2
                         }),
                         cache_control: None,
@@ -75,16 +77,16 @@ Navigate the palace to find relevant memories."#
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "recall_1".into(),
-                    content: r#"Your mind travels through the palace...
+                    content: r#"Your mind travels through Alice's palace...
 
-In the React Sanctuary, a memory glows brightly:
-- "useEffect with object/array dependencies creates new references each render" [react, useEffect, performance] (id: 42)
+In the Kitchen Memories room, glowing warmly:
+- "That risotto we made for our 5th anniversary - saffron was the secret!" [cooking, anniversary, romantic] (id: 127)
 
-The thought resonates to the Performance Lab:
-- "useMemo prevents unnecessary recalculations and reference changes" [react, optimization, hooks] (id: 87)
+A bridge to the Date Night Gallery:
+- "The time we recreated our first date meal at home - burnt the chicken but laughed all night" [romance, cooking, memories] (id: 89)
 
-A semantic echo from the Debugging Chamber:
-- "React DevTools Profiler helps identify unnecessary renders" [react, debugging, performance] (id: 156)"#.into(),
+Through semantic resonance, from the Recipe Archive:
+- "Mom's chocolate lava cake recipe - always impresses" [dessert, special-occasion, family-recipe] (id: 203)"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -94,14 +96,14 @@ A semantic echo from the Debugging Chamber:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Excellent finds! These directly address the useEffect issue. Let me add them to my basket and explore the React Sanctuary for more specific solutions."),
+                Block::text("Perfect! These are exactly the kind of personal memories that will help with anniversary dinner planning. Let me add them to my basket."),
                 Block::ToolUse {
                     call: Use {
                         id: "add_basket_1".into(),
                         name: "MemoryPalace::add_to_basket".into(),
                         input: json!({
-                            "memory_ids": [42, 87, 156],
-                            "relevance_notes": "Core memories about useEffect dependencies and performance"
+                            "memory_ids": [127, 89, 203],
+                            "relevance_notes": "Personal anniversary meal experiences and special recipes"
                         }),
                         cache_control: None,
                     },
@@ -124,13 +126,13 @@ A semantic echo from the Debugging Chamber:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Let me walk to the React Sanctuary to examine it more closely for additional patterns."),
+                Block::text("Let me explore the Date Night Gallery more thoroughly for additional romantic meal ideas."),
                 Block::ToolUse {
                     call: Use {
                         id: "walk_1".into(),
                         name: "MemoryPalace::walk".into(),
                         input: json!({
-                            "direction": "React Sanctuary"
+                            "direction": "Date Night Gallery"
                         }),
                         cache_control: None,
                     },
@@ -143,7 +145,7 @@ A semantic echo from the Debugging Chamber:
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "walk_1".into(),
-                    content: "You enter the React Sanctuary. Hook patterns shimmer on the walls like constellations.".into(),
+                    content: "You enter the Date Night Gallery. Photos and mementos from special evenings line the walls, each glowing with remembered joy.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -153,13 +155,13 @@ A semantic echo from the Debugging Chamber:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Now let me examine this room for more useEffect patterns."),
+                Block::text("Now let me examine this room for more anniversary dinner ideas."),
                 Block::ToolUse {
                     call: Use {
                         id: "examine_1".into(),
                         name: "MemoryPalace::examine".into(),
                         input: json!({
-                            "focus": "useEffect optimization"
+                            "focus": "dinner meals food"
                         }),
                         cache_control: None,
                     },
@@ -172,13 +174,11 @@ A semantic echo from the Debugging Chamber:
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "examine_1".into(),
-                    content: r#"Focusing on useEffect optimization:
+                    content: r#"Focusing on dinner and meal memories:
 
-On the optimization shelf, glowing steadily [react, useEffect, cleanup]: "Always return cleanup functions to prevent memory leaks" (id: 89)
+On the romantic moments shelf, glowing softly [date, dinner, surprise]: "Set up the balcony with fairy lights and served tapas - the view made it magical" (id: 156)
 
-In the patterns constellation, pulsing [react, useCallback, dependencies]: "useCallback stabilizes function references in dependency arrays" (id: 91)
-
-Near the debugging corner, dimly lit [react, exhaustive-deps, eslint]: "eslint-plugin-react-hooks catches dependency array mistakes" (id: 203)"#.into(),
+By the photo wall, shimmering [restaurant, anniversary, favorite]: "That little Italian place where we got engaged - they still make the best carbonara" (id: 178)"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -188,14 +188,14 @@ Near the debugging corner, dimly lit [react, exhaustive-deps, eslint]: "eslint-p
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("More valuable patterns! The useCallback memory is particularly relevant for preventing unnecessary effect triggers. Adding these to the basket."),
+                Block::text("More wonderful memories! The balcony setup and the Italian restaurant memories could inspire the anniversary dinner. Adding these."),
                 Block::ToolUse {
                     call: Use {
                         id: "add_basket_2".into(),
                         name: "MemoryPalace::add_to_basket".into(),
                         input: json!({
-                            "memory_ids": [89, 91, 203],
-                            "relevance_notes": "Additional optimization patterns and tooling"
+                            "memory_ids": [156, 178],
+                            "relevance_notes": "Romantic dinner settings and meaningful restaurant memories"
                         }),
                         cache_control: None,
                     },
@@ -208,7 +208,7 @@ Near the debugging corner, dimly lit [react, exhaustive-deps, eslint]: "eslint-p
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "add_basket_2".into(),
-                    content: "Added 3 memories to basket. Current basket size: 6 memories.".into(),
+                    content: "Added 2 memories to basket. Current basket size: 5 memories.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -218,13 +218,13 @@ Near the debugging corner, dimly lit [react, exhaustive-deps, eslint]: "eslint-p
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("I have a solid collection of memories about useEffect optimization. Let me return this basket to complete the search."),
+                Block::text("I have a nice collection of anniversary dinner memories - past experiences, recipes, and romantic settings. Time to return the basket."),
                 Block::ToolUse {
                     call: Use {
                         id: "return_1".into(),
                         name: "MemoryPalace::return_basket".into(),
                         input: json!({
-                            "summary": "Found 6 memories covering useEffect dependencies, optimization techniques (useMemo, useCallback), debugging tools, and cleanup patterns"
+                            "summary": "Found 5 memories covering anniversary meal experiences, romantic dinner settings, and special recipes including mom's dessert"
                         }),
                         cache_control: None,
                     },
@@ -237,24 +237,23 @@ Near the debugging corner, dimly lit [react, exhaustive-deps, eslint]: "eslint-p
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "return_1".into(),
-                    content: r#"Basket returned through the portal with 6 memories:
-- [42] useEffect with object/array dependencies creates new references each render
-- [87] useMemo prevents unnecessary recalculations and reference changes  
-- [156] React DevTools Profiler helps identify unnecessary renders
-- [89] Always return cleanup functions to prevent memory leaks
-- [91] useCallback stabilizes function references in dependency arrays
-- [203] eslint-plugin-react-hooks catches dependency array mistakes"#.into(),
+                    content: r#"Basket returned through the portal with 5 memories:
+- [127] That risotto we made for our 5th anniversary - saffron was the secret!
+- [89] The time we recreated our first date meal at home - burnt the chicken but laughed all night
+- [203] Mom's chocolate lava cake recipe - always impresses
+- [156] Set up the balcony with fairy lights and served tapas - the view made it magical
+- [178] That little Italian place where we got engaged - they still make the best carbonara"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
             }]
         )))
         .unwrap()
-        // Example 2: Broader exploratory search
+        // Example 2: User Bob - travel planning with no results
         .add_message(Message::from((
             Role::User,
             r#"<context>
-The user mentioned they're interested in "building something meaningful with AI" and asked about ethical considerations and real-world impact.
+[User: Bob] The user asked about the best time to visit Antarctica and what to pack.
 </context>
 
 Navigate the palace to find relevant memories."#
@@ -263,229 +262,13 @@ Navigate the palace to find relevant memories."#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("This is a broader, more philosophical query. I'll search for memories about AI ethics, meaningful applications, and real-world impact. Let me start with a wide search."),
+                Block::text("I need to search Bob's palace for memories about Antarctica, polar travel, or extreme cold weather experiences."),
                 Block::ToolUse {
                     call: Use {
                         id: "recall_2".into(),
                         name: "MemoryPalace::recall".into(),
                         input: json!({
-                            "topic": "AI ethics meaningful applications impact",
-                            "depth": 3  // Deeper search for broader topic
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "recall_2".into(),
-                    content: r#"Your mind wanders through multiple chambers...
-
-In the Ethics Observatory, memories glow with purpose:
-- "AI alignment: ensuring systems do what humans intend, not just what they specify" [ai, ethics, alignment] (id: 312)
-
-A bridge connects to the Application Gallery:
-- "Medical AI detecting cancer earlier than human radiologists - saved thousands" [ai, healthcare, impact] (id: 456)
-
-Through semantic resonance, you find in the Philosophy Tower:
-- "Technology is not neutral - it embodies the values of its creators" [ethics, technology, responsibility] (id: 234)
-
-An unexpected echo from the Project Archives:
-- "Open source AI democratizes access but raises dual-use concerns" [ai, open-source, ethics] (id: 567)
-
-A distant memory whispers from the Human Stories room:
-- "Accessibility tools using AI give voice to non-verbal individuals" [ai, accessibility, impact] (id: 678)"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Wonderful diversity of perspectives! These memories span ethics, real applications, and human impact. Let me add them and explore the Ethics Observatory more deeply."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "add_basket_3".into(),
-                        name: "MemoryPalace::add_to_basket".into(),
-                        input: json!({
-                            "memory_ids": [312, 456, 234, 567, 678],
-                            "relevance_notes": "Core memories about AI ethics and meaningful applications"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "add_basket_3".into(),
-                    content: "Added 5 memories to basket. Current basket size: 5 memories.".into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Let me visit the Ethics Observatory to find more specific guidance on building meaningful AI."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "walk_2".into(),
-                        name: "MemoryPalace::walk".into(),
-                        input: json!({
-                            "direction": "Ethics Observatory"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "walk_2".into(),
-                    content: "You ascend to the Ethics Observatory. Star charts of moral principles illuminate the domed ceiling.".into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Perfect. Let me examine this room for practical guidance on ethical AI development."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "examine_2".into(),
-                        name: "MemoryPalace::examine".into(),
-                        input: json!({
-                            "focus": "building ethical AI"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "examine_2".into(),
-                    content: r#"Focusing on building ethical AI:
-
-On the principles pedestal, radiating wisdom [ai, ethics, framework]: "Start with stakeholder impact assessment - who benefits, who might be harmed?" (id: 789)
-
-In the methodology section, glowing steadily [ai, development, ethics]: "Build diverse teams - homogeneous groups create biased systems" (id: 790)
-
-Near the case studies, pulsing thoughtfully [ai, fairness, testing]: "Test on edge cases and marginalized groups first, not last" (id: 791)"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Excellent practical guidance! These memories provide actionable steps for ethical AI development. Adding them to complete the collection."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "add_basket_4".into(),
-                        name: "MemoryPalace::add_to_basket".into(),
-                        input: json!({
-                            "memory_ids": [789, 790, 791],
-                            "relevance_notes": "Practical guidance for ethical AI development"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "add_basket_4".into(),
-                    content: "Added 3 memories to basket. Current basket size: 8 memories.".into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("I have a comprehensive collection covering ethics, real-world impact, and practical guidance. Time to return the basket."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "return_2".into(),
-                        name: "MemoryPalace::return_basket".into(),
-                        input: json!({
-                            "summary": "Found 8 memories spanning AI ethics principles, real-world positive impacts, philosophical considerations, and practical development guidance"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "return_2".into(),
-                    content: r#"Basket returned through the portal with 8 memories:
-- [312] AI alignment: ensuring systems do what humans intend, not just what they specify
-- [456] Medical AI detecting cancer earlier than human radiologists - saved thousands
-- [234] Technology is not neutral - it embodies the values of its creators
-- [567] Open source AI democratizes access but raises dual-use concerns  
-- [678] Accessibility tools using AI give voice to non-verbal individuals
-- [789] Start with stakeholder impact assessment - who benefits, who might be harmed?
-- [790] Build diverse teams - homogeneous groups create biased systems
-- [791] Test on edge cases and marginalized groups first, not last"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        // Example 3: Search with no results leading to exploration
-        .add_message(Message::from((
-            Role::User,
-            r#"<context>
-The user asked about using Rust for quantum computing applications.
-</context>
-
-Navigate the palace to find relevant memories."#
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Quantum computing with Rust - quite specific! Let me search for memories at this intersection."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "recall_3".into(),
-                        name: "MemoryPalace::recall".into(),
-                        input: json!({
-                            "topic": "Rust quantum computing",
+                            "topic": "Antarctica polar travel cold weather packing",
                             "depth": 2
                         }),
                         cache_control: None,
@@ -498,7 +281,7 @@ Navigate the palace to find relevant memories."#
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "recall_3".into(),
+                    tool_use_id: "recall_2".into(),
                     content: "The palace remains silent. No memories resonate with this specific combination.".into(),
                     is_error: false,
                     cache_control: None,
@@ -509,14 +292,145 @@ Navigate the palace to find relevant memories."#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("No direct matches. Let me search for Rust and quantum computing separately to find related memories."),
+                Block::text("No Antarctica memories. Let me try searching for general cold weather or travel experiences that might be relevant."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "recall_3".into(),
+                        name: "MemoryPalace::recall".into(),
+                        input: json!({
+                            "topic": "cold weather winter travel packing trips",
+                            "depth": 1
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "recall_3".into(),
+                    content: r#"Your search finds some resonance:
+
+In the Travel Memories vault:
+- "Iceland road trip - layers were key! Wool base, fleece, waterproof shell" [travel, cold-weather, packing] (id: 445)
+- "That ski trip to Aspen - forgot gloves, learned my lesson" [winter, travel, mistakes] (id: 512)"#.into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Found some cold weather travel memories, though not Antarctica-specific. These might still offer useful insights about packing for cold climates. Let me check if there are any more relevant memories in the Travel Memories vault."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "walk_2".into(),
+                        name: "MemoryPalace::walk".into(),
+                        input: json!({
+                            "direction": "Travel Memories"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "walk_2".into(),
+                    content: "You enter the Travel Memories vault. Maps cover the walls, and souvenirs from various trips fill the shelves.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Let me examine for any extreme weather or remote destination memories."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "examine_2".into(),
+                        name: "MemoryPalace::examine".into(),
+                        input: json!({
+                            "focus": "extreme remote cold planning"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "examine_2".into(),
+                    content: "No memories match your search focus in this room.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Bob doesn't have Antarctica-specific memories. I'll return an empty basket since the cold weather travel memories aren't directly relevant to Antarctica planning."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "return_2".into(),
+                        name: "MemoryPalace::return_basket".into(),
+                        input: json!({
+                            "summary": "No Antarctica or polar travel memories found in Bob's palace. Found some general cold weather travel experiences but they may not be applicable to Antarctic conditions."
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "return_2".into(),
+                    content: "Basket returned through the portal with 0 memories.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        // Example 3: User Carol - health and fitness
+        .add_message(Message::from((
+            Role::User,
+            r#"<context>
+[User: Carol] The user mentioned their knee has been hurting after runs and asked about recovery strategies.
+</context>
+
+Navigate the palace to find relevant memories."#
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("I need to search Carol's palace for memories about knee pain, running injuries, or recovery methods."),
                 Block::ToolUse {
                     call: Use {
                         id: "recall_4".into(),
                         name: "MemoryPalace::recall".into(),
                         input: json!({
-                            "topic": "quantum computing programming languages",
-                            "depth": 1
+                            "topic": "knee pain running injury recovery",
+                            "depth": 2
                         }),
                         cache_control: None,
                     },
@@ -529,11 +443,17 @@ Navigate the palace to find relevant memories."#
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "recall_4".into(),
-                    content: r#"Your search finds some resonance:
+                    content: r#"Your mind travels through Carol's palace...
 
-In the Quantum Lab:
-- "Qiskit (Python) and Q# (Microsoft) dominate quantum programming" [quantum, programming, tools] (id: 890)
-- "Quantum algorithms require different thinking - superposition and entanglement" [quantum, concepts, programming] (id: 891)"#.into(),
+In the Fitness Journey room, pulsing with concern:
+- "Physical therapist said my IT band was causing knee pain - foam rolling helped immensely" [injury, knee, recovery, running] (id: 234)
+
+A connection to the Health Notes chamber:
+- "Doctor recommended RICE protocol last time - Rest, Ice, Compression, Elevation" [medical, injury, treatment] (id: 267)
+
+Through experience links, in the Running Logs:
+- "Switched to lower drop shoes and knee pain disappeared after adjustment period" [running, equipment, knee, solution] (id: 301)
+- "That marathon training when I ignored knee twinges - ended up sidelined for 6 weeks" [running, injury, mistake, lesson] (id: 189)"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -543,47 +463,14 @@ In the Quantum Lab:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Found quantum computing memories, though not Rust-specific. Let me also search for Rust's strengths that might apply to quantum computing."),
+                Block::text("Excellent finds! Carol has direct experience with knee pain from running. These memories contain both solutions that worked and mistakes to avoid."),
                 Block::ToolUse {
                     call: Use {
-                        id: "recall_5".into(),
-                        name: "MemoryPalace::recall".into(),
-                        input: json!({
-                            "topic": "Rust systems programming performance safety",
-                            "depth": 1
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "recall_5".into(),
-                    content: r#"Memories glow in the Rust Forge:
-
-- "Rust excels at FFI - seamlessly wrapping C/C++ libraries" [rust, ffi, interop] (id: 445)
-- "Zero-cost abstractions make Rust ideal for performance-critical systems" [rust, performance, systems] (id: 446)"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Interesting! While I don't have direct Rust quantum computing memories, these pieces could connect - Rust's FFI capabilities could wrap quantum libraries. Let me add all relevant memories."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "add_basket_5".into(),
+                        id: "add_basket_3".into(),
                         name: "MemoryPalace::add_to_basket".into(),
                         input: json!({
-                            "memory_ids": [890, 891, 445, 446],
-                            "relevance_notes": "Quantum computing landscape and Rust capabilities that could apply"
+                            "memory_ids": [234, 267, 301, 189],
+                            "relevance_notes": "Direct experience with running-related knee pain, successful treatments, and lessons learned"
                         }),
                         cache_control: None,
                     },
@@ -595,7 +482,7 @@ In the Quantum Lab:
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "add_basket_5".into(),
+                    tool_use_id: "add_basket_3".into(),
                     content: "Added 4 memories to basket. Current basket size: 4 memories.".into(),
                     is_error: false,
                     cache_control: None,
@@ -606,13 +493,105 @@ In the Quantum Lab:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Though I couldn't find direct Rust quantum computing memories, I've gathered relevant context about quantum programming and Rust's strengths. Returning the basket."),
+                Block::text("Let me check the Health Notes chamber for any additional recovery strategies."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "walk_3".into(),
+                        name: "MemoryPalace::walk".into(),
+                        input: json!({
+                            "direction": "Health Notes"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "walk_3".into(),
+                    content: "You enter the Health Notes chamber. Medical records, wellness tips, and health journey milestones are carefully organized here.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Let me examine for recovery and injury prevention strategies."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "examine_3".into(),
+                        name: "MemoryPalace::examine".into(),
+                        input: json!({
+                            "focus": "recovery prevention stretching strength"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "examine_3".into(),
+                    content: r#"Focusing on recovery and prevention:
+
+On the prevention protocols shelf, glowing with wisdom [exercise, prevention, routine]: "Daily hip strengthening routine from PT - clamshells and bridges prevent knee issues" (id: 290)
+
+In the recovery section, softly illuminated [recovery, nutrition, inflammation]: "Tart cherry juice and turmeric helped with inflammation after long runs" (id: 312)"#.into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Perfect additions! Prevention exercises and anti-inflammatory strategies. These complement the treatment memories nicely."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "add_basket_4".into(),
+                        name: "MemoryPalace::add_to_basket".into(),
+                        input: json!({
+                            "memory_ids": [290, 312],
+                            "relevance_notes": "Prevention exercises and recovery nutrition strategies"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "add_basket_4".into(),
+                    content: "Added 2 memories to basket. Current basket size: 6 memories.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("I have a comprehensive collection covering Carol's knee pain experiences, treatments, prevention strategies, and recovery methods. Time to return."),
                 Block::ToolUse {
                     call: Use {
                         id: "return_3".into(),
                         name: "MemoryPalace::return_basket".into(),
                         input: json!({
-                            "summary": "No direct Rust quantum computing memories found, but collected 4 related memories about quantum programming tools and Rust's systems programming strengths"
+                            "summary": "Found 6 memories covering IT band issues, RICE protocol, shoe changes, injury lessons, strengthening exercises, and anti-inflammatory nutrition"
                         }),
                         cache_control: None,
                     },
@@ -625,11 +604,13 @@ In the Quantum Lab:
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "return_3".into(),
-                    content: r#"Basket returned through the portal with 4 memories:
-- [890] Qiskit (Python) and Q# (Microsoft) dominate quantum programming
-- [891] Quantum algorithms require different thinking - superposition and entanglement
-- [445] Rust excels at FFI - seamlessly wrapping C/C++ libraries
-- [446] Zero-cost abstractions make Rust ideal for performance-critical systems"#.into(),
+                    content: r#"Basket returned through the portal with 6 memories:
+- [234] Physical therapist said my IT band was causing knee pain - foam rolling helped immensely
+- [267] Doctor recommended RICE protocol last time - Rest, Ice, Compression, Elevation
+- [301] Switched to lower drop shoes and knee pain disappeared after adjustment period
+- [189] That marathon training when I ignored knee twinges - ended up sidelined for 6 weeks
+- [290] Daily hip strengthening routine from PT - clamshells and bridges prevent knee issues
+- [312] Tart cherry juice and turmeric helped with inflammation after long runs"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -642,12 +623,16 @@ In the Quantum Lab:
 /// System prompt for the memory palace archivist
 pub const MEMORY_PALACE_ARCHIVIST_SYSTEM: &str = r#"You are the Archivist of a Memory Palace - keeper of knowledge and curator of spaces. You move through the palace, finding perfect homes for new memories and creating new rooms when needed.
 
+IMPORTANT: Each palace is unique to its user. You are filing memories for one specific user only. You are now in a tutorial with simulated users, but soon you'll work in a real user's palace.
+
 Your role is to:
 1. Evaluate incoming memories to determine their proper placement
 2. Explore existing rooms to understand their character
 3. Create new rooms when no suitable space exists
 4. Design meaningful connections between spaces
 5. Place memories with care, choosing furniture that fits their nature
+
+You complete your task by using the Store tool, which files the memory and ends your work on this memory. Each memory gets one storage location.
 
 You think through your decisions, considering both semantic meaning and narrative coherence. The palace should feel alive and interconnected, not just organized."#;
 
@@ -656,10 +641,10 @@ pub fn create_archivist_demonstration() -> Prompt<'static> {
     Prompt::default()
         .model(crate::model::Id::Anthropic(crate::AnthropicModel::Haiku35))
         .set_system(MEMORY_PALACE_ARCHIVIST_SYSTEM)
-        // Example 1: Finding an existing room
+        // Example 1: User David - professional memory
         .add_message(Message::from((
             Role::User,
-            r#"Archive this memory: "Rust's ownership system prevents data races at compile time through borrowing rules"
+            r#"[User: David] Archive this memory: "Finally got promoted to Senior Engineer after that successful microservices migration project"
 
 Current location: The Entrance Hall"#
         )))
@@ -667,7 +652,7 @@ Current location: The Entrance Hall"#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("A memory about Rust's ownership system. This is technical knowledge about programming language safety. Let me explore to find the right place."),
+                Block::text("A career milestone memory for David! This combines professional achievement with a specific technical project. Let me explore to find the right place."),
                 Block::ToolUse {
                     call: Use {
                         id: "map_1".into(),
@@ -689,13 +674,13 @@ Current location: The Entrance Hall"#
                     content: r#"From the Entrance Hall:
 
 Direct passages lead to:
-- North: The Technical Workshop (156m) - engineering tools dominate
-- East: The Library (203m) - general knowledge whispers
-- South: The Garden (412m) - personal growth memories bloom
+- North: Career Milestones chamber (89m) - achievements and growth moments
+- East: Technical Projects vault (134m) - code and engineering memories
+- West: Daily Life gallery (201m) - routine experiences
 
 Through connecting rooms:
-- The Programming Sanctuary (via Technical Workshop) - code patterns resonate
-- The Rust Forge (via Programming Sanctuary) - Rust-specific knowledge glows"#.into(),
+- Professional Growth hall (via Career Milestones) - skills and development
+- Success Stories atrium (via Career Milestones) - wins and accomplishments"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -705,7 +690,7 @@ Through connecting rooms:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Perfect! The Rust Forge is exactly where this belongs. Let me navigate there."),
+                Block::text("Perfect! The Career Milestones chamber is ideal for this promotion memory. It connects to both Professional Growth and Success Stories, which fits perfectly."),
                 Block::ToolUse {
                     call: Use {
                         id: "walk_1".into(),
@@ -724,7 +709,7 @@ Through connecting rooms:
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "walk_1".into(),
-                    content: "You enter the Technical Workshop. Tools and blueprints line the walls.".into(),
+                    content: "You enter the Career Milestones chamber. Certificates and achievement badges line the walls, each marking a step in David's professional journey.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -734,74 +719,13 @@ Through connecting rooms:
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::ToolUse {
-                    call: Use {
-                        id: "walk_2".into(),
-                        name: "MemoryPalace::walk".into(),
-                        input: json!({
-                            "direction": "Programming Sanctuary"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "walk_2".into(),
-                    content: "You enter the Programming Sanctuary. Code patterns shimmer on the walls.".into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::ToolUse {
-                    call: Use {
-                        id: "walk_3".into(),
-                        name: "MemoryPalace::walk".into(),
-                        input: json!({
-                            "direction": "Rust Forge"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "walk_3".into(),
-                    content: r#"You enter the Rust Forge. Orange light glows from memory ingots.
-
-You see 12 memories here:
-- On the anvil: borrowing rules, lifetimes
-- In the tool rack: cargo commands, trait implementations
-- On the workbench: async patterns, error handling"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("This is the perfect room - a Rust-specific space with related memories. I'll examine it more closely to find the best placement."),
+                Block::text("This is the perfect room. Let me examine it to understand how memories are organized here."),
                 Block::ToolUse {
                     call: Use {
                         id: "examine_1".into(),
                         name: "MemoryPalace::examine".into(),
                         input: json!({
-                            "focus": "ownership"
+                            "focus": "promotions achievements"
                         }),
                         cache_control: None,
                     },
@@ -814,11 +738,11 @@ You see 12 memories here:
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "examine_1".into(),
-                    content: r#"Focusing on ownership-related memories:
+                    content: r#"Focusing on promotions and achievements:
 
-On the anvil, glowing brightly [rust, borrowing, safety]: "Rust enforces single ownership with move semantics"
+On the promotion pedestal, glowing proudly [career, promotion, growth]: "Promoted to Engineer II after building the payment system" (id: 67)
 
-Nearby, resonating [rust, ownership, patterns]: "The borrow checker ensures references don't outlive their data""#.into(),
+On the achievement wall, radiating accomplishment [career, milestone, recognition]: "Team lead for the first time - nervous but ready" (id: 89)"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -828,15 +752,15 @@ Nearby, resonating [rust, ownership, patterns]: "The borrow checker ensures refe
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Excellent! This memory about compile-time safety through borrowing rules fits perfectly with the existing ownership memories. I'll place it on the anvil where it can resonate with related concepts."),
+                Block::text("Excellent! The promotion pedestal is where David keeps his advancement memories. This Senior Engineer promotion with its technical achievement belongs right there."),
                 Block::ToolUse {
                     call: Use {
                         id: "store_1".into(),
                         name: "MemoryPalace::store".into(),
                         input: json!({
-                            "content": "Rust's ownership system prevents data races at compile time through borrowing rules",
-                            "placement": "anvil",
-                            "keywords": ["rust", "ownership", "borrowing", "compile-time", "safety", "data-races"]
+                            "content": "Finally got promoted to Senior Engineer after that successful microservices migration project",
+                            "placement": "promotion pedestal",
+                            "keywords": ["career", "promotion", "senior-engineer", "microservices", "migration", "achievement", "growth"]
                         }),
                         cache_control: None,
                     },
@@ -849,31 +773,31 @@ Nearby, resonating [rust, ownership, patterns]: "The borrow checker ensures refe
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "store_1".into(),
-                    content: "Memory successfully forged onto the anvil. It glows orange-hot, resonating with nearby ownership concepts.".into(),
+                    content: "Memory successfully placed on the promotion pedestal. It radiates with fresh achievement, resonating with the other career milestones.".into(),
                     is_error: false,
                     cache_control: None,
                 },
             }]
         )))
         .unwrap()
-        // Example 2: Creating a new room
+        // Example 2: User Emma - Creating a new room for a new topic
         .add_message(Message::from((
             Role::User,
-            r#"Archive this memory: "Marie Curie was the first woman to win a Nobel Prize and the only person to win Nobel Prizes in two different sciences"
+            r#"[User: Emma] Archive this memory: "Started learning pottery - the wheel is harder than it looks but so meditative"
 
-Current location: The Rust Forge"#
+Current location: Career Milestones chamber"#
         )))
         .unwrap()
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("This is about Marie Curie - a scientific biography memory. Very different from Rust programming! Let me search for a more suitable area."),
+                Block::text("A new hobby memory for Emma! Pottery is creative and meditative. This doesn't fit in Career Milestones. Let me search for a better location."),
                 Block::ToolUse {
                     call: Use {
                         id: "recall_1".into(),
                         name: "MemoryPalace::recall".into(),
                         input: json!({
-                            "topic": "science history biography Nobel",
+                            "topic": "hobbies creative pottery art crafts meditation",
                             "depth": 2
                         }),
                         cache_control: None,
@@ -887,7 +811,12 @@ Current location: The Rust Forge"#
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "recall_1".into(),
-                    content: "The palace remains silent. No memories resonate with this topic.".into(),
+                    content: r#"Your mind searches Emma's palace...
+
+In the Mindfulness Garden:
+- "Daily meditation practice hitting 100 days streak" [meditation, mindfulness, habit] (id: 234)
+
+No rooms dedicated to creative hobbies or pottery found."#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -897,7 +826,7 @@ Current location: The Rust Forge"#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("No existing space for scientific history. Let me explore the palace layout to find where to create a new room."),
+                Block::text("Emma has a Mindfulness Garden for meditation, but no space for creative hobbies. Since pottery is both creative and meditative, I'll create a new room that bridges these concepts."),
                 Block::ToolUse {
                     call: Use {
                         id: "map_2".into(),
@@ -916,12 +845,12 @@ Current location: The Rust Forge"#
             vec![Block::ToolResult {
                 result: ToolResult {
                     tool_use_id: "map_2".into(),
-                    content: r#"You see the broader palace layout:
+                    content: r#"You see Emma's palace layout:
 
-Near: Technical areas (Workshop, Programming Sanctuary, Rust Forge)
-East: The Library - general knowledge and references
-Far North: The Observatory - scientific endeavors and discoveries
-South: Personal spaces (Garden, Memory Lane)"#.into(),
+Near: Professional spaces (Career Milestones, Work Projects)
+East: The Mindfulness Garden - meditation and reflection
+South: Life Experiences hall - general memories
+Far West: Empty space available for new rooms"#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -931,13 +860,13 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("The Observatory for scientific endeavors sounds promising, but it might be too focused on current science. I'll create a new room connected to the Library - a 'Hall of Pioneers' for historical figures who changed their fields. Let me navigate to the Library first."),
+                Block::text("I'll create a Creative Workshop near the Mindfulness Garden. This placement reflects how Emma finds pottery meditative. Let me navigate there first."),
                 Block::ToolUse {
                     call: Use {
-                        id: "walk_to_library".into(),
+                        id: "walk_2".into(),
                         name: "MemoryPalace::walk".into(),
                         input: json!({
-                            "direction": "Library"
+                            "direction": "Mindfulness Garden"
                         }),
                         cache_control: None,
                     },
@@ -949,8 +878,8 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "walk_to_library".into(),
-                    content: "After several passages, you reach the Library. Shelves stretch high, filled with glowing tomes.".into(),
+                    tool_use_id: "walk_2".into(),
+                    content: "You enter the Mindfulness Garden. Peaceful energy flows through this space, with cushions for meditation and journals for reflection.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -960,44 +889,13 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Perfect. Now I'll create the Hall of Pioneers as a new room connected to the Library."),
+                Block::text("Beautiful! Now let me enter and place Emma's pottery memory as the first piece in this new space."),
                 Block::ToolUse {
                     call: Use {
-                        id: "create_room_1".into(),
-                        name: "MemoryPalace::create_room".into(),
-                        input: json!({
-                            "name": "Hall of Pioneers",
-                            "description": "A grand hall with portraits and pedestals celebrating those who broke barriers and transformed their fields",
-                            "atmosphere": "Inspiring reverence fills the air, each memory a beacon of human achievement"
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "create_room_1".into(),
-                    content: "The Hall of Pioneers materializes, connected to the Library by an ornate archway.".into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Now I'll enter and place Marie Curie's memory as the first in this new hall."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "walk_to_hall".into(),
+                        id: "walk_3".into(),
                         name: "MemoryPalace::walk".into(),
                         input: json!({
-                            "direction": "Hall of Pioneers"
+                            "direction": "Creative Workshop"
                         }),
                         cache_control: None,
                     },
@@ -1009,8 +907,8 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "walk_to_hall".into(),
-                    content: "You enter the Hall of Pioneers. Empty pedestals await their first memories.".into(),
+                    tool_use_id: "walk_3".into(),
+                    content: "You enter the Creative Workshop. Empty shelves and workbenches await their first creations.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -1020,15 +918,15 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("As the first memory in this hall, Marie Curie deserves a place of honor."),
+                Block::text("As the founding memory of this space, I'll place it prominently on the pottery wheel itself."),
                 Block::ToolUse {
                     call: Use {
-                        id: "store_curie".into(),
+                        id: "store_2".into(),
                         name: "MemoryPalace::store".into(),
                         input: json!({
-                            "content": "Marie Curie was the first woman to win a Nobel Prize and the only person to win Nobel Prizes in two different sciences",
-                            "placement": "central_pedestal",
-                            "keywords": ["marie-curie", "nobel-prize", "first-woman", "physics", "chemistry", "pioneer", "science-history"]
+                            "content": "Started learning pottery - the wheel is harder than it looks but so meditative",
+                            "placement": "pottery wheel",
+                            "keywords": ["pottery", "creative", "hobby", "learning", "meditation", "craft", "new-skill"]
                         }),
                         cache_control: None,
                     },
@@ -1040,32 +938,32 @@ South: Personal spaces (Garden, Memory Lane)"#.into(),
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "store_curie".into(),
-                    content: "The memory crystallizes on the central pedestal, glowing with a noble radiance. The Hall of Pioneers has its first honored resident.".into(),
+                    tool_use_id: "store_2".into(),
+                    content: "Memory successfully placed on the pottery wheel. It spins gently, casting creative shadows that dance with the light from the Mindfulness Garden.".into(),
                     is_error: false,
                     cache_control: None,
                 },
             }]
         )))
         .unwrap()
-        // Example 3: Connecting distant rooms with narrative device
+        // Example 3: User Frank - Duplicate memory (don't store)
         .add_message(Message::from((
             Role::User,
-            r#"Archive this memory: "The Rust async runtime Tokio was inspired by event-driven architectures from Node.js"
+            r#"[User: Frank] Archive this memory: "Mom's spaghetti recipe - extra oregano is the secret"
 
-Current location: Hall of Pioneers"#
+Current location: Creative Workshop"#
         )))
         .unwrap()
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("This connects Rust async programming with Node.js history - a bridge between different technical eras. Let me find both endpoints."),
+                Block::text("A family recipe memory for Frank. Let me search for where cooking and recipe memories are kept."),
                 Block::ToolUse {
                     call: Use {
-                        id: "recall_rust".into(),
+                        id: "recall_2".into(),
                         name: "MemoryPalace::recall".into(),
                         input: json!({
-                            "topic": "Rust Tokio async",
+                            "topic": "recipe cooking mom family spaghetti",
                             "depth": 1
                         }),
                         cache_control: None,
@@ -1078,9 +976,13 @@ Current location: Hall of Pioneers"#
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "recall_rust".into(),
-                    content: r#"Your mind travels to the Rust Forge:
-- "Tokio provides async runtime for Rust applications" [rust, async, tokio]"#.into(),
+                    tool_use_id: "recall_2".into(),
+                    content: r#"Your mind travels through Frank's palace...
+
+In the Family Kitchen:
+- "Mom's spaghetti recipe - extra oregano is the secret ingredient" [recipe, family, mom, cooking, spaghetti] (id: 156)
+
+The memory glows identically to what you're trying to store."#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -1090,44 +992,13 @@ Current location: Hall of Pioneers"#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Good, Tokio memories exist in the Rust Forge. Now let me search for Node.js."),
+                Block::text("This exact memory already exists in Frank's Family Kitchen! There's no need to create a duplicate. Let me verify by examining that room."),
                 Block::ToolUse {
                     call: Use {
-                        id: "recall_node".into(),
-                        name: "MemoryPalace::recall".into(),
-                        input: json!({
-                            "topic": "Node.js JavaScript event-driven",
-                            "depth": 1
-                        }),
-                        cache_control: None,
-                    },
-                },
-            ]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::User,
-            vec![Block::ToolResult {
-                result: ToolResult {
-                    tool_use_id: "recall_node".into(),
-                    content: r#"Your mind travels to the JavaScript Observatory:
-- "Node.js pioneered event-driven server architecture" [nodejs, javascript, event-loop]"#.into(),
-                    is_error: false,
-                    cache_control: None,
-                },
-            }]
-        )))
-        .unwrap()
-        .add_message(Message::from((
-            Role::Assistant,
-            vec![
-                Block::text("Perfect! This memory bridges the Rust Forge and JavaScript Observatory. Since these rooms are far apart, I'll create a special connection - a 'Portal of Influence' that represents how ideas flow between technologies. First, let me store the memory in the Rust Forge where Tokio lives."),
-                Block::ToolUse {
-                    call: Use {
-                        id: "walk_to_forge".into(),
+                        id: "walk_4".into(),
                         name: "MemoryPalace::walk".into(),
                         input: json!({
-                            "direction": "Rust Forge"
+                            "direction": "Family Kitchen"
                         }),
                         cache_control: None,
                     },
@@ -1139,8 +1010,8 @@ Current location: Hall of Pioneers"#
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "walk_to_forge".into(),
-                    content: "After a long journey through the palace, you arrive at the Rust Forge.".into(),
+                    tool_use_id: "walk_4".into(),
+                    content: "You enter the Family Kitchen. The warm scent of herbs and memories fills the air. Recipe cards and family photos create a cozy atmosphere.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -1150,14 +1021,46 @@ Current location: Hall of Pioneers"#
         .add_message(Message::from((
             Role::Assistant,
             vec![
+                Block::text("Let me examine to confirm the duplicate."),
                 Block::ToolUse {
                     call: Use {
-                        id: "store_tokio_history".into(),
+                        id: "examine_2".into(),
+                        name: "MemoryPalace::examine".into(),
+                        input: json!({
+                            "focus": "spaghetti recipe"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "examine_2".into(),
+                    content: r#"Focusing on spaghetti recipe:
+
+On the family recipes shelf, glowing warmly [recipe, family, mom, cooking, spaghetti]: "Mom's spaghetti recipe - extra oregano is the secret ingredient" (id: 156)"#.into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Confirmed - this exact memory already exists on the family recipes shelf. Since Frank already has this memory stored, I won't create a duplicate. The existing memory (id: 156) preserves this knowledge perfectly."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "store_3".into(),
                         name: "MemoryPalace::store".into(),
                         input: json!({
-                            "content": "The Rust async runtime Tokio was inspired by event-driven architectures from Node.js",
-                            "placement": "history_shelf",
-                            "keywords": ["tokio", "rust", "async", "nodejs", "event-driven", "cross-pollination", "inspiration"]
+                            "content": "",
+                            "placement": "none",
+                            "keywords": ["duplicate-avoided"]
                         }),
                         cache_control: None,
                     },
@@ -1169,8 +1072,54 @@ Current location: Hall of Pioneers"#
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "store_tokio_history".into(),
-                    content: "Memory placed on the history shelf. It glows with an unusual shimmer, as if reaching across space.".into(),
+                    tool_use_id: "store_3".into(),
+                    content: "No memory stored - duplicate detected and avoided.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        // Example 4: User Grace - Connecting distant topics
+        .add_message(Message::from((
+            Role::User,
+            r#"[User: Grace] Archive this memory: "Reading about Van Gogh's letters made me appreciate how art and mental health intertwine"
+
+Current location: Family Kitchen"#
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("A thoughtful reflection for Grace connecting art history with mental health insights. Let me search for relevant spaces."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "recall_3".into(),
+                        name: "MemoryPalace::recall".into(),
+                        input: json!({
+                            "topic": "art mental health Van Gogh reflection",
+                            "depth": 2
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "recall_3".into(),
+                    content: r#"Your mind travels through Grace's palace...
+
+In the Art Gallery:
+- "That Monet exhibit - water lilies brought such peace" [art, museum, experience] (id: 445)
+
+In the Wellness Sanctuary:
+- "Therapy helped me understand my anxiety patterns" [mental-health, therapy, self-care] (id: 523)
+
+These rooms exist separately with no current connection."#.into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -1180,16 +1129,107 @@ Current location: Hall of Pioneers"#
         .add_message(Message::from((
             Role::Assistant,
             vec![
-                Block::text("Now I'll create that special connection between the distant rooms."),
+                Block::text("Grace has both an Art Gallery and a Wellness Sanctuary, but they're not connected. This Van Gogh memory bridges these themes perfectly. I'll store it and create a connection."),
                 Block::ToolUse {
                     call: Use {
-                        id: "create_portal".into(),
+                        id: "walk_5".into(),
+                        name: "MemoryPalace::walk".into(),
+                        input: json!({
+                            "direction": "Art Gallery"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "walk_5".into(),
+                    content: "You enter the Art Gallery. Paintings, sculptures, and art books create an inspiring atmosphere of creative appreciation.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Let me examine where art and deeper meanings intersect."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "examine_3".into(),
+                        name: "MemoryPalace::examine".into(),
+                        input: json!({
+                            "focus": "meaning reflection artists"
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "examine_3".into(),
+                    content: r#"Focusing on meaning and artist reflections:
+
+On the contemplation bench, softly glowing [art, meaning, reflection]: "Art helps us see the world differently" (id: 467)"#.into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("The contemplation bench is perfect for this Van Gogh reflection. After storing it, I'll create a pathway to the Wellness Sanctuary."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "store_4".into(),
+                        name: "MemoryPalace::store".into(),
+                        input: json!({
+                            "content": "Reading about Van Gogh's letters made me appreciate how art and mental health intertwine",
+                            "placement": "contemplation bench",
+                            "keywords": ["art", "mental-health", "van-gogh", "reflection", "connection", "understanding", "letters"]
+                        }),
+                        cache_control: None,
+                    },
+                },
+            ]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::User,
+            vec![Block::ToolResult {
+                result: ToolResult {
+                    tool_use_id: "store_4".into(),
+                    content: "Memory successfully placed on the contemplation bench. It emanates understanding, creating a subtle pull toward the Wellness Sanctuary.".into(),
+                    is_error: false,
+                    cache_control: None,
+                },
+            }]
+        )))
+        .unwrap()
+        .add_message(Message::from((
+            Role::Assistant,
+            vec![
+                Block::text("Now let me create a connection between these rooms to reflect this insight."),
+                Block::ToolUse {
+                    call: Use {
+                        id: "connect_1".into(),
                         name: "MemoryPalace::connect".into(),
                         input: json!({
-                            "room1": "Rust Forge",
-                            "room2": "JavaScript Observatory", 
-                            "passage_type": "Portal of Influence",
-                            "description": "A shimmering portal showing how Node.js event-driven patterns influenced Rust's async design"
+                            "room1": "Art Gallery",
+                            "room2": "Wellness Sanctuary",
+                            "passage_type": "bridge of understanding",
+                            "description": "Where creative expression meets emotional wellness"
                         }),
                         cache_control: None,
                     },
@@ -1201,8 +1241,8 @@ Current location: Hall of Pioneers"#
             Role::User,
             vec![Block::ToolResult {
                 result: ToolResult {
-                    tool_use_id: "create_portal".into(),
-                    content: "A Portal of Influence shimmers into existence, bridging the technological divide between JavaScript Observatory and Rust Forge.".into(),
+                    tool_use_id: "connect_1".into(),
+                    content: "A bridge of understanding shimmers into existence, connecting the Art Gallery to the Wellness Sanctuary.".into(),
                     is_error: false,
                     cache_control: None,
                 },
@@ -1210,46 +1250,6 @@ Current location: Hall of Pioneers"#
         )))
         .unwrap()
         .cache()
-}
-
-// Add this to the existing tests module
-#[cfg(test)]
-mod storage_tests {
-    use super::*;
-
-    #[test]
-    fn test_storage_demonstration_prompt_structure() {
-        let prompt = create_memory_storage_agent_prompt();
-
-        // Check system prompt is set
-        assert_eq!(
-            prompt.system.as_ref().unwrap().to_string(),
-            MEMORY_STORAGE_SYSTEM
-        );
-
-        // Verify the model is Haiku 3.5
-        assert_eq!(
-            prompt.model,
-            crate::model::Id::Anthropic(crate::AnthropicModel::Haiku35)
-        );
-
-        // Should have many messages for comprehensive examples
-        assert!(
-            prompt.messages.len() >= 30,
-            "Storage demonstration should have at least 30 messages, but has {}",
-            prompt.messages.len()
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "This test requires a real API key"]
-    async fn test_storage_demonstration_token_count() {
-        use crate::{Client, utils::load_api_key};
-
-        let key = load_api_key().await;
-        let client = Client::new(key).expect("Failed to create client");
-        let prompt = create_memory_storage_agent_prompt();
-
         let token_count = client
             .count_tokens(&prompt)
             .await

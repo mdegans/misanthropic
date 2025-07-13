@@ -1,7 +1,14 @@
-use crate::tool::memory_palace::{MemoryId, PromptId, RoomId};
+//! [`Citation`] for the agent.
 use serde::{Deserialize, Serialize};
 use url::Url;
 
+/// A citation in a document, such as a [`Char`], [`Page`], [`ContentBlock`] or
+/// [`Web`].
+///
+/// [`Char`]: Citation::Char
+/// [`Page`]: Citation::Page
+/// [`ContentBlock`]: Citation::ContentBlock
+/// [`Web`]: Citation::Web
 #[derive(Clone, Debug, Deserialize, Serialize, Hash)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]

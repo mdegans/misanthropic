@@ -88,9 +88,7 @@ enum SubmissionMessage {
     },
     /// Signal an Id has been completed and the count should be removed from the
     /// retry map
-    Complete {
-        id: crate::batch::Id,
-    },
+    Complete { id: crate::batch::Id },
 }
 
 /// Messages sent to the batch processing task  
@@ -179,7 +177,8 @@ impl MemorySubroutine {
         if !self.is_ready() {
             return Err(crate::tool::memory_palace::MemoryPalaceError::Other(
                 "MemorySubroutine is not ready".to_string(),
-            ).into());
+            )
+            .into());
         }
 
         if let Some(handles) = &mut self.handles {
@@ -206,7 +205,6 @@ impl MemorySubroutine {
         self.submit_prompt_with_id(prompt, id).await?;
         Ok(id)
     }
-
 
     /// Check for and process any ready batches
     pub async fn process_ready_batches(
@@ -375,11 +373,11 @@ impl Tool for MemorySubroutine {
                                 msg
                             );
                             // Sanitize by escaping angle brackets
-                            let sanitized =
-                                msg.replace('<user>', "<fake_user>")
-                                    .replace("</user>", "</fake_user>")
-                                    .replace('<assistant>', "<fake_assistant>")
-                                    .replace("</assistant>", "</fake_assistant>");
+                            let sanitized = msg
+                                .replace("<user>", "<fake_user>")
+                                .replace("</user>", "</fake_user>")
+                                .replace("<assistant>", "<fake_assistant>")
+                                .replace("</assistant>", "</fake_assistant>");
                             sanitized
                         } else {
                             msg.clone()

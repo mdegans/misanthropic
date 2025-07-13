@@ -751,8 +751,11 @@ pub enum Error {
     #[cfg(feature = "batch")]
     #[error("Batch error: {cause}")]
     Batch {
+        /// Prompts that were not submitted.
         unsubmitted: Option<batch::Prompts<'static>>,
+        /// Prompts that were submitted.
         submitted: Option<batch::Pending<'static>>,
+        /// Cause of the error.
         cause: Box<Error>,
     },
 }

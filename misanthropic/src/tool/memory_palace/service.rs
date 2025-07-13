@@ -461,12 +461,12 @@ pub async fn get_context_summary(
             Box::pin(async move {
                 // Get recent memories based on last_updated (more relevant for agents)
                 let recent_memories: Vec<Memory> = sqlx::query_as(
-                    r#"
-                SELECT *
-                FROM memories 
-                ORDER BY last_updated DESC, created_at DESC 
-                LIMIT 5
-            "#,
+                r#"
+                    SELECT *
+                    FROM memories 
+                    ORDER BY last_updated DESC, created_at DESC 
+                    LIMIT 5
+                "#,
                 )
                 .fetch_all(&mut **tx)
                 .await?;

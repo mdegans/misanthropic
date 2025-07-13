@@ -3,31 +3,399 @@
 use sqlx::PgPool;
 use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
+use rand::distributions::WeightedIndex;
+use rand::prelude::*;
 
 use crate::tool::{
     self, 
     embedding::{EmbeddingClient, TextEmbedding}, 
-    memory_palace::{execute_with_schema, MemoryId, MemoryPalaceError, Memory, Room, RoomId}, 
+    memory_palace::{
+        db::execute_with_schema, 
+        models::*,
+        MemoryPalaceError, 
+    }, 
     memory_subroutine::MemorySubroutineError, 
     MemoryPalace, 
     Method, 
     Tool
 };
 
-/// `Navigator` agent [`Tool`] for exploring the [`MemoryPalace`].
+/// Scout report showing the brightest paths through the palace
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScoutReport {
+    /// The query context that drove this scout
+    pub query_context: String,
+    /// Rooms ordered by relevance to query
+    pub bright_rooms: Vec<BrightRoom>,
+    /// Sum of all room relevance scores in the report
+    pub total_relevance: f64,
+    /// Reference lookup for quick access
+    #[serde(skip)]
+    pub reference_map: ReferenceMap,
+}
+
+/// A bright room with its brightest memories. Brightness is a combination of
+/// semantic distance and memory strength.
+// Is "combination" the right word here? Is there a more correct term?
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BrightRoom {
+    /// The room data
+    pub room: Room,
+    /// Semantic distance from query (0.0 = identical, 1.0 = unrelated)
+    pub distance: f64,
+    /// Combined relevance score
+    pub relevance: f64,
+    /// Brightest memory placements in this room
+    pub bright_spots: Vec<MemoryPreview>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPreview {
+    /// Memory ID for collection
+    pub id: MemoryId,
+    /// Where it's placed in the room
+    pub placement: String,
+    /// Memory strength (0.0-1.0)
+    pub glow: f64,
+    /// First 100 chars or brief description
+    pub preview: String,
+    /// Reference number for quick access
+    pub ref_num: usize,
+}
+
+/// Maps reference numbers to rooms and memories for quick access
+#[derive(Debug, Clone, Default)]
+pub struct ReferenceMap {
+    rooms: Vec<Room>,
+    memories: Vec<(MemoryId, RoomId)>,
+}
+
+impl ReferenceMap {
+    fn add_room(&mut self, room: Room) -> usize {
+        let index = self.rooms.len();
+        self.rooms.push(room);
+        index
+    }
+    
+    fn add_memory(&mut self, memory_id: MemoryId, room_id: RoomId) -> usize {
+        let index = self.memories.len();
+        self.memories.push((memory_id, room_id));
+        index
+    }
+    
+    fn get_room(&self, ref_num: usize) -> Option<&Room> {
+        self.rooms.get(ref_num)
+    }
+    
+    fn get_memory(&self, ref_num: usize) -> Option<(MemoryId, RoomId)> {
+        self.memories.get(ref_num).copied()
+    }
+}
+
+/// Simplified navigation actions
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(tag = "name", content = "input", rename_all = "snake_case")]
+pub enum NavigatorUse {
+    /// Scout the palace (automatic on first turn)
+    Scout { 
+        /// How many rooms to include (3-10)
+        depth: u32 
+    },
+    
+    /// Teleport directly to a room by reference number
+    Teleport { 
+        /// Reference number from scout report
+        room_ref: usize 
+    },
+    
+    /// Collect memories by reference numbers
+    Collect { 
+        /// Reference numbers from scout report
+        memory_refs: Vec<usize> 
+    },
+    
+    /// Return the basket and complete navigation
+    Return { 
+        /// Brief summary of what was found
+        summary: String 
+    },
+}
+
+/// Navigator state
 pub struct Navigator {
-    /// The [`MemoryPalace`] to navigate (very fancy database).
+    /// The memory palace
     palace: MemoryPalace,
-    /// [`Room`] the agent is currently in.
-    current_room: Room,
-    /// The path the agent has taken through the palace (room IDs).
-    journey: Vec<RoomId>,
-    /// Context for the current mission. Query driving navigation.
-    mission_context: String,
-    /// [`Memory`]s for delivery to the primary agent.
-    basket: Vec<CollectedMemory>,
-    /// Embedding client (for looking up embeddings of context and memories).
+    /// Navigation session state
+    session: NavigationSession,
+    /// Embedding client
     emb_client: Box<dyn EmbeddingClient>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct NavigationSession {
+    /// User we're navigating for
+    user_id: UserId,
+    /// Query that started this navigation
+    query: String,
+    /// Query embedding (cached)
+    query_embedding: Option<TextEmbedding>,
+    /// Scout report (generated on first turn)
+    scout_report: Option<ScoutReport>,
+    /// Current room (if teleported)
+    current_room: Option<Room>,
+    /// Memories collected
+    basket: Vec<CollectedMemory>,
+    /// Path taken (for strengthening)
+    journey: Vec<PathMemberIds>,
+    /// Turn count
+    turns: u32,
+}
+
+/// Temperature for weighted sampling (higher = more random)
+const SAMPLING_TEMPERATURE: f64 = 0.5;
+
+impl Navigator {
+    pub fn new(
+        palace: MemoryPalace,
+        user_id: UserId,
+        context: String,
+        embedding_client: Box<dyn EmbeddingClient>
+    ) -> Result<Self, MemorySubroutineError> {
+        Ok(Self {
+            palace,
+            session: NavigationSession {
+                user_id,
+                query: context,
+                query_embedding: None,
+                scout_report: None,
+                current_room: None,
+                basket: Vec::new(),
+                journey: Vec::new(),
+                turns: 0,
+            },
+            emb_client: embedding_client,
+        })
+    }
+
+    async fn execute(&mut self, action: NavigatorUse) -> Result<String, MemorySubroutineError> {
+        self.session.turns += 1;
+        
+        match action {
+            NavigatorUse::Scout { depth } => {
+                let depth = depth.clamp(3, 10) as usize;
+                
+                // Get or compute query embedding
+                if self.session.query_embedding.is_none() {
+                    self.session.query_embedding = Some(
+                        self.emb_client.get_embedding(&self.session.query).await?
+                    );
+                }
+                let embedding = self.session.query_embedding.as_ref().unwrap();
+                
+                // Find semantically relevant rooms with weighted sampling
+                let candidate_rooms = find_relevant_rooms_weighted(
+                    &self.palace.pool,
+                    self.palace.schema(),
+                    embedding,
+                    depth * 2, // Get more candidates for sampling
+                    SAMPLING_TEMPERATURE,
+                ).await?;
+                
+                // Build scout report
+                let mut reference_map = ReferenceMap::default();
+                let mut bright_rooms = Vec::new();
+
+                for (room, similarity) in candidate_rooms.into_iter().take(depth) {
+                    let room_ref = reference_map.add_room(room.clone());
+                    
+                    // Get brightest memories in this room
+                    let memories = get_brightest_memories_in_room(
+                        &self.palace.pool,
+                        self.palace.schema(),
+                        room.id,
+                        5, // Top 5 memories per room
+                    ).await?;
+                    
+                    let bright_spots: Vec<MemoryPreview> = memories.into_iter()
+                        .map(|memory| {
+                            let ref_num = reference_map.add_memory(memory.id, room.id);
+                            MemoryPreview {
+                                id: memory.id,
+                                placement: memory.placement,
+                                glow: memory.strength,
+                                preview: memory.content.brief_description()
+                                    .unwrap_or_else(|| "A memory".to_string()),
+                                ref_num,
+                            }
+                        })
+                        .collect();
+                    
+                    bright_rooms.push(BrightRoom {
+                        room: room.clone(),
+                        distance: 1.0 - similarity,
+                        relevance: similarity * room.strength,
+                        bright_spots,
+                    });
+                }
+                
+                let total_relevance: f64 = bright_rooms.iter()
+                    .map(|br| br.relevance)
+                    .sum();
+                
+                self.session.scout_report = Some(ScoutReport {
+                    query_context: self.session.query.clone(),
+                    bright_rooms: bright_rooms.clone(),
+                    total_relevance,
+                    reference_map,
+                });
+                
+                // Format narrative response
+                Ok(format_scout_report(&bright_rooms, total_relevance))
+            }
+            
+            NavigatorUse::Teleport { room_ref } => {
+                let scout = self.session.scout_report.as_ref()
+                    .ok_or_else(|| MemorySubroutineError::InvalidInput(
+                        "Must scout before teleporting".into()
+                    ))?;
+                
+                let room = scout.reference_map.get_room(room_ref)
+                    .ok_or_else(|| MemorySubroutineError::InvalidInput(
+                        format!("Invalid room reference: {}", room_ref)
+                    ))?;
+                
+                self.session.current_room = Some(room.clone());
+                self.session.journey.push(PathMemberIds::Room(room.id));
+                
+                // Get all memories in the room for detailed view
+                let memories = get_room_memories(
+                    &self.palace.pool,
+                    self.palace.schema(),
+                    &room.name
+                ).await?;
+                
+                Ok(format_room_teleport(room, memories))
+            }
+            
+            NavigatorUse::Collect { memory_refs } => {
+                let scout = self.session.scout_report.as_ref()
+                    .ok_or_else(|| MemorySubroutineError::InvalidInput(
+                        "Must scout before collecting".into()
+                    ))?;
+                
+                let mut collected = 0;
+                for &ref_num in &memory_refs {
+                    if let Some((memory_id, room_id)) = scout.reference_map.get_memory(ref_num) {
+                        // Fetch full memory
+                        if let Ok(memory) = get_memory_by_id(
+                            &self.palace.pool,
+                            self.palace.schema(),
+                            memory_id
+                        ).await {
+                            let room = get_room_by_id(
+                                &self.palace.pool,
+                                self.palace.schema(),
+                                room_id
+                            ).await?;
+                            
+                            if let Some(content) = memory.content.clone().format_for_navigator(
+                                memory.id,
+                                room_id,
+                                memory.prompt_id
+                            ) {
+                                self.session.basket.push(CollectedMemory {
+                                    id: memory.id,
+                                    content: content.to_string(),
+                                    room_name: room.name,
+                                    relevance_notes: format!("Collected from ref #{}", ref_num),
+                                });
+                                self.session.journey.push(PathMemberIds::Memory(memory.id));
+                                collected += 1;
+                            }
+                        }
+                    }
+                }
+                
+                Ok(format!(
+                    "Collected {} memories. Basket now contains {} items.",
+                    collected,
+                    self.session.basket.len()
+                ))
+            }
+            
+            NavigatorUse::Return { summary } => {
+                // Strengthen the path taken
+                if !self.session.journey.is_empty() {
+                    strengthen_path(
+                        &self.palace.pool,
+                        self.palace.schema(),
+                        &PathById::from_members(self.session.journey.clone())?
+                    ).await?;
+                }
+                
+                Ok(format_basket_return(&self.session.basket, &summary))
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Tool for Navigator {
+    fn name(&self) -> &str {
+        "MemoryPalace"
+    }
+
+    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
+        Box::new([
+            Method::builder("scout")
+                .description("Scout the palace for relevant memories (automatic on first turn)")
+                .number_param("depth", "Number of rooms to explore (3-10)", true)
+                .build()
+                .unwrap(),
+            
+            Method::builder("teleport")
+                .description("Teleport directly to a room from the scout report")
+                .number_param("room_ref", "Room reference number from scout report", true)
+                .build()
+                .unwrap(),
+            
+            Method::builder("collect")
+                .description("Add memories to your basket by reference number")
+                .array_param("memory_refs", "Memory reference numbers from scout report", true)
+                .build()
+                .unwrap(),
+            
+            Method::builder("return")
+                .description("Return the collected memories")
+                .string_param("summary", "Brief summary of findings", true)
+                .build()
+                .unwrap(),
+        ].into_iter())
+    }
+
+    async fn call<'a>(&mut self, call: tool::Use<'a>) -> tool::Result<'a> {
+        // Automatically scout on first turn if not done
+        if self.session.turns == 0 && !matches!(call.name.as_ref(), "scout") {
+            // Force a scout first
+            let scout_result = self.execute(NavigatorUse::Scout { depth: 5 }).await
+                .map_err(|e| format!("Auto-scout failed: {}", e))?;
+            
+            // Continue with the requested action
+        }
+        
+        let action = NavigatorUse::try_from(call.clone())
+            .map_err(|e| format!("Invalid tool use: {}", e))?;
+        
+        let result = self.execute(action).await
+            .map_err(|e| format!("Navigation error: {}", e))?;
+        
+        Ok(tool::Result {
+            tool_use_id: call.id,
+            content: result.into(),
+            is_error: false,
+            cache_control: None,
+        })
+    }
 }
 
 /// Content of a [`Memory`] collected during navigation.
@@ -43,381 +411,140 @@ pub struct CollectedMemory {
     pub relevance_notes: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(tag = "name", content = "input", rename_all = "snake_case")]
-pub enum NavigatorUse {
-    /// Look around the current room
-    // Should this be automatic on entry/walk?
-    Examine { focus: String },
+// Helper functions
 
-    /// See connections from current room
-    Map { radius: u32 },
-
-    /// Move to an adjacent room
-    // Should walk allow multiple hops? Should it function more like fast travel?
-    Walk { direction: String },
-
-    /// Search across the entire palace
-    // Should we use "radius" for depth as well? I can't recall exactly what
-    // this parameter does.
-    Recall { topic: String, depth: u32 },
-
-    /// Add memories to the collection basket
-    AddToBasket {
-        memory_ids: Vec<i64>,
-        relevance_notes: String,
-    },
-
-    /// Return the basket and complete navigation
-    ReturnBasket { summary: String },
-}
-
-impl TryFrom<crate::tool::Use<'_>> for NavigatorUse {
-    type Error = MemorySubroutineError;
-
-    fn try_from(call: tool::Use<'_>) -> Result<Self, Self::Error> {
-        // Other fields like `id`` and `cache_control` be ignored by `serde`
-        serde_json::from_value(serde_json::to_value(call)?)
-        .map_err(|e| MemorySubroutineError::InvalidInput(
-            format!("Invalid navigator parameters: {}", e)
-        ))
-    }
-}
-
-impl Navigator {
-    /// Create a new `Navigator` starting close to `context`
-    pub async fn new(
-        palace: crate::tool::MemoryPalace,
-        context: String,
-        embedding_client: Box<dyn EmbeddingClient>
-    ) -> Result<Self, MemorySubroutineError> {
-        // Find the closest starting room based on the context embedding
-        let context_embedding = embedding_client.get_embedding(&context).await?;
-        let (current_room, _similarity) = find_closest_room_to_embedding(
-            &palace.pool,
-            palace.schema(),
-            &context_embedding
-        ).await?;
-
-        Ok(Self {
-            palace,
-            journey: vec![current_room.id],
-            current_room,
-            mission_context: context,
-            basket: MemoryBasket::default(),
-            emb_client: embedding_client,
-        })
-    }
-
-    /// Execute a navigation action
-    async fn execute(
-        &mut self,
-        call: NavigatorUse
-    ) -> Result<String, MemorySubroutineError> {
-        match call {
-            NavigatorUse::Examine { focus } => {
-                let memories = if focus.is_empty() {
-                    self.palace.get_room_memories(&self.current_room.name).await?
-                } else {
-                    self.palace.search_in_room(&self.current_room.name, &focus).await?
-                };
-
-                Ok(format_room_contents(&self.current_room, memories))
-            }
-            NavigatorUse::Walk { direction } => {
-                let new_room = self.palace
-                    .follow_passage(&self.current_room.name, &direction)
-                    .await?;
-
-                let description = self.palace.get_room_description(&new_room.name).await?;
-
-                // Update state
-                self.current_room = new_room.clone();
-                self.journey.push(new_room.id);
-
-                Ok(description)
-            }
-            NavigatorUse::Map { radius } => {
-                let rooms_by_distance = self.palace
-                    .get_rooms_within_radius(&self.current_room.name, radius)
-                    .await?;
-                
-                let mut narrative = format!(
-                    "From {}, you survey the palace...\n\n",
-                    self.current_room.name
-                );
-                
-                if rooms_by_distance.is_empty() {
-                    narrative.push_str("You are in an isolated room with no visible connections.");
-                } else {
-                    narrative.push_str("Direct passages lead to:\n");
-                    for room_dist in rooms_by_distance.iter().filter(|r| r.distance == 1) {
-                        narrative.push_str(&format!(
-                            "- {}: {}\n", 
-                            room_dist.room.name,
-                            truncate_content(&room_dist.room.description, 60)
-                        ));
-                    }
-                    
-                    if radius > 1 {
-                        let further_rooms: Vec<_> = rooms_by_distance.iter()
-                            .filter(|r| r.distance > 1)
-                            .collect();
-                        
-                        if !further_rooms.is_empty() {
-                            narrative.push_str("\nThrough connecting rooms:\n");
-                            for room_dist in further_rooms {
-                                narrative.push_str(&format!(
-                                    "- {} ({} rooms away)\n",
-                                    room_dist.room.name,
-                                    room_dist.distance
-                                ));
-                            }
-                        }
-                    }
-                }
-                
-                Ok(narrative)
-            }
-            NavigatorUse::Recall { topic, depth } => {
-                let results = self.palace.search(&topic).await?;
-                
-                if results.is_empty() {
-                    return Ok(format!(
-                        "Your mind travels through the palace searching for \"{}\"...\n\n\
-                        The palace remains silent. No memories resonate with this topic.",
-                        topic
-                    ));
-                }
-                
-                let mut narrative = "Your mind travels through the palace...\n\n".to_string();
-                
-                for (idx, scored) in results.iter().take(5).enumerate() {
-                    if idx == 0 {
-                        narrative.push_str(&format!(
-                            "In {}, a memory glows brightly:\n",
-                            scored.room.name
-                        ));
-                    } else {
-                        narrative.push_str(&format!(
-                            "\nA resonance from {}:\n",
-                            scored.room.name
-                        ));
-                    }
-                    
-                    narrative.push_str(&format!(
-                        "- \"{}\" {} (id: {})\n",
-                        truncate_content(&scored.memory.content, 80),
-                        format_tags(&scored.memory.tags),
-                        scored.memory.id
-                    ));
-                }
-                
-                Ok(narrative)
-            }
-            NavigatorUse::AddToBasket { memory_ids, relevance_notes } => {
-                let mut added = 0;
-                for id in memory_ids {
-                    if let Ok(memory) = self.palace.get_memory_by_id(id).await {
-                        let room = self.palace.get_room_by_id(memory.room_id).await?;
-                        self.basket.memories.push(CollectedMemory {
-                            id: memory.id,
-                            content: memory.content,
-                            room_name: room.name,
-                            relevance_notes: relevance_notes.clone(),
-                        });
-                        added += 1;
-                    }
-                }
-                
-                Ok(format!(
-                    "Added {} memories to basket. Current basket size: {} memories.",
-                    added,
-                    self.basket.memories.len()
-                ))
-            }
-            NavigatorUse::ReturnBasket { summary } => {
-                let mut result = format!(
-                    "Basket returned through the portal with {} memories:\n",
-                    self.basket.memories.len()
-                );
-                
-                for memory in &self.basket.memories {
-                    result.push_str(&format!(
-                        "- [{}] {}\n",
-                        memory.id,
-                        truncate_content(&memory.content, 80)
-                    ));
-                }
-                
-                if !summary.is_empty() {
-                    result.push_str(&format!("\n{}", summary));
-                }
-                
-                Ok(result)
-            }
-        }
-    }
-}
-
-#[async_trait]
-impl Tool for Navigator {
-    fn name(&self) -> &str {
-        "Navigator"
-    }
-
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new([
-            Method::builder("examine")
-                .description("Look around the current room or focus on specific memories")
-                .string_param("focus", "What to look for (empty = everything)", false)
-                .build()
-                .unwrap(),
-            
-            Method::builder("map")
-                .description("Survey nearby rooms from current location")
-                .number_param("radius", "How many rooms away to include", true)
-                .build()
-                .unwrap(),
-                
-            Method::builder("walk")
-                .description("Move to an adjacent room")
-                .string_param("direction", "Which passage to take", true)
-                .build()
-                .unwrap(),
-                
-            Method::builder("recall")
-                .description("Search the entire palace for memories")
-                .string_param("topic", "What to search for", true)
-                .number_param("depth", "How deeply to follow resonances (1-5)", true)
-                .build()
-                .unwrap(),
-                
-            Method::builder("add_to_basket")
-                .description("Add memories to your collection basket")
-                .array_param("memory_ids", "IDs of memories to collect", true)
-                .string_param("relevance_notes", "Why these are relevant", true)
-                .build()
-                .unwrap(),
-                
-            Method::builder("return_basket")
-                .description("Return the collected memories and end navigation")
-                .string_param("summary", "Summary of what was found", true)
-                .build()
-                .unwrap(),
-        ].into_iter())
-    }
-
-    async fn call<'a>(&mut self, call: tool::Use<'a>) -> tool::Result<'a> {
-        let navigator_use = NavigatorUse::try_from(call.clone())
-            .map_err(|e| format!("Invalid tool use: {}", e))?;
-        
-        let result = self.execute(navigator_use).await
-            .map_err(|e| format!("Navigation error: {}", e))?;
-        
-        Ok(tool::Result {
-            tool_use_id: call.id,
-            content: result.into(),
-            is_error: false,
-            cache_control: None,
-        })
-    }
-}
-
-// ## Helper functions for navigation
-
-/// Format tags for display
-fn format_tags(tags: &[String]) -> String {
-    if tags.is_empty() {
-        String::new()
-    } else {
-        format!("[{}]", tags.join(", "))
-    }
-}
-
-/// Extract placement from memory (now from the placement field directly)
-fn extract_placement(memory: &Memory) -> String {
-    memory.placement.clone()
-}
-
-// ## Database operations for navigation
-
-/// Find the room closest to a given embedding
-pub async fn find_closest_room_to_embedding(
+/// Find relevant rooms using weighted sampling to prevent overfitting
+async fn find_relevant_rooms_weighted(
     pool: &PgPool,
     schema: &str,
     embedding: &TextEmbedding,
-) -> Result<(Room, f32), MemoryPalaceError> {
+    candidate_count: usize,
+    temperature: f64,
+) -> Result<Vec<(Room, f64)>, MemoryPalaceError> {
+    // Get top candidates by similarity
+    let candidates = find_rooms_by_embedding_similarity(
+        pool,
+        schema,
+        embedding,
+        candidate_count
+    ).await?;
+    
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    
+    // Apply temperature-based sampling
+    let scores: Vec<f64> = candidates.iter()
+        .map(|(_, similarity)| similarity / temperature)
+        .collect();
+    
+    // Softmax
+    let max_score = scores.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let exp_scores: Vec<f64> = scores.iter()
+        .map(|&s| (s - max_score).exp())
+        .collect();
+    let sum_exp: f64 = exp_scores.iter().sum();
+    let probabilities: Vec<f64> = exp_scores.iter()
+        .map(|&e| e / sum_exp)
+        .collect();
+    
+    // Weighted sampling without replacement
+    let mut rng = thread_rng();
+    let mut selected = Vec::new();
+    let mut remaining_candidates = candidates;
+    let mut remaining_probs = probabilities;
+    
+    for _ in 0..candidate_count.min(remaining_candidates.len()) {
+        if remaining_candidates.is_empty() {
+            break;
+        }
+        
+        let dist = WeightedIndex::new(&remaining_probs)
+            .map_err(|e| MemoryPalaceError::Other(e.to_string()))?;
+        let idx = dist.sample(&mut rng);
+        
+        selected.push(remaining_candidates.remove(idx));
+        remaining_probs.remove(idx);
+        
+        // Renormalize
+        let sum: f64 = remaining_probs.iter().sum();
+        if sum > 0.0 {
+            for p in &mut remaining_probs {
+                *p /= sum;
+            }
+        }
+    }
+    
+    Ok(selected)
+}
+
+/// Find rooms by embedding similarity
+async fn find_rooms_by_embedding_similarity(
+    pool: &PgPool,
+    schema: &str,
+    embedding: &TextEmbedding,
+    limit: usize,
+) -> Result<Vec<(Room, f64)>, MemoryPalaceError> {
+    let model_name = format!("{}_{}", embedding.model.as_str(), "centroid");
+    
     execute_with_schema(
         pool,
         schema,
         |tx| Box::pin(async move {
-            // First try to find rooms with centroid embeddings
-            let result: Option<(Room, f32)> = sqlx::query_as(
+            // First try rooms with centroid embeddings
+            let results: Vec<(Room, f64)> = sqlx::query_as(
                 r#"
-                SELECT r.*, 1 - (r.centroid_embedding <=> $1::vector) as similarity
+                SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
                 FROM rooms r
-                WHERE r.centroid_embedding IS NOT NULL
+                JOIN room_embeddings re ON r.id = re.room_id
+                JOIN embeddings e ON re.embedding_id = e.id
+                WHERE e.model_name = $2
                 ORDER BY similarity DESC
-                LIMIT 1
+                LIMIT $3
                 "#,
             )
-            .bind(&embedding.embedding)
-            .fetch_optional(&mut **tx)
+            .bind(&embedding.embedding[..])
+            .bind(&model_name)
+            .bind(limit as i64)
+            .fetch_all(&mut **tx)
             .await?;
 
-            if let Some((room, similarity)) = result {
-                return Ok((room, similarity));
+            if !results.is_empty() {
+                return Ok(results);
             }
 
-            // Fallback: find room with memories most similar to the query
-            let result: Option<(Room, f32)> = sqlx::query_as(
+            // Fallback: find rooms based on memory similarity
+            let results: Vec<(Room, f64)> = sqlx::query_as(
                 r#"
                 WITH room_similarities AS (
                     SELECT 
                         r.*,
-                        AVG(1 - (m.embedding <=> $1::vector)) as similarity
+                        AVG(1 - (e.embedding <=> $1::vector)) as similarity
                     FROM memories m
                     JOIN rooms r ON m.room_id = r.id
-                    WHERE m.embedding IS NOT NULL
+                    JOIN memory_embeddings me ON m.id = me.memory_id
+                    JOIN embeddings e ON me.embedding_id = e.id
+                    WHERE e.model_name = $2
                     GROUP BY r.id
                 )
                 SELECT * FROM room_similarities
                 ORDER BY similarity DESC
-                LIMIT 1
+                LIMIT $3
                 "#,
             )
-            .bind(&embedding.embedding)
-            .fetch_optional(&mut **tx)
+            .bind(&embedding.embedding[..])
+            .bind(&embedding.model)
+            .bind(limit as i64)
+            .fetch_all(&mut **tx)
             .await?;
 
-            match result {
-                Some((room, similarity)) => Ok((room, similarity)),
-                None => {
-                    // Last resort: return the entrance hall or first room
-                    let room: Room = sqlx::query_as(
-                        "SELECT * FROM rooms WHERE name = 'Entrance Hall' OR name = 'entrance_hall' LIMIT 1"
-                    )
-                    .fetch_optional(&mut **tx)
-                    .await?
-                    .or_else(|| {
-                        sqlx::query_as("SELECT * FROM rooms ORDER BY id LIMIT 1")
-                            .fetch_optional(&mut **tx)
-                            .await?
-                    })
-                    .ok_or_else(|| MemoryPalaceError::Other(
-                        "No rooms exist in the palace".to_string()
-                    ))?;
-                    
-                    Ok((room, 0.0))
-                }
-            }
+            Ok(results)
         })
     ).await
 }
 
 /// Get all memories in a specific room
-pub async fn get_room_memories(
+async fn get_room_memories(
     pool: &PgPool,
     schema: &str,
     room_name: &str,
@@ -433,7 +560,7 @@ pub async fn get_room_memories(
                 FROM memories m
                 JOIN rooms r ON m.room_id = r.id
                 WHERE r.name = $1
-                ORDER BY m.importance DESC, m.last_updated DESC
+                ORDER BY m.strength DESC, m.last_accessed DESC
                 "#
             )
             .bind(&room_name)
@@ -445,39 +572,65 @@ pub async fn get_room_memories(
     ).await
 }
 
-/// Search for memories within a specific room only
-pub async fn search_in_room(
+/// Truncate content to a maximum length
+fn truncate_content(content: &str, max_len: usize) -> &str {
+    if content.len() <= max_len {
+        content
+    } else {
+        &content[..content.char_indices()
+            .take(max_len)
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(0)]
+    }
+}
+
+/// Format tags for display
+fn format_tags(tags: &[String]) -> String {
+    if tags.is_empty() {
+        String::new()
+    } else {
+        format!("[{}]", tags.join(", "))
+    }
+}
+
+/// Calculate memory glow based on strength and recency
+fn calculate_memory_glow(memory: &Memory) -> &'static str {
+    let recency_days = (chrono::Utc::now() - memory.last_accessed).num_days();
+    let recency_factor = (30.0 - recency_days.min(30) as f64) / 30.0;
+    let access_factor = (memory.access_count as f64).ln().max(0.0) / 10.0;
+    let combined = memory.strength * 0.6 + recency_factor * 0.3 + access_factor * 0.1;
+    
+    match combined {
+        s if s > 0.8 => "🌟",
+        s if s > 0.6 => "✨",
+        s if s > 0.4 => "💫",
+        _ => "🌑"
+    }
+}
+
+/// Get brightest memories in a room
+async fn get_brightest_memories_in_room(
     pool: &PgPool,
     schema: &str,
-    room_name: &str,
-    query: &str,
+    room_id: RoomId,
+    limit: usize,
 ) -> Result<Vec<Memory>, MemoryPalaceError> {
-    let pattern = format!("%{}%", query.trim());
-    let room_name = room_name.to_string();
-    
     execute_with_schema(
         pool,
         schema,
         |tx| Box::pin(async move {
             let memories: Vec<Memory> = sqlx::query_as(
                 r#"
-                SELECT m.*
-                FROM memories m
-                JOIN rooms r ON m.room_id = r.id
-                WHERE r.name = $1 
-                    AND (m.content ILIKE $2 OR m.tags::text ILIKE $2)
-                ORDER BY 
-                    CASE 
-                        WHEN m.content ILIKE $2 THEN 2
-                        WHEN m.tags::text ILIKE $2 THEN 1
-                        ELSE 0
-                    END DESC,
-                    m.importance DESC,
-                    m.last_updated DESC
+                SELECT *
+                FROM memories
+                WHERE room_id = $1
+                ORDER BY strength DESC, last_accessed DESC
+                LIMIT $2
                 "#
             )
-            .bind(&room_name)
-            .bind(&pattern)
+            .bind(room_id)
+            .bind(limit as i64)
             .fetch_all(&mut **tx)
             .await?;
             
@@ -486,80 +639,126 @@ pub async fn search_in_room(
     ).await
 }
 
-/// Get adjacent rooms sorted by semantic distance
-pub async fn get_adjacent_rooms_sorted(
-    pool: &PgPool,
-    schema: &str,
-    current_room: &str,
-    limit: usize,
-) -> Result<Vec<(String, Room, f32)>, MemoryPalaceError> {
-    let current_room = current_room.to_string();
-
-    execute_with_schema(
-        pool,
-        schema,
-        |tx| Box::pin(async move {
-            // Get current room
-            let current: Room = sqlx::query_as(
-                "SELECT * FROM rooms WHERE name = $1"
-            )
-            .bind(&current_room)
-            .fetch_one(&mut **tx)
-            .await
-            .map_err(|_| MemoryPalaceError::RoomNotFound(current_room.clone()))?;
-            
-            // Get connected rooms with their info
-            let connections: Vec<(String, RoomId, String)> = sqlx::query_as(
-                r#"
-                SELECT 
-                    rc.passage_type,
-                    CASE 
-                        WHEN rc.from_room_id = $1 THEN rc.to_room_id
-                        ELSE rc.from_room_id
-                    END as connected_room_id,
-                    r.name as room_name
-                FROM room_connections rc
-                JOIN rooms r ON r.id = CASE 
-                    WHEN rc.from_room_id = $1 THEN rc.to_room_id
-                    ELSE rc.from_room_id
-                END
-                WHERE rc.from_room_id = $1 OR rc.to_room_id = $1
-                ORDER BY rc.strength DESC, rc.traversal_count DESC
-                LIMIT $2
-                "#
-            )
-            .bind(current.id)
-            .bind(limit as i64)
-            .fetch_all(&mut **tx)
-            .await?;
-            
-            // Fetch full room info and calculate semantic distances
-            let mut results = Vec::new();
-            for (passage_type, room_id, _) in connections {
-                let room: Room = sqlx::query_as(
-                    "SELECT * FROM rooms WHERE id = $1"
-                )
-                .bind(room_id)
-                .fetch_one(&mut **tx)
-                .await?;
-                
-                // Calculate semantic distance if both rooms have centroids
-                let distance = if let (Some(centroid1), Some(centroid2)) = 
-                    (&current.centroid, &room.centroid) {
-                    // Cosine distance
-                    calculate_vector_distance(centroid1, centroid2)
-                } else {
-                    // Default distance based on connection strength
-                    100.0
-                };
-                
-                let direction = format_direction(&passage_type, &room.name);
-                results.push((direction, room, distance));
+/// Format the scout report for narrative display
+fn format_scout_report(rooms: &[BrightRoom], cumulative_relevance: f64) -> String {
+    let mut report = format!(
+        "Scout Report - Total Relevance: {:.1}\n\n",
+        cumulative_relevance * 100.0
+    );
+    
+    report.push_str("The palace responds to your query, rooms glowing with recognition:\n\n");
+    
+    for (room_idx, bright_room) in rooms.iter().enumerate() {
+        let glow_desc = describe_glow(bright_room.relevance);
+        
+        report.push_str(&format!(
+            "[Room #{}] {} - {}\n",
+            room_idx,
+            bright_room.room.name,
+            glow_desc
+        ));
+        
+        report.push_str(&format!(
+            "  {}\n",
+            bright_room.room.description
+        ));
+        
+        if !bright_room.bright_spots.is_empty() {
+            report.push_str("  Brightest memories:\n");
+            for spot in &bright_room.bright_spots {
+                let glow = describe_glow(spot.glow);
+                report.push_str(&format!(
+                    "  - [#{}] {} on {} - {}\n",
+                    spot.ref_num,
+                    glow,
+                    spot.placement,
+                    truncate_content(&spot.preview, 50)
+                ));
             }
-            
-            Ok(results)
-        })
-    ).await
+        }
+        
+        report.push('\n');
+    }
+    
+    report
+}
+
+/// Convert strength/relevance to narrative description
+fn describe_glow(strength: f64) -> &'static str {
+    match strength {
+        s if s > 0.9 => "🌟 Blazing",
+        s if s > 0.7 => "✨ Brilliant", 
+        s if s > 0.5 => "💫 Glowing",
+        s if s > 0.3 => "🌙 Shimmering",
+        s if s > 0.1 => "⭐ Glimmering",
+        _ => "🌑 Dim",
+    }
+}
+
+/// Format room teleport narrative
+fn format_room_teleport(room: &Room, memories: Vec<Memory>) -> String {
+    let mut narrative = format!(
+        "You materialize in {}.\n{}\n\n",
+        room.name,
+        room.description
+    );
+    
+    if memories.is_empty() {
+        narrative.push_str("The room awaits its first memories.");
+    } else {
+        narrative.push_str(&format!(
+            "You see {} memories here:\n",
+            memories.len()
+        ));
+        
+        // Group by placement
+        let mut by_placement = std::collections::HashMap::new();
+        for memory in &memories {
+            by_placement
+                .entry(memory.placement.clone())
+                .or_insert_with(Vec::new)
+                .push(memory);
+        }
+        
+        for (placement, mems) in by_placement {
+            narrative.push_str(&format!("\nOn the {}:\n", placement));
+            for (idx, mem) in mems.iter().enumerate().take(3) {
+                let preview = mem.content.brief_description()
+                    .unwrap_or_else(|| "A memory".to_string());
+                narrative.push_str(&format!(
+                    "- {}\n",
+                    truncate_content(&preview, 60)
+                ));
+            }
+            if mems.len() > 3 {
+                narrative.push_str(&format!("  ...and {} more\n", mems.len() - 3));
+            }
+        }
+    }
+    
+    narrative
+}
+
+/// Format basket return
+fn format_basket_return(basket: &[CollectedMemory], summary: &str) -> String {
+    let mut result = format!(
+        "Returning with {} memories:\n\n",
+        basket.len()
+    );
+    
+    for memory in basket {
+        result.push_str(&format!(
+            "- From {}: {}\n",
+            memory.room_name,
+            truncate_content(&memory.content, 60)
+        ));
+    }
+    
+    if !summary.is_empty() {
+        result.push_str(&format!("\nSummary: {}", summary));
+    }
+    
+    result
 }
 
 /// Follow a passage from current room to get destination
@@ -590,11 +789,11 @@ pub async fn follow_passage(
                 r#"
                 SELECT r.*
                 FROM rooms r
-                JOIN room_connections rc ON (
-                    (rc.from_room_id = $1 AND rc.to_room_id = r.id) OR
-                    (rc.to_room_id = $1 AND rc.from_room_id = r.id)
+                JOIN pathways p ON (
+                    (p.room_a = $1 AND p.room_b = r.id) OR
+                    (p.room_b = $1 AND p.room_a = r.id)
                 )
-                WHERE LOWER(r.name) = $2 OR LOWER(rc.passage_type) = $2
+                WHERE LOWER(r.name) = $2 OR LOWER(p.passage_type) = $2
                 LIMIT 1
                 "#
             )
@@ -606,11 +805,11 @@ pub async fn follow_passage(
             if let Some(room) = destination {
                 // Update traversal tracking
                 sqlx::query(
-                    r#"UPDATE room_connections 
+                    r#"UPDATE pathways 
                        SET traversal_count = traversal_count + 1,
                            last_traversed = NOW()
-                       WHERE (from_room_id = $1 AND to_room_id = $2) 
-                          OR (to_room_id = $1 AND from_room_id = $2)"#
+                       WHERE (room_a = $1 AND room_b = $2) 
+                          OR (room_b = $1 AND room_a = $2)"#
                 )
                 .bind(current_room.id)
                 .bind(room.id)
@@ -618,36 +817,6 @@ pub async fn follow_passage(
                 .await?;
                 
                 return Ok(room);
-            }
-            
-            // Try cardinal directions
-            let connections: Vec<Room> = sqlx::query_as(
-                r#"
-                SELECT r.*
-                FROM rooms r
-                JOIN room_connections rc ON (
-                    (rc.from_room_id = $1 AND rc.to_room_id = r.id) OR
-                    (rc.to_room_id = $1 AND rc.from_room_id = r.id)
-                )
-                ORDER BY r.name
-                "#
-            )
-            .bind(current_room.id)
-            .fetch_all(&mut **tx)
-            .await?;
-            
-            let position = match direction.as_str() {
-                "north" | "n" => Some(0),
-                "east" | "e" => Some(1),
-                "south" | "s" => Some(2),
-                "west" | "w" => Some(3),
-                _ => None,
-            };
-            
-            if let Some(pos) = position {
-                if let Some(room) = connections.get(pos % connections.len()) {
-                    return Ok(room.clone());
-                }
             }
             
             Err(MemoryPalaceError::Other(
@@ -669,7 +838,6 @@ pub async fn get_room_description(
         pool,
         schema,
         |tx| Box::pin(async move {
-            // Get room with memory count
             let room: Room = sqlx::query_as(
                 "SELECT * FROM rooms WHERE name = $1"
             )
@@ -678,77 +846,40 @@ pub async fn get_room_description(
             .await
             .map_err(|_| MemoryPalaceError::RoomNotFound(room_name.clone()))?;
             
-            // Get connections with room names
             let connections: Vec<(String, String)> = sqlx::query_as(
                 r#"
                 SELECT 
-                    rc.passage_type,
+                    p.passage_type,
                     r.name as connected_room
-                FROM room_connections rc
+                FROM pathways p
                 JOIN rooms r ON r.id = CASE
-                    WHEN rc.from_room_id = $1 THEN rc.to_room_id
-                    ELSE rc.from_room_id
+                    WHEN p.room_a = $1 THEN p.room_b
+                    ELSE p.room_a
                 END
-                WHERE rc.from_room_id = $1 OR rc.to_room_id = $1
-                ORDER BY rc.strength DESC, r.name
+                WHERE p.room_a = $1 OR p.room_b = $1
+                ORDER BY p.strength DESC, r.name
                 "#
             )
             .bind(room.id)
             .fetch_all(&mut **tx)
             .await?;
             
-            // Build description
             let mut desc = format!("You enter {}. {}", room.name, room.description);
-            
-            if let Some(atmosphere) = &room.atmosphere {
-                desc.push_str(&format!(" {}", atmosphere));
-            }
-            
-            desc.push_str("\n\n");
             
             if room.memory_count > 0 {
                 desc.push_str(&format!(
-                    "You see {} memor{} here",
+                    "\n\nYou see {} memor{} here.",
                     room.memory_count,
                     if room.memory_count == 1 { "y" } else { "ies" }
                 ));
-                
-                // Add placement hints
-                let placements: Vec<(String, i64)> = sqlx::query_as(
-                    r#"
-                    SELECT placement, COUNT(*) as count
-                    FROM memories
-                    WHERE room_id = $1
-                    GROUP BY placement
-                    ORDER BY count DESC
-                    LIMIT 3
-                    "#
-                )
-                .bind(room.id)
-                .fetch_all(&mut **tx)
-                .await?;
-                
-                if !placements.is_empty() {
-                    desc.push_str(":\n");
-                    for (placement, count) in placements {
-                        desc.push_str(&format!(
-                            "- {} on the {}\n",
-                            count,
-                            placement
-                        ));
-                    }
-                } else {
-                    desc.push_str(".\n");
-                }
             } else {
-                desc.push_str("The room is empty of memories.\n");
+                desc.push_str("\n\nThe room is empty of memories.");
             }
             
             if !connections.is_empty() {
-                desc.push_str("\nPassages lead:\n");
-                for (i, (passage_type, destination)) in connections.iter().enumerate() {
-                    let direction = format_direction(passage_type, destination);
-                    desc.push_str(&format!("- {}\n", direction));
+                desc.push_str("\n\nPassages lead:\n");
+                for (passage_type, destination) in connections {
+                    desc.push_str(&format!("- {} to {}\n", passage_type, destination));
                 }
             }
             
@@ -757,22 +888,163 @@ pub async fn get_room_description(
     ).await
 }
 
-// Helper to calculate vector distance
-fn calculate_vector_distance(v1: &pgvector::Vector, v2: &pgvector::Vector) -> f32 {
-    // This is a placeholder - implement actual cosine distance
-    // For now, return a default
-    100.0
+/// Get memory by ID
+async fn get_memory_by_id(
+    pool: &PgPool,
+    schema: &str,
+    id: MemoryId,
+) -> Result<Memory, MemoryPalaceError> {
+    execute_with_schema(
+        pool,
+        schema,
+        |tx| Box::pin(async move {
+            let memory = sqlx::query_as(
+                "SELECT * FROM memories WHERE id = $1"
+            )
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+            
+            Ok(memory)
+        })
+    ).await
 }
 
-// Helper to format direction descriptions
-fn format_direction(passage_type: &str, destination: &str) -> String {
-    match passage_type {
-        "hallway" => format!("A hallway leads to {}", destination),
-        "staircase" => format!("A staircase ascends to {}", destination),
-        "trapdoor" => format!("A trapdoor descends to {}", destination),
-        "portal" => format!("A shimmering portal to {}", destination),
-        _ => format!("{} to {}", passage_type, destination),
-    }
+/// Get room by ID
+async fn get_room_by_id(
+    pool: &PgPool,
+    schema: &str,
+    id: RoomId,
+) -> Result<Room, MemoryPalaceError> {
+    execute_with_schema(
+        pool,
+        schema,
+        |tx| Box::pin(async move {
+            let room = sqlx::query_as(
+                "SELECT * FROM rooms WHERE id = $1"
+            )
+            .bind(id)
+            .fetch_one(&mut **tx)
+            .await?;
+            
+            Ok(room)
+        })
+    ).await
+}
+
+/// Semantic search for memories
+async fn semantic_search(
+    pool: &PgPool,
+    schema: &str,
+    query: &str,
+    limit: usize,
+    embedding_client: &dyn EmbeddingClient,
+) -> Result<Vec<ScoredMemory>, MemoryPalaceError> {
+    let query_embedding = embedding_client.get_embedding(query).await
+        .map_err(|e| MemoryPalaceError::Other(e.to_string()))?;
+    
+    let model_name = format!("{}_{}", embedding_client.name(), embedding_client.model());
+    
+    execute_with_schema(
+        pool,
+        schema,
+        |tx| Box::pin(async move {
+            let results: Vec<ScoredMemory> = sqlx::query_as(
+                r#"
+                SELECT 
+                    m.*,
+                    1 - (e.embedding <=> $1::vector) as similarity_score
+                FROM memories m
+                JOIN memory_embeddings me ON m.id = me.memory_id
+                JOIN embeddings e ON me.embedding_id = e.id
+                WHERE e.model_name = $2
+                ORDER BY similarity_score DESC
+                LIMIT $3
+                "#
+            )
+            .bind(&query_embedding.embedding[..])
+            .bind(&model_name)
+            .bind(limit as i64)
+            .fetch_all(&mut **tx)
+            .await?
+            .into_iter()
+            .map(|(memory, score)| ScoredMemory {
+                memory,
+                journey: PathById::from_members(vec![PathMemberIds::Memory(memory.id)]).unwrap(),
+                relevance_score: score,
+                recency_score: 0.0,
+                relationship_score: 0.0,
+                final_score: score,
+            })
+            .collect();
+            
+            Ok(results)
+        })
+    ).await
+}
+
+/// Strengthen a path through the palace
+async fn strengthen_path(
+    pool: &PgPool,
+    schema: &str,
+    path: &PathById,
+) -> Result<(), MemoryPalaceError> {
+    execute_with_schema(
+        pool,
+        schema,
+        |tx| Box::pin(async move {
+            // Strengthen each pathway in the path
+            let mut prev_room: Option<RoomId> = None;
+            
+            for member in path.iter() {
+                match member {
+                    PathMemberIds::Room(room_id) => {
+                        // Update room strength and visit count
+                        sqlx::query(
+                            r#"UPDATE rooms 
+                               SET strength = LEAST(1.0, strength + 0.05),
+                                   visit_count = visit_count + 1,
+                                   last_visited = NOW()
+                               WHERE id = $1"#
+                        )
+                        .bind(room_id)
+                        .execute(&mut **tx)
+                        .await?;
+                        
+                        prev_room = Some(*room_id);
+                    }
+                    PathMemberIds::Pathway(pathway_id) => {
+                        // Update pathway strength
+                        sqlx::query(
+                            r#"UPDATE pathways
+                               SET strength = LEAST(1.0, strength + 0.05),
+                                   traversal_count = traversal_count + 1,
+                                   last_traversed = NOW()
+                               WHERE id = $1"#
+                        )
+                        .bind(pathway_id)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                    PathMemberIds::Memory(memory_id) => {
+                        // Update memory strength and access count
+                        sqlx::query(
+                            r#"UPDATE memories
+                               SET strength = LEAST(1.0, strength + 0.1),
+                                   access_count = access_count + 1,
+                                   last_accessed = NOW()
+                               WHERE id = $1"#
+                        )
+                        .bind(memory_id)
+                        .execute(&mut **tx)
+                        .await?;
+                    }
+                }
+            }
+            
+            Ok(())
+        })
+    ).await
 }
 
 /// Format memories found in a room for display
@@ -811,12 +1083,15 @@ fn format_room_contents(room: &Room, memories: Vec<Memory>) -> String {
         
         for mem in placement_memories.iter().take(5) {
             let glow = calculate_memory_glow(mem);
+            let brief = mem.content.brief_description()
+                .unwrap_or_else(|| "A memory".to_string());
+            
             content.push_str(&format!(
                 "- {} {}: \"{}\" (id: {})\n",
                 glow,
                 format_tags(&mem.tags),
-                truncate_content(&mem.content, 60),
-                mem.id
+                truncate_content(&brief, 60),
+                mem.id.0
             ));
         }
         

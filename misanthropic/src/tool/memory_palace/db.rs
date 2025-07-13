@@ -105,9 +105,9 @@ pub async fn ensure_initialized(
                 traversal_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 last_traversed TIMESTAMPTZ,
-                UNIQUE(from_room_id, to_room_id),
+                UNIQUE(room_a, room_b),
                 CONSTRAINT bidirectional_unique CHECK (
-                    from_room_id < to_room_id
+                    room_a < room_b
                 ),
                 CONSTRAINT strength_range CHECK (
                     strength >= 0 AND strength <= 1
@@ -168,7 +168,9 @@ pub async fn ensure_initialized(
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_similarity_clusters (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                cluster_id UUID NOT NULL DEFAULT gen_random_uuid(),
                 memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                similarity_score FLOAT NOT NULL DEFAULT 0.5,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE(cluster_id, memory_id),
                 CONSTRAINT valid_similarity_score CHECK (
@@ -187,6 +189,7 @@ pub async fn ensure_initialized(
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 consolidated_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
+                original_memory_ids UUID[] NOT NULL,
                 agent_notes TEXT,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 CONSTRAINT valid_original_memory_ids_elements CHECK (
@@ -227,6 +230,9 @@ pub async fn ensure_initialized(
             // memories.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_decay_log (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                memories_affected INTEGER NOT NULL DEFAULT 0,
+                decay_rate FLOAT NOT NULL DEFAULT 0.01,
                 decay_date TIMESTAMPTZ NOT NULL DEFAULT now(),
                 decay_reason VARCHAR(100) NOT NULL
             )"#)
@@ -364,22 +370,23 @@ pub async fn ensure_initialized(
                     -- Apply decay to memories not accessed recently
                     WITH decayed_memories AS (
                         UPDATE memories
-                        SET importance = GREATEST(
+                        SET strength = GREATEST(
                             min_importance,
-                            importance * (1 - decay_rate * EXTRACT(EPOCH FROM (now() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
+                            strength * (1 - decay_rate * EXTRACT(EPOCH FROM (now() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
                         )
                         WHERE last_accessed < now() - decay_period
-                        AND importance > min_importance
-                        RETURNING id, importance
+                        AND strength > min_importance
+                        RETURNING id, strength
                     )
-                    INSERT INTO memory_decay_log (memory_id, previous_importance, new_importance, decay_reason)
+                    INSERT INTO memory_decay_log (user_id, memories_affected, decay_rate, decay_reason)
                     SELECT 
-                        m.id,
-                        m.importance as previous_importance,
-                        dm.importance as new_importance,
+                        m.user_id,
+                        COUNT(dm.id),
+                        decay_rate,
                         'time_based_decay'
                     FROM memories m
-                    JOIN decayed_memories dm ON m.id = dm.id;
+                    JOIN decayed_memories dm ON m.id = dm.id
+                    GROUP BY m.user_id;
                 END;
                 $$ language 'plpgsql'"#)
             .execute(&mut **tx)
@@ -420,6 +427,148 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
+            // Function to calculate centroid embedding for a room
+            sqlx::query(r#"CREATE OR REPLACE FUNCTION calculate_room_centroid(
+                room_id_param UUID,
+                model_name_param VARCHAR
+            )
+            RETURNS UUID AS $$
+            DECLARE
+                new_embedding_id UUID;
+                centroid_vector VECTOR;
+            BEGIN
+                -- Calculate the centroid of all memory embeddings in the room
+                SELECT AVG(e.embedding)::VECTOR INTO centroid_vector
+                FROM memories m
+                JOIN memory_embeddings me ON m.id = me.memory_id
+                JOIN embeddings e ON me.embedding_id = e.id
+                WHERE m.room_id = room_id_param
+                AND (e.model_name = model_name_param);
+                
+                IF centroid_vector IS NULL THEN
+                    RETURN NULL;
+                END IF;
+                
+                -- Create a new embedding for the centroid
+                INSERT INTO embeddings (model_name, model_size, content_hash, embedding)
+                VALUES (
+                    model_name_param,
+                    array_length(centroid_vector::float[], 1),
+                    sha256(room_id_param::text::bytea),
+                    centroid_vector
+                )
+                ON CONFLICT (model_name, content_hash) 
+                DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id INTO new_embedding_id;
+                
+                -- Update room_embeddings
+                INSERT INTO room_embeddings (user_id, room_id, embedding_id)
+                SELECT m.user_id, room_id_param, new_embedding_id
+                FROM memories m
+                WHERE m.room_id = room_id_param
+                LIMIT 1
+                ON CONFLICT (room_id, embedding_id) DO NOTHING;
+                
+                RETURN new_embedding_id;
+            END;
+            $$ language 'plpgsql'"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Function to calculate centroid embedding for a cluster
+            sqlx::query(r#"CREATE OR REPLACE FUNCTION calculate_cluster_centroid(
+                cluster_id_param UUID,
+                user_id_param UUID,
+                model_name_param VARCHAR
+            )
+            RETURNS UUID AS $$
+            DECLARE
+                new_embedding_id UUID;
+                centroid_vector VECTOR;
+            BEGIN
+                -- Calculate the centroid of all memory embeddings in the cluster
+                SELECT AVG(e.embedding)::VECTOR INTO centroid_vector
+                FROM memory_similarity_clusters msc
+                JOIN memory_embeddings me ON msc.memory_id = me.memory_id
+                JOIN embeddings e ON me.embedding_id = e.id
+                WHERE msc.cluster_id = cluster_id_param
+                AND msc.user_id = user_id_param
+                AND (e.model_name = model_name_param);
+
+                IF centroid_vector IS NULL THEN
+                    RETURN NULL;
+                END IF;
+
+                -- Create a new embedding for the centroid
+                INSERT INTO embeddings (model_name, model_size, content_hash, embedding)
+                VALUES (
+                    model_name_param,
+                    array_length(centroid_vector::float[], 1),
+                    sha256(cluster_id_param::text::bytea),
+                    centroid_vector
+                )
+                ON CONFLICT (model_name, content_hash) 
+                DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id INTO new_embedding_id;
+
+                -- Update cluster_embeddings
+                INSERT INTO cluster_embeddings (user_id, cluster_id, embedding_id)
+                VALUES (user_id_param, cluster_id_param, new_embedding_id)
+                ON CONFLICT (cluster_id, embedding_id) DO NOTHING;
+
+                RETURN new_embedding_id;
+            END;
+            $$ language 'plpgsql'"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Function to update room centroid after memory changes
+            sqlx::query(r#"CREATE OR REPLACE FUNCTION update_room_centroid()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                -- For INSERT or UPDATE, use NEW.room_id
+                IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                    PERFORM calculate_room_centroid(NEW.room_id);
+                END IF;
+                
+                -- For UPDATE with room change, update old room too
+                IF TG_OP = 'UPDATE' AND OLD.room_id != NEW.room_id THEN
+                    PERFORM calculate_room_centroid(OLD.room_id);
+                END IF;
+                
+                -- For DELETE, use OLD.room_id
+                IF TG_OP = 'DELETE' THEN
+                    PERFORM calculate_room_centroid(OLD.room_id);
+                END IF;
+                
+                RETURN NULL;
+            END;
+            $$ language 'plpgsql'"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Function to update cluster centroids when membership changes
+            sqlx::query(r#"CREATE OR REPLACE FUNCTION update_cluster_centroid()
+            RETURNS TRIGGER AS $$
+            BEGIN
+                IF TG_OP IN ('INSERT', 'UPDATE') THEN
+                    PERFORM calculate_cluster_centroid(NEW.cluster_id, NEW.user_id);
+                END IF;
+                
+                IF TG_OP = 'UPDATE' AND OLD.cluster_id != NEW.cluster_id THEN
+                    PERFORM calculate_cluster_centroid(OLD.cluster_id, OLD.user_id);
+                END IF;
+                
+                IF TG_OP = 'DELETE' THEN
+                    PERFORM calculate_cluster_centroid(OLD.cluster_id, OLD.user_id);
+                END IF;
+                
+                RETURN NULL;
+            END;
+            $$ language 'plpgsql'"#)
+            .execute(&mut **tx)
+            .await?;
+
             // Trigger for updating room memory count
             sqlx::query("DROP TRIGGER IF EXISTS update_room_memory_count ON memories")
             .execute(&mut **tx)
@@ -429,6 +578,42 @@ pub async fn ensure_initialized(
                 AFTER INSERT OR DELETE ON memories
                 FOR EACH ROW
                 EXECUTE FUNCTION update_room_memory_count()"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Trigger for updating room centroids when memories change
+            sqlx::query("DROP TRIGGER IF EXISTS update_room_centroid_on_memory_change ON memories")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TRIGGER update_room_centroid_on_memory_change
+                AFTER INSERT OR UPDATE OR DELETE ON memories
+                FOR EACH ROW
+                EXECUTE FUNCTION update_room_centroid()"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Trigger for updating room centroids when memory embeddings change
+            sqlx::query("DROP TRIGGER IF EXISTS update_room_centroid_on_embedding_change ON memory_embeddings")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TRIGGER update_room_centroid_on_embedding_change
+                AFTER INSERT OR UPDATE OR DELETE ON memory_embeddings
+                FOR EACH ROW
+                EXECUTE FUNCTION update_room_centroid()"#)
+            .execute(&mut **tx)
+            .await?;
+
+            // Trigger for updating cluster centroids
+            sqlx::query("DROP TRIGGER IF EXISTS update_cluster_centroid_on_membership ON memory_similarity_clusters")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query(r#"CREATE TRIGGER update_cluster_centroid_on_membership
+                AFTER INSERT OR UPDATE OR DELETE ON memory_similarity_clusters
+                FOR EACH ROW
+                EXECUTE FUNCTION update_cluster_centroid()"#)
             .execute(&mut **tx)
             .await?;
 
@@ -447,6 +632,14 @@ pub async fn ensure_initialized(
 
             // Vector similarity search indexes on embeddings table
             sqlx::query("CREATE INDEX IF NOT EXISTS idx_embeddings_vector_ivfflat ON embeddings USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_pathways_room_a ON pathways(room_a)")
+            .execute(&mut **tx)
+            .await?;
+
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_pathways_room_b ON pathways(room_b)")
             .execute(&mut **tx)
             .await?;
 
@@ -513,36 +706,20 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            // Ensure bidirectional uniqueness constraint
-            sqlx::query(r#"
-DO $$ 
-BEGIN
-    ALTER TABLE room_connections 
-    ADD CONSTRAINT room_connections_bidirectional_unique 
-    CHECK (from_room_id < to_room_id);
-EXCEPTION
-    WHEN duplicate_object THEN 
-        -- Constraint already exists, that's fine
-        NULL;
-END $$;
-"#)
-        .execute(&mut **tx)
-        .await?;
-
             // Create view for easy room navigation
             sqlx::query(r#"CREATE OR REPLACE VIEW room_navigation AS
                 SELECT 
-                    rc.id,
-                    r1.name as from_room_name,
-                    r2.name as to_room_name,
-                    rc.passage_type,
-                    rc.description,
-                    rc.strength,
-                    rc.traversal_count,
-                    rc.last_traversed
-                FROM room_connections rc
-                JOIN rooms r1 ON rc.from_room_id = r1.id
-                JOIN rooms r2 ON rc.to_room_id = r2.id"#)
+                    p.id,
+                    r1.name as room_a_name,
+                    r2.name as room_b_name,
+                    p.passage_type,
+                    p.description,
+                    p.strength,
+                    p.traversal_count,
+                    p.last_traversed
+                FROM pathways p
+                JOIN rooms r1 ON p.room_a = r1.id
+                JOIN rooms r2 ON p.room_b = r2.id"#)
             .execute(&mut **tx)
             .await?;
 

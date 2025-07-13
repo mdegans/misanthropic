@@ -307,7 +307,7 @@ pub struct Pathway {
     /// paintings")
     pub description: Option<String>,
     /// Strength of the pathway, from 0.0 (weak) to 1.0 (strong)
-    pub strength: i64,
+    pub strength: f64,
     /// Number of times the connection has been traversed. Incremented only if
     /// the traversal led to the return of a [`Memory`].
     pub traversal_count: i32,

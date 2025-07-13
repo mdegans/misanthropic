@@ -7,7 +7,6 @@
 use std::{borrow::Cow, vec};
 
 use base64::engine::{Engine as _, general_purpose};
-use derive_more::derive;
 use serde::{Deserialize, Serialize};
 
 use crate::{
