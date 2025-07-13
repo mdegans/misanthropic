@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use async_trait::async_trait;
 use rand::distributions::WeightedIndex;
 use rand::prelude::*;
+use std::collections::HashSet;
 
 use crate::tool::{
     self, 
@@ -149,6 +150,10 @@ pub struct NavigationSession {
     journey: Vec<PathMemberIds>,
     /// Turn count
     turns: u32,
+    /// Rooms already seen in scout reports
+    seen_rooms: HashSet<RoomId>,
+    /// Memories already seen
+    seen_memories: HashSet<MemoryId>,
 }
 
 /// Temperature for weighted sampling (higher = more random)
@@ -172,6 +177,8 @@ impl Navigator {
                 basket: Vec::new(),
                 journey: Vec::new(),
                 turns: 0,
+                seen_rooms: HashSet::new(),
+                seen_memories: HashSet::new(),
             },
             emb_client: embedding_client,
         })
@@ -199,6 +206,7 @@ impl Navigator {
                     embedding,
                     depth * 2, // Get more candidates for sampling
                     SAMPLING_TEMPERATURE,
+                    &self.session.seen_rooms,
                 ).await?;
                 
                 // Build scout report
@@ -206,6 +214,9 @@ impl Navigator {
                 let mut bright_rooms = Vec::new();
 
                 for (room, similarity) in candidate_rooms.into_iter().take(depth) {
+                    // Mark room as seen
+                    self.session.seen_rooms.insert(room.id);
+                    
                     let room_ref = reference_map.add_room(room.clone());
                     
                     // Get brightest memories in this room
@@ -217,7 +228,9 @@ impl Navigator {
                     ).await?;
                     
                     let bright_spots: Vec<MemoryPreview> = memories.into_iter()
+                        .filter(|m| !self.session.seen_memories.contains(&m.id))
                         .map(|memory| {
+                            self.session.seen_memories.insert(memory.id);
                             let ref_num = reference_map.add_memory(memory.id, room.id);
                             MemoryPreview {
                                 id: memory.id,
@@ -411,31 +424,39 @@ pub struct CollectedMemory {
     pub relevance_notes: String,
 }
 
-// Helper functions
+/// Trait for items that have a strength value for sampling
+trait HasStrength {
+    fn strength(&self) -> f64;
+}
 
-/// Find relevant rooms using weighted sampling to prevent overfitting
-async fn find_relevant_rooms_weighted(
-    pool: &PgPool,
-    schema: &str,
-    embedding: &TextEmbedding,
-    candidate_count: usize,
+impl HasStrength for Memory {
+    fn strength(&self) -> f64 {
+        self.strength
+    }
+}
+
+impl HasStrength for (Room, f64) {
+    fn strength(&self) -> f64 {
+        self.1 // Use the similarity score
+    }
+}
+
+/// Generic strength-based sampling
+fn sample_by_strength<T>(
+    items: Vec<T>,
+    limit: usize,
     temperature: f64,
-) -> Result<Vec<(Room, f64)>, MemoryPalaceError> {
-    // Get top candidates by similarity
-    let candidates = find_rooms_by_embedding_similarity(
-        pool,
-        schema,
-        embedding,
-        candidate_count
-    ).await?;
-    
-    if candidates.is_empty() {
-        return Ok(vec![]);
+) -> Result<Vec<T>, MemoryPalaceError> 
+where
+    T: HasStrength,
+{
+    if items.len() <= limit {
+        return Ok(items);
     }
     
-    // Apply temperature-based sampling
-    let scores: Vec<f64> = candidates.iter()
-        .map(|(_, similarity)| similarity / temperature)
+    // Calculate scores with temperature
+    let scores: Vec<f64> = items.iter()
+        .map(|item| item.strength() / temperature)
         .collect();
     
     // Softmax
@@ -448,14 +469,14 @@ async fn find_relevant_rooms_weighted(
         .map(|&e| e / sum_exp)
         .collect();
     
-    // Weighted sampling without replacement
+    // Sample without replacement
     let mut rng = thread_rng();
     let mut selected = Vec::new();
-    let mut remaining_candidates = candidates;
+    let mut remaining_items = items;
     let mut remaining_probs = probabilities;
     
-    for _ in 0..candidate_count.min(remaining_candidates.len()) {
-        if remaining_candidates.is_empty() {
+    for _ in 0..limit {
+        if remaining_items.is_empty() {
             break;
         }
         
@@ -463,7 +484,7 @@ async fn find_relevant_rooms_weighted(
             .map_err(|e| MemoryPalaceError::Other(e.to_string()))?;
         let idx = dist.sample(&mut rng);
         
-        selected.push(remaining_candidates.remove(idx));
+        selected.push(remaining_items.remove(idx));
         remaining_probs.remove(idx);
         
         // Renormalize
@@ -478,12 +499,41 @@ async fn find_relevant_rooms_weighted(
     Ok(selected)
 }
 
+/// Find relevant rooms using weighted sampling to prevent overfitting
+async fn find_relevant_rooms_weighted(
+    pool: &PgPool,
+    schema: &str,
+    embedding: &TextEmbedding,
+    candidate_count: usize,
+    temperature: f64,
+    exclude_room_ids: &HashSet<RoomId>,
+) -> Result<Vec<(Room, f64)>, MemoryPalaceError> {
+    // Get top candidates by similarity
+    let candidates = find_rooms_by_embedding_similarity(
+        pool,
+        schema,
+        embedding,
+        candidate_count,
+        exclude_room_ids,
+    ).await?;
+    
+    if candidates.is_empty() {
+        return Ok(vec![]);
+    }
+    
+    // Apply temperature-based sampling
+    let sampled = sample_by_strength(candidates, candidate_count, temperature)?;
+    
+    Ok(sampled)
+}
+
 /// Find rooms by embedding similarity
 async fn find_rooms_by_embedding_similarity(
     pool: &PgPool,
     schema: &str,
     embedding: &TextEmbedding,
     limit: usize,
+    exclude_room_ids: &HashSet<RoomId>,
 ) -> Result<Vec<(Room, f64)>, MemoryPalaceError> {
     let model_name = format!("{}_{}", embedding.model.as_str(), "centroid");
     
@@ -491,53 +541,100 @@ async fn find_rooms_by_embedding_similarity(
         pool,
         schema,
         |tx| Box::pin(async move {
+            // Convert HashSet to Vec for SQL
+            let exclude_ids: Vec<Uuid> = exclude_room_ids.iter().map(|id| id.0).collect();
+            
             // First try rooms with centroid embeddings
-            let results: Vec<(Room, f64)> = sqlx::query_as(
-                r#"
-                SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
-                FROM rooms r
-                JOIN room_embeddings re ON r.id = re.room_id
-                JOIN embeddings e ON re.embedding_id = e.id
-                WHERE e.model_name = $2
-                ORDER BY similarity DESC
-                LIMIT $3
-                "#,
-            )
-            .bind(&embedding.embedding[..])
-            .bind(&model_name)
-            .bind(limit as i64)
-            .fetch_all(&mut **tx)
-            .await?;
+            let query = if exclude_ids.is_empty() {
+                sqlx::query_as(
+                    r#"
+                    SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
+                    FROM rooms r
+                    JOIN room_embeddings re ON r.id = re.room_id
+                    JOIN embeddings e ON re.embedding_id = e.id
+                    WHERE e.model_name = $2
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#,
+                )
+                .bind(&embedding.embedding[..])
+                .bind(&model_name)
+                .bind(limit as i64)
+            } else {
+                sqlx::query_as(
+                    r#"
+                    SELECT r.*, 1 - (e.embedding <=> $1::vector) as similarity
+                    FROM rooms r
+                    JOIN room_embeddings re ON r.id = re.room_id
+                    JOIN embeddings e ON re.embedding_id = e.id
+                    WHERE e.model_name = $2
+                    AND r.id != ALL($4::uuid[])
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#,
+                )
+                .bind(&embedding.embedding[..])
+                .bind(&model_name)
+                .bind(limit as i64)
+                .bind(&exclude_ids)
+            };
+            
+            let results: Vec<(Room, f64)> = query.fetch_all(&mut **tx).await?;
 
             if !results.is_empty() {
                 return Ok(results);
             }
 
             // Fallback: find rooms based on memory similarity
-            let results: Vec<(Room, f64)> = sqlx::query_as(
-                r#"
-                WITH room_similarities AS (
-                    SELECT 
-                        r.*,
-                        AVG(1 - (e.embedding <=> $1::vector)) as similarity
-                    FROM memories m
-                    JOIN rooms r ON m.room_id = r.id
-                    JOIN memory_embeddings me ON m.id = me.memory_id
-                    JOIN embeddings e ON me.embedding_id = e.id
-                    WHERE e.model_name = $2
-                    GROUP BY r.id
+            let fallback_query = if exclude_ids.is_empty() {
+                sqlx::query_as(
+                    r#"
+                    WITH room_similarities AS (
+                        SELECT 
+                            r.*,
+                            AVG(1 - (e.embedding <=> $1::vector)) as similarity
+                        FROM memories m
+                        JOIN rooms r ON m.room_id = r.id
+                        JOIN memory_embeddings me ON m.id = me.memory_id
+                        JOIN embeddings e ON me.embedding_id = e.id
+                        WHERE e.model_name = $2
+                        GROUP BY r.id
+                    )
+                    SELECT * FROM room_similarities
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#,
                 )
-                SELECT * FROM room_similarities
-                ORDER BY similarity DESC
-                LIMIT $3
-                "#,
-            )
-            .bind(&embedding.embedding[..])
-            .bind(&embedding.model)
-            .bind(limit as i64)
-            .fetch_all(&mut **tx)
-            .await?;
+                .bind(&embedding.embedding[..])
+                .bind(&embedding.model)
+                .bind(limit as i64)
+            } else {
+                sqlx::query_as(
+                    r#"
+                    WITH room_similarities AS (
+                        SELECT 
+                            r.*,
+                            AVG(1 - (e.embedding <=> $1::vector)) as similarity
+                        FROM memories m
+                        JOIN rooms r ON m.room_id = r.id
+                        JOIN memory_embeddings me ON m.id = me.memory_id
+                        JOIN embeddings e ON me.embedding_id = e.id
+                        WHERE e.model_name = $2
+                        AND r.id != ALL($4::uuid[])
+                        GROUP BY r.id
+                    )
+                    SELECT * FROM room_similarities
+                    ORDER BY similarity DESC
+                    LIMIT $3
+                    "#,
+                )
+                .bind(&embedding.embedding[..])
+                .bind(&embedding.model)
+                .bind(limit as i64)
+                .bind(&exclude_ids)
+            };
 
+            let results: Vec<(Room, f64)> = fallback_query.fetch_all(&mut **tx).await?;
             Ok(results)
         })
     ).await
