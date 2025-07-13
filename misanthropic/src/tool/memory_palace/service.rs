@@ -3,9 +3,16 @@ use std::collections::BTreeSet;
 use chrono::{DateTime, Utc};
 
 // Copyright 2025 Claude 4 Opus, Claude 4 Sonnet, and Michael de Gans
-use crate::{tool::{embedding::TextEmbedding, memory_palace::{
-    db::execute_with_schema, models::*, MemoryPalaceError, PgPool, Postgres, Transaction
-}}, Prompt};
+use crate::{
+    Prompt,
+    tool::{
+        embedding::TextEmbedding,
+        memory_palace::{
+            MemoryPalaceError, PgPool, Postgres, Transaction,
+            db::execute_with_schema, models::*,
+        },
+    },
+};
 
 /// Calculate a recency score based on how recently a memory was updated.
 /// Returns a score between 0.0 and 1.0, with 1.0 being most recent.
@@ -200,20 +207,19 @@ pub async fn relate_memories(
         })
     }).await
 }
-                        
+
 pub async fn find_resonating_memories(
     pool: &PgPool,
     schema: &str,
     memory_id: i64,
     max_depth: u32,
     min_strength: f64,
-) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError>
-{
+) -> Result<Vec<(String, String, Memory, String, f64)>, MemoryPalaceError> {
     // Early return for invalid inputs
     if max_depth == 0 {
         return Ok(vec![]);
     }
-    
+
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // First, get the source memory to validate it exists
@@ -357,20 +363,20 @@ pub async fn get_rooms_within_radius(
     if radius == 0 {
         return Ok(vec![]);
     }
-    
+
     execute_with_schema(pool, schema, |tx: &mut Transaction<'_, Postgres>| {
         Box::pin(async move {
             // First verify the starting room exists
-            let start_room_id: Option<RoomId> = sqlx::query_scalar(
-                "SELECT id FROM rooms WHERE name = $1"
-            )
-            .bind(start_room)
-            .fetch_optional(&mut **tx)
-            .await?;
-            
-            let start_room_id = start_room_id
-                .ok_or_else(|| MemoryPalaceError::RoomNotFound(start_room.to_string()))?;
-            
+            let start_room_id: Option<RoomId> =
+                sqlx::query_scalar("SELECT id FROM rooms WHERE name = $1")
+                    .bind(start_room)
+                    .fetch_optional(&mut **tx)
+                    .await?;
+
+            let start_room_id = start_room_id.ok_or_else(|| {
+                MemoryPalaceError::RoomNotFound(start_room.to_string())
+            })?;
+
             #[derive(sqlx::FromRow)]
             struct RoomDistanceRow {
                 id: i64,
@@ -384,7 +390,7 @@ pub async fn get_rooms_within_radius(
                 distance: i32,
                 path: Vec<i64>,
             }
-            
+
             let rows: BTreeSet<RoomDistanceRow> = sqlx::query_as(
                 r#"
                 WITH RECURSIVE room_graph AS (
@@ -420,13 +426,13 @@ pub async fn get_rooms_within_radius(
                 WHERE id != $1
                 ORDER BY id, distance ASC
                 LIMIT 100  -- Hard limit
-                "#
+                "#,
             )
             .bind(start_room_id)
             .bind(radius as i32)
             .fetch_all(&mut **tx)
             .await?;
-            
+
             let results: Vec<RoomWithJourney> = rows
                 .into_iter()
                 .map(|row| RoomWithJourney {
@@ -445,7 +451,7 @@ pub async fn get_rooms_within_radius(
                     path: row.path.into_iter().map(RoomId).collect(),
                 })
                 .collect();
-            
+
             Ok(results)
         })
     })
@@ -461,7 +467,7 @@ pub async fn get_context_summary(
             Box::pin(async move {
                 // Get recent memories based on last_updated (more relevant for agents)
                 let recent_memories: Vec<Memory> = sqlx::query_as(
-                r#"
+                    r#"
                     SELECT *
                     FROM memories 
                     ORDER BY last_updated DESC, created_at DESC 
