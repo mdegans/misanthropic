@@ -1,45 +1,247 @@
 // Copyright (c) 2025 Claude 4 Opus and Michael de Gans
 use async_trait::async_trait;
-use rand::distributions::WeightedIndex;
+use memsecurity::blake3::Hash;
+use rand::{distributions::WeightedIndex, thread_rng};
 use rand::prelude::*;
+use rand_xorshift::XorShiftRng;
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashSet;
+use std::num::NonZero;
 
+use crate::tool::embedding::EmbeddingError;
+use crate::tool::memory_palace::execute_with_schema;
 use crate::tool::{
-    self, MemoryPalace, Method, Tool,
-    embedding::{EmbeddingClient, TextEmbedding},
-    memory_palace::{
-        MemoryId, MemoryPalaceError, PathwayId, Room, RoomId, UserId,
-        db::execute_with_schema, models::*,
-    },
-    memory_subroutine::MemorySubroutineError,
+    self, embedding::{EmbeddingClient, TextEmbedding}, memory_palace::{
+        // Do we need pathways at all? Seems the agent doesn't need to know
+        // about them in our new navigation system. We do need them to store
+        // edge data, however they don't need to have names or descriptions.
+        // We just need the two room ids and some weighting.
+        models::*, MemoryId, MemoryPalaceError, PathByIds, PathwayId, Room, RoomId, UserId
+    }, memory_subroutine::MemorySubroutineError, MemoryPalace, Method, Tool
 };
 
-/// Scout report showing the brightest paths through the palace
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ScoutReport {
-    /// The query context that drove this scout
-    pub query_context: String,
-    /// Rooms ordered by relevance to query
-    pub bright_rooms: Vec<BrightRoom>,
-    /// Sum of all room relevance scores in the report
-    pub total_relevance: f64,
-    /// Reference lookup for quick access
-    // I made this serialize because we can use it in the UI to display
-    // references and if we ever allow the primary agent to use the palace
-    // directly, it will be useful.
-    pub reference_map: ReferenceMap,
+/// [`Navigator`] Error.
+// Do we show this to the primary agent or retrieval agent or not at all? Many
+// of these we can handle programmatically but some are fatal and the agent
+// shoud be aware if their memory is offline so they can inform the user. Also
+// do we make this public if we can handle all cases? We can keep it private and
+// still relay it to the agent if we want to via serialization.
+#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
+pub enum NavigatorError {
+    /// The agent teleported before scouting the palace.
+    // Should be impossible because we should use tool::Choice::Method and
+    // constrain agent tool use. Scout is always the first call in a session.
+    // The flowery metaphor is not Opus. The intent here is to provide the
+    // retrieval agent with a humorous error message in the case something
+    // happens that should never happen. The retrieval agent should then relay
+    // this to the primary agent who can in turn relay it to the end user. IDC
+    // because this is not a commercial product and it's in good fun.
+    #[error("Cannot teleport before scouting the palace. A developer fucked up!")]
+    TeleportBeforeScout,
+    /// The agent attempted to collect memories before scouting the palace.
+    // Also should never happen.
+    #[error("Cannot collect memories before scouting the palace. A developer fucked up!")]
+    CollectBeforeScout,
+    /// Error when an invalid room reference is used.
+    // This should almost never happen unless something is very wrong with the
+    // prompt or sampling. Suggested course of action is to retry once and then
+    // abort.
+    #[error("Invalid room reference: {room_ref}")]
+    InvalidRoomReference { room_ref: usize },
+    /// [`EmbeddingError`] during navigation. This could be a connection issue,
+    /// a timeout, or an invalid response from the embedding service.
+    #[error("Embedding error: {message}")]
+    EmbeddingError { message: String },
+    /// A [`MemoryPalaceError`] occurred. This might mean a database issue or
+    /// something else unexpected. This should probably be fatal.
+    #[error("Memory Palace error: {message}")]
+    MemoryPalaceError { message: String },
 }
 
-/// A path element, room, pathway, or memory.
-pub enum PathMemberIds {
-    /// A room in the palace
-    Room(RoomId),
-    /// A pathway in the palace
-    Pathway(PathwayId),
-    /// A memory collected during navigation
-    Memory(MemoryId),
+// for ? convenience
+impl From<EmbeddingError> for NavigatorError {
+    fn from(err: EmbeddingError) -> Self {
+        NavigatorError::EmbeddingError {
+            message: err.to_string(),
+        }
+    }
+}
+
+impl From<MemoryPalaceError> for NavigatorError {
+    fn from(err: MemoryPalaceError) -> Self {
+        NavigatorError::MemoryPalaceError {
+            message: err.to_string(),
+        }
+    }
+}
+
+/// `ScoutReport` is a report for the [`Navigator`] showing an initial path
+/// through the memory palace based on the query context.
+/// 
+/// Note:
+/// - The path is non-deterministic and depends on the sampling strategy.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+// todo: validate on deserialization
+pub struct ScoutReport {
+    /// The query context that drove this scout
+    query_context: String,
+    /// Rooms ordered by our sampling strategy.
+    bright_rooms: Vec<BrightRoom>,
+    /// Glow of the entire report, a sum of all room glow scores.
+    glow: f64,
+    /// Reference lookup for quick access. Map of reference number to index in
+    /// [`bright_rooms`] and [`bright_spots`] within the [`BrightRoom`]. If the
+    /// second number is `None`, it means the reference is for a room itself.
+    /// 
+    /// [`bright_rooms`]: ScoutReport::bright_rooms
+    /// [`bright_spots`]: BrightRoom::bright_spots
+    reference_map: Vec<(usize, Option<usize>)>,
+}
+
+/// A [`BrightRoom`] or [`MemoryPreview`] with the path to get there from the
+/// current location. This is used to generate paths to collected memories to
+/// strengthen them later.
+// We don't display the pathway in the scout report, so this only has rooms and
+// memories.
+enum BrightRoomOrMemoryPreview<'a> {
+    BrightRoom {
+        bright_room: &'a BrightRoom
+    },
+    MemoryPreview {
+        preview: &'a MemoryPreview
+    },
+}
+
+impl BrightRoomOrMemoryPreview<'_> {
+    /// Returns true if this is a [`MemoryPreview`]
+    pub fn is_memory_preview(&self) -> bool {
+        matches!(self, BrightRoomOrMemoryPreview::MemoryPreview { .. })
+    }
+}
+
+impl ScoutReport {
+    /// Get a reference to the current location in the palace.
+    pub fn current_location(&self) -> &BrightRoom {
+        // Class invariant, we guarantee there is always at least one room in
+        // the scout report, the starting location.
+        &self.bright_rooms[0]
+    }
+
+    /// Get a reference to a [`BrightRoom`] or [`MemoryPreview`] by its
+    /// `ref_num` along with the path to it (starting in the current room). Does
+    /// not include [`Pathway`]s.
+    pub fn get(
+        &self,
+        ref_num: NonZero<usize>,
+    ) -> Option<(BrightRoomOrMemoryPreview, Vec<PathMemberIds>)> {
+        let (room_idx, spot_idx) = self.reference_map.get(ref_num.get())?;
+        let bright_room = self.bright_rooms.get(*room_idx)?;
+
+        // Collect the path from root (index 0, the current location, to the
+        // target room or memory preview). This will be used to strengthen the
+        // path later. We can strengthen Pathways by looking up by the pairs of
+        // room ids along the path later.
+        let path: Vec<PathMemberIds> = {
+            self.reference_map.iter().take(ref_num.get() + 1)
+                .enumerate()
+                .filter_map(|(curr_num, (room_idx, spot_idx))| {
+                    if let Some(idx) = spot_idx {
+                        // We have a memory. Is it the target?
+                        if ref_num.get() == curr_num {
+                            Some(PathMemberIds::Memory(
+                                // Safe because we control the reference map
+                                bright_room.memory_previews[*idx].id
+                            ))
+                        } else {
+                            // This is a memory, but it's not the selected so
+                            // it is not part of the path to the memory.
+                            None
+                        }
+                    } else {
+                        // This is a room, and part of the path
+                        Some(PathMemberIds::Room(
+                            // Safe because we control the reference map
+                            self.bright_rooms[*room_idx].room.id
+                        ))
+                    }
+                }).collect()
+        };
+        // We can't insert pathways here because we don't have the database so
+        // we will do it later when we strengthen the path.
+        if let Some(preview) = spot_idx.map(|idx| bright_room.memory_previews.get(idx)).flatten() {
+            Some((BrightRoomOrMemoryPreview::MemoryPreview {
+                preview
+            }, path))
+        } else {
+            Some((BrightRoomOrMemoryPreview::BrightRoom {
+                bright_room
+            }, path))
+        }
+    }
+
+    /// Iterate over all rooms and memory previews in the report. The ordering
+    /// is room first, then room content, then the next room and so on. Starts
+    /// at the current location (index 0).
+    pub fn tour(&self) -> impl Iterator<Item = (usize, BrightRoomOrMemoryPreview)> {
+        self.reference_map.iter().enumerate().map(|(idx, (room_idx, spot_idx))| {
+            if let Some(spot_idx) = spot_idx {
+                (idx, BrightRoomOrMemoryPreview::MemoryPreview {
+                    preview: &self.bright_rooms[*room_idx].memory_previews[*spot_idx]
+                })
+            } else {
+                (idx, BrightRoomOrMemoryPreview::BrightRoom {
+                    bright_room: &self.bright_rooms[*room_idx]
+                })
+            }
+        })
+    }
+}
+
+impl std::fmt::Display for ScoutReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "Current location: {}",
+            self.current_location()
+        )?;
+        write!(
+            f,
+            "Scout Report: {} rooms, {} memories",
+            self.bright_rooms.len(),
+            self.bright_rooms.iter().map(|r| r.memory_previews.len()).sum::<usize>()
+        )?;
+        for (index, element) in self.tour().skip(1) {
+            // Itemize the report so the agent can index into it. If the element
+            // is a memory preview we indent.
+            match element {
+                BrightRoomOrMemoryPreview::BrightRoom { bright_room } => {
+                    write!(f, "{index} - {bright_room}")?;
+                },
+                BrightRoomOrMemoryPreview::MemoryPreview { preview } => {
+                    write!(
+                        f,
+                        "{index} - Memory Preview: {} (Glow: {:.2})",
+                        preview.summary, preview.glow
+                    )?; // Show glow for memory previews
+                },
+            }
+        }
+
+        Ok(())
+    }
+}
+
+impl std::fmt::Display for BrightRoom {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(f, "Room: {}, Distance: {:.2}, Glow: {:.2}, Memories: {}",
+            self.room.name, self.distance, self.glow, self.memory_previews.len())?;
+        for memory_preview in &self.memory_previews {
+            write!(f, "Memory: {summary} Glow: {:.2}",
+                memory_preview.summary, memory_preview.summary)?;
+        }
+        Ok(())
+    }
 }
 
 /// A bright room with its brightest memories. Brightness is a combination of
@@ -48,56 +250,26 @@ pub enum PathMemberIds {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BrightRoom {
     /// The room data
-    pub room: Room,
+    room: Room,
     /// Semantic distance from query (0.0 = identical, 1.0 = unrelated)
-    pub distance: f64,
-    /// Combined relevance score
-    pub relevance: f64,
-    /// Brightest memory placements in this room
-    pub bright_spots: Vec<MemoryPreview>,
+    distance: f64,
+    /// Combined glow of the room and its memories
+    glow: f64,
+    /// Brightest memory placements in this room by placement sorted in random
+    /// order. Models can be biased towards a certain placement.
+    memory_previews: Vec<MemoryPreview>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryPreview {
     /// Memory ID for collection
-    pub id: MemoryId,
+    id: MemoryId,
     /// Where it's placed in the room
-    pub placement: String,
+    placement: String,
     /// Memory strength (0.0-1.0)
-    pub glow: f64,
-    /// First 100 chars or brief description
-    pub preview: String,
-    /// Reference number for quick access
-    pub ref_num: usize,
-}
-
-/// Maps reference numbers to rooms and memories for quick access
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ReferenceMap {
-    rooms: Vec<Room>,
-    memories: Vec<(MemoryId, RoomId)>,
-}
-
-impl ReferenceMap {
-    fn add_room(&mut self, room: Room) -> usize {
-        let index = self.rooms.len();
-        self.rooms.push(room);
-        index
-    }
-
-    fn add_memory(&mut self, memory_id: MemoryId, room_id: RoomId) -> usize {
-        let index = self.memories.len();
-        self.memories.push((memory_id, room_id));
-        index
-    }
-
-    fn get_room(&self, ref_num: usize) -> Option<&Room> {
-        self.rooms.get(ref_num)
-    }
-
-    fn get_memory(&self, ref_num: usize) -> Option<(MemoryId, RoomId)> {
-        self.memories.get(ref_num).copied()
-    }
+    glow: f64,
+    /// Summary generated by the Archivist
+    summary: String,
 }
 
 /// Simplified navigation actions
@@ -167,9 +339,6 @@ pub struct NavigationSession {
     sampling_options: SamplingOptions,
 }
 
-/// Temperature for weighted sampling (higher = more random)
-const SAMPLING_TEMPERATURE: f64 = 0.5;
-
 impl Navigator {
     pub fn new(
         palace: MemoryPalace,
@@ -200,8 +369,7 @@ impl Navigator {
     async fn execute(
         &mut self,
         action: NavigatorUse,
-        sampling_options: &SamplingOptions,
-    ) -> Result<String, MemorySubroutineError> {
+    ) -> Result<String, NavigatorError> {
         self.session.turns += 1;
 
         match action {
@@ -224,7 +392,7 @@ impl Navigator {
                     self.palace.schema(),
                     embedding,
                     depth * 2, // Get more candidates for sampling
-                    sampling_options,
+                    &self.session.sampling_options,
                     &self.session.seen_rooms,
                 )
                 .await?;
@@ -261,7 +429,7 @@ impl Navigator {
                                 id: memory.id,
                                 placement: memory.placement,
                                 glow: memory.strength,
-                                preview: memory
+                                summary: memory
                                     .content
                                     .brief_description()
                                     .unwrap_or_else(|| "A memory".to_string()),
@@ -273,18 +441,18 @@ impl Navigator {
                     bright_rooms.push(BrightRoom {
                         room: room.clone(),
                         distance: 1.0 - similarity,
-                        relevance: similarity * room.strength,
-                        bright_spots,
+                        glow: similarity * room.strength,
+                        memory_previews: bright_spots,
                     });
                 }
 
                 let total_relevance: f64 =
-                    bright_rooms.iter().map(|br| br.relevance).sum();
+                    bright_rooms.iter().map(|br| br.glow).sum();
 
                 self.session.scout_report = Some(ScoutReport {
                     query_context: self.session.query.clone(),
                     bright_rooms: bright_rooms.clone(),
-                    total_relevance,
+                    glow: total_relevance,
                     reference_map,
                 });
 
@@ -295,17 +463,14 @@ impl Navigator {
             NavigatorUse::Teleport { room_ref } => {
                 let scout =
                     self.session.scout_report.as_ref().ok_or_else(|| {
-                        MemorySubroutineError::InvalidInput(
-                            "Must scout before teleporting".into(),
-                        )
+                        NavigatorError::TeleportBeforeScout
                     })?;
 
                 let room = scout.reference_map.get_room(room_ref).ok_or_else(
                     || {
-                        MemorySubroutineError::InvalidInput(format!(
-                            "Invalid room reference: {}",
-                            room_ref
-                        ))
+                        NavigatorError::InvalidRoomReference {
+                            room_ref,
+                        }
                     },
                 )?;
 
@@ -326,9 +491,7 @@ impl Navigator {
             NavigatorUse::Collect { memory_refs } => {
                 let scout =
                     self.session.scout_report.as_ref().ok_or_else(|| {
-                        MemorySubroutineError::InvalidInput(
-                            "Must scout before collecting".into(),
-                        )
+                        NavigatorError::CollectBeforeScout
                     })?;
 
                 let mut collected = 0;
@@ -389,7 +552,7 @@ impl Navigator {
                     strengthen_path(
                         &self.palace.pool,
                         self.palace.schema(),
-                        &PathById::from_members(self.session.journey.clone())?,
+                        self.session.journey.clone(),
                     )
                     .await?;
                 }
@@ -440,8 +603,7 @@ impl Tool for Navigator {
             // Force a scout first
             let scout_result = self
                 .execute(
-                    NavigatorUse::Scout { depth: 5 },
-                    &self.session.sampling_options,
+                    NavigatorUse::Scout { depth: 5 }
                 )
                 .await
                 .map_err(|e| format!("Auto-scout failed: {}", e))?;
@@ -457,12 +619,12 @@ impl Tool for Navigator {
             .await
             .map_err(|e| format!("Navigation error: {}", e))?;
 
-        Ok(tool::Result {
+        tool::Result {
             tool_use_id: call.id,
             content: result.into(),
             is_error: false,
             cache_control: None,
-        })
+        }
     }
 }
 
@@ -497,7 +659,7 @@ impl HasStrength for (Room, f64) {
 }
 
 /// Sampling strategies for selecting from candidates
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum SamplingStrategy {
     /// Softmax with temperature (what we have now)
     Temperature(f64),
@@ -510,7 +672,7 @@ pub enum SamplingStrategy {
 }
 
 /// Options for sampling from candidates
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SamplingOptions {
     /// Strategies to apply in sequence
     pub strategies: Vec<SamplingStrategy>,
@@ -542,7 +704,7 @@ where
 
     let mut candidates = items;
     let mut rng: Box<dyn RngCore> = if let Some(seed) = options.seed {
-        Box::new(StdRng::seed_from_u64(seed))
+        Box::new(XorShiftRng::seed_from_u64(seed))
     } else {
         Box::new(thread_rng())
     };
@@ -733,7 +895,7 @@ async fn find_rooms_by_embedding_similarity(
     execute_with_schema(pool, schema, |tx| {
         Box::pin(async move {
             // Convert HashSet to Vec for SQL
-            let exclude_ids: Vec<Uuid> =
+            let exclude_ids: Vec<RoomId> =
                 exclude_room_ids.iter().map(|id| id.0).collect();
 
             // First try rooms with centroid embeddings
@@ -943,7 +1105,7 @@ fn format_scout_report(
     report.push_str("The palace responds to your query, rooms glowing with recognition:\n\n");
 
     for (room_idx, bright_room) in rooms.iter().enumerate() {
-        let glow_desc = describe_glow(bright_room.relevance);
+        let glow_desc = describe_glow(bright_room.glow);
 
         report.push_str(&format!(
             "[Room #{}] {} - {}\n",
@@ -952,16 +1114,16 @@ fn format_scout_report(
 
         report.push_str(&format!("  {}\n", bright_room.room.description));
 
-        if !bright_room.bright_spots.is_empty() {
+        if !bright_room.memory_previews.is_empty() {
             report.push_str("  Brightest memories:\n");
-            for spot in &bright_room.bright_spots {
+            for spot in &bright_room.memory_previews {
                 let glow = describe_glow(spot.glow);
                 report.push_str(&format!(
                     "  - [#{}] {} on {} - {}\n",
                     spot.ref_num,
                     glow,
                     spot.placement,
-                    truncate_content(&spot.preview, 50)
+                    truncate_content(&spot.summary, 50)
                 ));
             }
         }
@@ -1047,89 +1209,21 @@ fn format_basket_return(basket: &[CollectedMemory], summary: &str) -> String {
     result
 }
 
-/// Follow a passage from current room to get destination
-pub async fn follow_passage(
-    pool: &PgPool,
-    schema: &str,
-    from_room: &str,
-    direction: &str,
-) -> Result<Room, MemoryPalaceError> {
-    let from_room = from_room.to_string();
-    let direction = direction.to_lowercase();
-
-    execute_with_schema(pool, schema, |tx| {
-        Box::pin(async move {
-            // Get the current room
-            let current_room: Room =
-                sqlx::query_as("SELECT * FROM rooms WHERE name = $1")
-                    .bind(&from_room)
-                    .fetch_one(&mut **tx)
-                    .await
-                    .map_err(|_| {
-                        MemoryPalaceError::RoomNotFound(from_room.clone())
-                    })?;
-
-            // Try to find a room by the direction (could be room name or passage type)
-            let destination: Option<Room> = sqlx::query_as(
-                r#"
-                SELECT r.*
-                FROM rooms r
-                JOIN pathways p ON (
-                    (p.room_a = $1 AND p.room_b = r.id) OR
-                    (p.room_b = $1 AND p.room_a = r.id)
-                )
-                WHERE LOWER(r.name) = $2 OR LOWER(p.passage_type) = $2
-                LIMIT 1
-                "#,
-            )
-            .bind(current_room.id)
-            .bind(&direction)
-            .fetch_optional(&mut **tx)
-            .await?;
-
-            if let Some(room) = destination {
-                // Update traversal tracking
-                sqlx::query(
-                    r#"UPDATE pathways 
-                       SET traversal_count = traversal_count + 1,
-                           last_traversed = NOW()
-                       WHERE (room_a = $1 AND room_b = $2) 
-                          OR (room_b = $1 AND room_a = $2)"#,
-                )
-                .bind(current_room.id)
-                .bind(room.id)
-                .execute(&mut **tx)
-                .await?;
-
-                return Ok(room);
-            }
-
-            Err(MemoryPalaceError::Other(format!(
-                "No passage '{}' from {}",
-                direction, from_room
-            )))
-        })
-    })
-    .await
-}
-
 /// Get a rich description of a room
 pub async fn get_room_description(
     pool: &PgPool,
     schema: &str,
-    room_name: &str,
+    room_id: RoomId,
 ) -> Result<String, MemoryPalaceError> {
-    let room_name = room_name.to_string();
-
     execute_with_schema(pool, schema, |tx| {
         Box::pin(async move {
             let room: Room =
-                sqlx::query_as("SELECT * FROM rooms WHERE name = $1")
-                    .bind(&room_name)
+                sqlx::query_as("SELECT * FROM rooms WHERE id = $1")
+                    .bind(room_id)
                     .fetch_one(&mut **tx)
                     .await
                     .map_err(|_| {
-                        MemoryPalaceError::RoomNotFound(room_name.clone())
+                        MemoryPalaceError::RoomNotFound(room_id)
                     })?;
 
             let connections: Vec<(String, String)> = sqlx::query_as(
@@ -1256,7 +1350,7 @@ async fn semantic_search(
             .into_iter()
             .map(|(memory, score)| ScoredMemory {
                 memory,
-                journey: PathById::from_members(vec![PathMemberIds::Memory(
+                journey: PathByIds::from_members(vec![PathMemberIds::Memory(
                     memory.id,
                 )])
                 .unwrap(),
@@ -1277,14 +1371,11 @@ async fn semantic_search(
 async fn strengthen_path(
     pool: &PgPool,
     schema: &str,
-    path: &PathById,
+    path: Vec<PathMemberIds>,
 ) -> Result<(), MemoryPalaceError> {
     execute_with_schema(pool, schema, |tx| {
         Box::pin(async move {
-            // Strengthen each pathway in the path
-            let mut prev_room: Option<RoomId> = None;
-
-            for member in path.iter() {
+            for member in path.into_iter() {
                 match member {
                     PathMemberIds::Room(room_id) => {
                         // Update room strength and visit count
@@ -1298,8 +1389,6 @@ async fn strengthen_path(
                         .bind(room_id)
                         .execute(&mut **tx)
                         .await?;
-
-                        prev_room = Some(*room_id);
                     }
                     PathMemberIds::Pathway(pathway_id) => {
                         // Update pathway strength

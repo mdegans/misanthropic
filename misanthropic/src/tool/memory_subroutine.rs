@@ -6,10 +6,10 @@ use std::collections::VecDeque;
 
 use crate::batch;
 use crate::prompt::message::Block;
-use crate::tool::memory_palace::{Memory, MemoryPalaceError};
+use crate::tool::memory_palace::{Memory, MemoryId, MemoryPalaceError};
 use crate::tool::{self, Use};
 use crate::{
-    Client, Key, Prompt,
+    Client, Prompt,
     tool::{MemoryPalace, Method, Tool},
 };
 
@@ -19,7 +19,7 @@ use handle::BackgroundTasks;
 mod tasks;
 
 mod prompts;
-use prompts::MEMORY_SUBROUTINE_INSTRUCTIONS;
+// use prompts::MEMORY_SUBROUTINE_INSTRUCTIONS;
 
 mod db;
 use db::ensure_initialized;
@@ -232,7 +232,7 @@ impl MemorySubroutine {
         room: &str,
         content: &str,
         tags: Vec<&str>,
-    ) -> Result<i64, MemoryPalaceError> {
+    ) -> Result<MemoryId, MemoryPalaceError> {
         self.palace.store_memory(room, content, tags).await
     }
 }

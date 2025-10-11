@@ -99,8 +99,6 @@ pub async fn ensure_initialized(
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 room_a UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
                 room_b UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                passage_type VARCHAR(64) NOT NULL DEFAULT 'hallway',
-                description TEXT,
                 strength FLOAT8 NOT NULL DEFAULT 0.5,
                 traversal_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),

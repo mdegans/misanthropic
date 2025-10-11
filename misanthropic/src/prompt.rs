@@ -97,7 +97,7 @@ pub struct Prompt<'a> {
     /// Thinking support. Note that this is only required for using Anthropic's
     /// built-in COT support with Sonnet 3.7 and later models. The `cot` feature
     /// can be used with all models, provided the system prompt instructs the
-    /// Assistant to use `<thiking>` tags.
+    /// Assistant to use `<thinking>` tags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
 }
@@ -118,6 +118,8 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("tool_choice", &self.tool_choice)
             .field("tools", &self.methods)
             .field("top_k", &self.top_k)
+            .field("top_p", &self.top_p)
+            .field("thinking", &self.thinking)
             .field("...", &"...")
             .finish()
     }

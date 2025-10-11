@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use crate::Prompt;
 use crate::prompt::message::Content;
 
+mod agent_json;
+pub use agent_json::NavigatorJson;
+
 mod toolbox;
 pub use toolbox::ToolBox;
 
@@ -290,6 +293,16 @@ impl<'a> MethodBuilder<'a> {
         required: bool,
     ) -> Self {
         self.add_param(name, description, "string", required)
+    }
+
+    /// Add an array parameter to the schema.
+    pub fn array_param(
+        self,
+        name: &str,
+        description: &str,
+        required: bool,
+    ) -> Self {
+        self.add_param(name, description, "array", required)
     }
 
     /// Add a number parameter to the schema.

@@ -12,149 +12,23 @@
 //!
 //! [`MemoryPalace`]: super::MemoryPalace
 //! [`Tool`]: crate::Tool
-use crate::prompt::message::{Content, Message, MessagePair, Role};
+use std::{borrow::Cow, fmt::Debug};
+
+use crate::{
+    prompt::message::{Block, Content, Message, MessagePair},
+    tool::{
+        NavigatorJson,
+        memory_palace::{NavigatorJson, RenderForNavigator},
+    },
+};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-// ## Utilities
-
-/// A [`Path`] taken through the [`MemoryPalace`], containing the full rows
-/// of [`PathMember`]s, which can be a [`Room`], a [`Pathway`], or a
-/// [`Memory`]. The path is guaranteed to end with a [`Memory`], which is the
-/// destination of the path.
-///
-/// [`MemoryPalace`]: super::MemoryPalace
-#[derive(Debug, Clone, derive_more::Deref, Serialize)]
-#[serde(transparent)]
-pub struct Path(Vec<PathMember>);
-
-impl Path {
-    /// From an iterable of [`PathMember`]s
-    pub fn from_members(
-        members: impl IntoIterator<Item = PathMember>,
-    ) -> Result<Self, &'static str> {
-        let members: Vec<PathMember> = members.into_iter().collect();
-        let index = members
-            .iter()
-            .position(|m| matches!(m, PathMember::Memory(_)))
-            .ok_or_else(|| "Path must contain a Memory")?;
-
-        // Index should be the last member
-        if index != members.len() - 1 {
-            return Err("Path must end with a Memory");
-        }
-
-        Ok(Path(members))
-    }
-}
-
-impl<'de> Deserialize<'de> for Path {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let members = Vec::<PathMember>::deserialize(deserializer)?;
-        Self::from_members(members).map_err(serde::de::Error::custom)
-    }
-}
-
-impl IntoIterator for Path {
-    type Item = PathMember;
-    type IntoIter = std::vec::IntoIter<PathMember>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a Path {
-    type Item = &'a PathMember;
-    type IntoIter = std::slice::Iter<'a, PathMember>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum PathMember {
-    /// A [`Room`] in the path
-    Room(Room),
-    /// A [`Pathway`] between two [`Room`]s in the path
-    Pathway(Pathway),
-    /// A [`Memory`] in the path (destination)
-    Memory(Memory),
-}
-
-/// A member in a [`Path`] taken through the [`MemoryPalace`], by id.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum PathMemberIds {
-    /// A [`Room`] in the path
-    Room(RoomId),
-    /// A [`Pathway`] between two [`Room`]s in the path
-    Pathway(PathwayId),
-    /// A [`Memory`] in the path (destination)
-    Memory(MemoryId),
-}
-
-/// The journey an agent takes through the [`MemoryPalace`]. Guaranteed to
-/// contain exactly one [`Memory`] at the end, which is the destination of the
-/// path. The path is a sequence of [`PathMemberIds`], which
-/// [`RoomId`], [`PathwayId`], or [`MemoryId`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, derive_more::Deref, Serialize)]
-#[serde(transparent)]
-pub struct PathById(Vec<PathMemberIds>);
-
-impl PathById {
-    /// From an iterable of [`PathMemberIds`]s
-    pub fn from_members(
-        members: impl IntoIterator<Item = PathMemberIds>,
-    ) -> Result<Self, &'static str> {
-        let members: Vec<PathMemberIds> = members.into_iter().collect();
-        let index = members
-            .iter()
-            .position(|m| matches!(m, PathMemberIds::Memory(_)))
-            .ok_or_else(|| "Path must contain a Memory")?;
-
-        // Index should be the last member
-        if index != members.len() - 1 {
-            return Err("Path must end with a Memory");
-        }
-
-        Ok(PathById(members))
-    }
-}
-
-impl<'de> Deserialize<'de> for PathById {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let members = Vec::<PathMemberIds>::deserialize(deserializer)?;
-        Self::from_members(members).map_err(serde::de::Error::custom)
-    }
-}
-
-impl IntoIterator for PathById {
-    type Item = PathMemberIds;
-    type IntoIter = std::vec::IntoIter<PathMemberIds>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.into_iter()
-    }
-}
-
-impl<'a> IntoIterator for &'a PathById {
-    type Item = &'a PathMemberIds;
-    type IntoIter = std::slice::Iter<'a, PathMemberIds>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.0.iter()
-    }
-}
+mod path;
+pub use path::*;
 
 // ## Ids
 
@@ -173,7 +47,6 @@ pub struct UserId(pub Uuid);
 #[sqlx(transparent)]
 #[serde(transparent)]
 pub struct RoomId(pub Uuid);
-
 /// Id of a [`Memory`]
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
@@ -192,7 +65,7 @@ pub struct MemoryAccessId(pub Uuid);
 
 /// Id of a [`Prompt`]
 ///
-/// crate::Prompt
+/// [`Prompt`]: crate::Prompt
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, sqlx::Type,
 )]
@@ -227,6 +100,9 @@ pub struct User {
     pub created_at: DateTime<Utc>,
 }
 
+// No agent representation for the User. The agent does not need to know about
+// the user directly other than what the user shares with the agent.
+
 /// A `Room` in the [`MemoryPalace`]
 ///
 /// [`MemoryPalace`]: super::MemoryPalace
@@ -242,14 +118,36 @@ pub struct Room {
     pub description: String,
     /// Date the room was created
     pub created_at: DateTime<Utc>,
-    /// Date the room was last visited
+    /// Date the room was last visited (a memory was retrieved from it)
     pub last_visited: DateTime<Utc>,
     /// Strength of the room, from 0.0 (weak) to 1.0 (strong)
+    /// note: Log scale is probably best here, but we'll see how it goes.
     pub strength: f64,
-    /// Number of times the room has been visited
+    /// Number of times the room has been visited. A visit is counted only if
+    /// the visit led to the return of a [`Memory`] along the path between the
+    /// starting room (by semantic similarity) and the destination room.
     pub visit_count: i32,
     /// Number of memories in the room
     pub memory_count: i32,
+}
+
+impl RenderForNavigator for Room {
+    fn render_for_navigator(&self) -> Content {
+        json!({
+            "name": self.name,
+            "description": self.description,
+            "memory count": self.memory_count,
+            "last visited": humantime::format_duration(
+                Utc::now()
+                    .signed_duration_since(self.last_visited)
+                    .to_std()
+                    .unwrap_or_default(),
+            )
+            .to_string(),
+        })
+        .to_string()
+        .into()
+    }
 }
 
 /// A `Memory` item stored in the palace with metadata
@@ -282,12 +180,44 @@ pub struct Memory {
     pub tags: Vec<String>,
     /// Strength of the [`Memory`], from 0.0 (weak) to 1.0 (strong)
     pub strength: f64,
-    /// Number of times the [`Memory`] has been accessed
+    /// Number of times the [`Memory`] has been accessed (retrieved by the
+    /// navigator agent). Just being listed does not count.
     pub access_count: i32,
     /// Date the [`Memory`] was created
     pub created_at: DateTime<Utc>,
     /// Date the [`Memory`] was last accessed (put in the basket for return)
     pub last_accessed: DateTime<Utc>,
+    /// Date the [`Memory`] was last updated (content changed)
+    pub last_updated: DateTime<Utc>,
+}
+
+impl RenderForNavigator for Memory {
+    fn render_for_navigator(&self) -> Content {
+        // last accessed as a relative time, e.g. "3 days ago"
+        let last_accessed = humantime::format_duration(
+            Utc::now()
+                .signed_duration_since(self.last_accessed)
+                .to_std()
+                .unwrap_or_default(),
+        )
+        .to_string();
+
+        // The placement of the memory in the room is important to give the
+        // retrieval agent context about where the memory is located. This helps
+        // the agent to visualize the memory palace and navigate it more
+        // effectively. Agents fail at spatial reasoning, but we don't need any
+        // accurate spatial reasoning here. "On a bookcase for memories about
+        // Rust programming" is good enough. This will be presented as an
+        // overview to the retrieval agent, who will then use it to guide their
+        // search for relevant memories.
+        json!({
+            "content": self.content.navigator_json(),
+            "placement": self.placement,
+            "last accessed": last_accessed,
+        })
+        .to_string()
+        .into()
+    }
 }
 
 /// A bidirectional connection between two [`Room`]s in the palace
@@ -301,11 +231,6 @@ pub struct Pathway {
     pub room_a: RoomId,
     /// A connected [`Room`]
     pub room_b: RoomId,
-    /// Passage type (e.g. "hallway", "door", "staircase")
-    pub passage_type: String,
-    /// A description of the passage, if any (e.g. "a long hallway with
-    /// paintings")
-    pub description: Option<String>,
     /// Strength of the pathway, from 0.0 (weak) to 1.0 (strong)
     pub strength: f64,
     /// Number of times the connection has been traversed. Incremented only if
@@ -359,7 +284,7 @@ pub struct MemoryAccess {
     /// Path taken to access the memory, represented as a JSONB array of
     /// [`PathMember`]s.
     #[sqlx(json)]
-    pub path: PathById,
+    pub path: PathByIds,
     /// Date the memory was accessed
     pub accessed_at: DateTime<Utc>,
 }
@@ -379,12 +304,12 @@ pub enum MemoryContent {
     Message {
         /// A copy of the message
         message: Message<'static>,
+        /// An optional note about the message, created by the primary agent.
+        note: Option<String>,
         /// The index of the message in the [`Prompt`], if any.
         ///
         /// [`Prompt`]: crate::Prompt
         index: Option<usize>,
-        /// A note, if any, filed either by the assistant or Archivist
-        note: Option<String>,
     },
     /// A person. This represents the view of a person in the agent's mind and
     /// is updated by the primary agent over time as the agent learns more
@@ -406,24 +331,34 @@ pub enum MemoryContent {
     /// A [`MessagePair`] with a (user, assistant) exchange, in that order.
     Pair {
         pair: MessagePair<'static>, // Messages exchanged
+        /// An optional note about the message, created by the primary agent.
+        note: Option<String>,
         /// The index of the message in the prompt, if any
         index: Option<usize>,
-        /// A note, if any, filed either by the assistant or Archivist
-        note: Option<String>,
     },
     /// Just a note, explicitly created by the primary agent.
     Note {
         /// Text of the note
         text: String,
-        /// Tags associated with the note
-        tags: Vec<String>,
-        /// The index of the note in the prompt, if any
+        /// The title of the note
         title: String,
     },
-    /// Summary of a longer conversation
+    /// Summary of a [`Prompt`]. Use the [`Survey`] tool to create these.
+    ///
+    /// [`Prompt`]: crate::Prompt
+    // TODO: Survey tool. This should be a survey the agent takes after the chat
+    // has ended. Some questions are asked and the agent then generates a
+    // summary in their own words. The Survey tool should take arbitrary config
+    // for the questions to ask and prompt for the summary. The intent is to get
+    // valuable feedback from the actual agent which can result in a better
+    // system prompt and recall in the future with the MemoryPalace.
     ConversationSummary {
-        summary: Content<'static>,
+        /// Title of the summary
         title: String,
+        /// Summary of the conversation, frequently in the agent's own words
+        summary: Content<'static>,
+        /// Id of the summarized conversation
+        prompt_id: PromptId,
     },
     /// Security-related insight. The user cannot turn this off without entirely
     /// deleting their account, and they only get one (ideally).
@@ -433,225 +368,170 @@ pub enum MemoryContent {
         /// Title of the report
         title: String,
         /// Karma value of the report (neg = bad user, pos = good user).
-        /// [`User::karma`] accumulates this value.
+        /// [`User::karma`] accumulates this value. -128 is auto-ban.
         karma: i8,
         /// Index of the reported message in the prompt. This may refer to a
         /// single message or the entire conversation.
         index: Option<usize>,
+        /// Is there an emergency? Has the user threatened self-harm or harm
+        /// to others? Is the user in danger?
+        emergency: bool,
     },
 }
 
-impl MemoryContent {
-    /// Extract [`Content`] for navigator display.
-    ///
-    /// # Note:
-    /// - [`tool::Result`]s support [`Image`] and [`Text`] [`Content`] only as
-    ///   of writing so it is possible all blocks may be filtered out in which
-    ///   case `None` is returned.
-    ///
-    /// [`tool::Result`]: crate::tool::Result
-    /// [`Image`]: crate::prompt::message::Block::Image
-    /// [`Text`]: crate::prompt::message::Block::Text
-    pub fn format_for_navigator(
-        self,
-        id: MemoryId,
-        room: RoomId,
-        prompt: Option<PromptId>,
-    ) -> Option<Content<'static>> {
-        // Add just citation metadata to the content.
-        let add_cite = |mut content, role, prompt, index| {
-            // Add citation metadata
-            if let (Some(prompt), Some(index)) = (prompt, index) {
-                content.push(format!(
-                    "<cite>{}</cite>",
-                    json!({
-                        "memory": id, // Navigator cites these only
-                        "role": role,
-                        "room": room,
-                        "prompt": prompt,
-                        "index": index,
-                    })
-                ));
-            } else {
-                content.push(format!(
-                    "<cite>{}</cite>",
-                    json!({
-                        "memory": id,
-                        "role": role,
-                        "room": room,
-                    })
-                ));
-            }
+impl NavigatorJson for MemoryContent {
+    // Format json for the retrieval agent (Navigator). This should be as
+    // compact as possible and not include content that the retrieval agent does
+    // not need.
+    fn navigator_json(&self) -> serde_json::Value {
+        use serde_json::json;
 
-            content
+        // We need to do surgery on the image blocks to remove the actual imate
+        // data since it won't parse properly in the JSON. We'll waste tokens
+        // for no reason. So instead we'll create a new message with the same
+        // content blocks apart for the image data which will be replaced with
+        // a citation to the index of the image in the original message.
+        let message_content_needs_replacing = match self {
+            MemoryContent::Message { message, .. } => {
+                message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        Block::Image { .. } | Block::RedactedThought { .. }
+                    )
+                })
+            }
+            // We handle MemoryContent::Person with an image differently below.
+            _ => false,
         };
 
-        // Adds any note and citation metadata to the content. Anthropic has
-        // it's own `Citation` type but it does not suit our needs.
-        let add_note_and_cite = |mut content, role, note, prompt, index| {
-            // Add the note if it exists
-            if !note.contains("<note>") && !note.contains("</note>") {
-                content.push(format!("<note>{note}</note>"));
-            } else {
-                // It's possible an agent might put additional tags when
-                // creating a note.
-                content.push(note);
+        // Replace image and redacted thought blocks with a citation, since the
+        // retrieval agent cannot easily parse these.
+        fn replace_message_content(
+            message: Message<'static>,
+        ) -> Message<'static> {
+            Message {
+                role: message.role,
+                content: message
+                    .content
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, block)| match block {
+                        Block::Image { .. } => Block::Text {
+                            text: format!("[Image at index {}]", i),
+                            ..Default::default()
+                        },
+                        Block::RedactedThought { .. } => Block::Text {
+                            // Only the primary agent should can see the
+                            // redacted thought. It is signed by Anthropic and
+                            // in order to parse it properly the agent would
+                            // need to have the Anthropic key, which it does
+                            // not.
+                            text: "[Anthropic Redacted Thought]".into(),
+                            ..Default::default()
+                        },
+                        // We will likely also need special handling for other
+                        // block types in the future.
+                        other => other,
+                    })
+                    .collect(),
             }
+        }
 
-            // Add citation metadata
-            add_cite(content, role, prompt, index);
-        };
-
-        let mut content: Content<'static> = match self {
-            MemoryContent::Message {
-                message,
-                note,
-                index,
-            } => {
-                // Existing content should come first
-                let Message { role, mut content } = message;
-
-                add_note_and_cite(
-                    content,
-                    role.as_lowercase(),
-                    note,
-                    prompt,
-                    index,
-                )
-            }
+        let data = match self {
+            MemoryContent::Message { message, .. } => json!({
+                "message": if message_content_needs_replacing {
+                    replace_message_content(message.clone())
+                } else {
+                    message
+                },
+            }),
+            MemoryContent::Person {
+                name,
+                biography,
+                notes,
+                ..
+            } => json!({
+                "name": name,
+                // The retrieval agent does not need the photo and it would
+                // require splitting up the content into multiple parts. The
+                // primary agent can still get the photo from the memory.
+                "biography": biography,
+                "notes": notes,
+            }),
             MemoryContent::Pair { pair, index, note } => {
-                let MessagePair { user, assistant } = pair;
-                let mut content = Content::new();
-                content.push("<user>");
-                content.extend(user.content);
-                content.push("</user>");
-                content.push("<assistant>");
-                content.extend(assistant.content);
-                content.push("</assistant>");
+                let mut data = json!({
+                    "user": pair.user.content(),
+                    "assistant": pair.assistant.content(),
+                });
 
-                add_note_and_cite(
-                    content,
-                    "(user, assistant)",
-                    note.unwrap_or_default(),
-                    prompt,
-                    index,
-                )
-            }
-            MemoryContent::Note { text, tags, .. } => {
-                let mut content = Content::new();
-                content.push(format!("<note>{text}</note>"));
-                content.push(format!("<tags>{}</tags>", tags.join(",")));
-                // Only the assistant takes notes
-                add_cite(content, Role::Assistant.as_lowercase(), None, None)
-            }
-            MemoryContent::ConversationSummary { summary, .. } => {
-                let mut content = Content::new();
-                content.push(format!("<summary>{summary}</summary>"));
-                add_cite(
-                    content,
-                    Role::Assistant.as_lowercase(),
-                    Some(prompt),
-                    Some(0), // Refers to entire conversation
-                )
-            }
-            MemoryContent::Person {
-                name,
-                photo,
-                biography,
-                notes,
-            } => {
-                let mut content = Content::new();
-                if let Some(photo) = photo {
-                    content.push(photo);
+                if let Some(note) = note {
+                    data["note"] = note.to_string().into();
                 }
-                content.push(format!("<name>{name}</name>"));
-                content.push(format!("<biography>{biography}</biography>"));
-                if !notes.is_empty() {
-                    let mut note_str = String::new();
-                    note_str.push_str("<notes>");
-                    for note in notes {
-                        if note.contains("<note>") || note.contains("</note>") {
-                            "<error>Note contains invalid tags</error>"
-                                .to_string();
-                            continue;
-                        }
-                        note_str.push_str(&format!("<note>{}</note>", note));
-                    }
-                    note_str.push_str("</notes>");
 
-                    content.push(note_str);
-                }
-                add_cite(content, Role::Assistant.as_lowercase(), None, None)
+                data
             }
+            MemoryContent::Note { title, text } => {
+                // Truncate long notes to 500 characters for the retrieval
+                // agent. The primary agent can still get the full note from the
+                // memory.
+                let text: Cow<'static, str> = if text.len() > 500 {
+                    format!("{}...", text[..500]).into()
+                } else {
+                    // No need to clone if we don't have to.
+                    text.as_str().into()
+                };
+
+                json!({
+                    "title": title,
+                    "text": text,
+                })
+            }
+            MemoryContent::ConversationSummary {
+                title,
+                summary,
+                prompt_id,
+            } => json!({
+                "title": title,
+                "summary": summary,
+            }),
+            // The retrieval agent *should* be able to see the report content,
+            // with the exception of any index. The emergency flag is certainly
+            // important since in our retrieval agent system prompt we tell the
+            // agent to prioritize emergency reports unless clearly irrelevant
+            // although the latter shouldn't happen frequently given our
+            // semantic search.
             MemoryContent::Report {
-                mut content, index, ..
-            } => {
-                let mut content = Content::new();
-                add_cite(content, Role::Assistant.as_lowercase(), prompt, index)
-            }
+                content,
+                title,
+                karma,
+                emergency,
+                ..
+            } => json!({
+                "content": content.navigator_json(),
+                "title": title,
+                "karma": karma,
+                "emergency": emergency,
+            }),
         };
 
-        let filtered: Content = content
-            .into_iter()
-            .filter(|b| b.is_text() || b.is_image())
-            .collect();
-
-        if content.is_empty() {
-            None
-        } else {
-            Some(filtered)
-        }
-    }
-
-    /// Get a brief description if available
-    pub fn brief_description(&self) -> Option<String> {
-        match self {
-            MemoryContent::Message { note, .. } => {
-                note.as_ref().map(|n| format!("Message with note: {n}"))
-            }
-            MemoryContent::Pair { note, .. } => note
-                .as_ref()
-                .map(|n| format!("Message pair with note: {n}")),
-            MemoryContent::Note { tags, .. } => {
-                Some(format!("Note with tags: {}", tags.join(", ")).into())
-            }
-            MemoryContent::ConversationSummary { title, .. } => {
-                Some(format!("Summary of conversation titled: {title}").into())
-            }
-            MemoryContent::Report { title, .. } => {
-                Some(format!("Report on the user titled: {title}").into())
-            }
-            MemoryContent::Person {
-                name,
-                photo,
-                biography,
-                notes,
-            } => {
-                let photo_desc = if photo.is_empty() {
-                    "no photo".to_string()
-                } else {
-                    "with a photo".to_string()
-                };
-                let notes_desc = if notes.is_empty() {
-                    "no notes".to_string()
-                } else {
-                    format!("with {} notes", notes.len())
-                };
-                Some(format!(
-                    "Person: {name}, {photo_desc}, biography: {biography}, {notes_desc}"
-                ))
-            }
-        }
+        // Shorter than a tagged enum variant, which is useful for postgres
+        // jsonb indexing but not for our use case here.
+        let variant = match self {
+            MemoryContent::Message { .. } => "message",
+            MemoryContent::Person { .. } => "person",
+            MemoryContent::Pair { .. } => "pair",
+            MemoryContent::Note { .. } => "note",
+            MemoryContent::ConversationSummary { .. } => "conversation_summary",
+            MemoryContent::Report { .. } => "report",
+        };
+        serde_json::json!({
+            variant: data
+        })
     }
 }
 
-/// Search result with scoring information and path to the memory
-#[derive(Debug, Clone)]
-pub struct ScoredMemory {
-    pub memory: Memory,
-    pub journey: PathById,
-    pub relevance_score: f64,
-    pub recency_score: f64,
-    pub relationship_score: f64,
-    pub final_score: f64,
+impl std::fmt::Display for MemoryContent {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.navigator_json().fmt(f)
+    }
 }

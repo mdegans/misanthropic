@@ -10,7 +10,7 @@ use sqlx::{PgPool, Postgres, Transaction};
 mod tool;
 
 /// [`MemoryPalace`] models and types.
-mod models;
+pub(crate) mod models;
 pub(crate) use models::*;
 
 /// [`MemoryPalace`] Database initialization.
@@ -28,6 +28,9 @@ use service::*;
 /// [`MemoryPalace`] error handling.
 mod error;
 pub use error::MemoryPalaceError;
+
+pub(crate) mod render;
+pub(crate) use render::*;
 
 use crate::Prompt;
 use crate::prompt::Message;
