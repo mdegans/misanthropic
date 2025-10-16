@@ -1,14 +1,16 @@
-// Copyright 2025 Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
+// Copyright 2025 Claude 3.5 Sonnet, Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
 //! Models for the [`MemoryPalace`] [`Tool`], including [`User`], [`Room`],
 //! [`Memory`], [`Pathway`], and related types.
 //!
 //! ## Notes
 //!
-//! - `strength` fields in the models are used to indicate the strength of a
-//!   memory, room, or pathway. They range from 0.0 (weak) to 1.0 (strong). When
-//!   a memory is retrieved, the path it took to get there is also increased in
-//!   strength. This is meant to form neural pathways in the Agent's mind. The
-//!   strength of a memory also decays over time.
+//! - `weight` fields in the models are stored in log space and indicate the
+//!   importance/strength of a memory, room, or pathway. Values are typically
+//!   in the range (-10.0, 0.0], where -0.693147 ≈ log(0.5) is the default.
+//!   When a memory is retrieved, the path it took to get there is also
+//!   increased in weight. This is meant to form neural pathways in the Agent's
+//!   mind. The weight of a memory also decays over time exponentially (which
+//!   becomes additive decay in log space).
 //!
 //! [`MemoryPalace`]: super::MemoryPalace
 //! [`Tool`]: crate::Tool
@@ -120,9 +122,9 @@ pub struct Room {
     pub created_at: DateTime<Utc>,
     /// Date the room was last visited (a memory was retrieved from it)
     pub last_visited: DateTime<Utc>,
-    /// Strength of the room, from 0.0 (weak) to 1.0 (strong)
-    /// note: Log scale is probably best here, but we'll see how it goes.
-    pub strength: f64,
+    /// Weight of the room in log space. Higher values (closer to 0) indicate
+    /// stronger/more important rooms. Typically in range (-10.0, 0.0].
+    pub weight: f64,
     /// Number of times the room has been visited. A visit is counted only if
     /// the visit led to the return of a [`Memory`] along the path between the
     /// starting room (by semantic similarity) and the destination room.
@@ -178,8 +180,9 @@ pub struct Memory {
     /// Tags associated with the [`Memory`]
     #[sqlx(json)]
     pub tags: Vec<String>,
-    /// Strength of the [`Memory`], from 0.0 (weak) to 1.0 (strong)
-    pub strength: f64,
+    /// Weight of the [`Memory`] in log space. Higher values (closer to 0)
+    /// indicate stronger/more important memories. Typically in range (-10.0, 0.0].
+    pub weight: f64,
     /// Number of times the [`Memory`] has been accessed (retrieved by the
     /// navigator agent). Just being listed does not count.
     pub access_count: i32,
@@ -231,8 +234,9 @@ pub struct Pathway {
     pub room_a: RoomId,
     /// A connected [`Room`]
     pub room_b: RoomId,
-    /// Strength of the pathway, from 0.0 (weak) to 1.0 (strong)
-    pub strength: f64,
+    /// Weight of the pathway in log space. Higher values (closer to 0) indicate
+    /// stronger/more frequently traversed pathways. Typically in range (-10.0, 0.0].
+    pub weight: f64,
     /// Number of times the connection has been traversed. Incremented only if
     /// the traversal led to the return of a [`Memory`].
     pub traversal_count: i32,

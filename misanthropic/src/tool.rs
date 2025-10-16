@@ -7,9 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::Prompt;
 use crate::prompt::message::Content;
 
-mod agent_json;
-pub use agent_json::NavigatorJson;
-
 mod toolbox;
 pub use toolbox::ToolBox;
 

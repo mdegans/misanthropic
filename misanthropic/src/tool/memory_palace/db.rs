@@ -1,4 +1,4 @@
-// Copyright 2025 Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
+// Copyright 2025 Claude 3.5 Sonnet, Claude 4 Sonnet, Claude 4 Opus, and Michael de Gans
 //
 // The initial idea was Sonnet. Opus helped refine it into what it is now in a
 // collaborative effort. The code is a result of human and AI collaboration.
@@ -40,13 +40,13 @@ pub async fn ensure_initialized(
                 description TEXT NOT NULL,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 last_visited TIMESTAMPTZ NOT NULL DEFAULT now(),
-                strength FLOAT8 NOT NULL DEFAULT 0.5,
+                weight FLOAT8 NOT NULL DEFAULT -0.693147,
                 visit_count INTEGER NOT NULL DEFAULT 0,
                 memory_count INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(user_id, name),
                 CONSTRAINT room_name_length CHECK (char_length(name) >= 3),
                 CONSTRAINT valid_last_visited CHECK (last_visited >= created_at),
-                CONSTRAINT strength_range CHECK (strength >= 0 AND strength <= 1),
+                CONSTRAINT weight_range CHECK (weight <= 0 AND weight >= -10),
                 CONSTRAINT visit_count_non_negative CHECK (visit_count >= 0),
                 CONSTRAINT memory_count_non_negative CHECK (memory_count >= 0)
             )"#)
@@ -69,7 +69,7 @@ pub async fn ensure_initialized(
                 placement VARCHAR(64) NOT NULL DEFAULT 'shelf',
                 placement_description TEXT,
                 tags JSONB NOT NULL DEFAULT '[]',
-                strength FLOAT8 NOT NULL DEFAULT 0.5,
+                weight FLOAT8 NOT NULL DEFAULT -0.693147,
                 access_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 last_accessed TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -81,7 +81,7 @@ pub async fn ensure_initialized(
                     (prompt_id IS NULL AND prompt_index IS NULL) OR
                     (prompt_id IS NOT NULL AND prompt_index IS NOT NULL)
                 ),
-                CONSTRAINT strength_range CHECK (strength >= 0 AND strength <= 1),
+                CONSTRAINT weight_range CHECK (weight <= 0 AND weight >= -10),
                 CONSTRAINT access_count_non_negative CHECK (access_count >= 0),
                 CONSTRAINT valid_last_updated CHECK (last_updated >= created_at),
                 CONSTRAINT valid_last_accessed CHECK (last_accessed >= created_at)
@@ -92,14 +92,14 @@ pub async fn ensure_initialized(
             // Connections between rooms hint to the agent how to navigate
             // between them. They can represent hallways, doors, or other
             // passage types. They should lead to related rooms. Traversals will
-            // increase the strength of the connection forming neural pathways
+            // increase the weight of the connection forming neural pathways
             // in the palace.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS pathways (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                 room_a UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
                 room_b UUID NOT NULL REFERENCES rooms(id) ON DELETE CASCADE,
-                strength FLOAT8 NOT NULL DEFAULT 0.5,
+                weight FLOAT8 NOT NULL DEFAULT -0.693147,
                 traversal_count INTEGER NOT NULL DEFAULT 0,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 last_traversed TIMESTAMPTZ,
@@ -107,9 +107,7 @@ pub async fn ensure_initialized(
                 CONSTRAINT bidirectional_unique CHECK (
                     room_a < room_b
                 ),
-                CONSTRAINT strength_range CHECK (
-                    strength >= 0 AND strength <= 1
-                ),
+                CONSTRAINT weight_range CHECK (weight <= 0 AND weight >= -10),
                 CONSTRAINT valid_traversal_count CHECK (traversal_count >= 0),
                 CONSTRAINT valid_last_traversed CHECK (
                     last_traversed IS NULL OR last_traversed >= created_at
@@ -126,12 +124,10 @@ pub async fn ensure_initialized(
                 from_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 to_memory_id UUID NOT NULL REFERENCES memories(id) ON DELETE CASCADE,
                 relationship_type VARCHAR(100) NOT NULL DEFAULT 'related',
-                strength FLOAT NOT NULL DEFAULT 0.5,
+                weight FLOAT NOT NULL DEFAULT -0.693147,
                 created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
                 UNIQUE(from_memory_id, to_memory_id),
-                CONSTRAINT strength_range CHECK (
-                    strength >= 0 AND strength <= 1
-                )
+                CONSTRAINT weight_range CHECK (weight <= 0 AND weight >= -10)
             )"#)
             .execute(&mut **tx)
             .await?;
@@ -216,16 +212,16 @@ pub async fn ensure_initialized(
             .await?;
 
             // Table for memory decay tracking. This is purely for debugging
-            // purposes, logging when and why memory strength is decayed. More
-            // frequently accessed memories increase in strength while over time
+            // purposes, logging when and why memory weight is decayed. More
+            // frequently accessed memories increase in weight while over time
             // unused memories decay. This is a time-based decay, not a
             // similarity-based decay.
             //
             // The decay is applied periodically, e.g. once a week across all
             // memories. The decay rate is configurable, but the default is 1%
-            // per week. We don't record per-memory decay, rather the batch
-            // event is logged here. It is applied across the palace to all user
-            // memories.
+            // per week (0.01 in log space). We don't record per-memory decay, 
+            // rather the batch event is logged here. It is applied across the 
+            // palace to all user memories.
             sqlx::query(r#"CREATE TABLE IF NOT EXISTS memory_decay_log (
                 id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                 user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -361,20 +357,21 @@ pub async fn ensure_initialized(
             sqlx::query(r#"CREATE OR REPLACE FUNCTION calculate_memory_decay()
                 RETURNS VOID AS $$
                 DECLARE
-                    decay_rate FLOAT := 0.01; -- 1% decay per period
-                    min_importance FLOAT := 0.1; -- memories don't decay below this
+                    decay_rate FLOAT := 0.01; -- 1% decay per period in log space
+                    min_weight FLOAT := -10.0; -- memories don't decay below this (log scale)
                     decay_period INTERVAL := '7 days'; -- how often decay is applied
                 BEGIN
                     -- Apply decay to memories not accessed recently
+                    -- In log space, exponential decay becomes additive: weight' = weight - decay_amount
                     WITH decayed_memories AS (
                         UPDATE memories
-                        SET strength = GREATEST(
-                            min_importance,
-                            strength * (1 - decay_rate * EXTRACT(EPOCH FROM (now() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
+                        SET weight = GREATEST(
+                            min_weight,
+                            weight - (decay_rate * EXTRACT(EPOCH FROM (now() - last_accessed)) / EXTRACT(EPOCH FROM decay_period))
                         )
                         WHERE last_accessed < now() - decay_period
-                        AND strength > min_importance
-                        RETURNING id, strength
+                        AND weight > min_weight
+                        RETURNING id, weight
                     )
                     INSERT INTO memory_decay_log (user_id, memories_affected, decay_rate, decay_reason)
                     SELECT 
@@ -671,11 +668,11 @@ pub async fn ensure_initialized(
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_relationships_strength ON memory_relationships(strength DESC)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memory_relationships_weight ON memory_relationships(weight DESC)")
             .execute(&mut **tx)
             .await?;
 
-            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_importance ON memories(importance DESC)")
+            sqlx::query("CREATE INDEX IF NOT EXISTS idx_memories_weight ON memories(weight DESC)")
             .execute(&mut **tx)
             .await?;
 
@@ -712,7 +709,7 @@ pub async fn ensure_initialized(
                     r2.name as room_b_name,
                     p.passage_type,
                     p.description,
-                    p.strength,
+                    p.weight,
                     p.traversal_count,
                     p.last_traversed
                 FROM pathways p
