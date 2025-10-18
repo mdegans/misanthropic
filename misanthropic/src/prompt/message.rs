@@ -853,9 +853,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
         &'a self,
         options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
-        use pulldown_cmark::Event;
-
-        let it: Box<dyn Iterator<Item = Event<'a>> + 'a> = match self {
+        match self {
             Self::SinglePart(string) => {
                 Box::new(pulldown_cmark::Parser::new(string))
             }
@@ -864,9 +862,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
                     .iter()
                     .flat_map(move |part| part.markdown_events_custom(options)),
             ),
-        };
-
-        it
+        }
     }
 }
 
@@ -1106,6 +1102,7 @@ impl<'a> Block<'a> {
             text: std::borrow::Cow::Borrowed(text),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
+            citations: vec![],
         }
     }
 
