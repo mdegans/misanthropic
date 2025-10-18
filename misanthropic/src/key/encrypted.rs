@@ -86,6 +86,16 @@ impl TryFrom<Vec<u8>> for Key {
     }
 }
 
+impl TryFrom<Zeroizing<String>> for Key {
+    type Error = InvalidKeyLength;
+
+    /// Create a new key from a Zeroizing<String> securely. The string is
+    /// zeroized after conversion.
+    fn try_from(s: Zeroizing<String>) -> Result<Self, Self::Error> {
+        Self::try_from(s.as_bytes().to_vec())
+    }
+}
+
 impl std::fmt::Display for Key {
     /// Write out the key. Make sure to zeroize whatever you write it to if at
     /// all possible.
