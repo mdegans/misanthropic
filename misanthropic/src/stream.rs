@@ -18,7 +18,7 @@ use std::{borrow::Cow, pin::Pin, task::Poll};
 /// Sucessful Event from the API. See [`stream::Error`] for errors.
 ///
 /// [`stream::Error`]: Error
-#[derive(Debug, Serialize, Deserialize, derive_more::IsVariant)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum Event {
@@ -951,18 +951,23 @@ pub(crate) mod tests {
                 if let Block::Text {
                     text,
                     cache_control,
+                    citations,
                 } = content_block
                 {
                     assert_eq!(text.as_ref(), "");
                     assert!(cache_control.is_none());
+                    assert!(citations.is_empty());
                 } else {
                     panic!("Unexpected content block: {:?}", content_block);
                 }
                 #[cfg(not(feature = "prompt-caching"))]
-                if let Block::Text { text } = content_block {
-                    assert_eq!(text.as_ref(), "");
-                } else {
-                    panic!("Unexpected content block: {:?}", content_block);
+                {
+                    if let Block::Text { text, citations } = content_block {
+                        assert_eq!(text.as_ref(), "");
+                        assert!(citations.is_none());
+                    } else {
+                        panic!("Unexpected content block: {:?}", content_block);
+                    }
                 }
             }
             _ => panic!("Unexpected event: {:?}", event),
@@ -1156,7 +1161,8 @@ pub(crate) mod tests {
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
                         #[cfg(feature = "prompt-caching")]
-                        cache_control: None
+                        cache_control: None,
+                        citations: vec![]
                     }
                 ])
             }
@@ -1199,7 +1205,8 @@ pub(crate) mod tests {
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
                         #[cfg(feature = "prompt-caching")]
-                        cache_control: None
+                        cache_control: None,
+                        citations: vec![]
                     }
                 ])
             }

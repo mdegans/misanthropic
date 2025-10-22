@@ -101,9 +101,9 @@ impl Client {
     /// Create a new [`Client`] from any type that can be converted into a
     /// [`Key`], like a [`String`] or a [`Vec`], but not a `&str`.
     // misanthropic/src/client.rs
-    pub fn new<K>(key: K) -> std::result::Result<Self, key::InvalidKeyLength>
+    pub fn new<K>(key: K) -> std::result::Result<Self, key::Error>
     where
-        K: TryInto<Key, Error = key::InvalidKeyLength>,
+        K: TryInto<Key, Error = key::Error>,
     {
         Ok(Self::from_key(key.try_into()?))
     }
@@ -323,7 +323,7 @@ impl Client {
     /// around a `Vec` of [`Model`]s and derefs to it.
     ///
     /// [`Model``]: misanthropic::model::Model
-    pub async fn models(&self) -> Result<Models> {
+    pub async fn models(&self) -> Result<Models<'static>> {
         let response = self.get(self.models_url.as_str()).await?;
         let body = response.text().await?;
 
@@ -366,7 +366,10 @@ impl Client {
     /// [`Request`]: crate::prompt
     /// [`Message`]: crate::Message
     /// [`Stream`]: crate::Stream
-    pub async fn request<P>(&self, prompt: P) -> Result<crate::Response>
+    pub async fn request<'a, P>(
+        &'a self,
+        prompt: P,
+    ) -> Result<crate::Response<'a>>
     where
         P: Serialize,
     {
@@ -378,11 +381,11 @@ impl Client {
     /// using a different Messages compatible endpoint.
     ///
     /// [`request`]: Self::request
-    pub async fn request_custom<P, U>(
-        &self,
+    pub async fn request_custom<'a, P, U>(
+        &'a self,
         prompt: P,
         url: U,
-    ) -> Result<crate::Response>
+    ) -> Result<crate::Response<'a>>
     where
         P: Serialize,
         U: reqwest::IntoUrl,
@@ -442,7 +445,10 @@ impl Client {
     /// function will always return a single [`response::Message`].
     ///
     /// [`request`]: Self::request
-    pub async fn message<P>(&self, prompt: P) -> Result<response::Message>
+    pub async fn message<'a, P>(
+        &'a self,
+        prompt: P,
+    ) -> Result<response::Message<'a>>
     where
         P: Serialize,
     {

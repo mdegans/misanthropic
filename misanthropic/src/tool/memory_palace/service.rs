@@ -478,18 +478,17 @@ pub async fn get_context_summary(
                 .await?;
 
                 // Get top relationships by strength, but also consider recency
-                let top_relationships: Vec<TopRelationship> = sqlx::query_as(
-                    r#"
-                SELECT m1.content as from_content, m2.content as to_content, 
-                        mr.relationship_type, mr.strength
-                FROM memory_relationships mr
-                JOIN memories m1 ON mr.from_memory_id = m1.id
-                JOIN memories m2 ON mr.to_memory_id = m2.id
-                ORDER BY 
-                    mr.strength DESC,
-                    GREATEST(m1.last_updated, m2.last_updated) DESC
-                LIMIT 3
-            "#,
+                let top_relationships: Vec<TopRelationship> = sqlx::query_as(r#"
+                    SELECT m1.content as from_content, m2.content as to_content, 
+                            mr.relationship_type, mr.strength
+                    FROM memory_relationships mr
+                    JOIN memories m1 ON mr.from_memory_id = m1.id
+                    JOIN memories m2 ON mr.to_memory_id = m2.id
+                    ORDER BY 
+                        mr.strength DESC,
+                        GREATEST(m1.last_updated, m2.last_updated) DESC
+                    LIMIT 3
+                "#,
                 )
                 .fetch_all(&mut **tx)
                 .await?;

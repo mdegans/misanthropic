@@ -1,5 +1,5 @@
 //! Unencrypted [`Key`] management for Anthropic API keys.
-use zeroize::{ZeroizeOnDrop, Zeroizing};
+use zeroize::Zeroizing;
 
 /// The length of an Anthropic API key in bytes.
 pub const LEN: usize = 108;
@@ -26,11 +26,12 @@ impl From<InvalidKeyLength> for shuttle_runtime::Error {
 /// implementation that can be used to write out the key. **Be sure to zeroize
 /// whatever you write it to**. The key is zeroized on drop.
 ///
+/// # Invariants
+/// - The key is always valid UTF-8.
 /// [`Display`]: std::fmt::Display
-#[derive(ZeroizeOnDrop)]
 #[repr(transparent)] // why not
 pub struct Key {
-    mem: Arr,
+    mem: Zeroizing<Arr>,
 }
 
 impl std::fmt::Debug for Key {
@@ -45,51 +46,66 @@ impl Key {
     /// The length of an Anthropic API key in bytes.
     pub const LEN: usize = LEN;
 
-    /// Read the key. The key is zeroized on drop.
-    // We can't return a &str becuase the other implementation of Key::read
-    // returns a memsecurity::ZeroizeBytes, and we can't return a reference to
-    // that because it's a temporary value, so this returns a slice instead,
-    // which has more or less the same public API.
+    /// Read a reference to the key bytes. Guaranteed to be UTF-8.
     pub fn read(&self) -> &[u8] {
-        &self.mem
+        &self.mem.as_slice()
     }
+}
+
+/// Errors that can occur when creating a [`Key`].
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The key length was invalid.
+    #[error(transparent)]
+    InvalidLength(#[from] InvalidKeyLength),
+    /// Vec<u8> was not valid UTF-8.
+    #[error("Key is not valid UTF-8")]
+    InvalidUtf8,
 }
 
 impl TryFrom<String> for Key {
-    type Error = InvalidKeyLength;
+    type Error = Error;
 
-    /// Create a new key from a string securely. The string is zeroized after
-    /// conversion.
+    /// Create a new key from a String securely. The string is consumed and
+    /// zeroized on drop.
     fn try_from(s: String) -> Result<Self, Self::Error> {
-        Self::try_from(s.into_bytes())
-    }
-}
-
-impl TryFrom<Vec<u8>> for Key {
-    type Error = InvalidKeyLength;
-
-    /// Create a new key from a Vec<u8> securely. The Vec<u8> is zeroized after
-    /// conversion.
-    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
-        let v = Zeroizing::new(v);
-        let mut arr: Arr = [0; LEN];
-        if v.len() != LEN {
-            let actual = v.len();
-            return Err(InvalidKeyLength { actual });
-        }
-
-        arr.copy_from_slice(&v);
-        Ok(Key { mem: arr })
+        Self::try_from(Zeroizing::new(s))
     }
 }
 
 impl TryFrom<Zeroizing<String>> for Key {
-    type Error = InvalidKeyLength;
+    type Error = Error;
 
     /// Create a new key from a Zeroizing<String> securely. The string is
-    /// zeroized after conversion.
+    /// zeroized on drop.
     fn try_from(s: Zeroizing<String>) -> Result<Self, Self::Error> {
-        Self::try_from(s.as_bytes().to_vec())
+        // Directly convert to Vec<u8> with `into_bytes` is not possible because
+        // it moves out of a deref. So convert to String first and then move
+        // into a zeroizing Vec<u8>.
+        Self::try_from(s.to_string().into_bytes())
+    }
+}
+
+impl TryFrom<Vec<u8>> for Key {
+    type Error = Error;
+
+    /// Create a new key from a Vec<u8> securely. The Vec<u8> is zeroized after
+    /// conversion.
+    fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
+        let v = Zeroizing::new(v); // take ownership and ensure zeroize on drop
+        // Check UTF-8 validity
+        if std::str::from_utf8(&v).is_err() {
+            return Err(Error::InvalidUtf8);
+        }
+        // Check length
+        if v.len() != LEN {
+            let actual = v.len();
+            return Err(Error::InvalidLength(InvalidKeyLength { actual }));
+        }
+        // v is valid, copy into array
+        let mut arr: Zeroizing<Arr> = Zeroizing::new([0; LEN]);
+        arr.copy_from_slice(&v);
+        Ok(Key { mem: arr }) // v is zeroized on drop
     }
 }
 

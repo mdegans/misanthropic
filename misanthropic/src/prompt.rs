@@ -148,7 +148,7 @@ impl Default for Prompt<'_> {
 }
 
 /// Message turn order is incorrect.
-#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+#[derive(Clone, Debug, thiserror::Error, Serialize, Deserialize)]
 #[error(
     "The message turn order must alternate between User and Assistant. The first message is {first:?} and the second message is {second:?}."
 )]

@@ -3,8 +3,8 @@
 #[cfg(feature = "memsecurity")]
 mod encrypted;
 #[cfg(feature = "memsecurity")]
-pub use encrypted::{InvalidKeyLength, Key};
+pub use encrypted::{Error, Key};
 #[cfg(not(feature = "memsecurity"))]
 mod unencrypted;
 #[cfg(not(feature = "memsecurity"))]
-pub use unencrypted::{InvalidKeyLength, Key};
+pub use unencrypted::{Error, Key};

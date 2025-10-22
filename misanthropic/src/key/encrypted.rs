@@ -8,25 +8,35 @@ use memsecurity::zeroize::Zeroizing;
 /// The length of an Anthropic API key in bytes.
 pub const LEN: usize = 108;
 
-/// Error for when a key is not 108 bytes.
-#[derive(Debug, thiserror::Error)]
-#[error("Invalid key length: {actual} (expected {LEN})")]
-pub struct InvalidKeyLength {
-    /// The incorrect actual length of the key.
-    pub actual: usize,
-}
-
 #[cfg(feature = "shuttle")]
-impl From<InvalidKeyLength> for shuttle_runtime::Error {
-    fn from(e: InvalidKeyLength) -> Self {
+impl From<Error> for shuttle_runtime::Error {
+    fn from(e: Error) -> Self {
         shuttle_runtime::Error::Custom(e.into())
     }
 }
+
+/// `Error` type for [`Key`] operations.
+#[derive(Debug, thiserror::Error)]
+pub enum Error {
+    /// The key length was invalid.
+    #[error("Invalid key length: {actual} (expected {LEN})")]
+    InvalidLength {
+        /// The incorrect actual length of the key.
+        actual: usize,
+    },
+    /// Vec<u8> was not valid UTF-8.
+    #[error("Key is not valid UTF-8")]
+    InvalidUtf8,
+}
+
 /// Stores an Anthropic API key securely. The API key is encrypted in memory.
 /// The object features a [`Display`] implementation that can be used to write
 /// out the key. **Be sure to zeroize whatever you write it to**. Prefer
 /// [`Key::read`] if you want a return value that will automatically zeroize
 /// the key on drop.
+///
+/// # Invariants
+/// - The key is always valid UTF-8.
 ///
 /// [`Display`]: std::fmt::Display
 pub struct Key {
@@ -50,12 +60,14 @@ impl Key {
 
     /// Read the key. The key is zeroized on drop.
     pub fn read(&self) -> memsecurity::ZeroizeBytes {
+        // We want to upwrap if decryption fails because that indicates a
+        // catastrophic failure of the encryption system.
         self.mem.decrypt().unwrap()
     }
 }
 
 impl TryFrom<String> for Key {
-    type Error = InvalidKeyLength;
+    type Error = Error;
 
     /// Create a new key from a string securely. The string is zeroized after
     /// conversion.
@@ -65,21 +77,34 @@ impl TryFrom<String> for Key {
 }
 
 impl TryFrom<Vec<u8>> for Key {
-    type Error = InvalidKeyLength;
+    type Error = Error;
 
     /// Create a new key from a Vec<u8> securely. The Vec<u8> is zeroized after
     /// conversion.
     fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
-        let v = Zeroizing::new(v);
+        Self::try_from(Zeroizing::new(v)) // take ownership and ensure zeroize on drop
+    }
+}
+
+impl TryFrom<Zeroizing<Vec<u8>>> for Key {
+    type Error = Error;
+
+    /// Create a new key from a Zeroizing<Vec<u8>> securely. The Vec<u8> is
+    /// zeroized after conversion.
+    fn try_from(v: Zeroizing<Vec<u8>>) -> Result<Self, Self::Error> {
         if v.len() != LEN {
             let actual = v.len();
-            return Err(InvalidKeyLength { actual });
+            return Err(Error::InvalidKeyLength { actual });
+        }
+
+        // We need to ensure valid UTF-8
+        if std::str::from_utf8(&v).is_err() {
+            return Err(Error::InvalidUtf8);
         }
 
         let mut mem = memsecurity::EncryptedMem::new();
 
-        // Unwrap is desirable here because this can only fail if encryption
-        // is broken, which is a catastrophic failure.
+        // Same reasoning as in `read` about unwrap here.
         mem.encrypt(&v).unwrap();
 
         Ok(Self { mem })
@@ -87,12 +112,12 @@ impl TryFrom<Vec<u8>> for Key {
 }
 
 impl TryFrom<Zeroizing<String>> for Key {
-    type Error = InvalidKeyLength;
+    type Error = Error;
 
     /// Create a new key from a Zeroizing<String> securely. The string is
     /// zeroized after conversion.
     fn try_from(s: Zeroizing<String>) -> Result<Self, Self::Error> {
-        Self::try_from(s.as_bytes().to_vec())
+        Self::try_from(s.into_bytes())
     }
 }
 

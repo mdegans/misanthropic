@@ -10,10 +10,11 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Thinking {
     /// Thinking budget in tokens. This must be at least 1024 tokens and at most
-    /// `max_tokens` toke
-    /// ns.
+    /// `budget_tokens` tokens.
     pub budget_tokens: NonZeroU32,
     /// Thinking type.
+    // `type` conflicts and I don't like the look of the escaped version. It's
+    // ugly syntax, subjectively. Kind works just as well.
     #[serde(rename = "type")]
     pub kind: Kind,
 }

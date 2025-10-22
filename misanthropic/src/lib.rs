@@ -1,4 +1,8 @@
 #![deny(warnings)]
+// FIXME: fixing this prevents the crate from compiling on Rust 1.90 so we'll
+// have to look at this later. Taking the compiler's suggestions on how to fix
+// the build should not break the build, but it does.
+#![allow(mismatched_lifetime_syntaxes)]
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 //! `misanthropic` is a crate providing ergonomic access to the [Anthropic
