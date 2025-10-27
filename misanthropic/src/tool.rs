@@ -397,13 +397,23 @@ impl<'a> MethodBuilder<'a> {
 
         let properties = if let Some(properties) = obj.get("properties") {
             if let Some(o) = properties.as_object() {
-                // The object is required to have a `description` field
-                if !o.contains_key("description") {
-                    return Err(
-                        "`properties` must have a `description` field.".into(),
-                    );
+                // Check that each property has a description field
+                for (prop_name, prop_value) in o.iter() {
+                    if let Some(prop_obj) = prop_value.as_object() {
+                        if !prop_obj.contains_key("description") {
+                            return Err(format!(
+                            "Property '{}' must have a 'description' field.",
+                            prop_name
+                        ).into());
+                        }
+                    } else {
+                        return Err(format!(
+                            "Property '{}' must be an object.",
+                            prop_name
+                        )
+                        .into());
+                    }
                 }
-
                 o
             } else {
                 return Err("`properties` must be an object.".into());
