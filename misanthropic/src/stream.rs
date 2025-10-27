@@ -438,6 +438,110 @@ impl Serialize for Error {
     }
 }
 
+// Deserialize impl is partial. We only really want deserialization for the
+// `Anthropic` variant for testing purposes.
+impl<'de> Deserialize<'de> for Error {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde_json::Value;
+        // Deserialize into a serde_json::Value and extract the fields we need.
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let mut map = if let Value::Object(map) = value {
+            map
+        } else {
+            return Err(serde::de::Error::custom(
+                "Expected a JSON object for Error",
+            ));
+        };
+
+        let variant = if let Some(Value::String(variant)) = map.remove("type") {
+            variant
+        } else {
+            return Err(serde::de::Error::custom(
+                "Expected a 'type' field for Error",
+            ));
+        };
+
+        match variant.as_str() {
+            "anthropic" => {
+                let error_value = map.remove("error").unwrap_or_default();
+                let error: AnthropicError = serde_json::from_value(error_value)
+                    .map_err(serde::de::Error::custom)?;
+                let event: eventsource_stream::Event =
+                    if let Some(event_value) = map.remove("event") {
+                        // eventsource_stream::Event does not implement Deserialize,
+                        // but all the fields are public, so we can extract them manually.
+                        if let Value::Object(mut event_map) = event_value {
+                            let event = if let Some(Value::String(event)) =
+                                event_map.remove("event")
+                            {
+                                event
+                            } else {
+                                return Err(serde::de::Error::custom(
+                                    "Expected 'event' field to be a string",
+                                ));
+                            };
+                            let data = if let Some(Value::String(data)) =
+                                event_map.remove("data")
+                            {
+                                data
+                            } else {
+                                return Err(serde::de::Error::custom(
+                                    "Expected 'data' field to be a string",
+                                ));
+                            };
+                            let id = if let Some(Value::String(id)) =
+                                event_map.remove("id")
+                            {
+                                id
+                            } else {
+                                return Err(serde::de::Error::custom(
+                                    "Expected 'id' field to be a string",
+                                ));
+                            };
+                            let retry = if let Some(retry) =
+                                event_map.remove("retry")
+                            {
+                                let retry: Option<core::time::Duration> =
+                                    serde_json::from_value(retry)
+                                        .map_err(serde::de::Error::custom)?;
+                                retry
+                            } else {
+                                None
+                            };
+
+                            eventsource_stream::Event {
+                                event,
+                                data,
+                                id,
+                                retry,
+                            }
+                        } else {
+                            return Err(serde::de::Error::custom(
+                                "Expected 'event' field to be an object",
+                            ));
+                        }
+                    } else {
+                        return Err(serde::de::Error::custom(
+                            "Expected an 'event' field for Anthropic error",
+                        ));
+                    };
+
+                Ok(Error::Anthropic { error, event })
+            }
+            _ => Err(serde::de::Error::custom(format!(
+                "Deserialization for `misanthropic::Error` variant '{}' is not implemented. Message: {}",
+                variant,
+                map.get("message")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<no message>")
+            ))),
+        }
+    }
+}
+
 /// Stream of [`Event`]s or [`Error`]s.
 pub struct Stream {
     inner: Pin<
