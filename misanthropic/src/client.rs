@@ -154,7 +154,7 @@ impl Client {
             #[cfg(feature = "rate-limiting")]
             rate_limiter: Some(Arc::new(governor::RateLimiter::direct(
                 governor::Quota::per_minute(
-                    std::num::NonZeroU32::new(50).unwrap(),
+                    std::num::NonZeroU32::new(25).unwrap(),
                 ),
             ))),
             #[cfg(feature = "rate-limiting")]
