@@ -7,7 +7,7 @@
 use std::{borrow::Cow, vec};
 
 use base64::engine::{Engine as _, general_purpose};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 
 use crate::{
     prompt::Citation,
@@ -168,6 +168,14 @@ impl Message<'_> {
         }
 
         if self.is_empty() { None } else { Some(self) }
+    }
+
+    /// Interpret the content block as json and deserialize it into T.
+    pub fn json<T>(&self) -> Result<T, serde_json::Error>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        self.content.json()
     }
 }
 
@@ -821,6 +829,32 @@ impl<'a> Content<'a> {
             Self::MultiPart(parts) => parts.iter_mut(),
             Self::SinglePart(_) => unreachable!(),
         }
+    }
+
+    /// Interpret the content block as json and deserialize it into T.
+    /// Anything other than text blocks will be skipped.
+    pub fn json<T>(&self) -> Result<T, serde_json::Error>
+    where
+        T: for<'de> serde::Deserialize<'de>,
+    {
+        serde_json::from_str(match self {
+            Self::SinglePart(text) => text.as_ref(),
+            Self::MultiPart(parts) => {
+                if parts.len() == 1 {
+                    if let Block::Text { text, .. } = &parts[0] {
+                        text.as_ref()
+                    } else {
+                        return Err(serde_json::Error::custom(
+                            "Content is not a text block",
+                        ));
+                    }
+                } else {
+                    return Err(serde_json::Error::custom(
+                        "Content has multiple parts",
+                    ));
+                }
+            }
+        })
     }
 }
 
