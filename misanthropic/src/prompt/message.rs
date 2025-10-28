@@ -837,12 +837,12 @@ impl<'a> Content<'a> {
     where
         T: for<'de> serde::Deserialize<'de>,
     {
-        serde_json::from_str(match self {
-            Self::SinglePart(text) => text.as_ref(),
+        let text = match self {
+            Self::SinglePart(text) => text.clone(),
             Self::MultiPart(parts) => {
                 if parts.len() == 1 {
                     if let Block::Text { text, .. } = &parts[0] {
-                        text.as_ref()
+                        text.clone()
                     } else {
                         return Err(serde_json::Error::custom(
                             "Content is not a text block",
@@ -854,7 +854,17 @@ impl<'a> Content<'a> {
                     ));
                 }
             }
-        })
+        };
+
+        // There is a tendecy to add ````json\n` ... \n```` around json content.
+        // Strip those if they exist.
+        let text = text
+            .trim_start_matches("```json")
+            .trim_start_matches("```")
+            .trim_end_matches("```")
+            .trim();
+
+        serde_json::from_str(text)
     }
 }
 
