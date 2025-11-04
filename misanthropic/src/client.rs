@@ -5,8 +5,6 @@
 use std::{collections::HashMap, env, num::NonZeroU16, sync::Arc};
 
 #[cfg(feature = "client")]
-use eventsource_stream::Eventsource;
-#[cfg(feature = "client")]
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -45,9 +43,9 @@ pub struct Client {
     /// Encrypted API [`Key`] for convenience. It can be set to a new [`Key`] to
     /// change the key used for requests.
     pub key: Arc<Key>,
-    /// Rate limiter. Defaults to 50 requests per minute (tier 1).
+    /// Request rate limiter. Defaults to 50 requests per minute (tier 1).
     #[cfg(feature = "rate-limiting")]
-    pub rate_limiter: Option<
+    pub rpm_limiter: Option<
         Arc<
             governor::RateLimiter<
                 governor::state::NotKeyed,
@@ -152,9 +150,9 @@ impl Client {
                 .unwrap(),
             key: Arc::new(key),
             #[cfg(feature = "rate-limiting")]
-            rate_limiter: Some(Arc::new(governor::RateLimiter::direct(
+            rpm_limiter: Some(Arc::new(governor::RateLimiter::direct(
                 governor::Quota::per_minute(
-                    std::num::NonZeroU32::new(10).unwrap(),
+                    std::num::NonZeroU32::new(50).unwrap(),
                 ),
             ))),
             #[cfg(feature = "rate-limiting")]
@@ -170,14 +168,13 @@ impl Client {
         }
     }
 
-    /// Set [`Quota`] for the [`RateLimiter`].
+    /// Set [`Quota`] for the [`RateLimiter`] governing requests per minute.
     ///
     /// [`Quota`]: governor::Quota
     /// [`RateLimiter`]: governor::RateLimiter
     #[cfg(feature = "rate-limiting")]
-    pub fn set_rate_limit(&mut self, quota: governor::Quota) {
-        self.rate_limiter =
-            Some(Arc::new(governor::RateLimiter::direct(quota)));
+    pub fn set_rpm_quota(&mut self, quota: governor::Quota) {
+        self.rpm_limiter = Some(Arc::new(governor::RateLimiter::direct(quota)));
     }
 
     /// Set [`Jitter`] for the [`RateLimiter`].
@@ -221,8 +218,8 @@ impl Client {
     ///
     /// [`request_raw`]: Self::request_raw
     #[cfg(feature = "rate-limiting")]
-    pub async fn await_rate_limiter(&self) {
-        if let Some(limiter) = self.rate_limiter.as_ref() {
+    pub async fn await_rpm(&self) {
+        if let Some(limiter) = self.rpm_limiter.as_ref() {
             if let Some(jitter) = self.jitter {
                 limiter.until_ready_with_jitter(jitter).await;
             } else {
@@ -239,7 +236,7 @@ impl Client {
     {
         #[cfg(feature = "rate-limiting")]
         {
-            self.await_rate_limiter().await;
+            self.await_rpm().await;
         }
 
         #[cfg(feature = "log")]
@@ -259,7 +256,29 @@ impl Client {
         let response = self.get_raw(url).await?;
 
         if response.status() != reqwest::StatusCode::OK {
-            let error: AnthropicErrorWrapper = response.json().await?;
+            let mut error: AnthropicErrorWrapper = response.json().await?;
+
+            if let AnthropicError::RateLimit {
+                message,
+                retry_after,
+            } = &mut error.error
+            {
+                if let Some(retry_after_header) =
+                    response.headers().get("retry-after")
+                {
+                    if let Ok(retry_after_str) = retry_after_header.to_str() {
+                        if let Ok(retry_after_value) =
+                            retry_after_str.parse::<u64>()
+                        {
+                            *retry_after = retry_after_value;
+                        }
+                    }
+                } else {
+                    return Err(Error::UnexpectedResponse {
+                        message: "Anthropic rate limit error missing `retry-after` header.",
+                    });
+                }
+            }
 
             // Error was sucessfully parsed from the API.
             return Err(error.error.into());
@@ -283,7 +302,7 @@ impl Client {
 
         #[cfg(feature = "rate-limiting")]
         {
-            self.await_rate_limiter().await;
+            self.await_rpm().await;
         }
 
         #[cfg(feature = "log")]
@@ -380,6 +399,10 @@ impl Client {
     /// Post a [`request`] to a custom URL. This is useful for testing or for
     /// using a different Messages compatible endpoint.
     ///
+    /// # Note
+    /// - This still respects the rate limiting settings of the client, so clear
+    ///  `rpm_limiter` if you don't want that.
+    ///
     /// [`request`]: Self::request
     pub async fn request_custom<'a, P, U>(
         &'a self,
@@ -390,11 +413,49 @@ impl Client {
         P: Serialize,
         U: reqwest::IntoUrl,
     {
+        #[cfg(feature = "rate-limiting")]
+        {
+            self.await_rpm().await;
+        }
+
         let json = serde_json::to_value(prompt)?;
         let streaming = json["stream"].as_bool().unwrap_or(false);
         let response: reqwest::Response = self.post(url, json).await?;
 
+        if response.status() != reqwest::StatusCode::OK {
+            let mut error: AnthropicErrorWrapper = response.json().await?;
+
+            if error.error.is_rate_limit() {
+                if let Some(retry_after_header) =
+                    response.headers().get("retry-after")
+                {
+                    if let Ok(retry_after_str) = retry_after_header.to_str() {
+                        if let Ok(retry_after_value) =
+                            retry_after_str.parse::<u64>()
+                        {
+                            if let AnthropicError::RateLimit {
+                                message: _,
+                                retry_after,
+                            } = &mut error.error
+                            {
+                                *retry_after = retry_after_value;
+                            }
+                        }
+                    }
+                } else {
+                    return Err(Error::UnexpectedResponse {
+                        message: "Anthropic rate limit error missing `retry-after` header.",
+                    });
+                }
+            }
+
+            // Error was sucessfully parsed from the API.
+            return Err(error.error.into());
+        }
+
         if streaming {
+            use eventsource_stream::Eventsource; // for .eventsource()
+
             #[cfg(feature = "log")]
             {
                 log::debug!("RECV:Stream");
@@ -809,7 +870,14 @@ impl Serialize for Error {
 }
 
 /// Anthropic error type.
-#[derive(Debug, thiserror::Error, Serialize, Deserialize, PartialEq)]
+#[derive(
+    Debug,
+    thiserror::Error,
+    Serialize,
+    Deserialize,
+    PartialEq,
+    derive_more::IsVariant,
+)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[allow(missing_docs)]
@@ -834,7 +902,12 @@ pub enum AnthropicError {
     RequestTooLarge { message: String },
     #[error("rate limit (429): {message}")]
     #[serde(rename = "rate_limit_error")]
-    RateLimit { message: String },
+    RateLimit {
+        message: String,
+        /// Seconds to wait before retrying.
+        #[serde(default)]
+        retry_after: u64,
+    },
     #[error("api error (500): {message}")]
     #[serde(rename = "api_error")]
     API { message: String },
