@@ -8,8 +8,10 @@ mod state;
 pub(crate) use state::AppState;
 
 type UserMessage = misanthropic::prompt::message::UserMessage<'static>;
-type AssistantMessage =
-    misanthropic::prompt::message::AssistantMessage<'static>;
+// TODO: Modify `AssistantMessage` so it can be used in the chat backend code as
+// well, since having these as types reduces bugs and makes checks unnecessary.
+// type AssistantMessage =
+//     misanthropic::prompt::message::AssistantMessage<'static>;
 type Prompt = misanthropic::Prompt<'static>;
 
 #[shuttle_runtime::main]

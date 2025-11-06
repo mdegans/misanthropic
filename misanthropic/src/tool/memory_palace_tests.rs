@@ -270,7 +270,7 @@ mod tests {
                 "content": "test content",
                 "tags": ["test_tag"]
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -300,7 +300,7 @@ mod tests {
             input: json!({
                 "query": "AI"
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -317,7 +317,7 @@ mod tests {
             id: "test_id".into(),
             name: "MemoryPalace::invalid_method".into(),
             input: json!({}),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -340,7 +340,7 @@ mod tests {
                 "room": "test_room"
                 // missing content and tags
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -502,7 +502,7 @@ mod tests {
                 "decay_factor": 0.8,
                 "min_score": 0.1
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -774,7 +774,7 @@ mod tests {
                 "max_depth": 2,
                 "min_strength": 0.1
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -792,7 +792,7 @@ mod tests {
                 "min_strength": 0.1
                 // missing memory_id
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -809,7 +809,7 @@ mod tests {
                 "max_depth": 2,
                 "min_strength": 0.1
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -826,7 +826,7 @@ mod tests {
                 "max_depth": 2,
                 "min_strength": 0.1
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 

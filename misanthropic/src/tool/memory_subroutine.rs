@@ -409,7 +409,7 @@ impl Tool for MemorySubroutine {
                         tool_use_id: call.id,
                         content: "No conversation context available for memory search.".into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
+                        
                         cache_control: None,
                     };
                 }
@@ -422,7 +422,7 @@ impl Tool for MemorySubroutine {
                                 tool_use_id: call.id,
                                 content: "None".into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
+                                
                                 cache_control: None,
                             }
                         } else {
@@ -454,7 +454,7 @@ impl Tool for MemorySubroutine {
                                 tool_use_id: call.id,
                                 content: response.into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
+                                
                                 cache_control: None,
                             }
                         }
@@ -464,7 +464,7 @@ impl Tool for MemorySubroutine {
                         content: format!("Error searching memories: {}", e)
                             .into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
+                        
                         cache_control: None,
                     },
                 }
@@ -473,7 +473,7 @@ impl Tool for MemorySubroutine {
                 tool_use_id: call.id,
                 content: format!("Unknown method: {}", call.name).into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             },
         }

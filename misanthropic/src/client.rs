@@ -1,6 +1,8 @@
 // Copyright (c) 2025 Claude 4 Opus & Michael de Gans
 //! [`Client`] for the Anthropic Messages API and related types.
 
+#[cfg(feature = "client")]
+use std::num::{NonZeroU8, NonZeroU32};
 #[allow(unused_imports)] // because lots of conditional compilation
 use std::{collections::HashMap, env, num::NonZeroU16, sync::Arc};
 
@@ -17,10 +19,6 @@ use crate::batch::{self, IdentifiedBatchResult, Prompts};
 
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
-
-/// FIXME: Prompt caching is now out of beta so we can remove the feature flag
-/// for it. This will require a breaking change. Additionally, it should be
-/// possible to set the beta version at runtime.
 
 /// Client for the Anthropic Messages API. Cheap to clone.
 ///
@@ -40,11 +38,12 @@ pub struct Client {
     /// - **Do not use** `client.inner.get` directly. Use [`Self::get`] instead
     ///   to safely set the API [`Key`] as sensitive.
     pub inner: reqwest::Client,
+    /// Beta in use.
+    pub beta: Arc<String>,
     /// Encrypted API [`Key`] for convenience. It can be set to a new [`Key`] to
     /// change the key used for requests.
     pub key: Arc<Key>,
     /// Request rate limiter. Defaults to 50 requests per minute (tier 1).
-    #[cfg(feature = "rate-limiting")]
     pub rpm_limiter: Option<
         Arc<
             governor::RateLimiter<
@@ -56,7 +55,6 @@ pub struct Client {
         >,
     >,
     /// Rate limit jitter. Defaults to [`Self::DEFAULT_JITTER_MS`].
-    #[cfg(feature = "rate-limiting")]
     pub jitter: Option<governor::Jitter>,
     /// Custom endpoint for the Messages API. Defaults to [`Self::MESSAGES_URL`].
     pub messages_url: Arc<Url>,
@@ -74,9 +72,6 @@ impl Client {
     /// Version of the API. This is appended to the header as
     /// "anthropic-version".
     pub const ANTHROPIC_VERSION: &'static str = "2023-06-01";
-    /// Beta we are using. This is appended to the header as "anthropic-beta".
-    #[cfg(feature = "prompt-caching")]
-    pub const BETA: &'static str = "prompt-caching-2024-07-31";
     /// Our user agent.
     pub const USER_AGENT: &'static str =
         concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -93,8 +88,9 @@ impl Client {
     pub const COUNT_TOKENS_URL: &'static str =
         "https://api.anthropic.com/v1/messages/count_tokens";
     /// Default jitter in milliseconds for rate limiting (max).
-    #[cfg(feature = "rate-limiting")]
     pub const DEFAULT_JITTER_MS: u64 = 20;
+    /// Default requests per minute (RPM) for the client.
+    pub const DEFAULT_RPM: NonZeroU32 = NonZeroU32::new(50).unwrap();
 
     /// Create a new [`Client`] from any type that can be converted into a
     /// [`Key`], like a [`String`] or a [`Vec`], but not a `&str`.
@@ -113,12 +109,10 @@ impl Client {
             log::debug!(concat!(
                 "Creating ",
                 env!("CARGO_PKG_NAME"),
-                " client..."
+                "::Client"
             ));
             log::debug!(concat!("Crate version: ", env!("CARGO_PKG_VERSION")));
             log::debug!("Anthropic version: {}", Self::ANTHROPIC_VERSION);
-            #[cfg(feature = "beta")]
-            log::debug!("Anthropic beta: {}", Self::BETA);
         }
 
         // Headers for all requests.
@@ -136,26 +130,16 @@ impl Client {
             reqwest::header::HeaderValue::from_static(Self::ANTHROPIC_VERSION),
         );
 
-        // Enable prompt caching beta.
-        #[cfg(feature = "prompt-caching")]
-        headers.insert(
-            "anthropic-beta",
-            reqwest::header::HeaderValue::from_static(Self::BETA),
-        );
-
         Self {
             inner: reqwest::Client::builder()
                 .default_headers(headers)
                 .build()
                 .unwrap(),
             key: Arc::new(key),
-            #[cfg(feature = "rate-limiting")]
+            beta: Arc::new(String::new()),
             rpm_limiter: Some(Arc::new(governor::RateLimiter::direct(
-                governor::Quota::per_minute(
-                    std::num::NonZeroU32::new(50).unwrap(),
-                ),
+                governor::Quota::per_minute(Self::DEFAULT_RPM),
             ))),
-            #[cfg(feature = "rate-limiting")]
             jitter: Some(governor::Jitter::up_to(
                 std::time::Duration::from_millis(Self::DEFAULT_JITTER_MS),
             )),
@@ -168,27 +152,13 @@ impl Client {
         }
     }
 
-    /// Set [`Quota`] for the [`RateLimiter`] governing requests per minute.
-    ///
-    /// [`Quota`]: governor::Quota
-    /// [`RateLimiter`]: governor::RateLimiter
-    #[cfg(feature = "rate-limiting")]
-    pub fn set_rpm_quota(&mut self, quota: governor::Quota) {
-        self.rpm_limiter = Some(Arc::new(governor::RateLimiter::direct(quota)));
-    }
-
-    /// Set [`Jitter`] for the [`RateLimiter`].
-    ///
-    /// [`Jitter`]: governor::Jitter
-    /// [`RateLimiter`]: governor::RateLimiter
-    #[cfg(feature = "rate-limiting")]
-    pub fn set_rate_limit_jitter(&mut self, jitter: governor::Jitter) {
-        self.jitter = Some(jitter);
-    }
-
     /// Create a [`reqwest::RequestBuilder`] with the API key set as a sensitive
-    /// header value. **Does not check rate limiting**.
-    pub fn request_raw<U>(
+    /// header value.
+    ///
+    /// # Notes
+    /// - **Does not check rate limiting**. Call [`Self::await_rpm`] if you wish
+    ///   to respect the rate limiter.
+    pub fn build_request<U>(
         &self,
         method: reqwest::Method,
         url: U,
@@ -210,15 +180,18 @@ impl Client {
                 .unwrap();
         val.set_sensitive(true);
 
-        self.inner.request(method, url).header("x-api-key", val)
+        let request = self.inner.request(method, url).header("x-api-key", val);
+
+        // Set beta header if needed.
+        if !self.beta.is_empty() {
+            request.header("anthropic-beta", self.beta.as_str())
+        } else {
+            request
+        }
     }
 
-    /// Await the rate limiter. It is not necessary to call this manually unless
-    /// you are doing something custom with [`request_raw`] or similar.
-    ///
-    /// [`request_raw`]: Self::request_raw
-    #[cfg(feature = "rate-limiting")]
-    pub async fn await_rpm(&self) {
+    /// Await the rate limiter.
+    async fn await_rpm(&self) {
         if let Some(limiter) = self.rpm_limiter.as_ref() {
             if let Some(jitter) = self.jitter {
                 limiter.until_ready_with_jitter(jitter).await;
@@ -230,21 +203,22 @@ impl Client {
 
     /// Send a GET request with the API key set as a sensitive header value.
     /// Returns a [`reqwest::Result`] for maximum flexibility.
+    ///
+    /// # Note
+    /// - Most users won't need this function. It's only real use is with custom
+    ///   endpoints that return raw responses.
     pub async fn get_raw<U>(&self, url: U) -> reqwest::Result<reqwest::Response>
     where
         U: reqwest::IntoUrl,
     {
-        #[cfg(feature = "rate-limiting")]
-        {
-            self.await_rpm().await;
-        }
+        self.await_rpm().await; // IMPORTANT
 
         #[cfg(feature = "log")]
         {
             log::debug!("GET:{}", url.as_str());
         }
 
-        self.request_raw(reqwest::Method::GET, url).send().await
+        self.build_request(reqwest::Method::GET, url).send().await
     }
 
     /// Same as [`Self::get_raw`] but returns a crate [`Result`] instead of a
@@ -253,38 +227,116 @@ impl Client {
     where
         U: reqwest::IntoUrl,
     {
-        let response = self.get_raw(url).await?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            let mut error: AnthropicErrorWrapper = response.json().await?;
-
-            if let AnthropicError::RateLimit {
-                message,
-                retry_after,
-            } = &mut error.error
-            {
-                if let Some(retry_after_header) =
-                    response.headers().get("retry-after")
-                {
-                    if let Ok(retry_after_str) = retry_after_header.to_str() {
-                        if let Ok(retry_after_value) =
-                            retry_after_str.parse::<u64>()
-                        {
-                            *retry_after = retry_after_value;
-                        }
-                    }
-                } else {
-                    return Err(Error::UnexpectedResponse {
-                        message: "Anthropic rate limit error missing `retry-after` header.",
-                    });
-                }
-            }
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
-        }
+        let response = self.get_raw(url).await?; // rate limiting handled
+        let response = parse_anthropic_error(response).await?;
 
         Ok(response)
+    }
+
+    /// [`get`] with `retries` on rate limit errors, using the provided
+    /// `sleep_seconds` function to wait between retries.
+    ///
+    /// # Notes
+    /// - If the number of retries is exceeded, the last rate limit error is
+    ///   returned.
+    /// - The `sleep_seconds` function is called with the number of seconds
+    ///   specified by the API in the `retry-after` header. It should sleep for
+    ///   a duration no less than that, then return whether to continue.
+    // Trying to reduce dependence on async runtime specifics here.
+    pub async fn get_with_retries_custom<U>(
+        &self,
+        url: U,
+        mut retries: NonZeroU8,
+        sleep_seconds: impl Fn(
+            u32,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = bool> + Send>,
+        > + Send
+        + Sync,
+    ) -> Result<reqwest::Response>
+    where
+        U: reqwest::IntoUrl + Clone,
+    {
+        loop {
+            match self.get(url.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(Error::Anthropic(AnthropicError::RateLimit {
+                    message,
+                    retry_after,
+                })) => {
+                    // NonZeroU8 actually has no `checked_sub`, which makes no
+                    // sense, so we have to do this manually.
+                    if let Some(retries_left) =
+                        NonZeroU8::new(retries.get() - 1)
+                    {
+                        #[cfg(feature = "log")]
+                        {
+                            log::warn!(
+                                "RETRY:In {retry_after} seconds. Retries left: {retries_left}.",
+                            );
+                        }
+
+                        if sleep_seconds(retry_after).await {
+                            retries = retries_left;
+                            continue;
+                        } else {
+                            #[cfg(feature = "log")]
+                            {
+                                log::error!("RETRY:Aborted by sleep function.");
+                            }
+
+                            return Err(Error::Anthropic(
+                                AnthropicError::RateLimit {
+                                    message,
+                                    retry_after,
+                                },
+                            ));
+                        }
+                    } else {
+                        #[cfg(feature = "log")]
+                        {
+                            log::error!(
+                                "RETRY:Rate limit exceeded and no retries left.",
+                            );
+                        }
+
+                        return Err(Error::Anthropic(
+                            AnthropicError::RateLimit {
+                                message,
+                                retry_after,
+                            },
+                        ));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// [`get`] with `retries` on rate limit errors.
+    ///
+    /// # Notes
+    /// - If the number of retries is exceeded, the last rate limit error is
+    ///  returned.
+    #[cfg(feature = "tokio")]
+    pub async fn get_with_retries<U>(
+        &self,
+        url: U,
+        retries: NonZeroU8,
+    ) -> Result<reqwest::Response>
+    where
+        U: reqwest::IntoUrl + Clone,
+    {
+        self.get_with_retries_custom(url, retries, |seconds| {
+            Box::pin(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(
+                    seconds as u64,
+                ))
+                .await;
+                true
+            })
+        })
+        .await
     }
 
     /// Send a POST request with the API key set as a sensitive header value.
@@ -298,23 +350,21 @@ impl Client {
         U: reqwest::IntoUrl,
         B: serde::Serialize,
     {
-        let url: reqwest::Url = url.into_url()?;
+        self.await_rpm().await; // IMPORTANT
 
-        #[cfg(feature = "rate-limiting")]
-        {
-            self.await_rpm().await;
-        }
+        let url: reqwest::Url = url.into_url()?;
 
         #[cfg(feature = "log")]
         {
-            if let Ok(json) = serde_json::to_string_pretty(&body) {
+            if let Ok(json) = serde_json::to_string(&body) {
                 log::debug!("POST({}):{}", &url, json);
             } else {
                 log::warn!("Could not serialize body. Request will fail.");
+                // but we need to make it anyway to get the error
             }
         }
 
-        let req = self.request_raw(reqwest::Method::POST, url);
+        let req = self.build_request(reqwest::Method::POST, url);
 
         req.json(&body).send().await
     }
@@ -326,14 +376,8 @@ impl Client {
         U: reqwest::IntoUrl,
         B: serde::Serialize,
     {
-        let response = self.post_raw(url, body).await?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            let error: AnthropicErrorWrapper = response.json().await?;
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
-        }
+        let response = self.post_raw(url, body).await?; // rate limiting handled
+        let response = parse_anthropic_error(response).await?; // errors parsed
 
         Ok(response)
     }
@@ -343,6 +387,7 @@ impl Client {
     ///
     /// [`Model``]: misanthropic::model::Model
     pub async fn models(&self) -> Result<Models<'static>> {
+        // Handles rate limiting through `get` which calls `get_raw`.
         let response = self.get(self.models_url.as_str()).await?;
         let body = response.text().await?;
 
@@ -392,18 +437,13 @@ impl Client {
     where
         P: Serialize,
     {
+        // Handles rate limiting through `post` which calls `post_raw`.
         self.request_custom(prompt, self.messages_url.as_str())
             .await
     }
 
     /// Post a [`request`] to a custom URL. This is useful for testing or for
     /// using a different Messages compatible endpoint.
-    ///
-    /// # Note
-    /// - This still respects the rate limiting settings of the client, so clear
-    ///  `rpm_limiter` if you don't want that.
-    ///
-    /// [`request`]: Self::request
     pub async fn request_custom<'a, P, U>(
         &'a self,
         prompt: P,
@@ -413,45 +453,11 @@ impl Client {
         P: Serialize,
         U: reqwest::IntoUrl,
     {
-        #[cfg(feature = "rate-limiting")]
-        {
-            self.await_rpm().await;
-        }
+        // `post` handles rate limiting through `post_raw`.
 
         let json = serde_json::to_value(prompt)?;
         let streaming = json["stream"].as_bool().unwrap_or(false);
         let response: reqwest::Response = self.post(url, json).await?;
-
-        if response.status() != reqwest::StatusCode::OK {
-            let mut error: AnthropicErrorWrapper = response.json().await?;
-
-            if error.error.is_rate_limit() {
-                if let Some(retry_after_header) =
-                    response.headers().get("retry-after")
-                {
-                    if let Ok(retry_after_str) = retry_after_header.to_str() {
-                        if let Ok(retry_after_value) =
-                            retry_after_str.parse::<u64>()
-                        {
-                            if let AnthropicError::RateLimit {
-                                message: _,
-                                retry_after,
-                            } = &mut error.error
-                            {
-                                *retry_after = retry_after_value;
-                            }
-                        }
-                    }
-                } else {
-                    return Err(Error::UnexpectedResponse {
-                        message: "Anthropic rate limit error missing `retry-after` header.",
-                    });
-                }
-            }
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
-        }
 
         if streaming {
             use eventsource_stream::Eventsource; // for .eventsource()
@@ -513,6 +519,8 @@ impl Client {
     where
         P: Serialize,
     {
+        // self.request handles rate limiting.
+
         let mut json = serde_json::to_value(prompt)?;
         json["stream"] = serde_json::Value::Bool(false);
 
@@ -546,6 +554,8 @@ impl Client {
     where
         P: Serialize,
     {
+        // self.request handles rate limiting.
+
         let mut json = serde_json::to_value(prompt)?;
         json["stream"] = serde_json::Value::Bool(true);
 
@@ -576,6 +586,8 @@ impl Client {
     where
         P: IntoIterator<Item = Prompt<'a>>,
     {
+        // self.post handles rate limiting.
+
         let prompts: Prompts<'a> = prompts.into_iter().collect();
 
         let resp = match self.post(self.batch_url.as_str(), &prompts).await {
@@ -614,6 +626,8 @@ impl Client {
         It: IntoIterator<Item = (Id, Prompt<'a>)>,
         Id: Into<batch::Id>,
     {
+        // self.post handles rate limiting.
+
         let prompts: Prompts<'a> = prompts.into_iter().collect();
 
         let resp = match self.post(self.batch_url.as_str(), &prompts).await {
@@ -651,6 +665,8 @@ impl Client {
         &self,
         mut pending: batch::Pending<'a>,
     ) -> Result<batch::Batch<'a>> {
+        // self.get handles rate limiting.
+
         use batch::{Batch, Ready};
 
         // Craft the URL for the batch.
@@ -775,6 +791,8 @@ impl Client {
     where
         P: Serialize,
     {
+        // self.post handles rate limiting.
+
         #[derive(Deserialize)]
         struct TokenCount {
             input_tokens: u32,
@@ -786,6 +804,46 @@ impl Client {
 
         Ok(count.input_tokens)
     }
+}
+
+// Helper type to parse errors from the API, extracting headers as needed.
+async fn parse_anthropic_error(
+    response: reqwest::Response,
+) -> Result<reqwest::Response> {
+    let code = response.status().as_u16();
+
+    if !response.status().is_success() {
+        // Extract retry-after header if present. We have to do this now
+        // since we can't read the headers after consuming the body.
+        let retry_after: u32 = response
+            .headers()
+            .get("retry-after")
+            .and_then(|h| h.to_str().ok())
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+
+        // Parse the body as the expected error type.
+        let mut error: AnthropicErrorWrapper = response.json().await?;
+        if let AnthropicError::RateLimit {
+            retry_after: ra, ..
+        } = &mut error.error
+        {
+            // We must set this from the header since the API does not
+            if retry_after != 0 {
+                log::debug!("RETRY:{code}:{retry_after}s");
+                *ra = retry_after;
+            } else {
+                return Err(Error::UnexpectedResponse {
+                    message: "Anthropic rate limit error missing or zero in `retry-after` header.",
+                });
+            }
+        }
+
+        // Error was sucessfully parsed from the API.
+        return Err(error.error.into());
+    }
+
+    Ok(response)
 }
 
 #[cfg(feature = "client")]
@@ -906,7 +964,9 @@ pub enum AnthropicError {
         message: String,
         /// Seconds to wait before retrying.
         #[serde(default)]
-        retry_after: u64,
+        // If there is a value larger than u32::MAX we have bigger problems.
+        // The server has gone mad.
+        retry_after: u32,
     },
     #[error("api error (500): {message}")]
     #[serde(rename = "api_error")]
@@ -1019,7 +1079,8 @@ mod tests {
         assert_eq!(
             error,
             AnthropicError::RateLimit {
-                message: "Rate limit exceeded".to_string()
+                message: "Rate limit exceeded".to_string(),
+                retry_after: 0, // Normal. We set this from the header.
             }
         );
 

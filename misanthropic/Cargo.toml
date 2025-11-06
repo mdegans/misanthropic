@@ -132,7 +132,7 @@ tempfile = "3.12"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch"]
+default = ["rustls-tls", "langsan", "client", "batch"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself, so it almost always makes sense
 # to enable this and use the image crate.
@@ -167,8 +167,6 @@ langsan = ["dep:langsan"]
 # not encrypted. This is a more secure option for the paranoid. Does not build
 # on wasm32.
 memsecurity = ["dep:memsecurity"]
-# Enable client-side rate limiting. This is enabled by default.
-rate-limiting = ["dep:governor"]
 # Support for parsing chain of thought XML tags.
 cot = []
 # Support for shuttle-runtime crate.
@@ -177,7 +175,7 @@ shuttle = ["dep:shuttle-runtime"]
 batch = ["client"]
 # Enable the actual client. This can be off for wasm because eventsource-stream
 # requires Sync on some things and that's not possible in wasm.
-client = ["dep:reqwest"]
+client = ["dep:reqwest", "dep:governor"]
 # Enables some Dioxus support. This is not necessary for the client.
 dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes.

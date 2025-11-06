@@ -1051,7 +1051,7 @@ pub(crate) mod tests {
                 content_block,
             } => {
                 assert_eq!(index, 0);
-                #[cfg(feature = "prompt-caching")]
+                
                 if let Block::Text {
                     text,
                     cache_control,
@@ -1264,7 +1264,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
-                        #[cfg(feature = "prompt-caching")]
+                        
                         cache_control: None,
                         citations: vec![]
                     }
@@ -1308,7 +1308,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
-                        #[cfg(feature = "prompt-caching")]
+                        
                         cache_control: None,
                         citations: vec![]
                     }

@@ -230,7 +230,7 @@ impl<'a> IntoIterator for Message<'a> {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
                 citations: vec![],
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             }]
             .into_iter(),
@@ -493,7 +493,7 @@ impl<'a> IntoIterator for UserMessage<'a> {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
                 citations: vec![],
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             }]
             .into_iter(),
@@ -640,7 +640,7 @@ impl<'a> Content<'a> {
     /// - If the content is [`MultiPart`].
     pub fn unwrap_single_part(self) -> Block<'a> {
         match self {
-            #[cfg(feature = "prompt-caching")]
+            
             Self::SinglePart(text) => Block::Text {
                 text,
                 citations: vec![],
@@ -689,7 +689,7 @@ impl<'a> Content<'a> {
     ///
     /// [`SinglePart`]: Content::SinglePart
     /// [`MultiPart`]: Content::MultiPart
-    #[cfg(feature = "prompt-caching")]
+    
     pub fn cache(&mut self) {
         if self.is_single_part() {
             let mut old = Content::MultiPart(vec![]);
@@ -787,7 +787,7 @@ impl<'a> Content<'a> {
                         Box::new(std::iter::once(Block::Text {
                             text,
                             citations: vec![],
-                            #[cfg(feature = "prompt-caching")]
+                            
                             cache_control: None,
                         }))
                     }
@@ -877,7 +877,7 @@ impl<'a> IntoIterator for Content<'a> {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
                 citations: vec![],
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             }]
             .into_iter(),
@@ -993,7 +993,7 @@ where
         *self = Self::MultiPart(vec![Block::Text {
             text,
             citations: vec![],
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }]);
         // This can never recurse infinitely because we just converted to
@@ -1052,7 +1052,7 @@ pub enum Block<'a> {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         citations: Vec<Citation>,
         /// Use prompt caching. See [`Block::cache`] for more information.
-        #[cfg(feature = "prompt-caching")]
+        
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -1098,7 +1098,7 @@ pub enum Block<'a> {
         /// An base64 encoded image.
         image: Image<'a>,
         /// Use prompt caching. See [`Block::cache`] for more information.
-        #[cfg(feature = "prompt-caching")]
+        
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
@@ -1144,7 +1144,7 @@ impl<'a> Block<'a> {
     pub const fn const_text(text: &'a str) -> Self {
         Self::Text {
             text: std::borrow::Cow::Borrowed(text),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
             citations: vec![],
         }
@@ -1158,7 +1158,7 @@ impl<'a> Block<'a> {
         Self::Text {
             text: text.into(),
             citations: vec![],
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
     }
@@ -1315,7 +1315,7 @@ impl<'a> Block<'a> {
     /// however some blocks are automatically cached and will return false.
     ///
     /// [`Prompt::cache`]: crate::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
+    
     pub fn cache(&mut self) -> bool {
         use crate::tool;
 
@@ -1339,7 +1339,7 @@ impl<'a> Block<'a> {
     }
 
     /// Returns true if the block has a `cache_control` breakpoint.
-    #[cfg(feature = "prompt-caching")]
+    
     pub const fn is_cached(&self) -> bool {
         use crate::tool;
 
@@ -1374,7 +1374,7 @@ impl<'a> Block<'a> {
             Self::Text {
                 text,
                 citations,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control,
             } => Block::Text {
                 #[cfg(not(feature = "langsan"))]
@@ -1382,7 +1382,7 @@ impl<'a> Block<'a> {
                 #[cfg(feature = "langsan")]
                 text: text.into_static(),
                 citations,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control,
             },
             Self::Thought { thought, signature } => Block::Thought {
@@ -1394,11 +1394,11 @@ impl<'a> Block<'a> {
             },
             Self::Image {
                 image,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control,
             } => Block::Image {
                 image: image.into_static(),
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control,
             },
             Self::ToolUse { call } => Block::ToolUse {
@@ -1512,7 +1512,7 @@ impl From<String> for Block<'_> {
         Self::Text {
             text: text.into(),
             citations: vec![],
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
     }
@@ -1523,7 +1523,7 @@ impl<'a> From<crate::CowStr<'a>> for Block<'a> {
         Self::Text {
             text,
             citations: vec![],
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
     }
@@ -1533,7 +1533,7 @@ impl<'a> From<Image<'a>> for Block<'a> {
     fn from(image: Image<'a>) -> Self {
         Self::Image {
             image,
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
     }
@@ -1575,7 +1575,7 @@ impl From<image::DynamicImage> for Block<'_> {
 }
 
 /// Cache control for prompt caching.
-#[cfg(feature = "prompt-caching")]
+
 #[derive(Clone, Default, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
@@ -1877,7 +1877,7 @@ mod tests {
             id: "tool_123".into(),
             name: "tool".into(),
             input: serde_json::json!({}),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
         .into();
@@ -1909,7 +1909,7 @@ mod tests {
             id: "tool_123".into(),
             name: "tool".into(),
             input: serde_json::json!({}),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
         .into();
@@ -1952,7 +1952,7 @@ mod tests {
                 id: "tool_123".into(),
                 name: "tool".into(),
                 input: serde_json::json!({}),
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             },
         };
@@ -1991,7 +1991,7 @@ mod tests {
         let mut block = Block::Text {
             text: "Hello, world!".into(),
             citations: vec![],
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 
@@ -2108,7 +2108,7 @@ mod tests {
                 id: "tool_123".into(),
                 name: "tool".into(),
                 input: serde_json::json!({}),
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             },
         };
@@ -2165,7 +2165,7 @@ mod tests {
             tool_use_id: "tool_123".into(),
             content: Content::SinglePart("Hello, world!".into()),
             is_error: false,
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
         .into();
@@ -2180,7 +2180,7 @@ mod tests {
             tool_use_id: "tool_123".into(),
             content: Content::SinglePart("Hello, world!".into()),
             is_error: true,
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
         .into();
@@ -2197,7 +2197,7 @@ mod tests {
             id: "tool_123".into(),
             name: "tool".into(),
             input: serde_json::json!({}),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
 

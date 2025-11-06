@@ -416,7 +416,7 @@ mod tests {
                 tool_use_id: "blablak".into(),
                 content: "blabla".into(),
                 is_error: false,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             },
         };

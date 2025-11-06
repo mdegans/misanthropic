@@ -68,7 +68,7 @@ impl<'a> Tool for Notepad<'a> {
                     "`Notepad::push` is the only method available on `Notepad`"
                         .into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             };
         }
@@ -86,7 +86,7 @@ impl<'a> Tool for Notepad<'a> {
                     detail
                 ).into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             };
         };
@@ -101,7 +101,7 @@ impl<'a> Tool for Notepad<'a> {
                     tool_use_id: call.id,
                     content: "You cannot put `<notepad>` or `</notepad>` in your note.".into(),
                     is_error: true,
-                    #[cfg(feature = "prompt-caching")]
+                    
                     cache_control: None,
                 };
             }
@@ -113,7 +113,7 @@ impl<'a> Tool for Notepad<'a> {
                     tool_use_id: call.id,
                     content: "You cannot put `<note>` or `</note>` in your note. `notepad` will handle it.".into(),
                     is_error: true,
-                    #[cfg(feature = "prompt-caching")]
+                    
                     cache_control: None,
                 };
             }
@@ -128,7 +128,7 @@ impl<'a> Tool for Notepad<'a> {
                 tool_use_id: call.id,
                 content: "`note` must be a string.".into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
+                
                 cache_control: None,
             };
         }
@@ -137,7 +137,7 @@ impl<'a> Tool for Notepad<'a> {
             tool_use_id: call.id,
             content: "Note taken.".into(),
             is_error: false,
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         }
     }
@@ -322,7 +322,7 @@ mod tests {
             input: json!({
                 "note": "Hello, world!"
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
         let result = notepad.call(call).await;
@@ -355,7 +355,7 @@ mod tests {
             input: json!({
                 "note": "Hello, world!"
             }),
-            #[cfg(feature = "prompt-caching")]
+            
             cache_control: None,
         };
         let result = toolbox.call(call).await;
