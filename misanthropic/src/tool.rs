@@ -166,7 +166,7 @@ pub struct Method<'a> {
     /// Set a cache breakpoint. See [`Prompt::cache`] for more information.
     ///
     /// [`Prompt::cache`] crate::Prompt::cache
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -201,7 +201,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             name: Cow<'static, str>,
             description: Cow<'static, str>,
             input_schema: serde_json::Value,
-            
+
             cache_control: Option<crate::prompt::message::CacheControl>,
         }
 
@@ -211,7 +211,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             name,
             description,
             input_schema,
-            
+
             cache_control,
         } = foreign;
 
@@ -220,7 +220,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
                 name,
                 description,
                 schema: input_schema,
-                
+
                 cache_control,
             },
         })
@@ -240,7 +240,7 @@ impl<'a> MethodBuilder<'a> {
     /// [`cache_control`]: Spec::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    
+
     pub fn cache(mut self) -> Self {
         self.tool.cache_control =
             Some(crate::prompt::message::CacheControl::Ephemeral);
@@ -283,43 +283,23 @@ impl<'a> MethodBuilder<'a> {
     }
 
     /// Add a string parameter to the schema.
-    pub fn string_param(
-        self,
-        name: &str,
-        description: &str,
-        required: bool,
-    ) -> Self {
-        self.add_param(name, description, "string", required)
+    pub fn string_param(self, name: &str, description: &str) -> Self {
+        self.add_param(name, description, "string")
     }
 
     /// Add an array parameter to the schema.
-    pub fn array_param(
-        self,
-        name: &str,
-        description: &str,
-        required: bool,
-    ) -> Self {
-        self.add_param(name, description, "array", required)
+    pub fn array_param(self, name: &str, description: &str) -> Self {
+        self.add_param(name, description, "array")
     }
 
     /// Add a number parameter to the schema.
-    pub fn number_param(
-        self,
-        name: &str,
-        description: &str,
-        required: bool,
-    ) -> Self {
-        self.add_param(name, description, "number", required)
+    pub fn number_param(self, name: &str, description: &str) -> Self {
+        self.add_param(name, description, "number")
     }
 
     /// Add a boolean parameter to the schema.
-    pub fn boolean_param(
-        self,
-        name: &str,
-        description: &str,
-        required: bool,
-    ) -> Self {
-        self.add_param(name, description, "boolean", required)
+    pub fn boolean_param(self, name: &str, description: &str) -> Self {
+        self.add_param(name, description, "boolean")
     }
 
     /// Helper method to add a parameter to the schema.
@@ -328,16 +308,16 @@ impl<'a> MethodBuilder<'a> {
         name: &str,
         description: &str,
         param_type: &str,
-        required: bool,
     ) -> Self {
         // Initialize schema if it's null
-        if self.tool.schema.is_null() {
+        if !self.tool.schema.is_object() {
             self.tool.schema = serde_json::json!({
                 "type": "object",
                 "properties": {},
                 "required": []
             });
         }
+        // tool.schema must be an object here
 
         // Add the property
         if let Some(properties) = self
@@ -353,19 +333,28 @@ impl<'a> MethodBuilder<'a> {
                     "description": description
                 }),
             );
+        } else {
+            // Should rarely happen due to earlier initialization, but just in
+            // case:
+            self.tool.schema["properties"] = serde_json::json!({
+                name: {
+                    "type": param_type,
+                    "description": description
+                }
+            });
         }
 
-        // Add to required array if needed
-        if required {
-            if let Some(required_array) = self
-                .tool
-                .schema
-                .get_mut("required")
-                .and_then(|r| r.as_array_mut())
-            {
-                required_array
-                    .push(serde_json::Value::String(name.to_string()));
-            }
+        // All parameters are required in the current Anthropic API
+        if let Some(required) = self
+            .tool
+            .schema
+            .get_mut("required")
+            .and_then(|r| r.as_array_mut())
+        {
+            required.push(serde_json::Value::String(name.to_string()));
+        } else {
+            self.tool.schema["required"] =
+                serde_json::json!([name.to_string()]);
         }
 
         self
@@ -505,7 +494,7 @@ impl<'a> MethodBuilder<'a> {
             name: Cow::Owned(self.tool.name.into_owned()),
             description: Cow::Owned(self.tool.description.into_owned()),
             schema: self.tool.schema,
-            
+
             cache_control: self.tool.cache_control,
         }
     }
@@ -536,7 +525,7 @@ impl<'a> Method<'a> {
                 name: name.into(),
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
-                
+
                 cache_control: None,
             },
         }
@@ -556,7 +545,7 @@ impl<'a> Method<'a> {
                 "properties": {},
                 "required": []
             }),
-            
+
             cache_control: None,
         }
     }
@@ -584,7 +573,7 @@ impl<'a> Method<'a> {
                 },
                 "required": required_array
             }),
-            
+
             cache_control: None,
         }
     }
@@ -595,7 +584,7 @@ impl<'a> Method<'a> {
     /// [`cache_control`]: Self::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    
+
     pub fn cache(&mut self) -> &mut Self {
         self.cache_control =
             Some(crate::prompt::message::CacheControl::Ephemeral);
@@ -604,7 +593,7 @@ impl<'a> Method<'a> {
 
     /// Returns true if the [`Method`] has a cache breakpoint set (if
     /// `cache_control` is [`Some`]).
-    
+
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
@@ -630,7 +619,7 @@ impl<'a> Method<'a> {
             name: Cow::Owned(self.name.into_owned()),
             description: Cow::Owned(self.description.into_owned()),
             schema: self.schema,
-            
+
             cache_control: self.cache_control,
         }
     }
@@ -674,7 +663,7 @@ pub struct Use<'a> {
     /// Use prompt caching. See [`Prompt::cache`] for more information.
     ///
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -687,7 +676,7 @@ impl Use<'_> {
             id: Cow::Owned(self.id.into_owned()),
             name: Cow::Owned(self.name.into_owned()),
             input: self.input,
-            
+
             cache_control: self.cache_control,
         }
     }
@@ -763,7 +752,7 @@ pub struct Result<'a> {
     /// Use prompt caching. See [`Prompt::cache`] for more information.
     ///
     /// crate::prompt::Prompt::cache
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -776,7 +765,7 @@ impl Result<'_> {
             tool_use_id: Cow::Owned(self.tool_use_id.into_owned()),
             content: self.content.into_static(),
             is_error: self.is_error,
-            
+
             cache_control: self.cache_control,
         }
     }
@@ -860,9 +849,9 @@ mod tests {
     fn test_method_builder_param_helpers() {
         let method = Method::builder("test_method")
             .description("Test method with multiple params")
-            .string_param("name", "A person's name", true)
-            .number_param("age", "A person's age", false)
-            .boolean_param("active", "Whether the person is active", true)
+            .string_param("name", "A person's name")
+            .number_param("age", "A person's age")
+            .boolean_param("active", "Whether the person is active")
             .build()
             .unwrap();
 
@@ -885,7 +874,7 @@ mod tests {
                     "description": "Whether the person is active"
                 }
             },
-            "required": ["name", "active"]
+            "required": ["name", "age", "active"]
         });
 
         assert_eq!(method.schema, expected_schema);
@@ -906,7 +895,7 @@ mod tests {
                 },
                 "required": ["existing"]
             }))
-            .string_param("new_param", "A new parameter", true)
+            .string_param("new_param", "A new parameter")
             .build()
             .unwrap();
 
@@ -958,7 +947,7 @@ mod tests {
             input: serde_json::json!({
                 "test_key": "test_value"
             }),
-            
+
             cache_control: None,
         };
 
@@ -1265,7 +1254,7 @@ mod tests {
             tool_use_id: "test_id".into(),
             content: "test_content".into(),
             is_error: false,
-            
+
             cache_control: None,
         };
 
@@ -1280,7 +1269,7 @@ mod tests {
             tool_use_id: "test_id".into(),
             content: "test_content".into(),
             is_error: false,
-            
+
             cache_control: None,
         };
 
