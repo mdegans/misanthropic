@@ -49,6 +49,10 @@ Default features: `rustls-tls`, `langsan`, `rate-limiting`, `client`, `batch`.
 Notable optional features: `prompt-caching`, `markdown`, `html`, `memsecurity`,
 `dioxus`, `memory-palace` (requires PostgreSQL), `notepad`, `cot`.
 
+`memory-palace` is slated for removal and will move to a separate crate. Its
+PostgreSQL/sqlx dependencies are too heavy for the core library. The default
+tool suite should stay minimal.
+
 The `batch` and `client` features don't build on wasm32.
 
 ## Testing notes
