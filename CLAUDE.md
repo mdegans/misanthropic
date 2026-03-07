@@ -42,6 +42,7 @@ cargo test --features <feature> --verbose
 - Uses `rustls` by default (not OpenSSL)
 - API keys are zeroized on drop; optionally encrypted in memory (`memsecurity`
   feature)
+- Warnings are treated as errors
 
 ### Readability above all
 
