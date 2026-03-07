@@ -147,6 +147,13 @@ pub enum Delta<'a> {
         /// [`Delta::Thought`]` to complete the thought.
         signature: Cow<'a, str>,
     },
+    /// A single citation to append to the current text block's
+    /// `citations` list.
+    #[serde(rename = "citations_delta")]
+    CitationsDelta {
+        /// The citation to append.
+        citation: crate::prompt::Citation<'a>,
+    },
 }
 
 impl Delta<'_> {
@@ -172,6 +179,9 @@ impl Delta<'_> {
             },
             Delta::RedactedThought { signature } => Delta::RedactedThought {
                 signature: signature.into_owned().into(),
+            },
+            Delta::CitationsDelta { citation } => Delta::CitationsDelta {
+                citation: citation.into_static(),
             },
         }
     }
@@ -321,6 +331,7 @@ impl<'a> Delta<'a> {
                         Delta::RedactedThought { .. } => {
                             "Delta::RedactedThought"
                         }
+                        Delta::CitationsDelta { .. } => "Delta::CitationsDelta",
                     },
                 });
             }
@@ -947,20 +958,12 @@ pub(crate) mod tests {
                 content_block,
             } => {
                 assert_eq!(index, 0);
-                #[cfg(feature = "prompt-caching")]
                 if let Block::Text {
-                    text,
-                    cache_control,
+                    text, citations, ..
                 } = content_block
                 {
                     assert_eq!(text.as_ref(), "");
-                    assert!(cache_control.is_none());
-                } else {
-                    panic!("Unexpected content block: {:?}", content_block);
-                }
-                #[cfg(not(feature = "prompt-caching"))]
-                if let Block::Text { text } = content_block {
-                    assert_eq!(text.as_ref(), "");
+                    assert!(citations.is_none());
                 } else {
                     panic!("Unexpected content block: {:?}", content_block);
                 }
@@ -1155,6 +1158,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
+                        citations: None,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None
                     }
@@ -1198,6 +1202,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
+                        citations: None,
                         #[cfg(feature = "prompt-caching")]
                         cache_control: None
                     }

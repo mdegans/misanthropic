@@ -3,7 +3,11 @@
 //!
 //! [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 
-use std::{borrow::Cow, num::{NonZeroU16, NonZeroU32}, vec};
+use std::{
+    borrow::Cow,
+    num::{NonZeroU16, NonZeroU32},
+    vec,
+};
 
 use crate::{
     model,
@@ -14,6 +18,9 @@ use message::Content;
 
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
+
+pub mod citation;
+pub use citation::Citation;
 
 pub mod message;
 pub use message::{AssistantMessage, Message, UserMessage};

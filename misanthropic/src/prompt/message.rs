@@ -10,6 +10,7 @@ use base64::engine::{Engine as _, general_purpose};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    prompt::Citation,
     response,
     stream::{ContentMismatch, Delta, DeltaError},
     tool,
@@ -220,6 +221,7 @@ impl<'a> IntoIterator for Message<'a> {
         match self.content {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: None,
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -481,6 +483,7 @@ impl<'a> IntoIterator for UserMessage<'a> {
         match self.inner.content {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: None,
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -615,10 +618,14 @@ impl<'a> Content<'a> {
             #[cfg(feature = "prompt-caching")]
             Self::SinglePart(text) => Block::Text {
                 text,
+                citations: None,
                 cache_control: None,
             },
             #[cfg(not(feature = "prompt-caching"))]
-            Self::SinglePart(text) => Block::Text { text },
+            Self::SinglePart(text) => Block::Text {
+                text,
+                citations: None,
+            },
             Self::MultiPart(_) => {
                 panic!("Content is MultiPart, not SinglePart");
             }
@@ -715,7 +722,10 @@ impl<'a> Content<'a> {
     /// this will return a [`ContentMismatch`] error.
     ///
     /// It is an error to try to merge a single json delta into a content block.
-    pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError<'_>> {
+    pub fn push_delta(
+        &mut self,
+        delta: Delta<'a>,
+    ) -> Result<(), DeltaError<'_>> {
         if let Delta::Json { .. } = &delta {
             // It isn't possible to merge a single json delta into a content
             // block because ToolUse::input is a serde_json::Value and not a
@@ -757,6 +767,7 @@ impl<'a> Content<'a> {
                     Content::SinglePart(text) => {
                         Box::new(std::iter::once(Block::Text {
                             text,
+                            citations: None,
                             #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         }))
@@ -810,6 +821,7 @@ impl<'a> IntoIterator for Content<'a> {
         match self {
             Content::SinglePart(text) => vec![Block::Text {
                 text,
+                citations: None,
                 #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]
@@ -929,6 +941,7 @@ where
 
         *self = Self::MultiPart(vec![Block::Text {
             text,
+            citations: None,
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }]);
@@ -984,6 +997,9 @@ pub enum Block<'a> {
     Text {
         /// The actual text content.
         text: crate::CowStr<'a>,
+        /// Citations referencing source documents.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<Vec<Citation<'a>>>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[cfg(feature = "prompt-caching")]
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1035,6 +1051,26 @@ pub enum Block<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// Document content (PDF, plain text, or custom content).
+    #[cfg_attr(not(feature = "markdown"), display("{}", source))]
+    Document {
+        /// The document source.
+        #[serde(rename = "source")]
+        source: DocumentSource<'a>,
+        /// Optional title (passed to model, not citable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<Cow<'a, str>>,
+        /// Optional context (passed to model, not citable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<Cow<'a, str>>,
+        /// Enable citations for this document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<CitationsConfig>,
+        /// Use prompt caching.
+        #[cfg(feature = "prompt-caching")]
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     /// [`Tool`] call. This should only be used with the [`Assistant`] role.
     ///
     /// [`Assistant`]: Role::Assistant
@@ -1077,6 +1113,7 @@ impl<'a> Block<'a> {
     pub const fn const_text(text: &'a str) -> Self {
         Self::Text {
             text: std::borrow::Cow::Borrowed(text),
+            citations: None,
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1089,6 +1126,31 @@ impl<'a> Block<'a> {
     {
         Self::Text {
             text: text.into(),
+            citations: None,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+
+    /// Document content block.
+    pub fn document(source: DocumentSource<'a>) -> Self {
+        Self::Document {
+            source,
+            title: None,
+            context: None,
+            citations: None,
+            #[cfg(feature = "prompt-caching")]
+            cache_control: None,
+        }
+    }
+
+    /// Document content block with citations enabled.
+    pub fn document_with_citations(source: DocumentSource<'a>) -> Self {
+        Self::Document {
+            source,
+            title: None,
+            context: None,
+            citations: Some(CitationsConfig { enabled: true }),
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1218,6 +1280,13 @@ impl<'a> Block<'a> {
                 // Lhs is empty, so we just assign. Thought is now complete.
                 *signature = delta_signature;
             }
+            // Citations delta merges into a text block.
+            (
+                Block::Text { citations, .. },
+                Delta::CitationsDelta { citation },
+            ) => {
+                citations.get_or_insert_with(Vec::new).push(citation);
+            }
             (this, acc) => {
                 let variant_name = match this {
                     Block::Text { .. } => stringify!(Block::Text),
@@ -1228,6 +1297,9 @@ impl<'a> Block<'a> {
                     Block::ToolUse { .. } => stringify!(Block::ToolUse),
                     Block::ToolResult { .. } => stringify!(Block::ToolResult),
                     Block::Image { .. } => stringify!(Block::Image),
+                    Block::Document { .. } => {
+                        stringify!(Block::Document)
+                    }
                 };
 
                 return Err(ContentMismatch {
@@ -1253,6 +1325,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text { cache_control, .. }
             | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
@@ -1277,6 +1350,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text { cache_control, .. }
             | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
@@ -1304,6 +1378,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text {
                 text,
+                citations,
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             } => Block::Text {
@@ -1311,6 +1386,9 @@ impl<'a> Block<'a> {
                 text: std::borrow::Cow::Owned(text.into_owned()),
                 #[cfg(feature = "langsan")]
                 text: text.into_static(),
+                citations: citations.map(|cs| {
+                    cs.into_iter().map(Citation::into_static).collect()
+                }),
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
@@ -1327,6 +1405,21 @@ impl<'a> Block<'a> {
                 cache_control,
             } => Block::Image {
                 image: image.into_static(),
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            },
+            Self::Document {
+                source,
+                title,
+                context,
+                citations,
+                #[cfg(feature = "prompt-caching")]
+                cache_control,
+            } => Block::Document {
+                source: source.into_static(),
+                title: title.map(|t| Cow::Owned(t.into_owned())),
+                context: context.map(|c| Cow::Owned(c.into_owned())),
+                citations,
                 #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
@@ -1349,6 +1442,7 @@ impl<'a> Block<'a> {
                 thought: thinking, ..
             } => thinking.len(),
             Self::Image { image, .. } => image.len(),
+            Self::Document { source, .. } => source.len(),
             Self::RedactedThought { .. }
             | Self::ToolUse { .. }
             | Self::ToolResult { .. } => 0,
@@ -1424,6 +1518,9 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
                     Box::new(std::iter::empty())
                 }
             }
+            Block::Document { source, .. } => {
+                Box::new([Event::Text(source.to_string().into())].into_iter())
+            }
         };
 
         it
@@ -1440,6 +1537,7 @@ impl From<String> for Block<'_> {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
+            citations: None,
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1450,6 +1548,7 @@ impl<'a> From<crate::CowStr<'a>> for Block<'a> {
     fn from(text: crate::CowStr<'a>) -> Self {
         Self::Text {
             text,
+            citations: None,
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
@@ -1463,6 +1562,12 @@ impl<'a> From<Image<'a>> for Block<'a> {
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
+    }
+}
+
+impl<'a> From<DocumentSource<'a>> for Block<'a> {
+    fn from(source: DocumentSource<'a>) -> Self {
+        Self::document(source)
     }
 }
 
@@ -1511,6 +1616,217 @@ pub enum CacheControl {
     /// Caches for 5 minutes.
     #[default]
     Ephemeral,
+}
+
+/// Configuration to enable citations on a [`Document`] block.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct CitationsConfig {
+    /// Whether citations are enabled for this document.
+    pub enabled: bool,
+}
+
+/// Media type for PDF documents.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum DocumentMediaType {
+    /// `application/pdf`
+    #[serde(rename = "application/pdf")]
+    Pdf,
+}
+
+impl std::fmt::Display for DocumentMediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pdf => write!(f, "application/pdf"),
+        }
+    }
+}
+
+/// Media type for plain text documents.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum PlainTextMediaType {
+    /// `text/plain`
+    #[serde(rename = "text/plain")]
+    Plain,
+}
+
+impl std::fmt::Display for PlainTextMediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plain => write!(f, "text/plain"),
+        }
+    }
+}
+
+/// A text chunk for custom content [`DocumentSource`]s.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(tag = "type", rename = "text")]
+pub struct ContentText<'a> {
+    /// The text content of this chunk.
+    pub text: Cow<'a, str>,
+}
+
+impl<'a> ContentText<'a> {
+    /// Convert to a `'static` lifetime.
+    pub fn into_static(self) -> ContentText<'static> {
+        ContentText {
+            text: Cow::Owned(self.text.into_owned()),
+        }
+    }
+}
+
+/// Source of a [`Document`] content block. Analogous to [`Image`]
+/// for image content.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum DocumentSource<'a> {
+    /// Base64-encoded document (PDF).
+    Base64 {
+        /// Document encoding format.
+        media_type: DocumentMediaType,
+        /// Base64-encoded document data.
+        data: Cow<'a, str>,
+    },
+    /// URL to a hosted document.
+    Url {
+        /// The URL.
+        url: Cow<'a, str>,
+    },
+    /// Plain text document (auto-chunked into sentences for
+    /// citations).
+    #[serde(rename = "text")]
+    PlainText {
+        /// Always `text/plain`.
+        media_type: PlainTextMediaType,
+        /// The plain text content.
+        data: Cow<'a, str>,
+    },
+    /// Custom content blocks (user controls citation granularity).
+    Content {
+        /// The content blocks.
+        content: Vec<ContentText<'a>>,
+    },
+    /// Reference to a file uploaded via the Files API.
+    File {
+        /// The file ID.
+        file_id: Cow<'a, str>,
+    },
+}
+
+impl<'a> DocumentSource<'a> {
+    /// Create a base64-encoded PDF document source.
+    pub fn from_base64(data: impl Into<Cow<'a, str>>) -> Self {
+        Self::Base64 {
+            media_type: DocumentMediaType::Pdf,
+            data: data.into(),
+        }
+    }
+
+    /// Create a URL document source.
+    pub fn from_url(url: impl Into<Cow<'a, str>>) -> Self {
+        Self::Url { url: url.into() }
+    }
+
+    /// Create a plain text document source.
+    pub fn from_text(data: impl Into<Cow<'a, str>>) -> Self {
+        Self::PlainText {
+            media_type: PlainTextMediaType::Plain,
+            data: data.into(),
+        }
+    }
+
+    /// Create a custom content document source from text chunks.
+    pub fn from_content(blocks: Vec<ContentText<'a>>) -> Self {
+        Self::Content { content: blocks }
+    }
+
+    /// Create a Files API reference document source.
+    pub fn from_file_id(id: impl Into<Cow<'a, str>>) -> Self {
+        Self::File { file_id: id.into() }
+    }
+
+    /// Read a file, base64-encode it, and create a document source.
+    pub fn from_file(
+        path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        let data = std::fs::read(path)?;
+        let encoded = general_purpose::STANDARD.encode(&data);
+        Ok(Self::Base64 {
+            media_type: DocumentMediaType::Pdf,
+            data: Cow::Owned(encoded),
+        })
+    }
+
+    /// Convert to a `'static` lifetime.
+    pub fn into_static(self) -> DocumentSource<'static> {
+        match self {
+            Self::Base64 { media_type, data } => DocumentSource::Base64 {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
+            Self::Url { url } => DocumentSource::Url {
+                url: Cow::Owned(url.into_owned()),
+            },
+            Self::PlainText { media_type, data } => DocumentSource::PlainText {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
+            Self::Content { content } => DocumentSource::Content {
+                content: content
+                    .into_iter()
+                    .map(ContentText::into_static)
+                    .collect(),
+            },
+            Self::File { file_id } => DocumentSource::File {
+                file_id: Cow::Owned(file_id.into_owned()),
+            },
+        }
+    }
+
+    /// Returns the byte length of the source data.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Base64 { data, .. } | Self::PlainText { data, .. } => {
+                data.as_bytes().len()
+            }
+            Self::Url { url } => url.as_bytes().len(),
+            Self::Content { content } => {
+                content.iter().map(|c| c.text.as_bytes().len()).sum()
+            }
+            Self::File { file_id } => file_id.as_bytes().len(),
+        }
+    }
+}
+
+impl std::fmt::Display for DocumentSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Base64 { media_type, .. } => {
+                write!(f, "[Document ({media_type})]")
+            }
+            Self::Url { url } => {
+                write!(f, "[Document ({url})]")
+            }
+            Self::PlainText { .. } => {
+                write!(f, "[Document (text/plain)]")
+            }
+            Self::Content { content } => {
+                write!(f, "[Document ({} blocks)]", content.len())
+            }
+            Self::File { file_id } => {
+                write!(f, "[Document (file:{file_id})]")
+            }
+        }
+    }
 }
 
 /// Image content for [`MultiPart`] [`Message`]s.
@@ -1917,6 +2233,7 @@ mod tests {
         }];
         let mut block = Block::Text {
             text: "Hello, world!".into(),
+            citations: None,
             #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
@@ -2231,5 +2548,189 @@ mod tests {
         let ret: Result<AssistantMessage, _> =
             serde_json::from_str(&valid_json);
         assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn serde_document_base64_pdf() {
+        let json = r#"{
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": "dGVzdA=="
+            },
+            "title": "My PDF",
+            "citations": {"enabled": true}
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_document());
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: Block = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(block, deserialized);
+    }
+
+    #[test]
+    fn serde_document_plain_text() {
+        let json = r#"{
+            "type": "document",
+            "source": {
+                "type": "text",
+                "media_type": "text/plain",
+                "data": "The grass is green."
+            },
+            "citations": {"enabled": true}
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_document());
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: Block = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(block, deserialized);
+    }
+
+    #[test]
+    fn serde_document_custom_content() {
+        let json = r#"{
+            "type": "document",
+            "source": {
+                "type": "content",
+                "content": [
+                    {"type": "text", "text": "First chunk"},
+                    {"type": "text", "text": "Second chunk"}
+                ]
+            },
+            "title": "Custom Doc",
+            "citations": {"enabled": true}
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_document());
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: Block = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(block, deserialized);
+    }
+
+    #[test]
+    fn serde_document_file_id() {
+        let json = r#"{
+            "type": "document",
+            "source": {
+                "type": "file",
+                "file_id": "file_abc123"
+            }
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_document());
+    }
+
+    #[test]
+    fn serde_document_url() {
+        let json = r#"{
+            "type": "document",
+            "source": {
+                "type": "url",
+                "url": "https://example.com/doc.pdf"
+            }
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_document());
+    }
+
+    #[test]
+    fn serde_text_with_citations() {
+        let json = r#"{
+            "type": "text",
+            "text": "the grass is green",
+            "citations": [
+                {
+                    "type": "char_location",
+                    "cited_text": "The grass is green.",
+                    "document_index": 0,
+                    "document_title": "My Doc",
+                    "start_char_index": 0,
+                    "end_char_index": 20
+                }
+            ]
+        }"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        assert!(block.is_text());
+        if let Block::Text { citations, .. } = &block {
+            assert!(citations.is_some());
+            assert_eq!(citations.as_ref().unwrap().len(), 1);
+        }
+        let serialized = serde_json::to_string(&block).unwrap();
+        let deserialized: Block = serde_json::from_str(&serialized).unwrap();
+        assert_eq!(block, deserialized);
+    }
+
+    #[test]
+    fn serde_text_without_citations() {
+        let json = r#"{"type": "text", "text": "hello"}"#;
+        let block: Block = serde_json::from_str(json).unwrap();
+        if let Block::Text { citations, .. } = &block {
+            assert!(citations.is_none());
+        }
+        // citations should be omitted when serialized
+        let serialized = serde_json::to_string(&block).unwrap();
+        assert!(!serialized.contains("citations"));
+    }
+
+    #[test]
+    fn document_constructors() {
+        let doc = DocumentSource::from_text("hello");
+        assert!(matches!(doc, DocumentSource::PlainText { .. }));
+
+        let doc = DocumentSource::from_base64("dGVzdA==");
+        assert!(matches!(doc, DocumentSource::Base64 { .. }));
+
+        let doc = DocumentSource::from_url("https://example.com/doc.pdf");
+        assert!(matches!(doc, DocumentSource::Url { .. }));
+
+        let doc = DocumentSource::from_content(vec![ContentText {
+            text: "chunk".into(),
+        }]);
+        assert!(matches!(doc, DocumentSource::Content { .. }));
+
+        let doc = DocumentSource::from_file_id("file_abc123");
+        assert!(matches!(doc, DocumentSource::File { .. }));
+    }
+
+    #[test]
+    fn document_into_static() {
+        let doc = Block::document_with_citations(DocumentSource::from_text(
+            "hello world",
+        ));
+        let _: Block<'static> = doc.into_static();
+    }
+
+    #[test]
+    fn document_from_source() {
+        let source = DocumentSource::from_text("hello world");
+        let block: Block = source.into();
+        assert!(block.is_document());
+    }
+
+    #[test]
+    fn document_len() {
+        let block = Block::document(DocumentSource::from_text("hello"));
+        assert_eq!(block.len(), 5);
+    }
+
+    #[test]
+    fn merge_citations_delta() {
+        let mut block = Block::text("the grass is green");
+        let delta = Delta::CitationsDelta {
+            citation: Citation::CharLocation {
+                cited_text: "The grass is green.".into(),
+                document_index: 0,
+                document_title: Some("Doc".into()),
+                start_char_index: 0,
+                end_char_index: 20,
+            },
+        };
+        block.merge_deltas(std::iter::once(delta)).unwrap();
+        if let Block::Text { citations, .. } = &block {
+            assert_eq!(citations.as_ref().unwrap().len(), 1);
+        } else {
+            panic!("Expected text block");
+        }
     }
 }

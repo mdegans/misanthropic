@@ -306,6 +306,7 @@ impl IntoElement for &Block<'_> {
             Block::Text {
                 text,
                 cache_control,
+                ..
             } => {
                 {
                     rsx!({
@@ -416,6 +417,13 @@ impl IntoElement for &Block<'_> {
                     })
                 }
             },
+            Block::Document { source, .. } => {
+                rsx!(div {
+                    key: key,
+                    class: "document",
+                    {source.to_string()}
+                })
+            }
             Block::ToolResult { result } => match &opts.tool_result {
                 opts::ToolResult::Hidden => rsx!(),
                 opts::ToolResult::Placeholder { error, ok } => {
