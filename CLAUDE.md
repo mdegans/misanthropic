@@ -40,7 +40,51 @@ cargo test --features <feature> --verbose
 - Max line width: 80 characters (`rustfmt.toml`)
 - `unsafe` code is forbidden (`#[forbid(unsafe_code)]`)
 - Uses `rustls` by default (not OpenSSL)
-- API keys are zeroized on drop; optionally encrypted in memory (`memsecurity` feature)
+- API keys are zeroized on drop; optionally encrypted in memory (`memsecurity`
+  feature)
+
+### Readability above all
+
+Code should read like Python. Prefer expressive generics and trait bounds on
+`Client` methods (e.g. `impl Into<Cow<'a, str>>`, `TryInto<Key>`) so that
+*call sites* stay clean, even when signatures get verbose.
+
+### Functional over imperative
+
+Prefer iterator chains (`.map()`, `.filter()`, `.collect()`) and pattern
+matching over mutable loops and temporary variables in library code. Examples
+and tests can be more imperative when it aids clarity.
+
+### Documentation style
+
+Doc comments are terse — often a single sentence explaining where the item fits
+relative to other types, linked with `[Type]` / `[Self::method]` /
+`[crate::path]` syntax. Avoid restating signatures; focus on relationships and
+intent. Module-level docs (`//!`) give a brief overview and point the reader to
+key entry-point types.
+
+### Naming choices
+
+The crate deliberately picks domain-friendly names over HTTP jargon: `Prompt`
+instead of `Request`, `Method` for individual tool function descriptors (to
+avoid collision with the `Tool` trait). Enum variants are short and
+self-describing (`StopReason::EndTurn`).
+
+### Patterns in use
+
+- **Builder-style fluent APIs** — `Prompt::default().add_tool(…).set_system(…)`
+- **Borrowed-by-default with `into_static()`** — most public types carry a
+  lifetime `'a`; call `.into_static()` when ownership is needed.
+- **`From` / `Into` blanket conversions** — e.g. `(Role, &str) -> Message`,
+  keeping construction ergonomic.
+- **Feature-gated modules** — heavy or platform-specific deps hide behind
+  Cargo features; `#[cfg(feature = "…")]` guards throughout.
+- **Privacy-aware `Debug`** — `Prompt`'s `Debug` impl hides chat messages.
+- **Cold-path hints** — error branches call `cold_path()` to guide the
+  optimizer.
+- **Conditional logging** — all `log::*` calls sit inside
+  `#[cfg(feature = "log")]` blocks.
+- **`thiserror` enums with a crate-level `Result<T>` alias.**
 
 ## Key features to know about
 
