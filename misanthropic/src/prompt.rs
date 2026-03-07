@@ -3,7 +3,7 @@
 //!
 //! [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 
-use std::{borrow::Cow, num::NonZeroU16, vec};
+use std::{borrow::Cow, num::{NonZeroU16, NonZeroU32}, vec};
 
 use crate::{
     model,
@@ -44,7 +44,7 @@ pub struct Prompt<'a> {
     /// tokens for each model.
     ///
     /// [docs]: <https://docs.anthropic.com/en/docs/about-claude/models>
-    pub max_tokens: NonZeroU16,
+    pub max_tokens: NonZeroU32,
     /// Optional info about the request, for example, `user_id` to help
     /// Anthropic detect and prevent abuse. Do not use PII here (email, phone).
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
@@ -125,7 +125,7 @@ impl std::fmt::Debug for Prompt<'_> {
 impl Default for Prompt<'_> {
     fn default() -> Self {
         Self {
-            max_tokens: NonZeroU16::new(4096).unwrap(),
+            max_tokens: NonZeroU32::new(4096).unwrap(),
             messages: Default::default(),
             metadata: Default::default(),
             model: Default::default(),
@@ -375,7 +375,7 @@ impl<'a> Prompt<'a> {
     /// [`StopReason`]: crate::response::StopReason
     /// [`MaxTokens`]: crate::response::StopReason::MaxTokens
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
-    pub fn max_tokens(mut self, max_tokens: NonZeroU16) -> Self {
+    pub fn max_tokens(mut self, max_tokens: NonZeroU32) -> Self {
         self.max_tokens = max_tokens;
         self
     }
@@ -1143,7 +1143,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Prompt<'a> {
 mod tests {
     use super::*;
     use serde_json::json;
-    use std::num::NonZeroU16;
+    use std::num::{NonZeroU16, NonZeroU32};
 
     use crate::{AnthropicModel, prompt::message::Role};
 
@@ -1156,7 +1156,7 @@ mod tests {
         let request = Prompt::default();
         assert_eq!(request.model, crate::model::Id::default());
         assert!(request.messages.is_empty());
-        assert_eq!(request.max_tokens, NonZeroU16::new(4096).unwrap());
+        assert_eq!(request.max_tokens, NonZeroU32::new(4096).unwrap());
         assert!(request.metadata.is_empty());
         assert!(request.stop_sequences.is_none());
         assert!(request.stream.is_none());
@@ -1288,7 +1288,7 @@ mod tests {
 
     #[test]
     fn test_set_max_tokens() {
-        let max_tokens = NonZeroU16::new(1024).unwrap();
+        let max_tokens = NonZeroU32::new(1024).unwrap();
         let request = Prompt::default().max_tokens(max_tokens);
         assert_eq!(request.max_tokens, max_tokens);
     }

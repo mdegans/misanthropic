@@ -114,13 +114,13 @@ impl Message<'_> {
 
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ToolUse`].
-    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
         self.content.last()?.tool_use()
     }
 
     /// Returns Some([`tool::Result`]) if the first [`Content`] [`Block`] is a
     /// [`Block::ToolResult`].
-    pub fn tool_result(&self) -> Option<&crate::tool::Result> {
+    pub fn tool_result(&self) -> Option<&crate::tool::Result<'_>> {
         match &self.content {
             Content::SinglePart(_) => None,
             Content::MultiPart(parts) => {
@@ -680,7 +680,7 @@ impl<'a> Content<'a> {
     ///
     /// [`SinglePart`]: Content::SinglePart
     // Because to make it multi-part on access this would have to be &mut
-    pub fn last(&self) -> Option<&Block> {
+    pub fn last(&self) -> Option<&Block<'_>> {
         match self {
             Self::SinglePart(_) => None,
             Self::MultiPart(parts) => parts.last(),
@@ -715,7 +715,7 @@ impl<'a> Content<'a> {
     /// this will return a [`ContentMismatch`] error.
     ///
     /// It is an error to try to merge a single json delta into a content block.
-    pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError> {
+    pub fn push_delta(&mut self, delta: Delta<'a>) -> Result<(), DeltaError<'_>> {
         if let Delta::Json { .. } = &delta {
             // It isn't possible to merge a single json delta into a content
             // block because ToolUse::input is a serde_json::Value and not a
@@ -1104,7 +1104,7 @@ impl<'a> Block<'a> {
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
     /// will return a [`ContentMismatch`] error. In the case of a [`ToolUse`]
     /// block, the deltas, together, must form a complete json object.
-    pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
+    pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError<'_>>
     where
         Ds: IntoIterator<Item = Delta<'a>>,
     {
@@ -1289,7 +1289,7 @@ impl<'a> Block<'a> {
 
     /// Returns the [`tool::Use`] if this is a [`Block::ToolUse`]. See also
     /// [`response::Message::tool_use`].
-    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
         match self {
             Self::ToolUse { call, .. } => Some(call),
             _ => None,

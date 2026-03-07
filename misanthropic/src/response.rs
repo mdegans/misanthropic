@@ -65,7 +65,7 @@ impl<'a> Response<'a> {
     /// this if you don't care about [`response::Message`] metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn message(&self) -> Option<&prompt::Message> {
+    pub fn message(&self) -> Option<&prompt::Message<'_>> {
         match self {
             Self::Message { message, .. } => Some(&message.inner),
             _ => None,
