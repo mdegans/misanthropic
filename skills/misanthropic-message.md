@@ -74,7 +74,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 convenience helpers that return `Self`.
 
 ```rust
-use std::num::NonZeroU16;
+use std::num::NonZeroU32;
 use misanthropic::{
     AnthropicModel, Prompt,
     prompt::message::Role,
@@ -88,7 +88,7 @@ let prompt = Prompt::default()
     // Append to system prompt.
     .add_system("Respond concisely.")
     // Set max tokens.
-    .max_tokens(NonZeroU16::new(1024).unwrap())
+    .max_tokens(NonZeroU32::new(1024).unwrap())
     // Set temperature (0.0–1.0).
     .temperature(Some(0.7))
     // Add a user message — returns Result because turn order
