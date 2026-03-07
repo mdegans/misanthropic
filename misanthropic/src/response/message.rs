@@ -46,7 +46,7 @@ impl Message<'_> {
     /// [`Block`]: crate::prompt::message::Block
     /// [`tool::Use`]: crate::tool::Use
     /// [`ToolUse`]: crate::prompt::message::Block::ToolUse
-    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
         if !matches!(self.stop_reason, Some(StopReason::ToolUse)) {
             return None;
         }

@@ -314,7 +314,7 @@ impl Client {
     /// around a `Vec` of [`Model`]s and derefs to it.
     ///
     /// [`Model``]: misanthropic::model::Model
-    pub async fn models(&self) -> Result<Models> {
+    pub async fn models(&self) -> Result<Models<'_>> {
         let response = self.get(self.models_url.as_str()).await?;
         let body = response.text().await?;
 
@@ -357,7 +357,7 @@ impl Client {
     /// [`Request`]: crate::prompt
     /// [`Message`]: crate::Message
     /// [`Stream`]: crate::Stream
-    pub async fn request<P>(&self, prompt: P) -> Result<crate::Response>
+    pub async fn request<P>(&self, prompt: P) -> Result<crate::Response<'_>>
     where
         P: Serialize,
     {
@@ -373,7 +373,7 @@ impl Client {
         &self,
         prompt: P,
         url: U,
-    ) -> Result<crate::Response>
+    ) -> Result<crate::Response<'_>>
     where
         P: Serialize,
         U: reqwest::IntoUrl,
@@ -433,7 +433,7 @@ impl Client {
     /// function will always return a single [`response::Message`].
     ///
     /// [`request`]: Self::request
-    pub async fn message<P>(&self, prompt: P) -> Result<response::Message>
+    pub async fn message<P>(&self, prompt: P) -> Result<response::Message<'_>>
     where
         P: Serialize,
     {
