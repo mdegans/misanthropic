@@ -733,7 +733,7 @@ mod tests {
     {
       "custom_id": "00000000-0000-0000-0000-000000000000",
       "params": {
-        "model": "claude-3-haiku-20240307",
+        "model": "claude-haiku-4-5",
         "messages": [],
         "max_tokens": 4096
       }
