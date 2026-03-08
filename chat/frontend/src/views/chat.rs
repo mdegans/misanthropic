@@ -16,7 +16,7 @@ use misanthropic::{
     },
     json,
     prompt::{
-        message::{Block, Image, MediaType, UserMessage},
+        message::{Block, DocumentSource, Image, MediaType, UserMessage},
         Prompt,
     },
     tool::{Method, Tool},
@@ -430,7 +430,7 @@ pub fn Chat() -> Element {
                     class: if *dragged_file_supported.read() {
                         "dragged-file-supported"
                     } else { "" },
-                    placeholder: "Type your message or drag a .json file here to load a chat...\n\n...You can also drag images here to attach them.",
+                    placeholder: "Type your message or drag a .json file here to load a chat...\n\n...You can also drag images, PDFs, or text files here to attach them.",
                     autofocus: true,
                     value: "{input_buffer}",
                     oninput: move |e| {
@@ -478,7 +478,11 @@ pub fn Chat() -> Element {
                                 return;
                             }
                             let filename = &filenames[0];
-                            if MediaType::is_supported(filename) || filename.ends_with(".json") {
+                            if MediaType::is_supported(filename)
+                                || filename.ends_with(".json")
+                                || filename.ends_with(".pdf")
+                                || filename.ends_with(".txt")
+                            {
                                 dragged_file_supported.set(true);
                             } else {
                                 dragged_file_supported.set(false);
@@ -594,7 +598,50 @@ pub fn Chat() -> Element {
                             }
 
 
-                            let format = if let Some(format) =  MediaType::detect(&filename) {
+                            // PDF document.
+                            if filename.ends_with(".pdf") {
+                                let data = if let Some(data) = files.read_file(filename).await {
+                                    data
+                                } else {
+                                    log::warn!("Failed to read file.");
+                                    return;
+                                };
+                                if data.is_empty() {
+                                    log::warn!("Empty file.");
+                                    return;
+                                }
+                                let doc = Block::document_with_citations(
+                                    DocumentSource::from_base64(
+                                        BASE64.encode(&data),
+                                    ),
+                                );
+                                attachments.write().push(doc);
+                                return;
+                            }
+
+                            // Plain text document.
+                            if filename.ends_with(".txt") {
+                                let data = if let Some(data) = files.read_file(filename).await {
+                                    data
+                                } else {
+                                    log::warn!("Failed to read file.");
+                                    return;
+                                };
+                                if data.is_empty() {
+                                    log::warn!("Empty file.");
+                                    return;
+                                }
+                                let text = String::from_utf8_lossy(&data)
+                                    .into_owned();
+                                let doc = Block::document_with_citations(
+                                    DocumentSource::from_text(text),
+                                );
+                                attachments.write().push(doc);
+                                return;
+                            }
+
+                            // Image files.
+                            let format = if let Some(format) = MediaType::detect(&filename) {
                                 format
                             } else {
                                 log::warn!("Unsupported file type.");
@@ -612,8 +659,6 @@ pub fn Chat() -> Element {
                                 log::warn!("Empty file.");
                                 return;
                             }
-                            // We have a file data with a supported format. Load
-                            // it and push it to the attachments.
 
                             let image = Image::from_compressed(format, data);
                             attachments.write().push(image.into());
