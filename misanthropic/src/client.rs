@@ -561,7 +561,9 @@ impl Client {
             let mut results = HashMap::new();
 
             for line in response.lines() {
-                match serde_json::from_str(line) {
+                match serde_json::from_str::<serde_json::Value>(line)
+                    .and_then(|v| serde_json::from_value::<IdentifiedBatchResult>(v))
+                {
                     Ok(IdentifiedBatchResult { id, result }) => {
                         // We do need to check for this to maintain the Ready
                         // invariant that every result has a corresponding

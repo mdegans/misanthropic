@@ -635,15 +635,25 @@ impl<'a> Ready<'a> {
     }
 }
 
-/// Helper for deserializing in the format the API expects.
+/// Helper for deserializing batch results from the API's JSONL format.
+///
+/// Uses `'static` lifetime because batch results are deserialized from
+/// owned `serde_json::Value` data (the JSONL response is downloaded as a
+/// String and parsed via Value intermediate to avoid borrow issues).
 #[derive(Deserialize)]
-pub(crate) struct IdentifiedBatchResult<'a> {
+pub(crate) struct IdentifiedBatchResult {
+    #[serde(rename = "custom_id")]
     pub(crate) id: Id,
-    pub(crate) result: BatchResult<'a>,
+    pub(crate) result: BatchResult<'static>,
 }
 
 /// A [`BatchResult`] is the result of processing a [`Prompt`] in a batch.
-#[derive(Serialize, Deserialize, derive_more::IsVariant)]
+///
+/// The API returns different content keys per variant:
+/// - `succeeded` → `{ "type": "succeeded", "message": { ... } }`
+/// - `errored` → `{ "type": "errored", "error": { ... } }`
+/// - `canceled` / `expired` → `{ "type": "canceled" }` (no content)
+#[derive(Serialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum BatchResult<'a> {
     /// The batch was canceled and this prompt was not processed.
@@ -654,7 +664,47 @@ pub enum BatchResult<'a> {
     #[serde(rename = "succeeded")]
     Ok(response::Message<'a>),
     /// Error response to a prompt.
+    #[serde(rename = "errored")]
     Error(client::AnthropicError),
+}
+
+impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Use Value as intermediate to avoid lifetime issues with borrowed data
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let type_str = value
+            .get("type")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| serde::de::Error::missing_field("type"))?;
+
+        match type_str {
+            "succeeded" => {
+                let message = value
+                    .get("message")
+                    .ok_or_else(|| serde::de::Error::missing_field("message"))?;
+                let msg: response::Message<'a> =
+                    serde_json::from_value(message.clone()).map_err(serde::de::Error::custom)?;
+                Ok(BatchResult::Ok(msg))
+            }
+            "errored" => {
+                let error = value
+                    .get("error")
+                    .ok_or_else(|| serde::de::Error::missing_field("error"))?;
+                let err: client::AnthropicError =
+                    serde_json::from_value(error.clone()).map_err(serde::de::Error::custom)?;
+                Ok(BatchResult::Error(err))
+            }
+            "canceled" => Ok(BatchResult::Canceled),
+            "expired" => Ok(BatchResult::Expired),
+            other => Err(serde::de::Error::unknown_variant(
+                other,
+                &["succeeded", "errored", "canceled", "expired"],
+            )),
+        }
+    }
 }
 
 impl<'a> From<BatchResult<'a>>
