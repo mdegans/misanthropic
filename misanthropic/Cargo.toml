@@ -129,9 +129,6 @@ default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch"]
 # you must handle encoding/decoding yourself, so it almost always makes sense
 # to enable this and use the image crate.
 image = ["dep:image"]
-# A beta has been enabled. It is not necessary to set this manually. Only one
-# beta can be enabled at a time (for example, `prompt-caching`).
-beta = []
 # Use the image crate to support JPEG images.
 jpeg = ["image", "image/jpeg"]
 # Use the image crate to support PNG images.
@@ -140,8 +137,6 @@ png = ["image", "image/png"]
 gif = ["image", "image/gif"]
 # Use the image crate to support WEBP images.
 webp = ["image", "image/webp"]
-# Enable prompt caching (recommended, however limits model choices)
-prompt-caching = ["beta"]
 # Enable logging
 log = ["dep:log"]
 # Use rustls instead of the system SSL, such as OpenSSL.
@@ -182,6 +177,9 @@ sqlx = ["dep:sqlx"]
 tokio-sqlx = ["sqlx/runtime-tokio-rustls"]
 # Feature for testing with in-memory database
 kv-mem = []
+# OpenAI-compatible types and conversions for use with Ollama and other
+# OpenAI-compatible endpoints.
+openai = []
 
 
 [[example]]
@@ -191,7 +189,7 @@ doc-scrape-examples = true
 
 [[example]]
 name = "python"
-required-features = ["client", "markdown", "prompt-caching"]
+required-features = ["client", "markdown"]
 doc-scrape-examples = true
 
 [[example]]

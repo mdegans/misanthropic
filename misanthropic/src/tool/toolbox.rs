@@ -277,7 +277,6 @@ impl Tool for ToolBox {
                     )
                         .into(),
                     is_error: true,
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 };
             }
@@ -295,7 +294,6 @@ impl Tool for ToolBox {
                 )
                     .into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }
         }
@@ -423,7 +421,6 @@ mod tests {
                         },
                     },
                 }),
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }))
         }
@@ -435,7 +432,6 @@ mod tests {
                 tool_use_id: id,
                 content: "Tool called".into(),
                 is_error: false,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }
         }
@@ -548,7 +544,6 @@ mod tests {
             id: "id".into(),
             name: "toolbox::TestTool::test".into(),
             input: serde_json::json!({}),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
         let result = toolbox.call(call.clone()).await;

@@ -59,7 +59,6 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message<'static>, String> {
             tool_use_id: call.id.to_string().into(),
             content: count.to_string().into(),
             is_error: false,
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
         // A `tool::Result` is always convertable to a `Message`. The `Role` is
@@ -105,7 +104,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             "required": ["letter", "string"],
         }),
-        #[cfg(feature = "prompt-caching")]
         cache_control: None,
     // Inform the assistant about their limitations.
     }).set_system("You are a helpful assistant. You cannot count letters in a word by yourself because you see in tokens, not letters. Use the `count_letters` tool to overcome this limitation.")

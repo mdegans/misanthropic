@@ -3,7 +3,11 @@
 //!
 //! [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 
-use std::{borrow::Cow, num::{NonZeroU16, NonZeroU32}, vec};
+use std::{
+    borrow::Cow,
+    num::{NonZeroU16, NonZeroU32},
+    vec,
+};
 
 use crate::{
     model,
@@ -708,7 +712,6 @@ impl<'a> Prompt<'a> {
     /// [`Sonnet35`]: crate::Model::Sonnet35
     /// [`Opus30`]: crate::Model::Opus30
     /// [`Haiku30`]: crate::Model::Haiku30
-    #[cfg(feature = "prompt-caching")]
     pub fn cache(mut self) -> Self {
         // If there are messages, add a cache breakpoint to the last one.
         if let Some(last) = self.messages.last_mut() {
@@ -1360,7 +1363,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(feature = "prompt-caching")]
     fn test_cache() {
         // Test with nothing to cache. This should be a no-op.
         let request = Prompt::default().cache();
@@ -1372,7 +1374,6 @@ mod tests {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: json!({}),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         });
 
@@ -1516,7 +1517,6 @@ mod tests {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: schema.clone(),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
 
@@ -1615,7 +1615,6 @@ mod tests {
                     },
                     "required": ["host"]
                 }),
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }])
             .set_system("You are a very succinct assistant.")
@@ -1638,7 +1637,6 @@ mod tests {
                     input: json!({
                         "host": "example.com"
                     }),
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),
@@ -1646,7 +1644,6 @@ mod tests {
                     tool_use_id: "abc123".into(),
                     content: "Pinging example.com.".into(),
                     is_error: false,
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),

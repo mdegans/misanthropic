@@ -117,7 +117,6 @@ pub fn handle_tool_call(
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: false,
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into());
@@ -133,7 +132,6 @@ pub fn handle_tool_call(
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: true,
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into());
@@ -144,7 +142,6 @@ pub fn handle_tool_call(
                 tool_use_id: call.id.to_string().into(),
                 content: "Python script timed out.".into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }
             .into());
@@ -155,7 +152,6 @@ pub fn handle_tool_call(
             tool_use_id: call.id.to_string().into(),
             content: "Invalid input.".into(),
             is_error: true,
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
         .into())
@@ -207,7 +203,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
                 "required": ["script"],
             }),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         })
         // Inform the assistant about their limitations.
@@ -248,7 +243,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 tool_use_id: "calibration_000".into(),
                 content: "3".into(),
                 is_error: false,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }.into(),
             (Role::Assistant, r#"The number of r's in "strawberry" is 3.""#).into(),

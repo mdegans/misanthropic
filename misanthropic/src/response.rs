@@ -138,9 +138,7 @@ mod tests {
                 stop_sequence: None,
                 usage: Usage {
                     input_tokens: 1,
-                    #[cfg(feature = "prompt-caching")]
                     cache_creation_input_tokens: Some(2),
-                    #[cfg(feature = "prompt-caching")]
                     cache_read_input_tokens: Some(3),
                     output_tokens: 4,
                 },
@@ -336,18 +334,14 @@ mod tests {
     fn test_usage_add() {
         let mut a = Usage {
             input_tokens: 1,
-            #[cfg(feature = "prompt-caching")]
             cache_creation_input_tokens: Some(2),
-            #[cfg(feature = "prompt-caching")]
             cache_read_input_tokens: Some(3),
             output_tokens: 4,
         };
 
         let b = Usage {
             input_tokens: 5,
-            #[cfg(feature = "prompt-caching")]
             cache_creation_input_tokens: Some(6),
-            #[cfg(feature = "prompt-caching")]
             cache_read_input_tokens: Some(7),
             output_tokens: 8,
         };
@@ -355,9 +349,7 @@ mod tests {
         a += b;
 
         assert_eq!(a.input_tokens, 6);
-        #[cfg(feature = "prompt-caching")]
         assert_eq!(a.cache_creation_input_tokens, Some(8));
-        #[cfg(feature = "prompt-caching")]
         assert_eq!(a.cache_read_input_tokens, Some(10));
         assert_eq!(a.output_tokens, 12);
     }

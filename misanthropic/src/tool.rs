@@ -147,7 +147,6 @@ pub struct Method<'a> {
     /// Set a cache breakpoint. See [`Prompt::cache`] for more information.
     ///
     /// [`Prompt::cache`] crate::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -182,7 +181,6 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             name: Cow<'static, str>,
             description: Cow<'static, str>,
             input_schema: serde_json::Value,
-            #[cfg(feature = "prompt-caching")]
             cache_control: Option<crate::prompt::message::CacheControl>,
         }
 
@@ -192,7 +190,6 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             name,
             description,
             input_schema,
-            #[cfg(feature = "prompt-caching")]
             cache_control,
         } = foreign;
 
@@ -201,7 +198,6 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
                 name,
                 description,
                 schema: input_schema,
-                #[cfg(feature = "prompt-caching")]
                 cache_control,
             },
         })
@@ -221,7 +217,6 @@ impl<'a> MethodBuilder<'a> {
     /// [`cache_control`]: Spec::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
     pub fn cache(mut self) -> Self {
         self.tool.cache_control =
             Some(crate::prompt::message::CacheControl::Ephemeral);
@@ -444,7 +439,6 @@ impl<'a> MethodBuilder<'a> {
             name: Cow::Owned(self.tool.name.into_owned()),
             description: Cow::Owned(self.tool.description.into_owned()),
             schema: self.tool.schema,
-            #[cfg(feature = "prompt-caching")]
             cache_control: self.tool.cache_control,
         }
     }
@@ -475,7 +469,6 @@ impl<'a> Method<'a> {
                 name: name.into(),
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             },
         }
@@ -495,7 +488,6 @@ impl<'a> Method<'a> {
                 "properties": {},
                 "required": []
             }),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
     }
@@ -523,7 +515,6 @@ impl<'a> Method<'a> {
                 },
                 "required": required_array
             }),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         }
     }
@@ -534,7 +525,6 @@ impl<'a> Method<'a> {
     /// [`cache_control`]: Self::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
     pub fn cache(&mut self) -> &mut Self {
         self.cache_control =
             Some(crate::prompt::message::CacheControl::Ephemeral);
@@ -543,7 +533,6 @@ impl<'a> Method<'a> {
 
     /// Returns true if the [`Method`] has a cache breakpoint set (if
     /// `cache_control` is [`Some`]).
-    #[cfg(feature = "prompt-caching")]
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
@@ -569,7 +558,6 @@ impl<'a> Method<'a> {
             name: Cow::Owned(self.name.into_owned()),
             description: Cow::Owned(self.description.into_owned()),
             schema: self.schema,
-            #[cfg(feature = "prompt-caching")]
             cache_control: self.cache_control,
         }
     }
@@ -615,7 +603,6 @@ pub struct Use<'a> {
     /// Use prompt caching. See [`Prompt::cache`] for more information.
     ///
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -628,7 +615,6 @@ impl Use<'_> {
             id: Cow::Owned(self.id.into_owned()),
             name: Cow::Owned(self.name.into_owned()),
             input: self.input,
-            #[cfg(feature = "prompt-caching")]
             cache_control: self.cache_control,
         }
     }
@@ -704,7 +690,6 @@ pub struct Result<'a> {
     /// Use prompt caching. See [`Prompt::cache`] for more information.
     ///
     /// crate::prompt::Prompt::cache
-    #[cfg(feature = "prompt-caching")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
@@ -717,7 +702,6 @@ impl Result<'_> {
             tool_use_id: Cow::Owned(self.tool_use_id.into_owned()),
             content: self.content.into_static(),
             is_error: self.is_error,
-            #[cfg(feature = "prompt-caching")]
             cache_control: self.cache_control,
         }
     }
@@ -899,7 +883,6 @@ mod tests {
             input: serde_json::json!({
                 "test_key": "test_value"
             }),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
 
@@ -1206,7 +1189,6 @@ mod tests {
             tool_use_id: "test_id".into(),
             content: "test_content".into(),
             is_error: false,
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
 
@@ -1221,7 +1203,6 @@ mod tests {
             tool_use_id: "test_id".into(),
             content: "test_content".into(),
             is_error: false,
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         };
 
