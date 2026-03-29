@@ -221,7 +221,6 @@ mod tests {
                     },
                     "required": ["script"],
                 }),
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             }]),
             messages: vec![
@@ -235,7 +234,6 @@ mod tests {
                     input: json!({
                         "script": "print('Hello, world!')",
                     }),
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),
@@ -247,7 +245,6 @@ mod tests {
                     .to_string()
                     .into(),
                     is_error: false,
-                    #[cfg(feature = "prompt-caching")]
                     cache_control: None,
                 }
                 .into(),

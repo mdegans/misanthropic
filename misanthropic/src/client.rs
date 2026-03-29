@@ -67,15 +67,12 @@ pub struct Client {
     pub models_url: Arc<Url>,
 }
 
-/// Claude client. Uses the Messages API and the prompt caching beta.
+/// Claude client. Uses the Messages API.
 #[cfg(feature = "client")]
 impl Client {
     /// Version of the API. This is appended to the header as
     /// "anthropic-version".
     pub const ANTHROPIC_VERSION: &'static str = "2023-06-01";
-    /// Beta we are using. This is appended to the header as "anthropic-beta".
-    #[cfg(feature = "prompt-caching")]
-    pub const BETA: &'static str = "prompt-caching-2024-07-31";
     /// Our user agent.
     pub const USER_AGENT: &'static str =
         concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -113,8 +110,6 @@ impl Client {
             ));
             log::debug!(concat!("Crate version: ", env!("CARGO_PKG_VERSION")));
             log::debug!("Anthropic version: {}", Self::ANTHROPIC_VERSION);
-            #[cfg(feature = "beta")]
-            log::debug!("Anthropic beta: {}", Self::BETA);
         }
 
         // Headers for all requests.
@@ -130,13 +125,6 @@ impl Client {
         headers.insert(
             "anthropic-version",
             reqwest::header::HeaderValue::from_static(Self::ANTHROPIC_VERSION),
-        );
-
-        // Enable prompt caching beta.
-        #[cfg(feature = "prompt-caching")]
-        headers.insert(
-            "anthropic-beta",
-            reqwest::header::HeaderValue::from_static(Self::BETA),
         );
 
         Self {
@@ -561,9 +549,9 @@ impl Client {
             let mut results = HashMap::new();
 
             for line in response.lines() {
-                match serde_json::from_str::<serde_json::Value>(line)
-                    .and_then(|v| serde_json::from_value::<IdentifiedBatchResult>(v))
-                {
+                match serde_json::from_str::<serde_json::Value>(line).and_then(
+                    |v| serde_json::from_value::<IdentifiedBatchResult>(v),
+                ) {
                     Ok(IdentifiedBatchResult { id, result }) => {
                         // We do need to check for this to maintain the Ready
                         // invariant that every result has a corresponding

@@ -105,10 +105,8 @@ pub struct Usage {
     /// Number of input tokens used.
     pub input_tokens: u64,
     /// Number of input tokens used to create the cache entry.
-    #[cfg(feature = "prompt-caching")]
     pub cache_creation_input_tokens: Option<u64>,
     /// Number of input tokens read from the cache.
-    #[cfg(feature = "prompt-caching")]
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
@@ -120,16 +118,14 @@ impl std::ops::Add<Usage> for Usage {
     fn add(self, rhs: Self) -> Self::Output {
         Self {
             input_tokens: self.input_tokens + rhs.input_tokens,
-            #[cfg(feature = "prompt-caching")]
             cache_creation_input_tokens: self
                 .cache_creation_input_tokens
                 .map(|c| c + rhs.cache_creation_input_tokens.unwrap_or(0))
-                .or_else(|| rhs.cache_creation_input_tokens),
-            #[cfg(feature = "prompt-caching")]
+                .or(rhs.cache_creation_input_tokens),
             cache_read_input_tokens: self
                 .cache_read_input_tokens
                 .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
-                .or_else(|| rhs.cache_read_input_tokens),
+                .or(rhs.cache_read_input_tokens),
             output_tokens: self.output_tokens + rhs.output_tokens,
         }
     }
@@ -213,7 +209,6 @@ mod tests {
             id: "id".into(),
             name: "name".into(),
             input: serde_json::json!({}),
-            #[cfg(feature = "prompt-caching")]
             cache_control: None,
         });
         assert!(message.tool_use().is_some());
@@ -260,9 +255,7 @@ mod tests {
             stop_sequence: None,
             usage: Usage {
                 input_tokens: 1,
-                #[cfg(feature = "prompt-caching")]
                 cache_creation_input_tokens: Some(2),
-                #[cfg(feature = "prompt-caching")]
                 cache_read_input_tokens: Some(3),
                 output_tokens: 4,
             },

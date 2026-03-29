@@ -245,7 +245,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -258,7 +257,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'room' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -271,7 +269,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'content' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -290,14 +287,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Memory stored with ID: {} in room '{}'", memory_id, room).into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to store memory: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -310,7 +305,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -323,7 +317,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'query' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -336,7 +329,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: format!("No memories found for query: '{}'", query).into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
@@ -356,7 +348,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: response.into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         }
@@ -365,7 +356,6 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Failed to search memories: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -376,14 +366,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: summary.into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to get summary: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -396,7 +384,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -409,7 +396,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'room1' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -422,7 +408,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'room2' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -433,14 +418,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Rooms '{}' and '{}' connected.", room1, room2).into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to connect rooms: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -463,7 +446,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: response.into(),
                             is_error: false,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         }
                     }
@@ -471,7 +453,6 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Failed to list rooms: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -484,7 +465,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -497,7 +477,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'memory_id1' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -510,7 +489,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'memory_id2' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -523,7 +501,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'relationship_type' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -539,14 +516,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: msg.into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to relate memories: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -559,7 +534,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -572,7 +546,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'memory_id' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -596,7 +569,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: format!("No related memories found for ID '{}'", memory_id).into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
@@ -616,7 +588,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: response.into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         }
@@ -625,7 +596,6 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Failed to find related memories: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -638,7 +608,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -651,7 +620,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'memory_id' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -670,14 +638,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: msg.into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to extract concepts: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -690,7 +656,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -703,7 +668,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'concept_name' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -716,7 +680,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: format!("No memories found for concept: '{}'", concept_name).into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
@@ -736,7 +699,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: response.into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         }
@@ -745,7 +707,6 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Failed to find memories by concept: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -756,14 +717,12 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: stats.into(),
                         is_error: false,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                     Err(err) => tool::Result {
                         tool_use_id: call.id,
                         content: format!("Failed to get graph stats: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -776,7 +735,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Input must be an object".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -789,7 +747,6 @@ impl Tool for MemoryPalace {
                             tool_use_id: call.id,
                             content: "Missing required 'memory_id' parameter".into(),
                             is_error: true,
-                            #[cfg(feature = "prompt-caching")]
                             cache_control: None,
                         };
                     }
@@ -818,7 +775,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: format!("No memories found within distance {} from ID '{}'", max_distance, memory_id).into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         } else {
@@ -839,7 +795,6 @@ impl Tool for MemoryPalace {
                                 tool_use_id: call.id,
                                 content: response.into(),
                                 is_error: false,
-                                #[cfg(feature = "prompt-caching")]
                                 cache_control: None,
                             }
                         }
@@ -848,7 +803,6 @@ impl Tool for MemoryPalace {
                         tool_use_id: call.id,
                         content: format!("Failed to find memories via BFS: {}", err).into(),
                         is_error: true,
-                        #[cfg(feature = "prompt-caching")]
                         cache_control: None,
                     },
                 }
@@ -861,7 +815,6 @@ impl Tool for MemoryPalace {
                 )
                 .into(),
                 is_error: true,
-                #[cfg(feature = "prompt-caching")]
                 cache_control: None,
             },
         }

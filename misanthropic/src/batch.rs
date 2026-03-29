@@ -682,11 +682,12 @@ impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
 
         match type_str {
             "succeeded" => {
-                let message = value
-                    .get("message")
-                    .ok_or_else(|| serde::de::Error::missing_field("message"))?;
+                let message = value.get("message").ok_or_else(|| {
+                    serde::de::Error::missing_field("message")
+                })?;
                 let msg: response::Message<'a> =
-                    serde_json::from_value(message.clone()).map_err(serde::de::Error::custom)?;
+                    serde_json::from_value(message.clone())
+                        .map_err(serde::de::Error::custom)?;
                 Ok(BatchResult::Ok(msg))
             }
             "errored" => {
@@ -694,7 +695,8 @@ impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
                     .get("error")
                     .ok_or_else(|| serde::de::Error::missing_field("error"))?;
                 let err: client::AnthropicError =
-                    serde_json::from_value(error.clone()).map_err(serde::de::Error::custom)?;
+                    serde_json::from_value(error.clone())
+                        .map_err(serde::de::Error::custom)?;
                 Ok(BatchResult::Error(err))
             }
             "canceled" => Ok(BatchResult::Canceled),

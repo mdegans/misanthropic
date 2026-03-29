@@ -52,6 +52,12 @@ pub mod html;
 #[cfg(feature = "cot")]
 pub mod cot;
 
+#[cfg(feature = "openai")]
+#[allow(missing_docs)]
+/// OpenAI-compatible types and conversions for use with Ollama and other
+/// OpenAI-compatible endpoints.
+pub mod openai;
+
 #[cfg(not(feature = "langsan"))]
 pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
 #[cfg(feature = "langsan")]

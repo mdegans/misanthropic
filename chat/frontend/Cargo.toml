@@ -20,7 +20,6 @@ misanthropic = { path = "../../misanthropic", default-features = false, features
     "dioxus",
     "html",
     "notepad",
-    "prompt-caching",
 ] }
 uuid = { version = "0.8", features = ["v4"], default-features = false }
 getrandom = { version = "0.2", features = ["js"], default-features = false }
