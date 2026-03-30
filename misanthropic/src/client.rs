@@ -85,6 +85,9 @@ impl Client {
     /// Default URL for the Models API.
     pub const MODELS_URL: &'static str =
         "https://api.anthropic.com/v1/models?limit=1000";
+    /// Default URL for the token counting API.
+    pub const COUNT_TOKENS_URL: &'static str =
+        "https://api.anthropic.com/v1/messages/count_tokens";
     /// Default jitter in milliseconds for rate limiting (max).
     #[cfg(feature = "rate-limiting")]
     pub const DEFAULT_JITTER_MS: u64 = 20;
@@ -601,6 +604,27 @@ impl Client {
 
         Ok(Batch::Pending(pending))
     }
+
+    /// Count the number of input tokens in a prompt without creating a message.
+    ///
+    /// This calls the `/v1/messages/count_tokens` endpoint and returns the
+    /// `input_tokens` count. Useful for estimating costs or making decisions
+    /// about prompt construction before sending a full request.
+    pub async fn count_tokens<P>(&self, prompt: P) -> Result<u32>
+    where
+        P: Serialize,
+    {
+        #[derive(Deserialize)]
+        struct TokenCount {
+            input_tokens: u32,
+        }
+
+        let response =
+            self.post(Self::COUNT_TOKENS_URL, prompt).await?;
+        let count: TokenCount = response.json().await?;
+
+        Ok(count.input_tokens)
+    }
 }
 
 #[cfg(feature = "client")]
@@ -930,6 +954,27 @@ mod tests {
             .unwrap();
 
         assert_eq!(msg, "🙏");
+    }
+
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "This test requires a real API key."]
+    async fn test_client_count_tokens() {
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let count = client
+            .count_tokens(Prompt::default().set_messages([(
+                Role::User,
+                "Hello, world!",
+            )]))
+            .await
+            .unwrap();
+
+        assert!(count > 0, "Token count should be positive");
     }
 
     #[cfg(feature = "client")]
