@@ -65,6 +65,9 @@ pub struct Client {
     pub batch_url: Arc<Url>,
     /// Custom endpoint for the Models API. Defaults to [`Self::MODELS_URL`].
     pub models_url: Arc<Url>,
+    /// Custom endpoint for the token counting API. Defaults to
+    /// [`Self::COUNT_TOKENS_URL`].
+    pub count_tokens_url: Arc<Url>,
 }
 
 /// Claude client. Uses the Messages API.
@@ -149,7 +152,43 @@ impl Client {
             messages_url: Arc::new(Url::parse(Self::MESSAGES_URL).unwrap()),
             batch_url: Arc::new(Url::parse(Self::BATCH_URL).unwrap()),
             models_url: Arc::new(Url::parse(Self::MODELS_URL).unwrap()),
+            count_tokens_url: Arc::new(
+                Url::parse(Self::COUNT_TOKENS_URL).unwrap(),
+            ),
         }
+    }
+
+    /// Set a custom base URL for all API endpoints.
+    ///
+    /// Replaces the scheme, host, and port of all endpoint URLs while
+    /// preserving their paths and query strings. Useful for pointing at
+    /// Ollama's Anthropic-compatible endpoint, proxies, or test servers.
+    ///
+    /// ```rust,no_run
+    /// # use misanthropic::Client;
+    /// let client = Client::new("x".repeat(108))?
+    ///     .with_base_url("http://localhost:11434")?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn with_base_url(
+        mut self,
+        base: &str,
+    ) -> std::result::Result<Self, url::ParseError> {
+        let base = Url::parse(base)?;
+
+        let rebase = |endpoint: &Url| -> Arc<Url> {
+            let mut new = base.clone();
+            new.set_path(endpoint.path());
+            new.set_query(endpoint.query());
+            Arc::new(new)
+        };
+
+        self.messages_url = rebase(&self.messages_url);
+        self.batch_url = rebase(&self.batch_url);
+        self.models_url = rebase(&self.models_url);
+        self.count_tokens_url = rebase(&self.count_tokens_url);
+
+        Ok(self)
     }
 
     /// Set [`Quota`] for the [`RateLimiter`].
@@ -620,7 +659,7 @@ impl Client {
         }
 
         let response =
-            self.post(Self::COUNT_TOKENS_URL, prompt).await?;
+            self.post(self.count_tokens_url.as_str(), prompt).await?;
         let count: TokenCount = response.json().await?;
 
         Ok(count.input_tokens)
@@ -928,6 +967,34 @@ mod tests {
         assert!(message.to_string().contains("🙏"));
     }
 
+    #[test]
+    #[cfg(feature = "client")]
+    fn test_with_base_url() {
+        let client = Client::new(FAKE_API_KEY.to_string())
+            .unwrap()
+            .with_base_url("http://localhost:11434")
+            .unwrap();
+
+        assert_eq!(
+            client.messages_url.as_str(),
+            "http://localhost:11434/v1/messages"
+        );
+        assert_eq!(
+            client.batch_url.as_str(),
+            "http://localhost:11434/v1/messages/batches/"
+        );
+        assert_eq!(client.models_url.path(), "/v1/models");
+        assert_eq!(client.models_url.query(), Some("limit=1000"));
+        assert_eq!(
+            client.count_tokens_url.as_str(),
+            "http://localhost:11434/v1/messages/count_tokens"
+        );
+
+        // Invalid URL should error.
+        let client = Client::new(FAKE_API_KEY.to_string()).unwrap();
+        assert!(client.with_base_url("not a url").is_err());
+    }
+
     #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
@@ -967,10 +1034,9 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let count = client
-            .count_tokens(Prompt::default().set_messages([(
-                Role::User,
-                "Hello, world!",
-            )]))
+            .count_tokens(
+                Prompt::default().set_messages([(Role::User, "Hello, world!")]),
+            )
             .await
             .unwrap();
 
