@@ -61,6 +61,25 @@ pub struct ChatCompletionRequest {
     /// Whether to stream the response.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// Reasoning effort for models that support extended thinking (e.g. Ollama
+    /// with cogito). Ollama maps this to its `think` parameter — `None` variant
+    /// disables thinking entirely.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+}
+
+/// Reasoning effort level for extended thinking models.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    /// No reasoning/thinking — fastest, lowest quality.
+    None,
+    /// Minimal reasoning.
+    Low,
+    /// Moderate reasoning.
+    Medium,
+    /// Full reasoning — slowest, highest quality.
+    High,
 }
 
 /// A message in the chat completions format.
@@ -444,6 +463,7 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
                 .as_ref()
                 .map(|seqs| seqs.iter().map(|s| s.to_string()).collect()),
             stream: prompt.stream,
+            reasoning_effort: None,
         }
     }
 }
@@ -1050,6 +1070,7 @@ mod tests {
             top_p: None,
             stop: None,
             stream: None,
+            reasoning_effort: None,
         };
 
         let json = serde_json::to_value(&req).unwrap();
