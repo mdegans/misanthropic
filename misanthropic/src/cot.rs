@@ -12,10 +12,10 @@ use crate::prompt::{
 
 /// Supported start tags for [`Thought`]s.
 pub const DEFAULT_START_TAGS: &[&str] =
-    &["<thinking>", "<inner-voice>", "<thought>"];
+    &["<thinking>", "<think>", "<inner-voice>", "<thought>"];
 /// Supported end tags for [`Thought`]s.
 pub const DEFAULT_END_TAGS: &[&str] =
-    &["</thinking>", "</inner-voice>", "</thought>"];
+    &["</thinking>", "</think>", "</inner-voice>", "</thought>"];
 
 /// Contents of a `<thinking>` element.
 #[derive(Debug, Clone, Deref, derive_more::Display)]
