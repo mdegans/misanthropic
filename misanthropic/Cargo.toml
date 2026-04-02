@@ -88,6 +88,8 @@ langsan = { version = "0", features = [
     "serde",
     "emoji",
     "verbose",
+    "general-punctuation",
+    "arrows",
 ], optional = true }
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
