@@ -1248,7 +1248,7 @@ impl<'a> Block<'a> {
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
             } => {
-                *cache_control = Some(CacheControl::Ephemeral);
+                *cache_control = Some(CacheControl::ephemeral());
 
                 true
             }
@@ -1482,15 +1482,61 @@ impl From<image::DynamicImage> for Block<'_> {
     }
 }
 
+/// Time-to-live for prompt cache entries.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum CacheTtl {
+    /// Cache for 1 hour. Costs 2x base input token price.
+    #[serde(rename = "1h")]
+    OneHour,
+}
+
+impl std::fmt::Display for CacheTtl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CacheTtl::OneHour => write!(f, "1h"),
+        }
+    }
+}
+
 /// Cache control for prompt caching.
-#[derive(Clone, Default, Debug, Serialize, Deserialize, Hash)]
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
 pub enum CacheControl {
-    /// Caches for 5 minutes.
-    #[default]
-    Ephemeral,
+    /// Ephemeral cache. Default TTL is 5 minutes; set `ttl` for longer
+    /// durations.
+    Ephemeral {
+        /// Optional TTL override. When `None`, the default 5-minute cache
+        /// is used. Set to [`CacheTtl::OneHour`] for a 1-hour cache at 2x
+        /// base input token price.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        ttl: Option<CacheTtl>,
+    },
+}
+
+impl Default for CacheControl {
+    fn default() -> Self {
+        CacheControl::Ephemeral { ttl: None }
+    }
+}
+
+impl CacheControl {
+    /// Create an ephemeral cache control with the default 5-minute TTL.
+    pub fn ephemeral() -> Self {
+        CacheControl::Ephemeral { ttl: None }
+    }
+
+    /// Create an ephemeral cache control with a 1-hour TTL.
+    ///
+    /// This costs 2x base input token price compared to the default
+    /// 5-minute cache.
+    pub fn one_hour() -> Self {
+        CacheControl::Ephemeral {
+            ttl: Some(CacheTtl::OneHour),
+        }
+    }
 }
 
 /// Image content for [`MultiPart`] [`Message`]s.
@@ -2203,5 +2249,67 @@ mod tests {
         let ret: Result<AssistantMessage, _> =
             serde_json::from_str(&valid_json);
         assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_cache_control_default_serialization() {
+        // Default ephemeral (5-minute) should serialize without ttl field
+        let cc = CacheControl::default();
+        let json = serde_json::to_string(&cc).unwrap();
+        assert_eq!(json, r#"{"type":"ephemeral"}"#);
+    }
+
+    #[test]
+    fn test_cache_control_ephemeral_convenience() {
+        // ephemeral() convenience method should match default
+        let cc = CacheControl::ephemeral();
+        let json = serde_json::to_string(&cc).unwrap();
+        assert_eq!(json, r#"{"type":"ephemeral"}"#);
+    }
+
+    #[test]
+    fn test_cache_control_one_hour_serialization() {
+        // 1-hour TTL should include the ttl field
+        let cc = CacheControl::one_hour();
+        let json = serde_json::to_string(&cc).unwrap();
+        assert_eq!(json, r#"{"type":"ephemeral","ttl":"1h"}"#);
+    }
+
+    #[test]
+    fn test_cache_control_default_deserialization() {
+        // Deserialize without ttl field
+        let json = r#"{"type":"ephemeral"}"#;
+        let cc: CacheControl = serde_json::from_str(json).unwrap();
+        assert_eq!(cc, CacheControl::Ephemeral { ttl: None });
+    }
+
+    #[test]
+    fn test_cache_control_one_hour_deserialization() {
+        // Deserialize with ttl field
+        let json = r#"{"type":"ephemeral","ttl":"1h"}"#;
+        let cc: CacheControl = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cc,
+            CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            }
+        );
+    }
+
+    #[test]
+    fn test_cache_control_roundtrip() {
+        // Roundtrip for default
+        let original = CacheControl::ephemeral();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: CacheControl =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
+
+        // Roundtrip for 1-hour
+        let original = CacheControl::one_hour();
+        let json = serde_json::to_string(&original).unwrap();
+        let deserialized: CacheControl =
+            serde_json::from_str(&json).unwrap();
+        assert_eq!(original, deserialized);
     }
 }

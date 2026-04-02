@@ -219,7 +219,7 @@ impl<'a> MethodBuilder<'a> {
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
     pub fn cache(mut self) -> Self {
         self.tool.cache_control =
-            Some(crate::prompt::message::CacheControl::Ephemeral);
+            Some(crate::prompt::message::CacheControl::ephemeral());
         self
     }
 
@@ -527,7 +527,7 @@ impl<'a> Method<'a> {
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
     pub fn cache(&mut self) -> &mut Self {
         self.cache_control =
-            Some(crate::prompt::message::CacheControl::Ephemeral);
+            Some(crate::prompt::message::CacheControl::ephemeral());
         self
     }
 
