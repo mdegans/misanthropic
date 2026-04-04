@@ -30,7 +30,7 @@ pub mod model;
 pub use model::{AnthropicModel, Model};
 
 pub mod prompt;
-pub use prompt::Prompt;
+pub use prompt::{CachedPrompt, Prompt};
 
 pub mod stream;
 pub use stream::Stream;
