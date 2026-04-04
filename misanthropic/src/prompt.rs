@@ -25,6 +25,9 @@ pub use message::{AssistantMessage, Message, UserMessage};
 pub mod thinking;
 pub use thinking::Thinking;
 
+pub mod cached;
+pub use cached::CachedPrompt;
+
 /// Request for the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
