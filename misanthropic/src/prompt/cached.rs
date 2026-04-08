@@ -137,6 +137,61 @@ impl<'a> CachedPrompt<'a> {
         self.inner = taken.cache();
     }
 
+    /// Add a cache breakpoint on the last message, keeping at most `n`
+    /// message-level breakpoints using a windowed strategy: keep the
+    /// **first** and the **last (n-1)**, drop everything in between.
+    ///
+    /// The first breakpoint anchors the start of messages for the 20-block
+    /// lookback window. The trailing breakpoints maximize cache hits from
+    /// the most recent rounds.
+    ///
+    /// Breakpoints on tools and system blocks are untouched (they are part
+    /// of the immutable prefix).
+    ///
+    /// # Budget accounting
+    ///
+    /// The API limits explicit `cache_control` blocks to 4 total. This
+    /// method counts at message granularity: a message with any cached
+    /// block counts as one toward `n`. When a message is dropped from
+    /// the window, **all** its cached blocks are cleared. In normal usage
+    /// ([`cache`] sets one breakpoint on the last block), each message has
+    /// at most one cached block, so message-level and block-level counts
+    /// are equivalent.
+    ///
+    /// # Typical usage
+    ///
+    /// Call [`cache`] once after building the initial prompt, then
+    /// `cache_windowed(3)` after each tool-use round. With 1 breakpoint
+    /// on the tools/system prefix, this uses all 4 API slots optimally.
+    ///
+    /// [`cache`]: CachedPrompt::cache
+    pub fn cache_windowed(&mut self, n: usize) {
+        // 1. Add breakpoint on the last message
+        if let Some(last) = self.inner.messages.last_mut() {
+            last.content.cache();
+        }
+
+        // 2. Find all message-level breakpoint indices
+        let cached_indices: Vec<usize> = self
+            .inner
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, msg)| msg.content.has_cache())
+            .map(|(i, _)| i)
+            .collect();
+
+        // 3. If over budget, keep first + last (n-1), drop the middle
+        if cached_indices.len() > n {
+            let keep_trailing = n.saturating_sub(1);
+            let drop_start = 1; // skip first
+            let drop_end = cached_indices.len() - keep_trailing;
+            for &idx in &cached_indices[drop_start..drop_end] {
+                self.inner.messages[idx].content.uncache();
+            }
+        }
+    }
+
     /// Set `max_tokens`.  Not part of the cache key.
     pub fn set_max_tokens(&mut self, max_tokens: NonZeroU32) {
         self.inner.max_tokens = max_tokens;
@@ -376,5 +431,91 @@ mod tests {
         assert_eq!(cached.max_tokens, NonZeroU32::new(1024).unwrap());
         assert!(cached.tool_choice.is_none());
         assert!(cached.functions.is_none());
+    }
+
+    #[test]
+    fn cache_windowed_keeps_first_and_last() {
+        let prompt = Prompt::default();
+        let mut cached = CachedPrompt::uncached(prompt);
+
+        // Add 7 user/assistant message pairs (14 messages total)
+        for i in 0..7 {
+            cached
+                .push_message((Role::User, format!("user {i}")))
+                .unwrap();
+            cached
+                .push_message((Role::Assistant, format!("asst {i}")))
+                .unwrap();
+            // Mark end of each "round" with a cache breakpoint
+            cached.cache();
+        }
+
+        // Should have 7 cached messages (the last of each pair)
+        let cached_count = cached
+            .messages
+            .iter()
+            .filter(|m| m.content.has_cache())
+            .count();
+        assert_eq!(cached_count, 7);
+
+        // Now apply windowed(3) — should keep first + last 2 = 3
+        cached.cache_windowed(3);
+
+        let cached_indices: Vec<usize> = cached
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.has_cache())
+            .map(|(i, _)| i)
+            .collect();
+
+        assert_eq!(
+            cached_indices.len(),
+            3,
+            "should have exactly 3 breakpoints"
+        );
+        // First breakpoint is the earliest cached message
+        assert_eq!(
+            cached_indices[0], 1,
+            "first breakpoint should be message 1 (asst 0)"
+        );
+        // Last two should be the most recent
+        assert_eq!(
+            cached_indices[cached_indices.len() - 1],
+            13,
+            "last breakpoint should be the final message"
+        );
+    }
+
+    #[test]
+    fn cache_windowed_no_op_when_under_budget() {
+        let prompt = Prompt::default();
+        let mut cached = CachedPrompt::uncached(prompt);
+
+        cached.push_message((Role::User, "hello")).unwrap();
+        cached.push_message((Role::Assistant, "hi")).unwrap();
+        cached.cache();
+
+        // Only 1 cached message, budget is 3 — should be a no-op
+        cached.cache_windowed(3);
+
+        let cached_count = cached
+            .messages
+            .iter()
+            .filter(|m| m.content.has_cache())
+            .count();
+        assert_eq!(cached_count, 1);
+    }
+
+    #[test]
+    fn uncache_removes_breakpoint() {
+        use crate::prompt::message::Content;
+
+        let mut content = Content::text("hello");
+        content.cache();
+        assert!(content.has_cache());
+
+        content.uncache();
+        assert!(!content.has_cache());
     }
 }
