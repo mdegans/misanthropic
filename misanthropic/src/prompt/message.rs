@@ -669,6 +669,24 @@ impl<'a> Content<'a> {
         }
     }
 
+    /// Remove all cache breakpoints from all blocks in this content.
+    pub fn uncache(&mut self) {
+        if let Content::MultiPart(parts) = self {
+            for block in parts {
+                block.uncache();
+            }
+        }
+        // SinglePart has no cache_control — nothing to do.
+    }
+
+    /// Returns `true` if any block in this content has a cache breakpoint.
+    pub fn has_cache(&self) -> bool {
+        match self {
+            Content::MultiPart(parts) => parts.iter().any(|b| b.is_cached()),
+            Content::SinglePart(_) => false,
+        }
+    }
+
     /// Get the last [`Block`] in the [`Content`]. Returns [`None`] if the
     /// [`Content`] is empty or [`SinglePart`].
     ///
@@ -1254,6 +1272,28 @@ impl<'a> Block<'a> {
             }
             // These are automatically cached.
             // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
+            Self::Thought { .. } | Self::RedactedThought { .. } => false,
+        }
+    }
+
+    /// Remove the cache breakpoint from this block. Returns `true` if a
+    /// breakpoint was removed.
+    pub fn uncache(&mut self) -> bool {
+        use crate::tool;
+
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::Image { cache_control, .. }
+            | Self::ToolUse {
+                call: tool::Use { cache_control, .. },
+            }
+            | Self::ToolResult {
+                result: tool::Result { cache_control, .. },
+            } => {
+                let was_cached = cache_control.is_some();
+                *cache_control = None;
+                was_cached
+            }
             Self::Thought { .. } | Self::RedactedThought { .. } => false,
         }
     }
@@ -2301,15 +2341,13 @@ mod tests {
         // Roundtrip for default
         let original = CacheControl::ephemeral();
         let json = serde_json::to_string(&original).unwrap();
-        let deserialized: CacheControl =
-            serde_json::from_str(&json).unwrap();
+        let deserialized: CacheControl = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
 
         // Roundtrip for 1-hour
         let original = CacheControl::one_hour();
         let json = serde_json::to_string(&original).unwrap();
-        let deserialized: CacheControl =
-            serde_json::from_str(&json).unwrap();
+        let deserialized: CacheControl = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
     }
 }
