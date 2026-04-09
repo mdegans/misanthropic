@@ -1,52 +1,60 @@
 //! Batch [`Requests`] and [`Response`]s.
+//!
+//! Generic over the prompt type `P: Serialize` so callers can submit
+//! [`Prompt`], [`CachedPrompt`], or any other serializable prompt wrapper
+//! without conversion.
+//!
+//! [`Prompt`]: crate::Prompt
+//! [`CachedPrompt`]: crate::CachedPrompt
 use std::{collections::HashMap, num::NonZeroU16, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use reqwest::Url;
 use serde::{Deserialize, Serialize, ser::SerializeSeq};
 
-use crate::{Prompt, client, response};
+use crate::{client, response};
 
-/// An immutable map of [`Id`] to [`Prompt`]. Part of a [`Batch`] returned by
+/// An immutable map of [`Id`] to prompts. Part of a [`Batch`] returned by
 /// [`Client::batch`]. Unordered. O(1) lookup by [`Id`].
+///
+/// The type parameter `P` is the prompt type — typically
+/// [`Prompt`](crate::Prompt) or [`CachedPrompt`](crate::CachedPrompt).
 ///
 /// # Note:
 /// - The user cannot mutate this, but the API can. For example, [`Ready`] has
-///   methods to remove [`Prompt`]s with successful, errored, canceled, or
+///   methods to remove prompts with successful, errored, canceled, or
 ///   expired results.
 ///
 /// [`Client::batch`]: crate::Client::batch
 /// [`Client`]: crate::Client
 #[derive(derive_more::Deref)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Prompts<'a> {
-    pub(crate) prompts: HashMap<Id, Prompt<'a>>,
+pub struct Prompts<P> {
+    pub(crate) prompts: HashMap<Id, P>,
 }
 
-impl std::fmt::Debug for Prompts<'_> {
-    // If we inplemented this the spew would be huge. It's not useful. Use
-    // the serialize representation instead if debug is really needed.
+impl<P> std::fmt::Debug for Prompts<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(concat!(stringify!(Prompts), " { ... }"))
     }
 }
 
-impl<'a> Prompts<'a> {
-    /// Get a [`Prompt`] by its [`Id`]. Use [`Prompts::keys`] to get all IDs or
-    /// [`Prompts::values`] to get all [`Prompt`]s.
+impl<P> Prompts<P> {
+    /// Get a prompt by its [`Id`]. Use [`Prompts::keys`] to get all IDs or
+    /// [`Prompts::values`] to get all prompts.
     ///
     /// # Note:
     /// - A [`uuid::Uuid`] will also work here.
-    pub fn get_id<I>(&self, id: I) -> Option<&Prompt<'a>>
+    pub fn get_id<I>(&self, id: I) -> Option<&P>
     where
         I: Into<Id>,
     {
         self.prompts.get(&id.into())
     }
 
-    /// Try to get a [`Prompt`] by string ID. Returns an error if the string is
+    /// Try to get a prompt by string ID. Returns an error if the string is
     /// not a valid UUID. Prefer using [`Prompts::get_id`] if possible.
-    pub fn try_get<I>(&self, id: I) -> Result<Option<&Prompt<'a>>, uuid::Error>
+    pub fn try_get<I>(&self, id: I) -> Result<Option<&P>, uuid::Error>
     where
         I: AsRef<str>,
     {
@@ -54,33 +62,19 @@ impl<'a> Prompts<'a> {
         Ok(self.get(&Id::from_str(s)?))
     }
 
-    /// Convert into the inner [`HashMap`] of [`Prompt`]s. There is no going
+    /// Convert into the inner [`HashMap`] of prompts. There is no going
     /// back from this. A [`Prompts`] may only be created by the [`Client`].
     ///
     /// [`Client`]: crate::Client
-    pub fn into_inner(self) -> HashMap<Id, Prompt<'a>> {
+    pub fn into_inner(self) -> HashMap<Id, P> {
         self.prompts
-    }
-
-    /// Convert into a [`Prompts`] with a static lifetime by taking ownership of
-    /// any [`Cow`] fields.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    // Yes, there is an actual use case for this. It's not just for symmetry.
-    pub fn into_static(self) -> Prompts<'static> {
-        let prompts: HashMap<Id, Prompt<'static>> = self
-            .prompts
-            .into_iter()
-            .map(|(id, prompt)| (id, prompt.into_static()))
-            .collect();
-        Prompts { prompts }
     }
 }
 
-impl<'a> FromIterator<Prompt<'a>> for Prompts<'a> {
+impl<P> FromIterator<P> for Prompts<P> {
     fn from_iter<I>(iter: I) -> Self
     where
-        I: IntoIterator<Item = Prompt<'a>>,
+        I: IntoIterator<Item = P>,
     {
         Prompts {
             prompts: iter
@@ -91,13 +85,13 @@ impl<'a> FromIterator<Prompt<'a>> for Prompts<'a> {
     }
 }
 
-impl<'a, I> FromIterator<(I, Prompt<'a>)> for Prompts<'a>
+impl<P, I> FromIterator<(I, P)> for Prompts<P>
 where
     I: Into<Id>,
 {
     fn from_iter<I2>(iter: I2) -> Self
     where
-        I2: IntoIterator<Item = (I, Prompt<'a>)>,
+        I2: IntoIterator<Item = (I, P)>,
     {
         Prompts {
             prompts: iter
@@ -108,25 +102,25 @@ where
     }
 }
 
-impl<'a> IntoIterator for Prompts<'a> {
-    type Item = (Id, Prompt<'a>);
-    type IntoIter = std::collections::hash_map::IntoIter<Id, Prompt<'a>>;
+impl<P> IntoIterator for Prompts<P> {
+    type Item = (Id, P);
+    type IntoIter = std::collections::hash_map::IntoIter<Id, P>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.prompts.into_iter()
     }
 }
 
-impl<'a> IntoIterator for &'a Prompts<'a> {
-    type Item = (&'a Id, &'a Prompt<'a>);
-    type IntoIter = std::collections::hash_map::Iter<'a, Id, Prompt<'a>>;
+impl<'a, P> IntoIterator for &'a Prompts<P> {
+    type Item = (&'a Id, &'a P);
+    type IntoIter = std::collections::hash_map::Iter<'a, Id, P>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.prompts.iter()
     }
 }
 
-impl Serialize for Prompts<'_> {
+impl<P: Serialize> Serialize for Prompts<P> {
     /// Serialize the [`Prompts`] as a list of [`Request`]s, which is what the
     /// API expects. The data will not be [`Clone`]d.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
@@ -135,17 +129,17 @@ impl Serialize for Prompts<'_> {
     {
         // Outer wrapper to put the { "requests": [ ... ] }
         #[derive(Serialize)]
-        struct Outer<'r, 'a> {
-            requests: Inner<'r, 'a>,
+        struct Outer<'r, P: Serialize> {
+            requests: Inner<'r, P>,
         }
 
         // Inner struct to serialize the actual sequence.
-        struct Inner<'r, 'a> {
-            prompts: &'r Prompts<'a>,
+        struct Inner<'r, P> {
+            prompts: &'r Prompts<P>,
         }
 
         // We serialize Prompts as a sequence of Requests. No allocations.
-        impl Serialize for Inner<'_, '_> {
+        impl<P: Serialize> Serialize for Inner<'_, P> {
             fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
             where
                 S: serde::Serializer,
@@ -168,7 +162,7 @@ impl Serialize for Prompts<'_> {
     }
 }
 
-/// [`Id`] of a [`Prompt`] in [`Prompts`]. Wrapper around a [`uuid::Uuid`].
+/// [`Id`] of a prompt in [`Prompts`]. Wrapper around a [`uuid::Uuid`].
 #[derive(
     Clone,
     Copy,
@@ -211,16 +205,16 @@ impl FromStr for Id {
     }
 }
 
-/// An individual `Request` in a batch. A [`Prompt`] with a custom [`Id`]
+/// An individual `Request` in a batch. A prompt with a custom [`Id`]
 /// (UUID). The only way to create a [`Request`] is through the [`Client`].
 ///
 /// [`Client`]: crate::Client
 #[derive(Serialize)]
-struct Request<'r, 'a> {
+struct Request<'r, P: Serialize> {
     #[serde(rename = "custom_id")]
     id: &'r Id,
     #[serde(rename = "params")]
-    prompt: &'r Prompt<'a>,
+    prompt: &'r P,
 }
 
 /// An Anthropic `message_batch` response with [`Batch`] metadata.
@@ -281,17 +275,17 @@ pub struct Stats {
     pub expired: u32,
 }
 
-/// A `Batch` of [`Prompts`] that can be in one of two states: [`Pending`] or
+/// A `Batch` of prompts that can be in one of two states: [`Pending`] or
 /// [`Ready`]. Because Anthropic has no way to call back to the client, the user
 /// must poll the API using [`Client::batch_poll`] until the Batch is [`Ready`].
 ///
 /// [`Client::batch_poll`]: crate::Client::batch_poll
 /// [`Batch::is_ready`].
 // Anthropic should really add a webhook or something.
-#[derive(Serialize, derive_more::IsVariant)]
-pub enum Batch<'a> {
+#[derive(derive_more::IsVariant)]
+pub enum Batch<P> {
     /// Needs more [`Client::batch_poll`]ing.
-    Pending(Pending<'a>),
+    Pending(Pending<P>),
     /// Results are [`Ready`]. See [`Ready::get_result`] for getting individual
     /// prompt completions.
     ///
@@ -299,29 +293,54 @@ pub enum Batch<'a> {
     /// - They are not guaranteed to be complete. Some requests might have been
     ///   canceled or expired. You will have to re-submit those. See [`Ready`]
     ///   for methods to remove them for resubmission.
-    Ready(Ready<'a>),
+    Ready(Ready<P>),
 }
 
-/// A pending [`Batch`] containing [`Prompts`] and an [`Meta`]data with
+// Manual Serialize: only Pending needs to be serializable (for polling).
+// Ready contains results which we don't need to re-serialize.
+impl<P: Serialize> Serialize for Batch<P> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Batch::Pending(p) => p.serialize(serializer),
+            Batch::Ready(r) => r.serialize(serializer),
+        }
+    }
+}
+
+/// A pending [`Batch`] containing prompts and [`Meta`]data with
 /// processing details. Can only be created by [`Client::batch`]. Can only be
 /// mutated by polling the API with [`Client::batch_poll`].
 ///
 /// [`Client::batch`]: crate::Client::batch
 /// [`Client::batch_poll`]: crate::Client::batch_poll
-#[derive(Serialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Pending<'a> {
-    pub(crate) prompts: Prompts<'a>,
+pub struct Pending<P> {
+    pub(crate) prompts: Prompts<P>,
     pub(crate) meta: Meta,
 }
 
-impl<'a> Pending<'a> {
+// Manual Serialize: only needed when P: Serialize (for submitting).
+impl<P: Serialize> Serialize for Pending<P> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        // Serialize just the prompts (the API submission format).
+        // Meta is handled separately by the client.
+        self.prompts.serialize(serializer)
+    }
+}
+
+impl<P> Pending<P> {
     /// Returns the `message_batch` [`Meta`]data of the batch.
     pub fn meta(&self) -> &Meta {
         &self.meta
     }
 
-    /// Returns the [`Status`] of the [`Prompts`] batch, last polled.
+    /// Returns the [`Status`] of the batch, last polled.
     pub fn status(&self) -> Status {
         self.meta.status
     }
@@ -339,55 +358,55 @@ impl<'a> Pending<'a> {
 
     /// Get the [`Prompts`] from the response. This is a map-like interface.
     /// The [`Prompts`] are immutable.
-    pub fn prompts(&self) -> &Prompts<'a> {
+    pub fn prompts(&self) -> &Prompts<P> {
         &self.prompts
     }
 
     /// Decompose the batch into its parts.
-    pub fn decompose(self) -> (Prompts<'a>, Meta) {
+    pub fn decompose(self) -> (Prompts<P>, Meta) {
         (self.prompts, self.meta)
     }
+}
 
-    /// Convert to static lifetime. May copy data if not already owned.
-    pub fn into_static(self) -> Pending<'static> {
-        let prompts = self.prompts.into_static();
-        let details = self.meta;
-        Pending {
-            prompts,
-            meta: details,
-        }
+/// A completed batch of prompts with [`BatchResult`]s.
+pub struct Ready<P> {
+    /// The prompts that were processed. It is guaranteed that every [`Id`] in
+    /// `results` is in `pending.prompts`.
+    pub(crate) pending: Pending<P>,
+    /// The results of processing the prompts. It is guaranteed that every
+    /// [`Id`] in `results` is in `pending.prompts`.
+    pub(crate) results: HashMap<Id, BatchResult>,
+}
+
+// Manual Serialize for Ready (P may or may not be Serialize at this point).
+impl<P: Serialize> Serialize for Ready<P> {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("Ready", 2)?;
+        s.serialize_field("pending", &self.pending)?;
+        s.serialize_field("results", &self.results)?;
+        s.end()
     }
 }
 
-/// A completed batch of [`Prompts`] with [`BatchResult`]s.
-#[derive(Serialize)]
-pub struct Ready<'a> {
-    /// The [`Prompts`] that were processed. It is guaranteed that every [`Id`] in
-    /// `results` is in `pending.prompts`.
-    pub(crate) pending: Pending<'a>,
-    /// The results of processing the [`Prompts`]. It is guaranteed that every
-    /// [`Id`] in [`results`] is in [`pending.prompts`].
-    ///
-    /// [`results`]: Ready::results
-    /// [`pending.prompts`]: Pending::prompts
-    pub(crate) results: HashMap<Id, BatchResult<'a>>,
-}
-
-impl<'a> Ready<'a> {
-    /// Get the result for a specific [`Prompt`] by its [`Id`].
-    pub fn get_result(&self, id: Id) -> Option<&BatchResult<'a>> {
+impl<P> Ready<P> {
+    /// Get the result for a specific prompt by its [`Id`].
+    pub fn get_result(&self, id: Id) -> Option<&BatchResult> {
         self.results.get(&id)
     }
 
     /// Decompose the batch into its parts. This is a one-way operation.
-    pub fn decompose(self) -> (Pending<'a>, HashMap<Id, BatchResult<'a>>) {
+    pub fn decompose(self) -> (Pending<P>, HashMap<Id, BatchResult>) {
         (self.pending, self.results)
     }
 
-    /// Iterate over sucessful [`Prompt`]s and their [`response::Message`]s.
+    /// Iterate over successful prompts and their [`response::Message`]s.
     pub fn iter_ok(
         &self,
-    ) -> impl Iterator<Item = (&Prompt<'a>, &response::Message<'a>)> {
+    ) -> impl Iterator<Item = (&P, &response::Message<'static>)> {
         self.results.iter().filter_map(|(id, result)| {
             if let BatchResult::Ok(msg) = result {
                 Some((self.pending.prompts.get(id)?, msg))
@@ -397,9 +416,9 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch with
+    /// Remove all prompts and [`response::Message`]s from the batch with
     /// successful results. This is a one-way operation.
-    pub fn remove_ok(&mut self) -> Vec<(Prompt<'a>, response::Message<'a>)> {
+    pub fn remove_ok(&mut self) -> Vec<(P, response::Message<'static>)> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -416,7 +435,6 @@ impl<'a> Ready<'a> {
                 match self.pending.meta.stats.succeeded.checked_sub(1) {
                     Some(s) => s,
                     None => {
-                        // Either our code is broken or Anthropic is lying.
                         #[cfg(feature = "log")]
                         log::error!(
                             "meta.stats.succeeded underflowed for batch: {}",
@@ -432,16 +450,12 @@ impl<'a> Ready<'a> {
                 .prompts
                 .prompts
                 .remove(&id)
-                // Every Id in results should be in prompts, but not necessarily
-                // the other way around, because some can fail to deserialize.
-                // This is guaranteed in `Client::batch_poll`.
                 .expect("Class invariant violated: Ready prompts missing ID");
             let result = self.results.remove(&id);
 
             if let Some(BatchResult::Ok(msg)) = result {
                 results.push((prompt, msg));
             } else {
-                // Impossible because we just checked for it.
                 panic!("Code above does not check result.is_ok()");
             }
         }
@@ -449,10 +463,10 @@ impl<'a> Ready<'a> {
         results
     }
 
-    /// Iterate over errored [`Prompt`]s and their [`client::AnthropicError`]s.
+    /// Iterate over errored prompts and their [`client::AnthropicError`]s.
     pub fn iter_errors(
         &self,
-    ) -> impl Iterator<Item = (&Prompt<'a>, &client::AnthropicError)> {
+    ) -> impl Iterator<Item = (&P, &client::AnthropicError)> {
         self.results.iter().filter_map(|(id, result)| {
             if let BatchResult::Error(e) = result {
                 Some((&self.pending.prompts[id], e))
@@ -462,11 +476,11 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch with
+    /// Remove all prompts and [`response::Message`]s from the batch with
     /// errors. This is a one-way operation.
     pub fn remove_errors(
         &mut self,
-    ) -> Vec<(Prompt<'a>, client::AnthropicError)> {
+    ) -> Vec<(P, client::AnthropicError)> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -501,15 +515,14 @@ impl<'a> Ready<'a> {
             if let Some(BatchResult::Error(e)) = result {
                 results.push((prompt, e));
             } else {
-                // Impossible because we just checked for it.
                 panic!("Code above does not check result.is_error()");
             }
         }
         results
     }
 
-    /// Iterate over canceled [`Prompt`]s.
-    pub fn iter_canceled(&self) -> impl Iterator<Item = &Prompt<'a>> {
+    /// Iterate over canceled prompts.
+    pub fn iter_canceled(&self) -> impl Iterator<Item = &P> {
         self.results.iter().filter_map(|(id, result)| {
             if result.is_canceled() {
                 Some(&self.pending.prompts[id])
@@ -519,9 +532,8 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch that
-    /// were canceled. This is a one-way operation.
-    pub fn remove_canceled(&mut self) -> Vec<Prompt<'a>> {
+    /// Remove all prompts from the batch that were canceled.
+    pub fn remove_canceled(&mut self) -> Vec<P> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -561,8 +573,8 @@ impl<'a> Ready<'a> {
         results
     }
 
-    /// Iterate over expired [`Prompt`]s.
-    pub fn iter_expired(&self) -> impl Iterator<Item = &Prompt<'a>> {
+    /// Iterate over expired prompts.
+    pub fn iter_expired(&self) -> impl Iterator<Item = &P> {
         self.results.iter().filter_map(|(id, result)| {
             if result.is_expired() {
                 Some(&self.pending.prompts[id])
@@ -572,9 +584,8 @@ impl<'a> Ready<'a> {
         })
     }
 
-    /// Remove all [`Prompt`]s and [`response::Message`]s from the batch that
-    /// expired. This is a one-way operation.
-    pub fn remove_expired(&mut self) -> Vec<Prompt<'a>> {
+    /// Remove all prompts from the batch that expired.
+    pub fn remove_expired(&mut self) -> Vec<P> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -611,25 +622,22 @@ impl<'a> Ready<'a> {
         results
     }
 
-    /// Iterate over all [`Prompt`]s and their [`BatchResult`]s.
+    /// Iterate over all prompts and their [`BatchResult`]s.
     pub fn iter(
         &self,
-    ) -> impl Iterator<Item = (Id, &Prompt<'a>, &BatchResult<'a>)> {
+    ) -> impl Iterator<Item = (Id, &P, &BatchResult)> {
         self.results
             .iter()
             .map(move |(id, result)| (*id, &self.pending.prompts[id], result))
     }
 
-    /// Convert into an iterator of (Prompt, Result) tuples.
+    /// Convert into an iterator of (prompt, result) tuples.
     pub fn into_iter(
         self,
-    ) -> impl Iterator<Item = (Id, Prompt<'a>, BatchResult<'a>)> {
+    ) -> impl Iterator<Item = (Id, P, BatchResult)> {
         let (mut pending, results) = self.decompose();
 
         results.into_iter().map(move |(id, result)| {
-            // Unwrap can never panic because of class invariants. The structure
-            // is constructed by the library and all operations guarantee that
-            // every ID in results is in prompts.
             (id, pending.prompts.prompts.remove(&id).unwrap(), result)
         })
     }
@@ -644,31 +652,34 @@ impl<'a> Ready<'a> {
 pub(crate) struct IdentifiedBatchResult {
     #[serde(rename = "custom_id")]
     pub(crate) id: Id,
-    pub(crate) result: BatchResult<'static>,
+    pub(crate) result: BatchResult,
 }
 
-/// A [`BatchResult`] is the result of processing a [`Prompt`] in a batch.
+/// A [`BatchResult`] is the result of processing a prompt in a batch.
 ///
 /// The API returns different content keys per variant:
 /// - `succeeded` → `{ "type": "succeeded", "message": { ... } }`
 /// - `errored` → `{ "type": "errored", "error": { ... } }`
 /// - `canceled` / `expired` → `{ "type": "canceled" }` (no content)
+///
+/// Response data is always owned (`'static`) since it is deserialized from
+/// the batch results JSONL download.
 #[derive(Serialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum BatchResult<'a> {
+pub enum BatchResult {
     /// The batch was canceled and this prompt was not processed.
     Canceled,
     /// The batch expired and this prompt was not processed.
     Expired,
     /// Sucessful response to a prompt.
     #[serde(rename = "succeeded")]
-    Ok(response::Message<'a>),
+    Ok(response::Message<'static>),
     /// Error response to a prompt.
     #[serde(rename = "errored")]
     Error(client::AnthropicError),
 }
 
-impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
+impl<'de> Deserialize<'de> for BatchResult {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -685,7 +696,7 @@ impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
                 let message = value.get("message").ok_or_else(|| {
                     serde::de::Error::missing_field("message")
                 })?;
-                let msg: response::Message<'a> =
+                let msg: response::Message<'static> =
                     serde_json::from_value(message.clone())
                         .map_err(serde::de::Error::custom)?;
                 Ok(BatchResult::Ok(msg))
@@ -709,10 +720,10 @@ impl<'de, 'a> Deserialize<'de> for BatchResult<'a> {
     }
 }
 
-impl<'a> From<BatchResult<'a>>
-    for Result<response::Message<'a>, client::AnthropicError>
+impl From<BatchResult>
+    for Result<response::Message<'static>, client::AnthropicError>
 {
-    fn from(result: BatchResult<'a>) -> Self {
+    fn from(result: BatchResult) -> Self {
         match result {
             BatchResult::Ok(msg) => Ok(msg),
             BatchResult::Error(e) => Err(e),
@@ -733,7 +744,8 @@ mod tests {
     use uuid::Uuid;
 
     use crate::{
-        AnthropicModel, model, prompt::message::Content, response::Usage,
+        AnthropicModel, Prompt, model, prompt::message::Content,
+        response::Usage,
     };
 
     use super::*;
@@ -766,14 +778,14 @@ mod tests {
 
     #[test]
     fn test_prompts_serialize() {
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: HashMap::new(),
         };
         let json = serde_json::to_string(&prompts).unwrap();
         assert_eq!(json, r#"{"requests":[]}"#);
 
         let id: Id = Uuid::nil().into();
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [(id, Prompt::default())].into_iter().collect(),
         };
 
@@ -798,7 +810,7 @@ mod tests {
     #[test]
     fn test_prompts_get_id() {
         let id: Id = Uuid::max().into();
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [(id, Prompt::default())].into_iter().collect(),
         };
 
@@ -808,7 +820,7 @@ mod tests {
     #[test]
     fn test_prompts_try_get() {
         let id = Uuid::max();
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [(id.into(), Prompt::default())].into_iter().collect(),
         };
 
@@ -822,7 +834,7 @@ mod tests {
     #[test]
     fn test_prompts_into_inner() {
         let id: Id = Uuid::max().into();
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [(id, Prompt::default())].into_iter().collect(),
         };
 
@@ -832,32 +844,11 @@ mod tests {
     }
 
     #[test]
-    fn test_prompts_into_static() {
-        let id: Id = Uuid::max().into();
-        let prompts = Prompts {
-            prompts: [(id, Prompt::default())].into_iter().collect(),
-        };
-
-        // The reason to have this is so we can have &'static str in the prompt,
-        // and we coud even make static assignments at runtime this way for
-        // canned responses or for the system prompt or tools or whatever. Also
-        // it helps make the borrow checker happy by annotating the lifetime.
-        //
-        // When these structures are deserialized they are not necessarily
-        // copied but if we ever want to return to the 'static lifetime we can
-        // do so with this method. The data will be copied, but it's a one-time
-        // operation, so it's O(n) where n is the number of prompts.
-        let static_prompts = prompts.into_static();
-        assert_eq!(static_prompts.len(), 1);
-        assert_eq!(static_prompts.get_id(id), Some(&Prompt::default()));
-    }
-
-    #[test]
     fn test_prompt_from_iter() {
-        let prompts: Prompts = [Prompt::default()].into_iter().collect();
+        let prompts: Prompts<Prompt> = [Prompt::default()].into_iter().collect();
         assert_eq!(prompts.len(), 1);
         let id = Id::default();
-        let prompts: Prompts = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts.get_id(id), Some(&Prompt::default()));
     }
@@ -866,7 +857,7 @@ mod tests {
     fn test_prompt_into_iter() {
         // value
         let id = Id::default();
-        let prompts: Prompts = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
         let mut iter = prompts.into_iter();
         let (id2, prompt) = iter.next().unwrap();
         assert_eq!(id, id2);
@@ -875,7 +866,7 @@ mod tests {
 
         // reference
         let id = Id::default();
-        let prompts: Prompts = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
         let mut iter = (&prompts).into_iter();
         let (id2, prompt) = iter.next().unwrap();
         assert_eq!(id, *id2);
@@ -886,7 +877,7 @@ mod tests {
     #[test]
     fn test_prompts_format() {
         let id = Id::default();
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [(id, Prompt::default())].into_iter().collect(),
         };
 
@@ -922,10 +913,10 @@ mod tests {
     };
 
     // Generate a Pending instance and an Id guaranteed to be in it.
-    fn gen_pending() -> (Id, Pending<'static>) {
+    fn gen_pending() -> (Id, Pending<Prompt<'static>>) {
         let id = Id::default();
 
-        let prompts = Prompts {
+        let prompts: Prompts<Prompt<'static>> = Prompts {
             prompts: [
                 (id, Prompt::default()),
                 (ERROR_ID, Prompt::default()),
@@ -948,12 +939,7 @@ mod tests {
             results_url: Some(Url::parse(PENDING_RESULTS_URL).unwrap()),
         };
 
-        let pending = Pending {
-            prompts,
-            meta: meta.clone(),
-        };
-
-        (id, pending.into_static())
+        (id, Pending { prompts, meta })
     }
 
     #[test]
@@ -961,7 +947,6 @@ mod tests {
         let (_, pending) = gen_pending();
         let meta = pending.meta();
         assert_eq!(meta.id, PENDING_ID);
-        // we have the correct meta
     }
 
     #[test]
@@ -1002,7 +987,7 @@ mod tests {
         assert_eq!(meta.id, PENDING_ID);
     }
 
-    fn gen_ready() -> (Id, Ready<'static>) {
+    fn gen_ready() -> (Id, Ready<Prompt<'static>>) {
         let (id, pending) = gen_pending();
         let mut results = HashMap::new();
         results.insert(
@@ -1036,14 +1021,12 @@ mod tests {
         let result = ready.get_result(id).unwrap();
         if let BatchResult::Ok(msg) = result {
             assert_eq!(msg.id, PENDING_ID);
-            // we have the correct message
         } else {
             panic!("Expected Ok result");
         }
     }
 
     #[test]
-    // this is just to satisfy the coverage report
     fn test_ready_decompose() {
         let (id, ready) = gen_ready();
         let (pending, results) = ready.decompose();
@@ -1145,7 +1128,6 @@ mod tests {
 
     #[test]
     fn test_ready_iter() {
-        // we collect it into another hashmap to make sure it's correct
         let (id, ready) = gen_ready();
         let results: HashMap<Id, (&Prompt, &BatchResult)> = ready
             .iter()

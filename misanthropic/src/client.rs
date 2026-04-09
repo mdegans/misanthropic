@@ -521,16 +521,22 @@ impl Client {
     /// sending multiple prompts at once at lower cost. Batches take up to 24
     /// hours to process.
     ///
-    /// Unique [`batch::Id`]s are generated for each Prompt in the batch. These
+    /// Unique [`batch::Id`]s are generated for each prompt in the batch. These
     /// can be used to track the progress of the batch.
+    ///
+    /// The prompt type `P` can be any [`Serialize`] type — typically
+    /// [`Prompt`] or [`CachedPrompt`](crate::CachedPrompt).
     ///
     /// [`Prompts`]: crate::batch::Prompts
     #[cfg(feature = "batch")]
-    pub async fn batch<'a, P>(&self, prompts: P) -> Result<batch::Pending<'a>>
+    pub async fn batch<P>(
+        &self,
+        prompts: impl IntoIterator<Item = P>,
+    ) -> Result<batch::Pending<P>>
     where
-        P: IntoIterator<Item = Prompt<'a>>,
+        P: Serialize,
     {
-        let prompts: Prompts<'a> = prompts.into_iter().collect();
+        let prompts: Prompts<P> = prompts.into_iter().collect();
         let meta = self
             .post(self.batch_url.as_str(), &prompts)
             .await?
@@ -543,15 +549,16 @@ impl Client {
     /// Same as [`Self::batch`] but with user-supplied [`batch::Id`]s. Duplicate
     /// [`batch::Id`]s will be overwritten in the order they are supplied.
     #[cfg(feature = "batch")]
-    pub async fn tagged_batch<'a, It, Id>(
+    pub async fn tagged_batch<P, It, Id>(
         &self,
         prompts: It,
-    ) -> Result<batch::Pending<'a>>
+    ) -> Result<batch::Pending<P>>
     where
-        It: IntoIterator<Item = (Id, Prompt<'a>)>,
+        P: Serialize,
+        It: IntoIterator<Item = (Id, P)>,
         Id: Into<batch::Id>,
     {
-        let prompts: Prompts<'a> = prompts.into_iter().collect();
+        let prompts: Prompts<P> = prompts.into_iter().collect();
         let meta = self
             .post(self.batch_url.as_str(), &prompts)
             .await?
@@ -565,12 +572,15 @@ impl Client {
     /// with the latest status of the [`Batch`]. If the batch is ready, the
     /// results are downloaded and returned in a [`batch::Ready`] variant.
     ///
+    /// The prompt type `P` does not need to be [`Serialize`] — polling only
+    /// downloads results, it never re-serializes prompts.
+    ///
     /// [`Batch`]: batch::Batch
     #[cfg(feature = "batch")]
-    pub async fn batch_poll<'a>(
+    pub async fn batch_poll<P>(
         &self,
-        mut pending: batch::Pending<'a>,
-    ) -> Result<batch::Batch<'a>> {
+        mut pending: batch::Pending<P>,
+    ) -> Result<batch::Batch<P>> {
         use batch::{Batch, Ready};
 
         // Craft the URL for the batch.
