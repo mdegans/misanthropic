@@ -358,6 +358,15 @@ impl<'a> From<AssistantMessage<'a>> for Content<'a> {
     }
 }
 
+impl<'a, T> FromIterator<T> for AssistantMessage<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from(Content::from_iter(iter))
+    }
+}
+
 impl<'a> TryFrom<Message<'a>> for AssistantMessage<'a> {
     type Error = NotTheAssistant;
 
@@ -469,6 +478,15 @@ impl<'a> From<tool::Result<'a>> for UserMessage<'a> {
         UserMessage {
             inner: result.into(),
         }
+    }
+}
+
+impl<'a, T> FromIterator<T> for UserMessage<'a>
+where
+    T: Into<Block<'a>>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from(Content::from_iter(iter))
     }
 }
 
@@ -2289,6 +2307,49 @@ mod tests {
         let ret: Result<AssistantMessage, _> =
             serde_json::from_str(&valid_json);
         assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_user_message_from_iter() {
+        // From an iterator of &str (via blanket Into<Block>).
+        let msg: UserMessage = ["Hello,", "world!"].into_iter().collect();
+        let Content::MultiPart(blocks) = msg.content() else {
+            panic!("expected MultiPart");
+        };
+        assert_eq!(blocks.len(), 2);
+
+        // From an iterator of tool::Result.
+        let results = vec![
+            tool::Result {
+                tool_use_id: "tool_1".into(),
+                content: "ok".into(),
+                is_error: false,
+                cache_control: None,
+            },
+            tool::Result {
+                tool_use_id: "tool_2".into(),
+                content: "parse error: ...".into(),
+                is_error: true,
+                cache_control: None,
+            },
+        ];
+        let msg: UserMessage = results.into_iter().collect();
+        let Content::MultiPart(blocks) = msg.content() else {
+            panic!("expected MultiPart");
+        };
+        assert_eq!(blocks.len(), 2);
+        assert!(matches!(blocks[0], Block::ToolResult { .. }));
+        assert!(matches!(blocks[1], Block::ToolResult { .. }));
+    }
+
+    #[test]
+    fn test_assistant_message_from_iter() {
+        let msg: AssistantMessage =
+            ["thinking...", "done."].into_iter().collect();
+        let Content::MultiPart(blocks) = msg.content() else {
+            panic!("expected MultiPart");
+        };
+        assert_eq!(blocks.len(), 2);
     }
 
     #[test]
