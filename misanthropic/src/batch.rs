@@ -445,12 +445,10 @@ impl<P> Ready<P> {
                 };
             self.pending.meta.stats.succeeded = succeeded;
 
-            let prompt = self
-                .pending
-                .prompts
-                .prompts
-                .remove(&id)
-                .expect("Class invariant violated: Ready prompts missing ID");
+            let prompt =
+                self.pending.prompts.prompts.remove(&id).expect(
+                    "Class invariant violated: Ready prompts missing ID",
+                );
             let result = self.results.remove(&id);
 
             if let Some(BatchResult::Ok(msg)) = result {
@@ -478,9 +476,7 @@ impl<P> Ready<P> {
 
     /// Remove all prompts and [`response::Message`]s from the batch with
     /// errors. This is a one-way operation.
-    pub fn remove_errors(
-        &mut self,
-    ) -> Vec<(P, client::AnthropicError)> {
+    pub fn remove_errors(&mut self) -> Vec<(P, client::AnthropicError)> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -623,18 +619,14 @@ impl<P> Ready<P> {
     }
 
     /// Iterate over all prompts and their [`BatchResult`]s.
-    pub fn iter(
-        &self,
-    ) -> impl Iterator<Item = (Id, &P, &BatchResult)> {
+    pub fn iter(&self) -> impl Iterator<Item = (Id, &P, &BatchResult)> {
         self.results
             .iter()
             .map(move |(id, result)| (*id, &self.pending.prompts[id], result))
     }
 
     /// Convert into an iterator of (prompt, result) tuples.
-    pub fn into_iter(
-        self,
-    ) -> impl Iterator<Item = (Id, P, BatchResult)> {
+    pub fn into_iter(self) -> impl Iterator<Item = (Id, P, BatchResult)> {
         let (mut pending, results) = self.decompose();
 
         results.into_iter().map(move |(id, result)| {
@@ -845,10 +837,12 @@ mod tests {
 
     #[test]
     fn test_prompt_from_iter() {
-        let prompts: Prompts<Prompt> = [Prompt::default()].into_iter().collect();
+        let prompts: Prompts<Prompt> =
+            [Prompt::default()].into_iter().collect();
         assert_eq!(prompts.len(), 1);
         let id = Id::default();
-        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> =
+            [(id, Prompt::default())].into_iter().collect();
         assert_eq!(prompts.len(), 1);
         assert_eq!(prompts.get_id(id), Some(&Prompt::default()));
     }
@@ -857,7 +851,8 @@ mod tests {
     fn test_prompt_into_iter() {
         // value
         let id = Id::default();
-        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> =
+            [(id, Prompt::default())].into_iter().collect();
         let mut iter = prompts.into_iter();
         let (id2, prompt) = iter.next().unwrap();
         assert_eq!(id, id2);
@@ -866,7 +861,8 @@ mod tests {
 
         // reference
         let id = Id::default();
-        let prompts: Prompts<Prompt> = [(id, Prompt::default())].into_iter().collect();
+        let prompts: Prompts<Prompt> =
+            [(id, Prompt::default())].into_iter().collect();
         let mut iter = (&prompts).into_iter();
         let (id2, prompt) = iter.next().unwrap();
         assert_eq!(id, *id2);

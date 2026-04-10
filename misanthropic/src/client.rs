@@ -271,22 +271,57 @@ impl Client {
         self.request_raw(reqwest::Method::GET, url).send().await
     }
 
-    /// Same as [`Self::get_raw`] but returns a crate [`Result`] instead of a
-    /// [`reqwest`] result. Parses [`AnthropicError`]s.s
-    async fn get<U>(&self, url: U) -> Result<reqwest::Response>
+    /// Send a GET and return the response body as a `String`.
+    ///
+    /// On non-OK statuses, attempts to parse the body as an
+    /// [`AnthropicError`]. If that fails (e.g. because an edge proxy
+    /// returned an HTML error page, a Cloudflare challenge, a
+    /// rate-limit plaintext response, or anything else the API
+    /// doesn't normally emit), surfaces an [`Error::NonJsonResponse`]
+    /// carrying the HTTP status and the first few KB of the body.
+    /// This keeps the opaque reqwest `"error decoding response body"`
+    /// out of callers' error chains and gives operators something to
+    /// grep for when an upstream misbehaves.
+    ///
+    /// When the `log` feature is enabled, the full body is emitted at
+    /// `debug!` level — matching the `RECV:{body}` pattern used by
+    /// `request_json` for POST responses. Previously GETs logged only
+    /// the request URL.
+    async fn get<U>(&self, url: U) -> Result<String>
     where
         U: reqwest::IntoUrl,
     {
         let response = self.get_raw(url).await?;
+        let status = response.status();
+        let body = response.text().await?;
 
-        if response.status() != reqwest::StatusCode::OK {
-            let error: AnthropicErrorWrapper = response.json().await?;
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
+        if status != reqwest::StatusCode::OK {
+            // Error path: try the documented Anthropic shape first.
+            return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
+                Ok(wrapper) => Err(wrapper.error.into()),
+                Err(_parse_err) => {
+                    #[cfg(feature = "log")]
+                    {
+                        log::error!(
+                            "ERROR:non-JSON error body (status {}): {}",
+                            status.as_u16(),
+                            truncate_body(&body),
+                        );
+                    }
+                    Err(Error::NonJsonResponse {
+                        status: status.as_u16(),
+                        body: truncate_body(&body).into_owned(),
+                    })
+                }
+            };
         }
 
-        Ok(response)
+        #[cfg(feature = "log")]
+        {
+            log::debug!("RECV:{}", body);
+        }
+
+        Ok(body)
     }
 
     /// Send a POST request with the API key set as a sensitive header value.
@@ -345,18 +380,13 @@ impl Client {
     ///
     /// [`Model``]: misanthropic::model::Model
     pub async fn models(&self) -> Result<Models<'_>> {
-        let response = self.get(self.models_url.as_str()).await?;
-        let body = response.text().await?;
+        // `get` now reads the body, logs it, and surfaces non-JSON
+        // error bodies as `Error::NonJsonResponse`, so we only have to
+        // deal with parse failures on an OK body.
+        let body = self.get(self.models_url.as_str()).await?;
 
         match serde_json::from_str(&body) {
-            Ok(models) => {
-                #[cfg(feature = "log")]
-                {
-                    log::debug!("RECV:{}", body);
-                }
-
-                Ok(models)
-            }
+            Ok(models) => Ok(models),
             Err(e) => {
                 #[cfg(feature = "log")]
                 {
@@ -589,13 +619,17 @@ impl Client {
             .join(pending.meta.id.as_str())
             .unwrap();
 
-        // Update the metadata with the latest status.
-        pending.meta = self.get(url).await?.json().await?;
+        // Update the metadata with the latest status. `get` returns the
+        // body as text and already surfaces non-JSON error bodies via
+        // `Error::NonJsonResponse`, so any failure here is an actual
+        // parse error on a body that was at least plausible JSON.
+        let meta_body = self.get(url).await?;
+        pending.meta = serde_json::from_str(&meta_body)?;
 
         // Check if we're done.
         if let Some(url) = pending.results_url() {
             // Download the json lines file with `IdentifiedBatchResult`s.
-            let response = self.get(url.clone()).await?.text().await?;
+            let response = self.get(url.clone()).await?;
 
             // Create a new hashmap to store the results.
             let mut results = HashMap::new();
@@ -683,6 +717,32 @@ impl From<Key> for Client {
     }
 }
 
+/// Maximum number of bytes of a non-JSON response body to preserve in
+/// [`Error::NonJsonResponse`] and debug logs. Bodies longer than this are
+/// truncated with a `... [N more bytes]` suffix so operators still know
+/// how much content was elided.
+const NON_JSON_BODY_SNIPPET_LEN: usize = 2048;
+
+/// Truncate `body` to at most [`NON_JSON_BODY_SNIPPET_LEN`] bytes at a
+/// valid UTF-8 boundary, appending a `... [N more bytes]` suffix if the
+/// body was longer.
+fn truncate_body(body: &str) -> std::borrow::Cow<'_, str> {
+    if body.len() <= NON_JSON_BODY_SNIPPET_LEN {
+        return std::borrow::Cow::Borrowed(body);
+    }
+    // Walk backward from the budget to find a valid UTF-8 boundary so we
+    // don't slice through a multi-byte character.
+    let mut cut = NON_JSON_BODY_SNIPPET_LEN;
+    while cut > 0 && !body.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let remaining = body.len() - cut;
+    std::borrow::Cow::Owned(format!(
+        "{}... [{remaining} more bytes]",
+        &body[..cut]
+    ))
+}
+
 /// [`Client`] error type.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -695,6 +755,15 @@ pub enum Error {
     /// Anthropic error.
     #[error("Anthropic error: {0}")]
     Anthropic(#[from] AnthropicError),
+    /// The server returned a non-OK status whose body could not be parsed
+    /// as an [`AnthropicError`] — most commonly a proxy or edge layer
+    /// (Cloudflare, gateway timeout) returning HTML or plaintext instead
+    /// of the documented JSON error shape. The body is truncated to
+    /// [`NON_JSON_BODY_SNIPPET_LEN`] bytes so the error fits in a log
+    /// line.
+    #[error("non-JSON error response (status {status}): {body}")]
+    #[allow(missing_docs)]
+    NonJsonResponse { status: u16, body: String },
     /// Unexpected response from the API. These should never happen unless the
     /// server is misbehaving (for example, returning a stream when a message is
     /// expected).
@@ -725,6 +794,12 @@ impl Serialize for Error {
                 // With the `AnthropicError` we can serialize it directly, yay!
                 json!({ "type": "anthropic", "message": e.to_string(), "error": e,  }).serialize(serializer)
             }
+            Self::NonJsonResponse { status, body } => json!({
+                "type": "non_json_response",
+                "status": status,
+                "body": body,
+            })
+            .serialize(serializer),
             Self::UnexpectedResponse { message } => {
                 json!({ "type": "unexpected_response", "message": message })
                     .serialize(serializer)
@@ -808,6 +883,73 @@ mod tests {
     use futures::TryStreamExt;
 
     use super::*;
+
+    // Test body truncation for NonJsonResponse payloads.
+
+    #[test]
+    fn test_truncate_body_shorter_than_limit_is_borrowed() {
+        let body = "short response";
+        let out = truncate_body(body);
+        assert_eq!(out.as_ref(), body);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_truncate_body_exact_limit_is_borrowed() {
+        let body = "a".repeat(NON_JSON_BODY_SNIPPET_LEN);
+        let out = truncate_body(&body);
+        assert_eq!(out.len(), NON_JSON_BODY_SNIPPET_LEN);
+        assert!(matches!(out, std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn test_truncate_body_over_limit_is_owned_with_suffix() {
+        let body = "a".repeat(NON_JSON_BODY_SNIPPET_LEN + 500);
+        let out = truncate_body(&body);
+        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+        assert!(out.starts_with(&"a".repeat(NON_JSON_BODY_SNIPPET_LEN)));
+        assert!(out.ends_with("[500 more bytes]"));
+    }
+
+    #[test]
+    fn test_truncate_body_does_not_split_utf8() {
+        // Build a body where a multi-byte character straddles the limit.
+        // Each `é` is 2 bytes. Pad with 2046 ASCII then add `é` so the
+        // boundary falls inside the `é`.
+        let mut body = "a".repeat(NON_JSON_BODY_SNIPPET_LEN - 1);
+        body.push('é');
+        body.push('é');
+        let out = truncate_body(&body);
+        // The truncate walks backward from 2048; the char at byte 2047
+        // starts at 2047 and ends at 2049, so the walk lands at 2047.
+        // Result must still be valid UTF-8.
+        assert!(matches!(out, std::borrow::Cow::Owned(_)));
+        // If this panics, we sliced through a multi-byte char.
+        let _: &str = out.as_ref();
+    }
+
+    #[test]
+    fn test_non_json_response_error_serializes() {
+        let err = Error::NonJsonResponse {
+            status: 502,
+            body: "<html>502 Bad Gateway</html>".to_string(),
+        };
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["type"], "non_json_response");
+        assert_eq!(json["status"], 502);
+        assert_eq!(json["body"], "<html>502 Bad Gateway</html>");
+    }
+
+    #[test]
+    fn test_non_json_response_error_display() {
+        let err = Error::NonJsonResponse {
+            status: 502,
+            body: "<html>oops</html>".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("502"), "missing status: {msg}");
+        assert!(msg.contains("<html>oops</html>"), "missing body: {msg}");
+    }
 
     // Test error deserialization.
 
