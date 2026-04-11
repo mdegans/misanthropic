@@ -715,17 +715,37 @@ impl<'a> Prompt<'a> {
     /// [`Sonnet35`]: crate::Model::Sonnet35
     /// [`Opus30`]: crate::Model::Opus30
     /// [`Haiku30`]: crate::Model::Haiku30
-    pub fn cache(mut self) -> Self {
+    pub fn cache(self) -> Self {
+        self.cache_with(crate::prompt::message::CacheControl::ephemeral())
+    }
+
+    /// Add a 1-hour cache breakpoint on the last cacheable block.
+    ///
+    /// Behaves identically to [`cache`](Prompt::cache) but uses
+    /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
+    /// Useful when the priming write and the real requests may be
+    /// separated by more than the default 5-minute window.
+    pub fn cache_1h(self) -> Self {
+        self.cache_with(crate::prompt::message::CacheControl::one_hour())
+    }
+
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] on
+    /// the last cacheable block. Shared implementation for
+    /// [`cache`](Prompt::cache) and [`cache_1h`](Prompt::cache_1h).
+    pub fn cache_with(
+        mut self,
+        cache_control: crate::prompt::message::CacheControl,
+    ) -> Self {
         // If there are messages, add a cache breakpoint to the last one.
         if let Some(last) = self.messages.last_mut() {
-            last.content.cache();
+            last.content.cache_with(cache_control);
             return self;
         }
 
         // If there are no messages, add a cache breakpoint to the system prompt
         // if it exists.
         if let Some(system) = self.system.as_mut() {
-            system.cache();
+            system.cache_with(cache_control);
             return self;
         }
 
@@ -734,7 +754,7 @@ impl<'a> Prompt<'a> {
         if let Some(tool) =
             self.functions.as_mut().and_then(|tools| tools.last_mut())
         {
-            tool.cache();
+            tool.cache_with(cache_control);
             return self;
         }
 

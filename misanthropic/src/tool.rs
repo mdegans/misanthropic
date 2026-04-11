@@ -522,12 +522,30 @@ impl<'a> Method<'a> {
     /// Create a cache breakpoint at this [`Method`] by setting [`cache_control`]
     /// to [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
+    /// Uses the default 5-minute TTL. For a 1-hour TTL, use
+    /// [`cache_1h`](Self::cache_1h).
+    ///
     /// [`cache_control`]: Self::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
     pub fn cache(&mut self) -> &mut Self {
-        self.cache_control =
-            Some(crate::prompt::message::CacheControl::ephemeral());
+        self.cache_with(crate::prompt::message::CacheControl::ephemeral())
+    }
+
+    /// Create a 1-hour cache breakpoint at this [`Method`]. Behaves
+    /// identically to [`cache`](Self::cache) but uses
+    /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
+    pub fn cache_1h(&mut self) -> &mut Self {
+        self.cache_with(crate::prompt::message::CacheControl::one_hour())
+    }
+
+    /// Create a cache breakpoint at this [`Method`] with a caller-provided
+    /// [`CacheControl`](crate::prompt::message::CacheControl).
+    pub fn cache_with(
+        &mut self,
+        cache_control: crate::prompt::message::CacheControl,
+    ) -> &mut Self {
+        self.cache_control = Some(cache_control);
         self
     }
 
