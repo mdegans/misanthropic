@@ -671,9 +671,30 @@ impl<'a> Content<'a> {
     /// Add a cache breakpoint to the final [`Block`]. If the [`Content`] is
     /// [`SinglePart`], it will be converted to [`MultiPart`] first.
     ///
+    /// Uses the default 5-minute ephemeral TTL. For a 1-hour TTL, use
+    /// [`cache_1h`](Content::cache_1h).
+    ///
     /// [`SinglePart`]: Content::SinglePart
     /// [`MultiPart`]: Content::MultiPart
     pub fn cache(&mut self) {
+        self.cache_with(CacheControl::ephemeral());
+    }
+
+    /// Add a 1-hour cache breakpoint to the final [`Block`].
+    ///
+    /// Behaves identically to [`cache`](Content::cache) but uses
+    /// [`CacheControl::one_hour`].
+    pub fn cache_1h(&mut self) {
+        self.cache_with(CacheControl::one_hour());
+    }
+
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to
+    /// the final [`Block`]. If the [`Content`] is [`SinglePart`], it will
+    /// be converted to [`MultiPart`] first.
+    ///
+    /// [`SinglePart`]: Content::SinglePart
+    /// [`MultiPart`]: Content::MultiPart
+    pub fn cache_with(&mut self, cache_control: CacheControl) {
         if self.is_single_part() {
             let mut old = Content::MultiPart(vec![]);
             std::mem::swap(self, &mut old);
@@ -683,7 +704,7 @@ impl<'a> Content<'a> {
         if let Content::MultiPart(parts) = self
             && let Some(block) = parts.last_mut()
         {
-            block.cache();
+            block.cache_with(cache_control);
         }
     }
 
@@ -1271,8 +1292,28 @@ impl<'a> Block<'a> {
     /// information. Returns true if the block was cached. This alwasy succeeds,
     /// however some blocks are automatically cached and will return false.
     ///
+    /// Uses the default 5-minute ephemeral TTL. For a 1-hour TTL, use
+    /// [`cache_1h`](Block::cache_1h).
+    ///
     /// [`Prompt::cache`]: crate::Prompt::cache
     pub fn cache(&mut self) -> bool {
+        self.cache_with(CacheControl::ephemeral())
+    }
+
+    /// Create a 1-hour cache breakpoint at this block.
+    ///
+    /// Behaves identically to [`cache`](Block::cache) but uses
+    /// [`CacheControl::one_hour`]. See [`Prompt::cache_1h`] for usage.
+    ///
+    /// [`Prompt::cache_1h`]: crate::Prompt::cache_1h
+    pub fn cache_1h(&mut self) -> bool {
+        self.cache_with(CacheControl::one_hour())
+    }
+
+    /// Create a cache breakpoint at this block with a caller-provided
+    /// [`CacheControl`]. Returns true if the block was cached; returns
+    /// false for thought blocks (which are automatically cached).
+    pub fn cache_with(&mut self, cache_control_value: CacheControl) -> bool {
         use crate::tool;
 
         match self {
@@ -1284,7 +1325,7 @@ impl<'a> Block<'a> {
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
             } => {
-                *cache_control = Some(CacheControl::ephemeral());
+                *cache_control = Some(cache_control_value);
 
                 true
             }

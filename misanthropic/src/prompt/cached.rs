@@ -130,11 +130,26 @@ impl<'a> CachedPrompt<'a> {
     /// Call this after appending messages to extend the cached region.
     /// The API keeps only the last 4 breakpoints, so calling this every
     /// turn is safe.
+    ///
+    /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL (useful
+    /// for cache priming across an hourly batch cadence), use
+    /// [`cache_1h`](CachedPrompt::cache_1h).
     pub fn cache(&mut self) {
         // Prompt::cache() is `fn cache(mut self) -> Self`, so we need to
         // temporarily take ownership.
         let taken = std::mem::take(&mut self.inner);
         self.inner = taken.cache();
+    }
+
+    /// Add a 1-hour cache breakpoint on the last cacheable block.
+    ///
+    /// Behaves identically to [`cache`](CachedPrompt::cache) but uses
+    /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
+    /// Useful when the priming write and the real requests may be
+    /// separated by more than the default 5-minute window.
+    pub fn cache_1h(&mut self) {
+        let taken = std::mem::take(&mut self.inner);
+        self.inner = taken.cache_1h();
     }
 
     /// Add a cache breakpoint on the last message, keeping at most `n`
@@ -323,6 +338,41 @@ mod tests {
             crate::prompt::message::Content::SinglePart(_) => {
                 panic!("expected MultiPart after cache()")
             }
+        }
+    }
+
+    #[test]
+    fn cache_1h_sets_one_hour_ttl() {
+        use crate::prompt::message::{CacheControl, CacheTtl};
+
+        let prompt = Prompt {
+            system: Some(crate::prompt::message::Content::text(
+                "You are a helpful assistant.",
+            )),
+            ..Default::default()
+        };
+
+        let mut cached = CachedPrompt::uncached(prompt);
+        cached.cache_1h();
+
+        // The system block should now carry a 1-hour cache_control.
+        match cached.system.as_ref().unwrap() {
+            crate::prompt::message::Content::MultiPart(blocks) => {
+                let last = blocks.last().unwrap();
+                let cc = match last {
+                    crate::prompt::message::Block::Text {
+                        cache_control, ..
+                    } => cache_control.as_ref().unwrap(),
+                    _ => panic!("expected text block"),
+                };
+                assert_eq!(
+                    cc,
+                    &CacheControl::Ephemeral {
+                        ttl: Some(CacheTtl::OneHour)
+                    }
+                );
+            }
+            _ => panic!("expected MultiPart after cache_1h()"),
         }
     }
 
