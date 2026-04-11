@@ -59,6 +59,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
+use super::message::CacheControl;
 use super::{Message, Prompt, TurnOrderError};
 
 /// A [`Prompt`] with an immutable cache prefix.
@@ -179,14 +180,46 @@ impl<'a> CachedPrompt<'a> {
     /// `cache_windowed(3)` after each tool-use round. With 1 breakpoint
     /// on the tools/system prefix, this uses all 4 API slots optimally.
     ///
+    /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL use
+    /// [`cache_windowed_1h`](CachedPrompt::cache_windowed_1h), or pass
+    /// an explicit [`CacheControl`] via
+    /// [`cache_windowed_with`](CachedPrompt::cache_windowed_with).
+    ///
     /// [`cache`]: CachedPrompt::cache
     pub fn cache_windowed(&mut self, n: usize) {
-        // 1. Add breakpoint on the last message
+        self.cache_windowed_with(n, CacheControl::ephemeral());
+    }
+
+    /// Like [`cache_windowed`](CachedPrompt::cache_windowed) but uses a
+    /// 1-hour TTL on the new breakpoint.
+    ///
+    /// Useful when rounds may be separated by more than the default
+    /// 5-minute window — for example, a human-driven deliberation loop
+    /// where the operator reads each response before calling the next
+    /// round.
+    pub fn cache_windowed_1h(&mut self, n: usize) {
+        self.cache_windowed_with(n, CacheControl::one_hour());
+    }
+
+    /// Like [`cache_windowed`](CachedPrompt::cache_windowed) but lets the
+    /// caller choose the [`CacheControl`] applied to the new breakpoint.
+    ///
+    /// Existing breakpoints on earlier messages retain whatever
+    /// `CacheControl` they were originally given; only the newly-added
+    /// breakpoint on the last message uses `cache_control`. Middle
+    /// breakpoints that fall outside the window are removed regardless
+    /// of their original TTL.
+    pub fn cache_windowed_with(
+        &mut self,
+        n: usize,
+        cache_control: CacheControl,
+    ) {
+        // 1. Add breakpoint on the last message with the requested TTL.
         if let Some(last) = self.inner.messages.last_mut() {
-            last.content.cache();
+            last.content.cache_with(cache_control);
         }
 
-        // 2. Find all message-level breakpoint indices
+        // 2. Find all message-level breakpoint indices.
         let cached_indices: Vec<usize> = self
             .inner
             .messages
@@ -196,7 +229,7 @@ impl<'a> CachedPrompt<'a> {
             .map(|(i, _)| i)
             .collect();
 
-        // 3. If over budget, keep first + last (n-1), drop the middle
+        // 3. If over budget, keep first + last (n-1), drop the middle.
         if cached_indices.len() > n {
             let keep_trailing = n.saturating_sub(1);
             let drop_start = 1; // skip first
@@ -361,7 +394,8 @@ mod tests {
                 let last = blocks.last().unwrap();
                 let cc = match last {
                     crate::prompt::message::Block::Text {
-                        cache_control, ..
+                        cache_control,
+                        ..
                     } => cache_control.as_ref().unwrap(),
                     _ => panic!("expected text block"),
                 };
@@ -534,6 +568,106 @@ mod tests {
             cached_indices[cached_indices.len() - 1],
             13,
             "last breakpoint should be the final message"
+        );
+    }
+
+    #[test]
+    fn cache_windowed_1h_sets_one_hour_ttl_on_last_message() {
+        use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
+
+        let prompt = Prompt::default();
+        let mut cached = CachedPrompt::uncached(prompt);
+
+        cached.push_message((Role::User, "hello")).unwrap();
+        cached.push_message((Role::Assistant, "hi")).unwrap();
+        cached.cache_windowed_1h(2);
+
+        // The last message's last block should carry a 1-hour TTL.
+        let last_msg = cached.messages.last().unwrap();
+        let last_block = match &last_msg.content {
+            Content::MultiPart(blocks) => blocks.last().unwrap(),
+            Content::SinglePart(_) => {
+                panic!("expected MultiPart after cache_windowed_1h")
+            }
+        };
+        let cc = match last_block {
+            Block::Text { cache_control, .. } => {
+                cache_control.as_ref().unwrap()
+            }
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(
+            cc,
+            &CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            }
+        );
+    }
+
+    #[test]
+    fn cache_windowed_with_preserves_earlier_ttls() {
+        use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
+
+        let prompt = Prompt::default();
+        let mut cached = CachedPrompt::uncached(prompt);
+
+        // Round 1: mark with 1h TTL
+        cached.push_message((Role::User, "round 1 user")).unwrap();
+        cached
+            .push_message((Role::Assistant, "round 1 asst"))
+            .unwrap();
+        cached.cache_windowed_1h(3);
+
+        // Round 2: mark with 5m (default ephemeral)
+        cached.push_message((Role::User, "round 2 user")).unwrap();
+        cached
+            .push_message((Role::Assistant, "round 2 asst"))
+            .unwrap();
+        cached.cache_windowed(3);
+
+        // Round 3: mark with 1h again
+        cached.push_message((Role::User, "round 3 user")).unwrap();
+        cached
+            .push_message((Role::Assistant, "round 3 asst"))
+            .unwrap();
+        cached.cache_windowed_1h(3);
+
+        // All three rounds should still be cached; round 1 keeps 1h,
+        // round 2 keeps 5m, round 3 is now 1h.
+        let ttl_at = |idx: usize| -> CacheControl {
+            let msg = &cached.messages[idx];
+            let block = match &msg.content {
+                Content::MultiPart(blocks) => blocks.last().unwrap(),
+                Content::SinglePart(_) => panic!("expected MultiPart"),
+            };
+            match block {
+                Block::Text { cache_control, .. } => {
+                    cache_control.as_ref().unwrap().clone()
+                }
+                _ => panic!("expected text block"),
+            }
+        };
+
+        // Messages 0..5 are 3 user/assistant pairs. cache_windowed marks
+        // the *last* message of each round (index 1, 3, 5).
+        assert_eq!(
+            ttl_at(1),
+            CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            },
+            "round 1 should still be 1h"
+        );
+        assert_eq!(
+            ttl_at(3),
+            CacheControl::Ephemeral { ttl: None },
+            "round 2 should be 5m (default)"
+        );
+        assert_eq!(
+            ttl_at(5),
+            CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            },
+            "round 3 should be 1h"
         );
     }
 
