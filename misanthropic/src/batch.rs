@@ -33,6 +33,14 @@ pub struct Prompts<P> {
     pub(crate) prompts: HashMap<Id, P>,
 }
 
+impl<P: Clone> Clone for Prompts<P> {
+    fn clone(&self) -> Self {
+        Self {
+            prompts: self.prompts.clone(),
+        }
+    }
+}
+
 impl<P> std::fmt::Debug for Prompts<P> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(concat!(stringify!(Prompts), " { ... }"))
@@ -320,6 +328,15 @@ impl<P: Serialize> Serialize for Batch<P> {
 pub struct Pending<P> {
     pub(crate) prompts: Prompts<P>,
     pub(crate) meta: Meta,
+}
+
+impl<P: Clone> Clone for Pending<P> {
+    fn clone(&self) -> Self {
+        Self {
+            prompts: self.prompts.clone(),
+            meta: self.meta.clone(),
+        }
+    }
 }
 
 // Manual Serialize: only needed when P: Serialize (for submitting).
