@@ -11,6 +11,19 @@
 //! [`Prompt`] is private, and only operations that preserve the cache prefix
 //! are exposed.
 //!
+//! # Construction
+//!
+//! Three constructors, differing only in whether they add a default cache
+//! breakpoint on top of whatever the caller already placed:
+//!
+//! - [`From::from`] / [`Into::into`] — wrap exactly as-is, no breakpoint added.
+//!   Use when the caller already set `cache_control` markers (inline, or
+//!   via [`Prompt::cache`] / [`Prompt::cache_1h`] before the conversion).
+//! - [`CachedPrompt::cached`] — wrap and add a 5-minute breakpoint.
+//! - [`CachedPrompt::cached_1h`] — wrap and add a 1-hour breakpoint.
+//!
+//! See the [`CachedPrompt`] struct-level docs for the full rationale.
+//!
 //! # Cache-safe operations
 //!
 //! | Method | Why it's safe |
@@ -64,8 +77,33 @@ use super::{Message, Prompt, TurnOrderError};
 
 /// A [`Prompt`] with an immutable cache prefix.
 ///
-/// Created via [`From<Prompt>`] (which adds a cache breakpoint) or
-/// [`CachedPrompt::uncached`] (which does not).
+/// # Construction
+///
+/// Three constructors, all equally explicit about what breakpoints the
+/// resulting `CachedPrompt` carries:
+///
+/// | Constructor                | Adds a breakpoint? | When to use |
+/// |----------------------------|---------------------|-------------|
+/// | [`From<Prompt>`] / `.into()` | No                | The prompt already has its own `cache_control` markers (set inline during construction or via [`Prompt::cache`] / [`Prompt::cache_1h`] before the conversion) and you just want to lock down the prefix. |
+/// | [`CachedPrompt::cached`]    | Yes, 5-minute TTL | You want the convenient default: wrap the prompt and add one 5-minute breakpoint on the last cacheable block. |
+/// | [`CachedPrompt::cached_1h`] | Yes, 1-hour TTL   | Same as `cached` but the breakpoint uses a 1-hour TTL. |
+///
+/// # Why `From` does not add a breakpoint
+///
+/// An earlier design made `From<Prompt>` call [`Prompt::cache`] under the
+/// hood. That turned `.into()` into a subtle footgun: a caller who had
+/// already placed an explicit 1-hour marker (via `.cache_1h()` or an inline
+/// `cache_control`) and then wrote `.into()` would silently have that marker
+/// overwritten with a default 5-minute one — producing an Anthropic-side
+/// "`ttl='1h' ... must not come after ttl='5m'`" error at submit time.
+///
+/// The current design splits the two intents apart:
+///
+/// - **Freeze, don't mark**: `Prompt::into()` / `CachedPrompt::from(prompt)`.
+///   Exactly preserves whatever `cache_control` markers the caller placed.
+/// - **Freeze and mark**: [`cached`](Self::cached) / [`cached_1h`](Self::cached_1h).
+///   A convenience for the common case where the caller wants the wrapper
+///   to pick the breakpoint location.
 ///
 /// To deliberately break the cache (e.g. removing tools for a different
 /// phase), call [`into_inner`] — the explicit escape hatch.
@@ -88,22 +126,58 @@ impl std::fmt::Debug for CachedPrompt<'_> {
 // --- Construction -----------------------------------------------------------
 
 impl<'a> From<Prompt<'a>> for CachedPrompt<'a> {
-    /// Freeze the prompt and add a cache breakpoint on the last cacheable
-    /// block.  This is the preferred constructor for most use cases.
+    /// Freeze the prompt into a [`CachedPrompt`] without touching its
+    /// `cache_control` markers. Use this when the prompt already carries
+    /// the breakpoints you want — either set inline at construction time
+    /// (e.g. `Block::Text { cache_control: Some(CacheControl::one_hour()), ... }`)
+    /// or placed via [`Prompt::cache`] / [`Prompt::cache_1h`] before the
+    /// conversion.
+    ///
+    /// For the common "wrap and also add a breakpoint" case, use
+    /// [`CachedPrompt::cached`] (5-minute TTL) or
+    /// [`CachedPrompt::cached_1h`] (1-hour TTL).
     fn from(prompt: Prompt<'a>) -> Self {
-        Self {
-            inner: prompt.cache(),
-        }
+        Self { inner: prompt }
     }
 }
 
 impl<'a> CachedPrompt<'a> {
-    /// Freeze the prompt *without* adding a cache breakpoint.
+    /// Freeze the prompt into a [`CachedPrompt`] **and** add a 5-minute
+    /// cache breakpoint on the last cacheable block (via [`Prompt::cache`]).
     ///
-    /// Use this when the prompt already has explicit `cache_control` markers
-    /// set during construction (e.g. on individual system blocks or tools).
-    pub fn uncached(prompt: Prompt<'a>) -> Self {
-        Self { inner: prompt }
+    /// Equivalent to `CachedPrompt::from(prompt.cache())`.
+    ///
+    /// Use this when the prompt does not yet carry any explicit
+    /// `cache_control` markers and you want the wrapper to place one at
+    /// the default location (messages → system → tools, whichever has
+    /// content first).
+    ///
+    /// For 1-hour TTL, use [`CachedPrompt::cached_1h`].
+    /// For wrapping without adding any new breakpoint, use
+    /// [`From::from`] / `.into()`.
+    pub fn cached(prompt: Prompt<'a>) -> Self {
+        Self {
+            inner: prompt.cache(),
+        }
+    }
+
+    /// Freeze the prompt into a [`CachedPrompt`] **and** add a 1-hour
+    /// cache breakpoint on the last cacheable block (via [`Prompt::cache_1h`]).
+    ///
+    /// Equivalent to `CachedPrompt::from(prompt.cache_1h())`.
+    ///
+    /// Use this when priming or caching data that needs to survive longer
+    /// than the default 5-minute window — for example, a prompt prefix
+    /// that will be read by a batch of requests submitted over the next
+    /// hour via the Anthropic Batch API.
+    ///
+    /// For 5-minute TTL, use [`CachedPrompt::cached`].
+    /// For wrapping without adding any new breakpoint, use
+    /// [`From::from`] / `.into()`.
+    pub fn cached_1h(prompt: Prompt<'a>) -> Self {
+        Self {
+            inner: prompt.cache_1h(),
+        }
     }
 }
 
@@ -331,14 +405,14 @@ impl Serialize for CachedPrompt<'_> {
     }
 }
 
-/// Deserializes as a [`Prompt`] and wraps it *without* adding a cache
-/// breakpoint (since the serialized form may already contain breakpoints).
+/// Deserializes as a [`Prompt`] and wraps it via [`From`] (which preserves
+/// any `cache_control` markers present in the serialized form exactly).
 impl<'de, 'a: 'de> Deserialize<'de> for CachedPrompt<'a> {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        Prompt::deserialize(deserializer).map(Self::uncached)
+        Prompt::deserialize(deserializer).map(Self::from)
     }
 }
 
@@ -348,7 +422,7 @@ mod tests {
     use crate::prompt::message::Role;
 
     #[test]
-    fn from_prompt_adds_cache_breakpoint() {
+    fn from_prompt_does_not_add_breakpoint() {
         let prompt = Prompt {
             system: Some(crate::prompt::message::Content::text(
                 "You are a helpful assistant.",
@@ -358,24 +432,48 @@ mod tests {
 
         let cached = CachedPrompt::from(prompt);
 
-        // The system content should now have a cache_control marker.
+        // System should still be SinglePart — From does not call .cache().
+        assert!(
+            cached.system.as_ref().unwrap().is_single_part(),
+            "expected SinglePart (From must not add a breakpoint)"
+        );
+    }
+
+    #[test]
+    fn cached_adds_5m_breakpoint() {
+        use crate::prompt::message::CacheControl;
+
+        let prompt = Prompt {
+            system: Some(crate::prompt::message::Content::text(
+                "You are a helpful assistant.",
+            )),
+            ..Default::default()
+        };
+
+        let cached = CachedPrompt::cached(prompt);
+
+        // The system block should now carry a 5-minute cache_control.
         // (cache() falls through: no messages → caches system)
         match cached.system.as_ref().unwrap() {
             crate::prompt::message::Content::MultiPart(blocks) => {
                 let last = blocks.last().unwrap();
-                assert!(
-                    last.is_cached(),
-                    "expected cache_control on system block"
-                );
+                let cc = match last {
+                    crate::prompt::message::Block::Text {
+                        cache_control,
+                        ..
+                    } => cache_control.as_ref().unwrap(),
+                    _ => panic!("expected text block"),
+                };
+                assert_eq!(cc, &CacheControl::Ephemeral { ttl: None });
             }
             crate::prompt::message::Content::SinglePart(_) => {
-                panic!("expected MultiPart after cache()")
+                panic!("expected MultiPart after cached()")
             }
         }
     }
 
     #[test]
-    fn cache_1h_sets_one_hour_ttl() {
+    fn cached_1h_adds_one_hour_breakpoint() {
         use crate::prompt::message::{CacheControl, CacheTtl};
 
         let prompt = Prompt {
@@ -385,7 +483,84 @@ mod tests {
             ..Default::default()
         };
 
-        let mut cached = CachedPrompt::uncached(prompt);
+        let cached = CachedPrompt::cached_1h(prompt);
+
+        // The system block should now carry a 1-hour cache_control.
+        match cached.system.as_ref().unwrap() {
+            crate::prompt::message::Content::MultiPart(blocks) => {
+                let last = blocks.last().unwrap();
+                let cc = match last {
+                    crate::prompt::message::Block::Text {
+                        cache_control,
+                        ..
+                    } => cache_control.as_ref().unwrap(),
+                    _ => panic!("expected text block"),
+                };
+                assert_eq!(
+                    cc,
+                    &CacheControl::Ephemeral {
+                        ttl: Some(CacheTtl::OneHour)
+                    }
+                );
+            }
+            _ => panic!("expected MultiPart after cached_1h()"),
+        }
+    }
+
+    /// Regression test for a bug where the old `From<Prompt> for
+    /// CachedPrompt` silently called `prompt.cache()` and would overwrite
+    /// an inline 1h `cache_control` marker with a fresh 5m one — producing
+    /// an Anthropic-side "ttl='1h' cache_control block must not come after
+    /// a ttl='5m' cache_control block" error at submit time.
+    ///
+    /// The current `From` impl just wraps. This test confirms an inline
+    /// 1h marker survives the conversion unchanged.
+    #[test]
+    fn from_preserves_inline_1h_marker() {
+        use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
+
+        let prompt = Prompt {
+            system: Some(Content::MultiPart(vec![Block::Text {
+                text: "You are a helpful assistant.".into(),
+                cache_control: Some(CacheControl::one_hour()),
+            }])),
+            ..Default::default()
+        };
+
+        let cached = CachedPrompt::from(prompt);
+
+        match cached.system.as_ref().unwrap() {
+            Content::MultiPart(blocks) => {
+                let cc = match blocks.last().unwrap() {
+                    Block::Text { cache_control, .. } => {
+                        cache_control.as_ref().unwrap()
+                    }
+                    _ => panic!("expected text block"),
+                };
+                assert_eq!(
+                    cc,
+                    &CacheControl::Ephemeral {
+                        ttl: Some(CacheTtl::OneHour)
+                    },
+                    "From must preserve the inline 1h marker unchanged"
+                );
+            }
+            _ => panic!("expected MultiPart"),
+        }
+    }
+
+    #[test]
+    fn cache_1h_on_mut_sets_one_hour_ttl() {
+        use crate::prompt::message::{CacheControl, CacheTtl};
+
+        let prompt = Prompt {
+            system: Some(crate::prompt::message::Content::text(
+                "You are a helpful assistant.",
+            )),
+            ..Default::default()
+        };
+
+        let mut cached = CachedPrompt::from(prompt);
         cached.cache_1h();
 
         // The system block should now carry a 1-hour cache_control.
@@ -408,24 +583,6 @@ mod tests {
             }
             _ => panic!("expected MultiPart after cache_1h()"),
         }
-    }
-
-    #[test]
-    fn uncached_does_not_add_breakpoint() {
-        let prompt = Prompt {
-            system: Some(crate::prompt::message::Content::text(
-                "You are a helpful assistant.",
-            )),
-            ..Default::default()
-        };
-
-        let cached = CachedPrompt::uncached(prompt);
-
-        // System should still be SinglePart — no cache() was called.
-        assert!(
-            cached.system.as_ref().unwrap().is_single_part(),
-            "expected SinglePart (no cache breakpoint)"
-        );
     }
 
     #[test]
@@ -520,7 +677,7 @@ mod tests {
     #[test]
     fn cache_windowed_keeps_first_and_last() {
         let prompt = Prompt::default();
-        let mut cached = CachedPrompt::uncached(prompt);
+        let mut cached = CachedPrompt::from(prompt);
 
         // Add 7 user/assistant message pairs (14 messages total)
         for i in 0..7 {
@@ -576,7 +733,7 @@ mod tests {
         use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
 
         let prompt = Prompt::default();
-        let mut cached = CachedPrompt::uncached(prompt);
+        let mut cached = CachedPrompt::from(prompt);
 
         cached.push_message((Role::User, "hello")).unwrap();
         cached.push_message((Role::Assistant, "hi")).unwrap();
@@ -609,7 +766,7 @@ mod tests {
         use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
 
         let prompt = Prompt::default();
-        let mut cached = CachedPrompt::uncached(prompt);
+        let mut cached = CachedPrompt::from(prompt);
 
         // Round 1: mark with 1h TTL
         cached.push_message((Role::User, "round 1 user")).unwrap();
@@ -674,7 +831,7 @@ mod tests {
     #[test]
     fn cache_windowed_no_op_when_under_budget() {
         let prompt = Prompt::default();
-        let mut cached = CachedPrompt::uncached(prompt);
+        let mut cached = CachedPrompt::from(prompt);
 
         cached.push_message((Role::User, "hello")).unwrap();
         cached.push_message((Role::Assistant, "hi")).unwrap();
