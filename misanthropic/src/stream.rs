@@ -923,7 +923,7 @@ pub(crate) mod tests {
                 Ok(event) => Ok(event),
                 Err(_) => Err(Error::Anthropic {
                     error: AnthropicError::Unknown {
-                        code: 123.try_into().unwrap(),
+                        code: Some(123.try_into().unwrap()),
                         // every line in the file is Ok, so this is impossible.
                         message: "impossible".into(),
                     },

@@ -737,11 +737,11 @@ impl From<BatchResult>
             BatchResult::Ok(msg) => Ok(msg),
             BatchResult::Error(e) => Err(e),
             BatchResult::Canceled => Err(client::AnthropicError::Unknown {
-                code: NonZeroU16::new(204).unwrap(),
+                code: Some(NonZeroU16::new(204).unwrap()),
                 message: "Batch result was cancelled.".into(),
             }),
             BatchResult::Expired => Err(client::AnthropicError::Unknown {
-                code: NonZeroU16::new(408).unwrap(),
+                code: Some(NonZeroU16::new(408).unwrap()),
                 message: "Batch result expired".into(),
             }),
         }
