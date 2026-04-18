@@ -865,7 +865,23 @@ impl Serialize for Error {
 }
 
 /// Anthropic error type.
-#[derive(Debug, thiserror::Error, Serialize, Deserialize, PartialEq)]
+///
+/// Deserialization route:
+/// - Matches on the `type` string field using the explicit
+///   `#[serde(rename = "...")]` aliases below when populated by the
+///   custom [`Deserialize`] impl.
+/// - Any `type` value not matching a known variant falls through to
+///   [`Self::Unknown`] with `code: None` and `message` carrying both
+///   the unrecognized type name and the body's `message`. This is the
+///   genuine catch-all — previously a `type` value Anthropic hadn't
+///   documented at crate release time (e.g. a new `gateway_timeout`
+///   variant) would fail deserialization entirely and surface as
+///   reqwest's opaque `"error decoding response body"`.
+///
+/// `#[serde(tag = "type", rename_all = "snake_case")]` remains in the
+/// derive attributes purely for the `Serialize` path — we still emit
+/// variants in Anthropic's documented shape.
+#[derive(Debug, thiserror::Error, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[allow(missing_docs)]
@@ -900,9 +916,20 @@ pub enum AnthropicError {
     #[error("timeout: {message}")]
     #[serde(rename = "timeout_error")]
     Timeout { message: String },
-    // Anthropic's API specifies they can add more error codes in the future.
-    #[error("unknown error ({code}): {message}")]
-    Unknown { code: NonZeroU16, message: String },
+    /// Fallback for any error `type` not covered by the variants above
+    /// — either an Anthropic error kind introduced after this crate
+    /// was released, or a synthetic error constructed by the crate
+    /// itself (e.g. batch results for cancelled/expired items).
+    ///
+    /// `code` is `None` when constructed via the deserialize fallback
+    /// (no HTTP status can be inferred from a `type` string alone).
+    /// Synthetic constructors can pass `Some(code)` when they have a
+    /// meaningful status to carry.
+    #[error("unknown error{}: {message}", code.map(|c| format!(" ({c})")).unwrap_or_default())]
+    Unknown {
+        code: Option<NonZeroU16>,
+        message: String,
+    },
 }
 
 impl AnthropicError {
@@ -918,9 +945,52 @@ impl AnthropicError {
             Self::RateLimit { .. } => Some(NonZeroU16::new(429).unwrap()),
             Self::API { .. } => Some(NonZeroU16::new(500).unwrap()),
             Self::Overloaded { .. } => Some(NonZeroU16::new(529).unwrap()),
-            Self::Unknown { code, .. } => Some(*code),
+            Self::Unknown { code, .. } => *code,
             Self::Timeout { .. } => None,
         }
+    }
+}
+
+/// Custom `Deserialize` impl so unknown `type` values fall through to
+/// [`AnthropicError::Unknown`] instead of failing deserialization.
+/// The derive'd impl would reject anything outside the explicit
+/// variant list — and because `Unknown` requires a `code` field that
+/// real Anthropic bodies don't carry, it couldn't serve as a fallback
+/// on its own.
+impl<'de> Deserialize<'de> for AnthropicError {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+
+        let value = serde_json::Value::deserialize(deserializer)?;
+        let type_name =
+            value.get("type").and_then(|v| v.as_str()).ok_or_else(|| {
+                D::Error::custom("AnthropicError body missing 'type' field")
+            })?;
+        let message = value
+            .get("message")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        Ok(match type_name {
+            "invalid_request_error" => Self::InvalidRequest { message },
+            "authentication_error" => Self::Authentication { message },
+            "billing_error" => Self::Billing { message },
+            "permission_error" => Self::Permission { message },
+            "not_found_error" => Self::NotFound { message },
+            "request_too_large" => Self::RequestTooLarge { message },
+            "rate_limit_error" => Self::RateLimit { message },
+            "api_error" => Self::API { message },
+            "overloaded_error" => Self::Overloaded { message },
+            "timeout_error" => Self::Timeout { message },
+            unknown => Self::Unknown {
+                code: None,
+                message: format!("{unknown}: {message}"),
+            },
+        })
     }
 }
 
@@ -1115,6 +1185,67 @@ mod tests {
                 }
             );
         }
+    }
+
+    // Test that unknown error types fall through to Unknown rather
+    // than failing deserialization (the failure mode observed 2026-04-18
+    // where reqwest surfaced an opaque "error decoding response body"
+    // and the raw Anthropic response was gone).
+
+    #[test]
+    fn test_unknown_error_type_falls_through() {
+        const UNKNOWN: &str = r#"{"type":"gateway_timeout_error","message":"upstream timed out"}"#;
+        let error: AnthropicError = serde_json::from_str(UNKNOWN).unwrap();
+        assert_eq!(
+            error,
+            AnthropicError::Unknown {
+                code: None,
+                message: "gateway_timeout_error: upstream timed out"
+                    .to_string()
+            }
+        );
+        // `status()` returns None for deserialize-fallback Unknowns —
+        // we have no way to infer HTTP status from a type string alone.
+        assert_eq!(error.status(), None);
+    }
+
+    #[test]
+    fn test_unknown_error_type_without_message_field() {
+        // Anthropic could (legally, by their own docs) ship an error
+        // body missing the `message` field. Don't fail the whole
+        // deserialize for that — default to empty string.
+        const UNKNOWN: &str = r#"{"type":"brand_new_error"}"#;
+        let error: AnthropicError = serde_json::from_str(UNKNOWN).unwrap();
+        assert_eq!(
+            error,
+            AnthropicError::Unknown {
+                code: None,
+                message: "brand_new_error: ".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn test_anthropic_error_missing_type_field_is_rejected() {
+        // But a body with no `type` at all is still a hard fail —
+        // that's definitionally not an Anthropic error shape. The
+        // outer `NonJsonResponse` / `parse_body` paths in
+        // `client::post` / `client::get` will catch it and preserve
+        // the raw body.
+        const BAD: &str = r#"{"message":"where's my type?"}"#;
+        assert!(serde_json::from_str::<AnthropicError>(BAD).is_err());
+    }
+
+    #[test]
+    fn test_synthetic_unknown_preserves_code() {
+        // Synthetic constructors (batch result for cancelled/expired,
+        // stream assertion fallbacks) still supply a meaningful status
+        // code via `Some(...)`. Confirm `status()` returns it.
+        let e = AnthropicError::Unknown {
+            code: Some(NonZeroU16::new(408).unwrap()),
+            message: "Batch result expired".to_string(),
+        };
+        assert_eq!(e.status(), Some(NonZeroU16::new(408).unwrap()));
     }
 
     // Test the Client
