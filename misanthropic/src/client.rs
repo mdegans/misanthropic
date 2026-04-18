@@ -358,6 +358,14 @@ impl Client {
 
     /// Same as [`Self::post_raw`] but returns a crate [`Result`] instead of a
     /// [`reqwest`] result. Parses [`AnthropicError`]s.
+    ///
+    /// On non-OK statuses, attempts to parse the body as an
+    /// [`AnthropicError`]. If that fails (edge proxy returned HTML,
+    /// plaintext rate-limit notice, Cloudflare challenge, …), surfaces
+    /// an [`Error::NonJsonResponse`] with the HTTP status and a
+    /// truncated body snippet — mirroring [`Self::get`]'s behaviour so
+    /// operators get the same diagnostic signal for POST and GET
+    /// failures.
     pub async fn post<U, B>(&self, url: U, body: B) -> Result<reqwest::Response>
     where
         U: reqwest::IntoUrl,
@@ -366,10 +374,25 @@ impl Client {
         let response = self.post_raw(url, body).await?;
 
         if response.status() != reqwest::StatusCode::OK {
-            let error: AnthropicErrorWrapper = response.json().await?;
-
-            // Error was sucessfully parsed from the API.
-            return Err(error.error.into());
+            let status = response.status();
+            let body = response.text().await?;
+            return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
+                Ok(wrapper) => Err(wrapper.error.into()),
+                Err(_parse_err) => {
+                    #[cfg(feature = "log")]
+                    {
+                        log::error!(
+                            "ERROR:non-JSON error body (status {}): {}",
+                            status.as_u16(),
+                            truncate_body(&body),
+                        );
+                    }
+                    Err(Error::NonJsonResponse {
+                        status: status.as_u16(),
+                        body: truncate_body(&body).into_owned(),
+                    })
+                }
+            };
         }
 
         Ok(response)
@@ -567,11 +590,8 @@ impl Client {
         P: Serialize,
     {
         let prompts: Prompts<P> = prompts.into_iter().collect();
-        let meta = self
-            .post(self.batch_url.as_str(), &prompts)
-            .await?
-            .json()
-            .await?;
+        let response = self.post(self.batch_url.as_str(), &prompts).await?;
+        let meta = parse_body(response, "batch::Metadata").await?;
 
         Ok(batch::Pending { prompts, meta })
     }
@@ -589,11 +609,8 @@ impl Client {
         Id: Into<batch::Id>,
     {
         let prompts: Prompts<P> = prompts.into_iter().collect();
-        let meta = self
-            .post(self.batch_url.as_str(), &prompts)
-            .await?
-            .json()
-            .await?;
+        let response = self.post(self.batch_url.as_str(), &prompts).await?;
+        let meta = parse_body(response, "batch::Metadata").await?;
 
         Ok(batch::Pending { prompts, meta })
     }
@@ -704,7 +721,7 @@ impl Client {
 
         let response =
             self.post(self.count_tokens_url.as_str(), prompt).await?;
-        let count: TokenCount = response.json().await?;
+        let count: TokenCount = parse_body(response, "TokenCount").await?;
 
         Ok(count.input_tokens)
     }
@@ -722,6 +739,45 @@ impl From<Key> for Client {
 /// truncated with a `... [N more bytes]` suffix so operators still know
 /// how much content was elided.
 const NON_JSON_BODY_SNIPPET_LEN: usize = 2048;
+
+/// Read `response` body as text and parse it as JSON, logging the raw
+/// body (truncated to [`NON_JSON_BODY_SNIPPET_LEN`]) at `error!` level
+/// on parse failure.
+///
+/// Use this instead of `response.json().await?` on any post-OK-status
+/// body where the caller needs structured output. The built-in
+/// [`reqwest::Response::json`] path surfaces only the opaque
+/// `"error decoding response body"` message and discards the bytes
+/// before they can be logged, leaving upstream schema drift or edge-
+/// proxy error bodies undiagnosable without a packet capture.
+///
+/// `context` identifies the call site in the log message (for
+/// example, `"batch::Metadata"` or `"TokenCount"`). It is unused when
+/// the `log` feature is disabled.
+#[cfg(feature = "client")]
+async fn parse_body<T>(
+    response: reqwest::Response,
+    #[cfg_attr(not(feature = "log"), allow(unused_variables))] context: &str,
+) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let body = response.text().await?;
+    match serde_json::from_str::<T>(&body) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            #[cfg(feature = "log")]
+            {
+                log::error!(
+                    "ERROR:Could not parse {} from JSON: {}",
+                    context,
+                    truncate_body(&body),
+                );
+            }
+            Err(e.into())
+        }
+    }
+}
 
 /// Truncate `body` to at most [`NON_JSON_BODY_SNIPPET_LEN`] bytes at a
 /// valid UTF-8 boundary, appending a `... [N more bytes]` suffix if the
