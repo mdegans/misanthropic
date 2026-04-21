@@ -37,7 +37,6 @@ pub use output::{JsonSchemaFormat, OutputConfig, OutputFormat};
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
-#[non_exhaustive]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
     pub model: model::Id<'a>,
