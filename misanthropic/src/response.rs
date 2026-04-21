@@ -5,7 +5,7 @@
 use derive_more::derive::IsVariant;
 
 pub(crate) mod message;
-pub use message::{Message, StopReason, Usage};
+pub use message::{JsonError, Message, StopReason, Usage};
 
 use crate::prompt;
 

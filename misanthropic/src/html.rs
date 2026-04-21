@@ -222,6 +222,7 @@ mod tests {
                     "required": ["script"],
                 }),
                 cache_control: None,
+                strict: None,
             }]),
             messages: vec![
                 Message {

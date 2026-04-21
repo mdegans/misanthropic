@@ -190,21 +190,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             AnthropicModel::Haiku30
         })
-        .add_tool(Method {
-            name: "python".into(),
-            description: "Run a Python script.".into(),
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "script": {
-                        "type": "string",
-                        "description": "Python script to run.",
+        .add_tool(
+            Method::builder("python")
+                .description("Run a Python script.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Python script to run.",
+                        },
                     },
-                },
-                "required": ["script"],
-            }),
-            cache_control: None,
-        })
+                    "required": ["script"],
+                }))
+                .build()?,
+        )
         // Inform the assistant about their limitations.
         .set_system(include_str!("python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", python_version))
