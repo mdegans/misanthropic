@@ -210,4 +210,14 @@ name = "neologism"
 required-features = ["client"]
 doc-scrape-examples = true
 
+[[example]]
+name = "structured_commit_classifier"
+required-features = ["client", "json-schema"]
+doc-scrape-examples = true
+
+[[example]]
+name = "vote_intent"
+required-features = ["client", "json-schema"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.
