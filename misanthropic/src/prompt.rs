@@ -28,12 +28,16 @@ pub use thinking::Thinking;
 pub mod cached;
 pub use cached::CachedPrompt;
 
+pub mod output;
+pub use output::{JsonSchemaFormat, OutputConfig, OutputFormat};
+
 /// Request for the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct Prompt<'a> {
     /// [`Model`] to use for inference.
     pub model: model::Id<'a>,
@@ -104,6 +108,28 @@ pub struct Prompt<'a> {
     /// Assistant to use `<thiking>` tags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
+    /// Structured output configuration. When set, the response is
+    /// constrained by grammar-based decoding to a single [`Text`] [`Block`]
+    /// whose body matches the configured schema.
+    ///
+    /// Changing [`OutputConfig::format`] invalidates the [prompt cache] for
+    /// the conversation thread. Incompatible with message prefilling and
+    /// [`citations`]; combinable with [`strict`] [tool use], [streaming],
+    /// and [batching]. A [`Refusal`] [`StopReason`] can occur here when the
+    /// model declines to produce structured output.
+    ///
+    /// [`Text`]: crate::prompt::message::Block::Text
+    /// [`Block`]: crate::prompt::message::Block
+    /// [`strict`]: crate::tool::Method::strict
+    /// [`Refusal`]: crate::response::StopReason::Refusal
+    /// [`StopReason`]: crate::response::StopReason
+    /// [`citations`]: <https://docs.anthropic.com/en/docs/build-with-claude/citations>
+    /// [tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    /// [streaming]: <https://docs.anthropic.com/en/docs/build-with-claude/streaming>
+    /// [batching]: <https://docs.anthropic.com/en/docs/build-with-claude/batch-processing>
+    /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_config: Option<OutputConfig>,
 }
 
 impl std::fmt::Debug for Prompt<'_> {
@@ -122,6 +148,7 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("tool_choice", &self.tool_choice)
             .field("tools", &self.functions)
             .field("top_k", &self.top_k)
+            .field("output_config", &self.output_config)
             .field("...", &"...")
             .finish()
     }
@@ -145,6 +172,7 @@ impl Default for Prompt<'_> {
             top_k: Default::default(),
             top_p: Default::default(),
             thinking: Default::default(),
+            output_config: Default::default(),
         }
     }
 }
@@ -695,6 +723,37 @@ impl<'a> Prompt<'a> {
         self
     }
 
+    /// Set [`output_config`] for structured output. See
+    /// [`OutputConfig`] for construction helpers including
+    /// [`OutputConfig::json_schema`] and (with the `json-schema` feature)
+    /// [`OutputConfig::for_type`].
+    ///
+    /// [`output_config`]: Prompt::output_config
+    pub fn output_config<C>(mut self, config: C) -> Self
+    where
+        C: Into<OutputConfig>,
+    {
+        self.output_config = Some(config.into());
+        self
+    }
+
+    /// Sugar: constrain output to a raw [JSON Schema] value. Equivalent to
+    /// `self.output_config(OutputConfig::json_schema(schema))`.
+    ///
+    /// [JSON Schema]: <https://json-schema.org/>
+    pub fn json_schema(self, schema: serde_json::Value) -> Self {
+        self.output_config(OutputConfig::json_schema(schema))
+    }
+
+    /// Sugar: constrain output to the schema derived from `T`. Equivalent
+    /// to `self.output_config(OutputConfig::for_type::<T>())`.
+    ///
+    /// Requires the `json-schema` feature.
+    #[cfg(feature = "json-schema")]
+    pub fn structured_output<T: schemars::JsonSchema>(self) -> Self {
+        self.output_config(OutputConfig::for_type::<T>())
+    }
+
     /// Add a cache breakpoint to the end of the prompt, setting `cache_control`
     /// to `Ephemeral`.
     ///
@@ -785,6 +844,7 @@ impl<'a> Prompt<'a> {
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
+            output_config: self.output_config,
         }
     }
 
@@ -1398,6 +1458,7 @@ mod tests {
             description: "Ping a server.".into(),
             schema: json!({}),
             cache_control: None,
+            strict: None,
         });
 
         assert!(
@@ -1513,6 +1574,88 @@ mod tests {
     }
 
     #[test]
+    fn test_output_config_defaults_to_none() {
+        let prompt = Prompt::default();
+        assert!(prompt.output_config.is_none());
+        // And is elided from serialized form.
+        let json = serde_json::to_string(&prompt).unwrap();
+        assert!(!json.contains("output_config"));
+    }
+
+    #[test]
+    fn test_output_config_builder_and_roundtrip() {
+        let schema = json!({
+            "type": "object",
+            "properties": { "support": { "type": "boolean" } },
+            "required": ["support"],
+            "additionalProperties": false,
+        });
+        let prompt = Prompt::default().json_schema(schema.clone());
+        let cfg = prompt.output_config.as_ref().unwrap();
+        assert!(cfg.format.is_json_schema());
+
+        // Wire shape matches Anthropic's `output_config.format` exactly.
+        let value = serde_json::to_value(&prompt).unwrap();
+        assert_eq!(
+            value["output_config"],
+            json!({
+                "format": {
+                    "type": "json_schema",
+                    "schema": schema,
+                }
+            })
+        );
+
+        // Roundtrip.
+        let back = serde_json::from_value::<Prompt>(value).unwrap();
+        assert_eq!(back.output_config, prompt.output_config);
+    }
+
+    #[test]
+    fn test_output_config_accepts_into_impls() {
+        // From<serde_json::Value>
+        let from_value: Prompt =
+            Prompt::default().output_config(json!({"type": "object"}));
+        assert!(from_value.output_config.is_some());
+
+        // From<JsonSchemaFormat>
+        let from_format = Prompt::default().output_config(JsonSchemaFormat {
+            schema: json!({"type": "object"}),
+        });
+        assert!(from_format.output_config.is_some());
+
+        // Explicit OutputConfig.
+        let explicit = Prompt::default().output_config(
+            OutputConfig::json_schema(json!({"type": "object"})),
+        );
+        assert!(explicit.output_config.is_some());
+    }
+
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn test_structured_output_from_type() {
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct VoteIntent {
+            post_id: String,
+            support: bool,
+            rationale: String,
+        }
+
+        let prompt = Prompt::default().structured_output::<VoteIntent>();
+        let cfg = prompt.output_config.as_ref().unwrap();
+        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        assert_eq!(
+            schema.get("additionalProperties"),
+            Some(&serde_json::Value::Bool(false))
+        );
+        let props = schema.get("properties").unwrap().as_object().unwrap();
+        for name in ["post_id", "support", "rationale"] {
+            assert!(props.contains_key(name), "missing property: {name}");
+        }
+    }
+
+    #[test]
     fn test_tools() {
         // A tool can be added from a json object. This is fallible. It must
         // deserialize into a Tool.
@@ -1541,6 +1684,7 @@ mod tests {
             description: "Ping a server.".into(),
             schema: schema.clone(),
             cache_control: None,
+            strict: None,
         };
 
         let request = Prompt::default()
@@ -1639,6 +1783,7 @@ mod tests {
                     "required": ["host"]
                 }),
                 cache_control: None,
+                strict: None,
             }])
             .set_system("You are a very succinct assistant.")
             .set_messages([

@@ -105,6 +105,8 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
+# JSON Schema generation for structured outputs (Prompt::output_config).
+schemars = { version = "1", optional = true }
 # SurrealDB support - pinned to 1.x for edition 2021 compatibility
 sqlx = { version = "0.8", optional = true }
 
@@ -182,6 +184,10 @@ kv-mem = []
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
+# JSON Schema integration for structured outputs. Enables
+# `OutputConfig::for_type::<T>()` and `Prompt::structured_output::<T>()` for
+# any `T: schemars::JsonSchema`.
+json-schema = ["dep:schemars"]
 
 
 [[example]]

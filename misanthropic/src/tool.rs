@@ -131,6 +131,7 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder<'a>")]
 #[serde(rename = "tool")]
+#[non_exhaustive]
 pub struct Method<'a> {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'a, str>,
@@ -149,6 +150,22 @@ pub struct Method<'a> {
     /// [`Prompt::cache`] crate::Prompt::cache
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
+    /// When `Some(true)`, enables [strict tool use] — the API uses
+    /// grammar-constrained decoding so [`Use::input`] is guaranteed to
+    /// validate against [`schema`]. Defaults to `None` (best-effort
+    /// adherence only).
+    ///
+    /// Strict mode is compatible with [`Prompt::output_config`] — the API
+    /// accepts both in the same request, but any given response turn
+    /// emits either a `tool_use` block or the constrained output text,
+    /// not both.
+    ///
+    /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    /// [`Use::input`]: crate::tool::Use::input
+    /// [`schema`]: Method::schema
+    /// [`Prompt::output_config`]: crate::Prompt::output_config
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub strict: Option<bool>,
 }
 
 impl<'a> TryFrom<MethodBuilder<'a>> for Method<'a> {
@@ -167,10 +184,14 @@ pub struct MethodBuilder<'a> {
     tool: Method<'a>,
 }
 
-// MethodBuilder must implement Deserialize but we can't derive it because it
-// would recursively require Tool to implement Deserialize, so we have to
-// implement it manually. This is a bit ugly, but it works and ensures that
-// a Tool is always valid when deserialized.
+// `Method` is annotated with `#[serde(try_from = "MethodBuilder<'a>")]`, so
+// deserializing a `Method` routes through `MethodBuilder::deserialize` and
+// then `MethodBuilder::build`. If we derived `Deserialize` on
+// `MethodBuilder`, serde would generate an impl that defers to
+// `Method::deserialize`, which in turn calls back into
+// `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
+// a private `Foreign` helper struct that owns the actual field mapping.
+// Every public field on `Method` must have a matching entry here.
 impl<'de> Deserialize<'de> for MethodBuilder<'_> {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -181,7 +202,10 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             name: Cow<'static, str>,
             description: Cow<'static, str>,
             input_schema: serde_json::Value,
+            #[serde(default)]
             cache_control: Option<crate::prompt::message::CacheControl>,
+            #[serde(default)]
+            strict: Option<bool>,
         }
 
         let foreign = Foreign::deserialize(deserializer)?;
@@ -191,6 +215,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             description,
             input_schema,
             cache_control,
+            strict,
         } = foreign;
 
         Ok(MethodBuilder {
@@ -199,6 +224,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
                 description,
                 schema: input_schema,
                 cache_control,
+                strict,
             },
         })
     }
@@ -208,6 +234,16 @@ impl<'a> MethodBuilder<'a> {
     /// Set the description for the tool.
     pub fn description(mut self, description: impl Into<Cow<'a, str>>) -> Self {
         self.tool.description = description.into();
+        self
+    }
+
+    /// Set the [`strict`] flag on the [`Method`], enabling [strict tool
+    /// use] (grammar-constrained decoding of tool inputs).
+    ///
+    /// [`strict`]: Method::strict
+    /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    pub fn strict(mut self, strict: bool) -> Self {
+        self.tool.strict = Some(strict);
         self
     }
 
@@ -440,6 +476,7 @@ impl<'a> MethodBuilder<'a> {
             description: Cow::Owned(self.tool.description.into_owned()),
             schema: self.tool.schema,
             cache_control: self.tool.cache_control,
+            strict: self.tool.strict,
         }
     }
 }
@@ -470,6 +507,7 @@ impl<'a> Method<'a> {
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
                 cache_control: None,
+                strict: None,
             },
         }
     }
@@ -489,6 +527,7 @@ impl<'a> Method<'a> {
                 "required": []
             }),
             cache_control: None,
+            strict: None,
         }
     }
 
@@ -516,6 +555,7 @@ impl<'a> Method<'a> {
                 "required": required_array
             }),
             cache_control: None,
+            strict: None,
         }
     }
 
@@ -555,6 +595,23 @@ impl<'a> Method<'a> {
         self.cache_control.is_some()
     }
 
+    /// Set the [`strict`] flag on the [`Method`], enabling [strict tool
+    /// use]. See [`MethodBuilder::strict`] for the builder variant.
+    ///
+    /// [`strict`]: Method::strict
+    /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    pub fn strict(&mut self, strict: bool) -> &mut Self {
+        self.strict = Some(strict);
+        self
+    }
+
+    /// Returns `true` if [strict tool use] is enabled on this [`Method`].
+    ///
+    /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    pub fn is_strict(&self) -> bool {
+        self.strict == Some(true)
+    }
+
     /// Try to convert from a serializable value to a [`Method`].
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
@@ -577,6 +634,7 @@ impl<'a> Method<'a> {
             description: Cow::Owned(self.description.into_owned()),
             schema: self.schema,
             cache_control: self.cache_control,
+            strict: self.strict,
         }
     }
 }
@@ -1296,5 +1354,82 @@ mod tests {
         }));
 
         assert!(tool.is_err());
+    }
+
+    #[test]
+    fn test_method_strict_defaults_none_and_elides() {
+        let tool = Method::simple("ping", "Ping a server.");
+        assert_eq!(tool.strict, None);
+        assert!(!tool.is_strict());
+
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert!(
+            wire.as_object().unwrap().get("strict").is_none(),
+            "strict must be elided when None, got {wire:#}",
+        );
+    }
+
+    #[test]
+    fn test_method_builder_strict_flag() {
+        let tool = Method::builder("ping")
+            .description("Ping a server.")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string", "description": "hostname" }
+                },
+                "required": ["host"],
+            }))
+            .strict(true)
+            .build()
+            .unwrap();
+
+        assert_eq!(tool.strict, Some(true));
+        assert!(tool.is_strict());
+        let wire = serde_json::to_value(&tool).unwrap();
+        assert_eq!(wire["strict"], serde_json::Value::Bool(true));
+    }
+
+    #[test]
+    fn test_method_strict_mut_setter() {
+        let mut tool = Method::simple("ping", "Ping a server.");
+        tool.strict(true);
+        assert_eq!(tool.strict, Some(true));
+    }
+
+    #[test]
+    fn test_method_strict_roundtrips_through_deserialize() {
+        let wire = serde_json::json!({
+            "name": "ping",
+            "description": "Ping a server.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string", "description": "hostname" }
+                },
+                "required": ["host"],
+            },
+            "strict": true,
+        });
+        let tool = Method::from_serializable(wire).unwrap();
+        assert_eq!(tool.strict, Some(true));
+    }
+
+    #[test]
+    fn test_method_into_static_preserves_strict() {
+        let tool = Method::builder("ping")
+            .description("Ping a server.")
+            .schema(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string", "description": "hostname" }
+                },
+                "required": ["host"],
+            }))
+            .strict(true)
+            .build()
+            .unwrap();
+        let owned: Method<'static> = tool.into_static();
+        assert_eq!(owned.strict, Some(true));
     }
 }

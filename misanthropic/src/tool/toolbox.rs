@@ -422,6 +422,7 @@ mod tests {
                     },
                 }),
                 cache_control: None,
+                strict: None,
             }))
         }
 
