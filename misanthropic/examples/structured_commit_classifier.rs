@@ -10,6 +10,19 @@
 //! the same type we deserialize the response into (via
 //! [`serde::Deserialize`]).
 //!
+//! # Field order and chain-of-thought
+//!
+//! schemars preserves source-code order for struct fields, and
+//! Anthropic's constrained decoding emits required fields in schema
+//! order. That means field order *is* the generation order, which in
+//! turn acts as inline chain-of-thought for the model.
+//!
+//! [`summary`] is declared before [`category`] so the model describes
+//! what the diff does before committing to a conventional-commit
+//! category label — otherwise `category` gets picked first and the
+//! summary becomes post-hoc justification. The effect is most visible
+//! on smaller models.
+//!
 //! # Usage
 //!
 //! ```sh
@@ -26,6 +39,8 @@
 //!
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`Message::json`]: misanthropic::response::Message::json
+//! [`summary`]: CommitClassification::summary
+//! [`category`]: CommitClassification::category
 
 use std::io::{BufRead, Read, stdin};
 
@@ -72,14 +87,24 @@ enum Category {
 /// `#[derive(JsonSchema)]` propagates the `///` doc comments above each
 /// field into the JSON Schema's `description` slots, which the model
 /// uses as part of its constrained-decoding guidance.
+///
+/// Field order is deliberate: the model generates [`summary`] first (a
+/// description of what the diff does), then [`category`] (a label
+/// informed by that description), then the remaining fields. See the
+/// module-level docs for the reasoning.
+///
+/// [`summary`]: CommitClassification::summary
+/// [`category`]: CommitClassification::category
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommitClassification {
-    /// Conventional-commit category that best describes this diff.
-    category: Category,
     /// Imperative one-line summary of the change, 70 characters or
     /// fewer, with no trailing period. Example: "Add cache_1h variant
-    /// for 1-hour TTL". Do NOT include the category prefix.
+    /// for 1-hour TTL". Do NOT include the category prefix. Generated
+    /// first so the model describes the change before labeling it.
     summary: String,
+    /// Conventional-commit category that best describes this diff,
+    /// chosen after articulating the summary above.
+    category: Category,
     /// True if this change likely alters the public API in a
     /// backwards-incompatible way (removed/renamed public items,
     /// changed signatures, new required fields on public structs).

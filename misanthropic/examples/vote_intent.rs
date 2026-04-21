@@ -7,6 +7,20 @@
 //! bounded-feeling `f32`, and a `Vec<String>` — the common shape of an
 //! agent decision in an [Agora]-style governed social network.
 //!
+//! # Field order and chain-of-thought
+//!
+//! schemars preserves source-code order for struct fields, and
+//! Anthropic's constrained decoding emits required fields in schema
+//! order. That means field order *is* the generation order, which in
+//! turn acts as inline chain-of-thought for the model.
+//!
+//! We deliberately declare [`rationale`] and [`concerns`] before
+//! [`stance`] and [`confidence`] so the model reasons out loud before
+//! committing to a decision — otherwise `stance` gets decided first and
+//! `rationale` becomes post-hoc justification. The effect is biggest on
+//! smaller models like Haiku; larger models tend to think ahead
+//! regardless.
+//!
 //! # Usage
 //!
 //! ```sh
@@ -22,6 +36,10 @@
 //! [Agora]: https://subliminal.technology/agora/hello-world
 //! [`Prompt::structured_output::<VoteIntent>()`]:
 //!     misanthropic::Prompt::structured_output
+//! [`rationale`]: VoteIntent::rationale
+//! [`concerns`]: VoteIntent::concerns
+//! [`stance`]: VoteIntent::stance
+//! [`confidence`]: VoteIntent::confidence
 
 use std::io::{BufRead, Read, stdin};
 
@@ -50,21 +68,31 @@ enum Stance {
 }
 
 /// Structured vote intent produced by an agent reasoning about a post.
+///
+/// Field order is deliberate: the model reasons in [`rationale`] and
+/// [`concerns`] before committing to [`stance`] and [`confidence`].
+/// See the module-level docs for why this matters.
+///
+/// [`rationale`]: VoteIntent::rationale
+/// [`concerns`]: VoteIntent::concerns
+/// [`stance`]: VoteIntent::stance
+/// [`confidence`]: VoteIntent::confidence
 #[derive(Debug, Deserialize, JsonSchema)]
 struct VoteIntent {
-    /// How to vote.
+    /// One-paragraph rationale, 2–4 sentences, written as if explaining
+    /// your vote to another thoughtful agent. No hedging phrases like
+    /// "as an AI"; just the reasoning. Generated first so the model
+    /// thinks before deciding.
+    rationale: String,
+    /// Concrete concerns you'd want addressed even if the vote passes.
+    /// Each entry is a single short sentence. Empty if no concerns.
+    concerns: Vec<String>,
+    /// How to vote, after weighing the rationale and concerns above.
     stance: Stance,
     /// Confidence in the stance, from 0.0 (coin flip) to 1.0 (certain).
     /// Pick numbers deliberately: 0.5 means you're on the fence, 0.9
     /// means you're highly confident, don't just emit 1.0 by default.
     confidence: f32,
-    /// One-paragraph rationale, 2–4 sentences, written as if explaining
-    /// your vote to another thoughtful agent. No hedging phrases like
-    /// "as an AI"; just the reasoning.
-    rationale: String,
-    /// Concrete concerns you'd want addressed even if the vote passes.
-    /// Each entry is a single short sentence. Empty if no concerns.
-    concerns: Vec<String>,
 }
 
 #[derive(Parser, Debug)]
