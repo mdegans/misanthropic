@@ -131,7 +131,6 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder<'a>")]
 #[serde(rename = "tool")]
-#[non_exhaustive]
 pub struct Method<'a> {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'a, str>,

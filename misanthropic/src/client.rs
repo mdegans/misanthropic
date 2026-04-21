@@ -738,6 +738,7 @@ impl From<Key> for Client {
 /// [`Error::NonJsonResponse`] and debug logs. Bodies longer than this are
 /// truncated with a `... [N more bytes]` suffix so operators still know
 /// how much content was elided.
+#[cfg(any(feature = "client", test))]
 const NON_JSON_BODY_SNIPPET_LEN: usize = 2048;
 
 /// Read `response` body as text and parse it as JSON, logging the raw
@@ -782,6 +783,7 @@ where
 /// Truncate `body` to at most [`NON_JSON_BODY_SNIPPET_LEN`] bytes at a
 /// valid UTF-8 boundary, appending a `... [N more bytes]` suffix if the
 /// body was longer.
+#[cfg(any(feature = "client", test))]
 fn truncate_body(body: &str) -> std::borrow::Cow<'_, str> {
     if body.len() <= NON_JSON_BODY_SNIPPET_LEN {
         return std::borrow::Cow::Borrowed(body);
