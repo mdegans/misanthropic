@@ -147,6 +147,11 @@ impl From<OutputFormat> for OutputConfig {
 /// * Adds `additionalProperties: false` to every object schema that
 ///   doesn't already set it — Anthropic requires it to be explicitly
 ///   `false` on all objects.
+/// * Renames `oneOf` → `anyOf`. Anthropic supports `anyOf` but not
+///   `oneOf`; for schemars-emitted enum schemas the variants are
+///   mutually exclusive by construction so the two are semantically
+///   equivalent on a per-value basis (any value that matches exactly
+///   one subschema also matches at least one).
 /// * Removes numeric constraints: `minimum`, `maximum`,
 ///   `exclusiveMinimum`, `exclusiveMaximum`, `multipleOf`.
 /// * Removes string constraints: `minLength`, `maxLength`.
@@ -187,6 +192,14 @@ pub fn sanitize_for_anthropic(value: &mut serde_json::Value) {
                 .is_some_and(|n| n > 1);
             if drop_min_items {
                 map.remove("minItems");
+            }
+            // schemars emits `oneOf` for enum variants; Anthropic
+            // accepts `anyOf` only. For mutually-exclusive subschemas
+            // (the only shape schemars produces here) the two are
+            // equivalent. If `anyOf` is already present we keep it and
+            // drop the `oneOf`.
+            if let Some(one_of) = map.remove("oneOf") {
+                map.entry("anyOf").or_insert(one_of);
             }
             let is_object_schema = map
                 .get("type")
@@ -369,6 +382,54 @@ mod tests {
                 "expected {kw:?} to be stripped, got {wire}"
             );
         }
+    }
+
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn for_type_rewrites_one_of_to_any_of_for_enums_with_descriptions() {
+        // schemars emits `oneOf` when enum variants carry per-variant
+        // metadata (doc comments become descriptions). Anthropic rejects
+        // `oneOf` but accepts `anyOf`; `sanitize_for_anthropic` rewrites
+        // the key. Plain unit-variant enums without docs emit a flat
+        // `{"type": "string", "enum": [...]}` instead — no rewrite
+        // needed there.
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        enum Category {
+            /// A new feature.
+            Feat,
+            /// A bug fix.
+            Fix,
+            /// Internal rework.
+            Refactor,
+        }
+
+        let cfg = OutputConfig::for_type::<Category>();
+        let wire = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            !wire.contains("\"oneOf\""),
+            "oneOf must be rewritten to anyOf, got {wire}"
+        );
+        assert!(
+            wire.contains("\"anyOf\""),
+            "expected anyOf to replace oneOf, got {wire}"
+        );
+    }
+
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn sanitize_preserves_any_of_when_both_present() {
+        let mut schema = serde_json::json!({
+            "anyOf": [{"type": "string"}],
+            "oneOf": [{"type": "integer"}],
+        });
+        sanitize_for_anthropic(&mut schema);
+        // `anyOf` wins, `oneOf` is dropped.
+        assert_eq!(
+            schema.get("anyOf").unwrap(),
+            &serde_json::json!([{"type": "string"}]),
+        );
+        assert!(schema.get("oneOf").is_none());
     }
 
     #[cfg(feature = "json-schema")]
