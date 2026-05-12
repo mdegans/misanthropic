@@ -75,6 +75,11 @@ use serde::{Deserialize, Serialize};
 use super::message::CacheControl;
 use super::{Message, Prompt, TurnOrderError};
 
+/// Maximum `cache_control` markers Anthropic accepts in a single request,
+/// counted across `tools` + `system` + `messages`. See
+/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#cache-limitations>.
+const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
+
 /// A [`Prompt`] with an immutable cache prefix.
 ///
 /// # Construction
@@ -227,32 +232,42 @@ impl<'a> CachedPrompt<'a> {
         self.inner = taken.cache_1h();
     }
 
-    /// Add a cache breakpoint on the last message, keeping at most `n`
-    /// message-level breakpoints using a windowed strategy: keep the
-    /// **first** and the **last (n-1)**, drop everything in between.
+    /// Place `n` cache breakpoints in a rolling trailing window across
+    /// `messages`, spaced 2 positions apart, then enforce the API's hard
+    /// 4-marker budget by evicting older message-level breakpoints.
     ///
-    /// The first breakpoint anchors the start of messages for the 20-block
-    /// lookback window. The trailing breakpoints maximize cache hits from
-    /// the most recent rounds.
+    /// The window lands on indices `[len-1, len-3, …, len-1 - 2(n-1)]`,
+    /// skipping any position that would fall before message 0. The 2-step
+    /// spacing matches the typical "push assistant + push user_results
+    /// per round" cadence: when this method is called again after another
+    /// such pair is pushed, the new `len-1 - 2k` aligns with the previous
+    /// call's `len-1 - 2(k-1)`, so an already-marked message gets re-marked
+    /// (a no-op when present) rather than the marker jumping role.
     ///
-    /// Breakpoints on tools and system blocks are untouched (they are part
-    /// of the immutable prefix).
+    /// This pins the rolling window to the role of the trailing message at
+    /// the *first* call's marker site. Subsequent calls in the same cadence
+    /// keep the marker on the same role, which is what backends that key
+    /// prefix re-use on the trailing-assistant render hash need to fire.
     ///
-    /// # Budget accounting
+    /// # Budget enforcement
     ///
-    /// The API limits explicit `cache_control` blocks to 4 total. This
-    /// method counts at message granularity: a message with any cached
-    /// block counts as one toward `n`. When a message is dropped from
-    /// the window, **all** its cached blocks are cleared. In normal usage
-    /// ([`cache`] sets one breakpoint on the last block), each message has
-    /// at most one cached block, so message-level and block-level counts
-    /// are equivalent.
+    /// Anthropic accepts at most **4** `cache_control` markers per request,
+    /// counted across `tools` + `system` + `messages`. This method counts
+    /// the existing `system` / tools markers as a fixed prefix-cache cost
+    /// and gives the rolling window the remaining budget. When the total
+    /// would exceed 4 it evicts the **oldest message-level** markers — the
+    /// system and tools markers are left untouched.
+    ///
+    /// A position already carrying a `cache_control` marker is left alone
+    /// (its existing TTL is preserved); only freshly marked positions take
+    /// the requested `cache_control`.
     ///
     /// # Typical usage
     ///
-    /// Call [`cache`] once after building the initial prompt, then
-    /// `cache_windowed(3)` after each tool-use round. With 1 breakpoint
-    /// on the tools/system prefix, this uses all 4 API slots optimally.
+    /// Call [`cache`] once after building the initial prompt to mark the
+    /// `tools` / `system` prefix, then `cache_windowed(2)` after each
+    /// tool-use round. With 1 prefix marker + 2 message markers this fits
+    /// inside the 4-budget with one slot left over.
     ///
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL use
     /// [`cache_windowed_1h`](CachedPrompt::cache_windowed_1h), or pass
@@ -276,39 +291,70 @@ impl<'a> CachedPrompt<'a> {
     }
 
     /// Like [`cache_windowed`](CachedPrompt::cache_windowed) but lets the
-    /// caller choose the [`CacheControl`] applied to the new breakpoint.
+    /// caller choose the [`CacheControl`] applied to freshly marked
+    /// positions.
     ///
-    /// Existing breakpoints on earlier messages retain whatever
-    /// `CacheControl` they were originally given; only the newly-added
-    /// breakpoint on the last message uses `cache_control`. Middle
-    /// breakpoints that fall outside the window are removed regardless
-    /// of their original TTL.
+    /// Positions already carrying a marker retain whatever `CacheControl`
+    /// they were originally given. When the 4-marker budget forces
+    /// eviction, **middle** message-level markers (those not in the tail
+    /// window) are removed first, oldest-non-tail kept last — so the
+    /// earliest message-level marker the caller placed (typically the
+    /// initial prefix marker) survives as long as the budget allows.
     pub fn cache_windowed_with(
         &mut self,
         n: usize,
         cache_control: CacheControl,
     ) {
-        // 1. Add breakpoint on the last message with the requested TTL.
-        if let Some(last) = self.inner.messages.last_mut() {
-            last.content.cache_with(cache_control);
+        // 1. Mark up to `n` positions at the tail, spaced by 2:
+        //    `len-1, len-3, …, len-1 - 2(n-1)`. Skip out-of-bounds indices.
+        //    Skip positions that already carry a marker so the existing
+        //    TTL is preserved.
+        let len = self.inner.messages.len();
+        let mut tail_set: std::collections::HashSet<usize> =
+            std::collections::HashSet::with_capacity(n);
+        for k in 0..n {
+            let idx_signed = len as isize - 1 - 2 * (k as isize);
+            if idx_signed < 0 {
+                break;
+            }
+            let idx = idx_signed as usize;
+            if !self.inner.messages[idx].content.has_cache() {
+                self.inner.messages[idx]
+                    .content
+                    .cache_with(cache_control.clone());
+            }
+            tail_set.insert(idx);
         }
 
-        // 2. Find all message-level breakpoint indices.
-        let cached_indices: Vec<usize> = self
+        // 2. Account for sticky prefix markers (system + tools) and the
+        //    tail set the caller just requested, then compute what's left
+        //    for any pre-existing non-tail message-level markers.
+        let system_count = usize::from(
+            self.inner.system.as_ref().is_some_and(|s| s.has_cache()),
+        );
+        let tool_count = self
+            .inner
+            .functions
+            .as_ref()
+            .map_or(0, |tools| tools.iter().filter(|t| t.is_cached()).count());
+        let used = system_count + tool_count + tail_set.len();
+        let non_tail_budget =
+            MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
+
+        // 3. Walk non-tail message-level breakpoints in document order.
+        //    Keep the earliest `non_tail_budget` (i.e. the beginning);
+        //    evict the rest (the middle stragglers).
+        let non_tail_indices: Vec<usize> = self
             .inner
             .messages
             .iter()
             .enumerate()
-            .filter(|(_, msg)| msg.content.has_cache())
+            .filter(|(i, msg)| msg.content.has_cache() && !tail_set.contains(i))
             .map(|(i, _)| i)
             .collect();
 
-        // 3. If over budget, keep first + last (n-1), drop the middle.
-        if cached_indices.len() > n {
-            let keep_trailing = n.saturating_sub(1);
-            let drop_start = 1; // skip first
-            let drop_end = cached_indices.len() - keep_trailing;
-            for &idx in &cached_indices[drop_start..drop_end] {
+        if non_tail_indices.len() > non_tail_budget {
+            for &idx in &non_tail_indices[non_tail_budget..] {
                 self.inner.messages[idx].content.uncache();
             }
         }
@@ -675,11 +721,13 @@ mod tests {
     }
 
     #[test]
-    fn cache_windowed_keeps_first_and_last() {
+    fn cache_windowed_marks_slide_2_tail_and_preserves_beginning() {
         let prompt = Prompt::default();
         let mut cached = CachedPrompt::from(prompt);
 
-        // Add 7 user/assistant message pairs (14 messages total)
+        // 7 user/asst pairs (14 messages, indices 0..14). cache() after
+        // each pair marks the trailing asst — odd indices 1, 3, 5, 7, 9,
+        // 11, 13. Total 7 message-level markers.
         for i in 0..7 {
             cached
                 .push_message((Role::User, format!("user {i}")))
@@ -687,19 +735,17 @@ mod tests {
             cached
                 .push_message((Role::Assistant, format!("asst {i}")))
                 .unwrap();
-            // Mark end of each "round" with a cache breakpoint
             cached.cache();
         }
+        assert_eq!(
+            cached.messages.iter().filter(|m| m.content.has_cache()).count(),
+            7,
+        );
 
-        // Should have 7 cached messages (the last of each pair)
-        let cached_count = cached
-            .messages
-            .iter()
-            .filter(|m| m.content.has_cache())
-            .count();
-        assert_eq!(cached_count, 7);
-
-        // Now apply windowed(3) — should keep first + last 2 = 3
+        // cache_windowed(3) marks the tail at indices 13, 11, 9 (slide-by-2),
+        // then evicts middle non-tail markers until the budget fits. With no
+        // system/tools markers the budget is 4: tail (3) + 1 non-tail slot,
+        // which goes to the earliest existing non-tail marker — index 1.
         cached.cache_windowed(3);
 
         let cached_indices: Vec<usize> = cached
@@ -711,21 +757,78 @@ mod tests {
             .collect();
 
         assert_eq!(
-            cached_indices.len(),
-            3,
-            "should have exactly 3 breakpoints"
+            cached_indices,
+            vec![1, 9, 11, 13],
+            "tail slide-2 keeps 13/11/9; beginning marker at 1 survives the 4-budget; \
+             middle stragglers 3/5/7 are evicted"
         );
-        // First breakpoint is the earliest cached message
+    }
+
+    #[test]
+    fn cache_windowed_evicts_beginning_when_system_marker_consumes_budget() {
+        use crate::prompt::message::{CacheControl, Content};
+
+        // Prefix marker on system consumes 1 of the 4 budget slots. With
+        // cache_windowed(3) the tail (3) uses the remaining 3, leaving 0
+        // for any non-tail message-level marker.
+        let mut prompt = Prompt::default();
+        let mut system = Content::text("system prompt");
+        system.cache_with(CacheControl::ephemeral());
+        prompt.system = Some(system);
+        let mut cached = CachedPrompt::from(prompt);
+
+        for i in 0..7 {
+            cached
+                .push_message((Role::User, format!("user {i}")))
+                .unwrap();
+            cached
+                .push_message((Role::Assistant, format!("asst {i}")))
+                .unwrap();
+            cached.cache();
+        }
+
+        cached.cache_windowed(3);
+
+        let cached_indices: Vec<usize> = cached
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.has_cache())
+            .map(|(i, _)| i)
+            .collect();
+
         assert_eq!(
-            cached_indices[0], 1,
-            "first breakpoint should be message 1 (asst 0)"
+            cached_indices,
+            vec![9, 11, 13],
+            "system marker holds 1 budget slot; tail uses 3; no slot left for \
+             the beginning marker, so index 1 is evicted along with the middle"
         );
-        // Last two should be the most recent
-        assert_eq!(
-            cached_indices[cached_indices.len() - 1],
-            13,
-            "last breakpoint should be the final message"
+        assert!(
+            cached.inner.system.as_ref().unwrap().has_cache(),
+            "system marker must not be touched by the windowed call"
         );
+    }
+
+    #[test]
+    fn cache_windowed_skip_oob_positions_when_messages_shorter_than_window() {
+        // Only 2 messages but cache_windowed(3) — tail set should be just
+        // index 1 (the only in-bounds position from the [N, N-2, N-4]
+        // sequence; N-2=-1 and N-4=-3 are skipped).
+        let prompt = Prompt::default();
+        let mut cached = CachedPrompt::from(prompt);
+        cached.push_message((Role::User, "hello")).unwrap();
+        cached.push_message((Role::Assistant, "hi")).unwrap();
+
+        cached.cache_windowed(3);
+
+        let cached_indices: Vec<usize> = cached
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.content.has_cache())
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(cached_indices, vec![1]);
     }
 
     #[test]
