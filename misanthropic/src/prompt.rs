@@ -31,6 +31,9 @@ pub use cached::CachedPrompt;
 pub mod output;
 pub use output::{JsonSchemaFormat, OutputConfig, OutputFormat};
 
+pub mod index;
+pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
+
 /// Request for the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>

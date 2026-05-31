@@ -167,6 +167,39 @@ pub struct Method<'a> {
     pub strict: Option<bool>,
 }
 
+#[cfg(feature = "markdown")]
+impl<'a> crate::markdown::ToMarkdown<'a> for Method<'a> {
+    fn markdown_events_custom(
+        &'a self,
+        options: crate::markdown::Options,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
+
+        // Can't panic because derived Serialize
+        let mut payload = serde_json::to_value(self).unwrap();
+        // Can't panic because we know it's an object
+        payload.as_object_mut().unwrap().remove("cache_control");
+        payload.as_object_mut().unwrap().remove("strict");
+
+        if options.tool_use {
+            Box::new(
+                [
+                    Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(
+                        "json".into(),
+                    ))),
+                    Event::Text(
+                        serde_json::to_string_pretty(&payload).unwrap().into(),
+                    ),
+                    Event::End(TagEnd::CodeBlock),
+                ]
+                .into_iter(),
+            )
+        } else {
+            Box::new(std::iter::empty())
+        }
+    }
+}
+
 impl<'a> TryFrom<MethodBuilder<'a>> for Method<'a> {
     type Error = ToolBuildError;
 
