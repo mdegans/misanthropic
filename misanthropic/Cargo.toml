@@ -30,6 +30,7 @@ base64 = "0.22"
 derive_more = { version = "1", features = [
     "as_ref",
     "deref",
+    "deref_mut",
     "display",
     "from",
     "into",

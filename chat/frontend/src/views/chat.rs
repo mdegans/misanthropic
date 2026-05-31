@@ -93,7 +93,7 @@ fn make_prompt() -> Prompt<'static> {
             },
             Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     // Regular, plain old, legacy thinking block. When displayed
                     // with `ThoughtsOrSpeech`, it will be styled as a thought.
                     r#"<thinking>I can't do that myself, but I can run a Python script to count the number of r's in "strawberry". The user did not specify case sensitivity so I will default to case insensitive.</thinking>"#.into(),
@@ -117,7 +117,7 @@ fn make_prompt() -> Prompt<'static> {
             (Role::User, "List the permutations of the first four letters of the alphabet.").into(),
             Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     // Anthropic provided `Thought` blocks should have the same
                     // exact styling as the Assistant's thoughts. So now "old"
                     // models have feature parity with the new ones, at least

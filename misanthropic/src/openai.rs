@@ -400,7 +400,7 @@ impl ChatStreamAccumulator {
 
         Some(Message {
             role: Role::Assistant,
-            content: Content::MultiPart(blocks),
+            content: Content(blocks),
         })
     }
 }
@@ -535,21 +535,16 @@ impl ChatCompletionResponse {
 /// Extract the text content from a misanthropic [`Content`], ignoring
 /// non-text blocks.
 fn content_to_text(content: &Content<'_>) -> String {
-    match content {
-        Content::SinglePart(text) => text.to_string(),
-        Content::MultiPart(blocks) => {
-            let mut out = String::new();
-            for block in blocks {
-                if let Block::Text { text, .. } = block {
-                    if !out.is_empty() {
-                        out.push('\n');
-                    }
-                    out.push_str(text);
-                }
+    let mut out = String::new();
+    for block in content.iter() {
+        if let Block::Text { text, .. } = block {
+            if !out.is_empty() {
+                out.push('\n');
             }
-            out
+            out.push_str(text);
         }
     }
+    out
 }
 
 /// Convert a misanthropic [`Message`] into one or more [`ChatMessage`]s.
@@ -558,124 +553,113 @@ fn content_to_text(content: &Content<'_>) -> String {
 /// produce multiple OpenAI messages, because tool results must be separate
 /// messages with `role: "tool"`.
 fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
-    match &msg.content {
-        Content::SinglePart(text) => vec![ChatMessage {
-            role: role_to_chat_role(msg.role),
-            content: Some(ChatContent::Text(text.to_string())),
-            tool_calls: None,
-            tool_call_id: None,
-            name: None,
-        }],
-        Content::MultiPart(blocks) => {
-            let mut text_parts = Vec::new();
-            let mut image_parts = Vec::new();
-            let mut tool_calls = Vec::new();
-            let mut tool_results = Vec::new();
+    let mut text_parts = Vec::new();
+    let mut image_parts = Vec::new();
+    let mut tool_calls = Vec::new();
+    let mut tool_results = Vec::new();
 
-            for block in blocks {
-                match block {
-                    Block::Text { text, .. } => {
-                        text_parts.push(text.to_string());
-                    }
-                    Block::Image { image, .. } => {
-                        let Image::Base64 {
-                            media_type, data, ..
-                        } = image;
-                        let mt = match media_type {
-                            MediaType::Jpeg => "image/jpeg",
-                            MediaType::Png => "image/png",
-                            MediaType::Gif => "image/gif",
-                            MediaType::Webp => "image/webp",
-                        };
-                        let data_url = format!("data:{};base64,{}", mt, data);
-                        image_parts.push(ChatContentPart::ImageUrl {
-                            image_url: ImageUrl {
-                                url: data_url,
-                                detail: None,
-                            },
-                        });
-                    }
-                    Block::ToolUse { call } => {
-                        tool_calls.push(ChatToolCall {
-                            id: call.id.to_string(),
-                            kind: "function".to_string(),
-                            function: ChatFunctionCall {
-                                name: call.name.to_string(),
-                                arguments: serde_json::to_string(&call.input)
-                                    .unwrap_or_default(),
-                            },
-                        });
-                    }
-                    Block::ToolResult { result } => {
-                        tool_results.push(ChatMessage {
-                            role: ChatRole::Tool,
-                            content: Some(ChatContent::Text(content_to_text(
-                                &result.content,
-                            ))),
-                            tool_calls: None,
-                            tool_call_id: Some(result.tool_use_id.to_string()),
-                            name: None,
-                        });
-                    }
-                    // Thought blocks have no OpenAI equivalent — skip them
-                    Block::Thought { .. } | Block::RedactedThought { .. } => {}
-                }
+    for block in msg.content.iter() {
+        match block {
+            Block::Text { text, .. } => {
+                text_parts.push(text.to_string());
             }
-
-            let mut messages = Vec::new();
-
-            // Build the primary message
-            if msg.role == Role::Assistant {
-                // Assistant: text content + optional tool calls
-                let content = if text_parts.is_empty() {
-                    None
-                } else {
-                    Some(ChatContent::Text(text_parts.join("\n")))
+            Block::Image { image, .. } => {
+                let Image::Base64 {
+                    media_type, data, ..
+                } = image;
+                let mt = match media_type {
+                    MediaType::Jpeg => "image/jpeg",
+                    MediaType::Png => "image/png",
+                    MediaType::Gif => "image/gif",
+                    MediaType::Webp => "image/webp",
                 };
-                let calls = if tool_calls.is_empty() {
-                    None
-                } else {
-                    Some(tool_calls)
-                };
-                messages.push(ChatMessage {
-                    role: ChatRole::Assistant,
-                    content,
-                    tool_calls: calls,
-                    tool_call_id: None,
+                let data_url = format!("data:{};base64,{}", mt, data);
+                image_parts.push(ChatContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: data_url,
+                        detail: None,
+                    },
+                });
+            }
+            Block::ToolUse { call } => {
+                tool_calls.push(ChatToolCall {
+                    id: call.id.to_string(),
+                    kind: "function".to_string(),
+                    function: ChatFunctionCall {
+                        name: call.name.to_string(),
+                        arguments: serde_json::to_string(&call.input)
+                            .unwrap_or_default(),
+                    },
+                });
+            }
+            Block::ToolResult { result } => {
+                tool_results.push(ChatMessage {
+                    role: ChatRole::Tool,
+                    content: Some(ChatContent::Text(content_to_text(
+                        &result.content,
+                    ))),
+                    tool_calls: None,
+                    tool_call_id: Some(result.tool_use_id.to_string()),
                     name: None,
                 });
-            } else {
-                // User: may have text + images
-                if !image_parts.is_empty() {
-                    let mut parts: Vec<ChatContentPart> = text_parts
-                        .iter()
-                        .map(|t| ChatContentPart::Text { text: t.clone() })
-                        .collect();
-                    parts.extend(image_parts);
-                    messages.push(ChatMessage {
-                        role: ChatRole::User,
-                        content: Some(ChatContent::Parts(parts)),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
-                } else if !text_parts.is_empty() {
-                    messages.push(ChatMessage {
-                        role: role_to_chat_role(msg.role),
-                        content: Some(ChatContent::Text(text_parts.join("\n"))),
-                        tool_calls: None,
-                        tool_call_id: None,
-                        name: None,
-                    });
-                }
             }
-
-            // Tool results become separate messages
-            messages.extend(tool_results);
-
-            messages
+            // Thought blocks have no OpenAI equivalent — skip them
+            Block::Thought { .. } | Block::RedactedThought { .. } => {}
         }
     }
+
+    let mut messages = Vec::new();
+
+    // Build the primary message
+    if msg.role == Role::Assistant {
+        // Assistant: text content + optional tool calls
+        let content = if text_parts.is_empty() {
+            None
+        } else {
+            Some(ChatContent::Text(text_parts.join("\n")))
+        };
+        let calls = if tool_calls.is_empty() {
+            None
+        } else {
+            Some(tool_calls)
+        };
+        messages.push(ChatMessage {
+            role: ChatRole::Assistant,
+            content,
+            tool_calls: calls,
+            tool_call_id: None,
+            name: None,
+        });
+    } else {
+        // User: may have text + images
+        if !image_parts.is_empty() {
+            let mut parts: Vec<ChatContentPart> = text_parts
+                .iter()
+                .map(|t| ChatContentPart::Text { text: t.clone() })
+                .collect();
+            parts.extend(image_parts);
+            messages.push(ChatMessage {
+                role: ChatRole::User,
+                content: Some(ChatContent::Parts(parts)),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        } else if !text_parts.is_empty() {
+            messages.push(ChatMessage {
+                role: role_to_chat_role(msg.role),
+                content: Some(ChatContent::Text(text_parts.join("\n"))),
+                tool_calls: None,
+                tool_call_id: None,
+                name: None,
+            });
+        }
+    }
+
+    // Tool results become separate messages
+    messages.extend(tool_results);
+
+    messages
 }
 
 /// Convert a [`ChatMessage`] into a misanthropic [`Message`].
@@ -726,22 +710,9 @@ fn chat_message_to_message(msg: ChatMessage) -> Message<'static> {
         _ => Role::User,
     };
 
-    if blocks.len() == 1 {
-        if let Block::Text { text, .. } = &blocks[0] {
-            return Message {
-                role,
-                content: Content::SinglePart(text.clone()),
-            };
-        }
-    }
-
     Message {
         role,
-        content: if blocks.is_empty() {
-            Content::SinglePart(CowStr::from(String::new()))
-        } else {
-            Content::MultiPart(blocks)
-        },
+        content: Content(blocks),
     }
 }
 
@@ -763,10 +734,10 @@ mod tests {
             model: "claude-sonnet-4-20250514".into(),
             messages: vec![Message {
                 role: Role::User,
-                content: Content::SinglePart("Hello".into()),
+                content: Content::text("Hello"),
             }],
             max_tokens: NonZeroU32::new(1024).unwrap(),
-            system: Some(Content::SinglePart("You are helpful.".into())),
+            system: Some(Content::text("You are helpful.")),
             ..Default::default()
         };
 
@@ -841,7 +812,7 @@ mod tests {
     fn tool_result_to_chat_message() {
         let result = tool::Result {
             tool_use_id: Cow::Borrowed("call_456"),
-            content: Content::SinglePart("Sunny, 22°C".into()),
+            content: Content::text("Sunny, 22°C"),
             is_error: false,
             cache_control: None,
         };
@@ -877,10 +848,11 @@ mod tests {
 
         let msg = resp.into_message().unwrap();
         assert_eq!(msg.role, Role::Assistant);
-        if let Content::SinglePart(text) = &msg.content {
+        assert_eq!(msg.content.len(), 1);
+        if let Some(Block::Text { text, .. }) = msg.content.first() {
             assert_eq!(text.to_string(), "Hello!");
         } else {
-            panic!("expected single part");
+            panic!("expected a text block");
         }
     }
 
@@ -921,7 +893,7 @@ mod tests {
     fn thought_blocks_stripped() {
         let msg = Message {
             role: Role::Assistant,
-            content: Content::MultiPart(vec![
+            content: Content(vec![
                 Block::Thought {
                     thought: "thinking...".into(),
                     signature: "sig".into(),
@@ -977,14 +949,10 @@ mod tests {
 
         assert_eq!(acc.finish_reason(), Some("stop"));
         let msg = acc.into_message().unwrap();
-        if let Content::MultiPart(blocks) = &msg.content {
-            if let Block::Text { text, .. } = &blocks[0] {
-                assert_eq!(text.to_string(), "Hello world!");
-            } else {
-                panic!("expected text block");
-            }
+        if let Some(Block::Text { text, .. }) = msg.content.first() {
+            assert_eq!(text.to_string(), "Hello world!");
         } else {
-            panic!("expected multipart");
+            panic!("expected text block");
         }
     }
 

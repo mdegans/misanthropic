@@ -104,7 +104,7 @@ impl Message<'_> {
     where
         T: serde::de::DeserializeOwned,
     {
-        use crate::prompt::message::{Block, Content};
+        use crate::prompt::message::Block;
 
         match self.stop_reason {
             Some(StopReason::Refusal) => return Err(JsonError::Refusal),
@@ -112,16 +112,15 @@ impl Message<'_> {
             _ => {}
         }
 
-        let text: &str = match &self.inner.content {
-            Content::SinglePart(text) => text.as_ref(),
-            Content::MultiPart(blocks) => blocks
-                .iter()
-                .find_map(|b| match b {
-                    Block::Text { text, .. } => Some(text.as_ref()),
-                    _ => None,
-                })
-                .ok_or(JsonError::NoTextBlock)?,
-        };
+        let text: &str = self
+            .inner
+            .content
+            .iter()
+            .find_map(|b| match b {
+                Block::Text { text, .. } => Some(text.as_ref()),
+                _ => None,
+            })
+            .ok_or(JsonError::NoTextBlock)?;
 
         Ok(serde_json::from_str(text)?)
     }
@@ -352,8 +351,8 @@ mod tests {
     fn json_parses_single_part_text() {
         let message = message_with(
             Some(StopReason::EndTurn),
-            prompt::message::Content::SinglePart(
-                r#"{"post_id":"abc","support":true}"#.into(),
+            prompt::message::Content::text(
+                r#"{"post_id":"abc","support":true}"#,
             ),
         );
         let parsed: VoteIntent = message.json().unwrap();
@@ -369,7 +368,7 @@ mod tests {
     #[test]
     fn json_skips_leading_thought_blocks() {
         use prompt::message::{Block, Content};
-        let content = Content::MultiPart(vec![
+        let content = Content(vec![
             Block::Thought {
                 thought: "Let me think about this...".into(),
                 signature: "sig".into(),
@@ -394,9 +393,7 @@ mod tests {
     fn json_returns_refusal_on_refusal_stop() {
         let message = message_with(
             Some(StopReason::Refusal),
-            prompt::message::Content::SinglePart(
-                "I can't help with that.".into(),
-            ),
+            prompt::message::Content::text("I can't help with that."),
         );
         let err = message.json::<VoteIntent>().unwrap_err();
         assert!(matches!(err, JsonError::Refusal));
@@ -406,7 +403,7 @@ mod tests {
     fn json_returns_tool_use_on_tool_stop() {
         let message = message_with(
             Some(StopReason::ToolUse),
-            prompt::message::Content::SinglePart("".into()),
+            prompt::message::Content::text(""),
         );
         let err = message.json::<VoteIntent>().unwrap_err();
         assert!(matches!(err, JsonError::ToolUse));
@@ -415,7 +412,7 @@ mod tests {
     #[test]
     fn json_returns_no_text_block_when_only_tool_blocks() {
         use prompt::message::{Block, Content};
-        let content = Content::MultiPart(vec![Block::ToolUse {
+        let content = Content(vec![Block::ToolUse {
             call: crate::tool::Use {
                 id: "u".into(),
                 name: "x".into(),
@@ -434,7 +431,7 @@ mod tests {
     fn json_propagates_serde_errors() {
         let message = message_with(
             Some(StopReason::EndTurn),
-            prompt::message::Content::SinglePart("not json".into()),
+            prompt::message::Content::text("not json"),
         );
         let err = message.json::<VoteIntent>().unwrap_err();
         assert!(matches!(err, JsonError::Json(_)));
@@ -450,8 +447,8 @@ mod tests {
             inner: prompt::AssistantMessage {
                 inner: prompt::Message {
                     role: prompt::message::Role::User,
-                    content: prompt::message::Content::SinglePart(
-                        "Hello, **world**!".into(),
+                    content: prompt::message::Content::text(
+                        "Hello, **world**!",
                     ),
                 },
             },
