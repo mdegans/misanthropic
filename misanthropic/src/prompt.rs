@@ -31,6 +31,9 @@ pub use cached::CachedPrompt;
 pub mod output;
 pub use output::{JsonSchemaFormat, OutputConfig, OutputFormat};
 
+pub mod index;
+pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
+
 /// Request for the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
@@ -72,10 +75,8 @@ pub struct Prompt<'a> {
     /// [`response::Message`]: crate::response::Message
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
-    /// System prompt as [`SinglePart`] or [`MultiPart`] [`Content`].
+    /// System prompt as [`Content`].
     ///
-    /// [`SinglePart`]: message::Content::SinglePart
-    /// [`MultiPart`]: message::Content::MultiPart
     /// [`Content`]: message::Content
     #[serde(skip_serializing_if = "Option::is_none")]
     pub system: Option<message::Content<'a>>,
@@ -587,8 +588,7 @@ impl<'a> Prompt<'a> {
                 self.system = Some(content);
             }
             None => {
-                // MultiPart doesn't actually need to have multiple parts.
-                self.system = Some(Content::MultiPart(vec![block.into()]));
+                self.system = Some(Content(vec![block.into()]));
             }
         }
         self
@@ -1525,11 +1525,20 @@ mod tests {
             .unwrap()
             .cache();
 
-        // The first message should still be a single part string.
-        assert!(request.messages.first().unwrap().content.last().is_none());
+        // The first message should not be cached — cache() only touches the
+        // last message.
+        assert!(
+            !request
+                .messages
+                .first()
+                .unwrap()
+                .content
+                .last()
+                .unwrap()
+                .is_cached()
+        );
 
-        // By now the final part should be a multi part string, since only
-        // Block has `cache_control`
+        // The last message's final block should now be cached.
         assert!(
             request
                 .messages

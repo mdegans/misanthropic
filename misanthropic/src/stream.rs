@@ -33,10 +33,6 @@ pub enum Event {
     /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
         /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
-        // TODO: Indexing. Issue is the Content::SinglePart is a String and
-        // Content::MultiPart is a Vec of Block. This is for serialization
-        // purposes. We should probably just use a Vec for both and write a
-        // custom serializer for that field.
         index: usize,
         /// Empty content block.
         content_block: Block<'static>,
@@ -1127,7 +1123,7 @@ pub(crate) mod tests {
             // message. `handle_stream_event` checks turn order.
             .add_message(Message {
                 role: Role::User,
-                content: Content::SinglePart("dummy message".into()),
+                content: Content::text("dummy message"),
             })
             .unwrap();
 
@@ -1141,7 +1137,7 @@ pub(crate) mod tests {
             last,
             prompt::Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     Block::Thought {
                         thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
                         signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()
@@ -1166,7 +1162,7 @@ pub(crate) mod tests {
             // message. `handle_stream_event` checks turn order.
             .add_message(Message {
                 role: Role::User,
-                content: Content::SinglePart("dummy message".into()),
+                content: Content::text("dummy message"),
             })
             .unwrap();
 
@@ -1183,7 +1179,7 @@ pub(crate) mod tests {
             last,
             prompt::Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     Block::Thought {
                         thought: "Let me solve this step by step:\n\n1. First break down 27 * 453\n2. 453 = 400 + 50 + 3".to_string().into(),
                         signature: "EqQBCgIYAhIM1gbcDa9GJwZA2b3hGgxBdjrkzLoky3dl1pkiMOYds...".to_string().into()

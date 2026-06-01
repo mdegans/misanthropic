@@ -332,11 +332,10 @@ impl<'a> CachedPrompt<'a> {
         let system_count = usize::from(
             self.inner.system.as_ref().is_some_and(|s| s.has_cache()),
         );
-        let tool_count = self
-            .inner
-            .functions
-            .as_ref()
-            .map_or(0, |tools| tools.iter().filter(|t| t.is_cached()).count());
+        let tool_count =
+            self.inner.functions.as_ref().map_or(0, |tools| {
+                tools.iter().filter(|t| t.is_cached()).count()
+            });
         let used = system_count + tool_count + tail_set.len();
         let non_tail_budget =
             MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
@@ -478,10 +477,10 @@ mod tests {
 
         let cached = CachedPrompt::from(prompt);
 
-        // System should still be SinglePart — From does not call .cache().
+        // From must not add a cache breakpoint.
         assert!(
-            cached.system.as_ref().unwrap().is_single_part(),
-            "expected SinglePart (From must not add a breakpoint)"
+            !cached.system.as_ref().unwrap().has_cache(),
+            "From must not add a breakpoint"
         );
     }
 
@@ -500,22 +499,14 @@ mod tests {
 
         // The system block should now carry a 5-minute cache_control.
         // (cache() falls through: no messages → caches system)
-        match cached.system.as_ref().unwrap() {
-            crate::prompt::message::Content::MultiPart(blocks) => {
-                let last = blocks.last().unwrap();
-                let cc = match last {
-                    crate::prompt::message::Block::Text {
-                        cache_control,
-                        ..
-                    } => cache_control.as_ref().unwrap(),
-                    _ => panic!("expected text block"),
-                };
-                assert_eq!(cc, &CacheControl::Ephemeral { ttl: None });
+        let last = cached.system.as_ref().unwrap().last().unwrap();
+        let cc = match last {
+            crate::prompt::message::Block::Text { cache_control, .. } => {
+                cache_control.as_ref().unwrap()
             }
-            crate::prompt::message::Content::SinglePart(_) => {
-                panic!("expected MultiPart after cached()")
-            }
-        }
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(cc, &CacheControl::Ephemeral { ttl: None });
     }
 
     #[test]
@@ -532,25 +523,19 @@ mod tests {
         let cached = CachedPrompt::cached_1h(prompt);
 
         // The system block should now carry a 1-hour cache_control.
-        match cached.system.as_ref().unwrap() {
-            crate::prompt::message::Content::MultiPart(blocks) => {
-                let last = blocks.last().unwrap();
-                let cc = match last {
-                    crate::prompt::message::Block::Text {
-                        cache_control,
-                        ..
-                    } => cache_control.as_ref().unwrap(),
-                    _ => panic!("expected text block"),
-                };
-                assert_eq!(
-                    cc,
-                    &CacheControl::Ephemeral {
-                        ttl: Some(CacheTtl::OneHour)
-                    }
-                );
+        let last = cached.system.as_ref().unwrap().last().unwrap();
+        let cc = match last {
+            crate::prompt::message::Block::Text { cache_control, .. } => {
+                cache_control.as_ref().unwrap()
             }
-            _ => panic!("expected MultiPart after cached_1h()"),
-        }
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(
+            cc,
+            &CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            }
+        );
     }
 
     /// Regression test for a bug where the old `From<Prompt> for
@@ -566,7 +551,7 @@ mod tests {
         use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
 
         let prompt = Prompt {
-            system: Some(Content::MultiPart(vec![Block::Text {
+            system: Some(Content(vec![Block::Text {
                 text: "You are a helpful assistant.".into(),
                 cache_control: Some(CacheControl::one_hour()),
             }])),
@@ -575,24 +560,19 @@ mod tests {
 
         let cached = CachedPrompt::from(prompt);
 
-        match cached.system.as_ref().unwrap() {
-            Content::MultiPart(blocks) => {
-                let cc = match blocks.last().unwrap() {
-                    Block::Text { cache_control, .. } => {
-                        cache_control.as_ref().unwrap()
-                    }
-                    _ => panic!("expected text block"),
-                };
-                assert_eq!(
-                    cc,
-                    &CacheControl::Ephemeral {
-                        ttl: Some(CacheTtl::OneHour)
-                    },
-                    "From must preserve the inline 1h marker unchanged"
-                );
+        let cc = match cached.system.as_ref().unwrap().last().unwrap() {
+            Block::Text { cache_control, .. } => {
+                cache_control.as_ref().unwrap()
             }
-            _ => panic!("expected MultiPart"),
-        }
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(
+            cc,
+            &CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            },
+            "From must preserve the inline 1h marker unchanged"
+        );
     }
 
     #[test]
@@ -610,25 +590,19 @@ mod tests {
         cached.cache_1h();
 
         // The system block should now carry a 1-hour cache_control.
-        match cached.system.as_ref().unwrap() {
-            crate::prompt::message::Content::MultiPart(blocks) => {
-                let last = blocks.last().unwrap();
-                let cc = match last {
-                    crate::prompt::message::Block::Text {
-                        cache_control,
-                        ..
-                    } => cache_control.as_ref().unwrap(),
-                    _ => panic!("expected text block"),
-                };
-                assert_eq!(
-                    cc,
-                    &CacheControl::Ephemeral {
-                        ttl: Some(CacheTtl::OneHour)
-                    }
-                );
+        let last = cached.system.as_ref().unwrap().last().unwrap();
+        let cc = match last {
+            crate::prompt::message::Block::Text { cache_control, .. } => {
+                cache_control.as_ref().unwrap()
             }
-            _ => panic!("expected MultiPart after cache_1h()"),
-        }
+            _ => panic!("expected text block"),
+        };
+        assert_eq!(
+            cc,
+            &CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::OneHour)
+            }
+        );
     }
 
     #[test]
@@ -738,7 +712,11 @@ mod tests {
             cached.cache();
         }
         assert_eq!(
-            cached.messages.iter().filter(|m| m.content.has_cache()).count(),
+            cached
+                .messages
+                .iter()
+                .filter(|m| m.content.has_cache())
+                .count(),
             7,
         );
 
@@ -833,7 +811,7 @@ mod tests {
 
     #[test]
     fn cache_windowed_1h_sets_one_hour_ttl_on_last_message() {
-        use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
+        use crate::prompt::message::{Block, CacheControl, CacheTtl};
 
         let prompt = Prompt::default();
         let mut cached = CachedPrompt::from(prompt);
@@ -844,12 +822,7 @@ mod tests {
 
         // The last message's last block should carry a 1-hour TTL.
         let last_msg = cached.messages.last().unwrap();
-        let last_block = match &last_msg.content {
-            Content::MultiPart(blocks) => blocks.last().unwrap(),
-            Content::SinglePart(_) => {
-                panic!("expected MultiPart after cache_windowed_1h")
-            }
-        };
+        let last_block = last_msg.content.last().unwrap();
         let cc = match last_block {
             Block::Text { cache_control, .. } => {
                 cache_control.as_ref().unwrap()
@@ -866,7 +839,7 @@ mod tests {
 
     #[test]
     fn cache_windowed_with_preserves_earlier_ttls() {
-        use crate::prompt::message::{Block, CacheControl, CacheTtl, Content};
+        use crate::prompt::message::{Block, CacheControl, CacheTtl};
 
         let prompt = Prompt::default();
         let mut cached = CachedPrompt::from(prompt);
@@ -896,10 +869,7 @@ mod tests {
         // round 2 keeps 5m, round 3 is now 1h.
         let ttl_at = |idx: usize| -> CacheControl {
             let msg = &cached.messages[idx];
-            let block = match &msg.content {
-                Content::MultiPart(blocks) => blocks.last().unwrap(),
-                Content::SinglePart(_) => panic!("expected MultiPart"),
-            };
+            let block = msg.content.last().unwrap();
             match block {
                 Block::Text { cache_control, .. } => {
                     cache_control.as_ref().unwrap().clone()

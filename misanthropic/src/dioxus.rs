@@ -449,27 +449,14 @@ impl IntoElement for &Block<'_> {
 
 impl IntoElement for &message::Content<'_> {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
-        match self {
-            message::Content::SinglePart(text) => {
-                rsx!(div {
-                    key: key,
-                    class: "single-part",
-                    {ThoughtsAndSpeech::new(text.as_ref())
-                        .enumerate()
-                        .map(|(i, ts)| ts.into_element_custom(hash(&[key, i as u64]), opts))}
-                })
-            }
-            message::Content::MultiPart(blocks) => {
-                rsx!(div {
-                    key: key,
-                    class: "multi-part",
-                    {blocks
-                        .iter()
-                        .enumerate()
-                        .map(|(i, block)| block.into_element_custom(hash(&[key, i as u64]), opts))}
-                })
-            }
-        }
+        rsx!(div {
+            key: key,
+            class: "multi-part",
+            {self
+                .iter()
+                .enumerate()
+                .map(|(i, block)| block.into_element_custom(hash(&[key, i as u64]), opts))}
+        })
     }
 }
 
@@ -490,58 +477,37 @@ impl IntoElement for &message::Message<'_> {
             // This has to be implemented here and not in content because we
             // need to know the role. This is unfortunate because it's a bit
             // ugly.
-            {match &self.content {
-                    message::Content::SinglePart(text) => {
+            {if self.role.is_user() {
+                // Users have no thoughts; gate their speech per options.
+                match &opts.speech {
+                    opts::Speech::Hidden => rsx!(),
+                    opts::Speech::Placeholder { class } => {
                         rsx!(div {
-                            key: key,
-                            class: "single-part",
-                            {if self.role.is_user() {
-                                match &opts.speech {
-                                    opts::Speech::Hidden => rsx!(),
-                                    opts::Speech::Placeholder { class } => {
-                                        rsx!(div {
-                                            key: hash(&[key, 0]),
-                                            class: class.as_ref(),
-                                        })
-                                    }
-                                    opts::Speech::Show { class } => {
-                                        rsx!(div {
-                                            key: hash(&[key, 0]),
-                                            class: class.as_ref(),
-                                            {text}
-                                        })
-                                    }
-                                }
-                            } else {
-                                rsx!(
-                                    div {
-                                        key: hash(&[key, 0]),
-                                        class: "assistant",
-                                        {ThoughtsAndSpeech::new(text.as_ref())
-                                            .enumerate()
-                                            .map(|(i, ts)| ts.into_element_custom(hash(&[key, i as u64]), opts))}
-                                    }
-                                )
-                            }}
+                            key: hash(&[key, 0]),
+                            class: class.as_ref(),
                         })
                     }
-                    message::Content::MultiPart(blocks) => {
+                    opts::Speech::Show { class } => {
                         rsx!(div {
                             key: key,
-                            class: "multi-part",
-                            {blocks
+                            class: class.as_ref(),
+                            {self.content
                                 .iter()
                                 .enumerate()
-                                .map(|(i, block)| {
-                                    block.into_element_custom(
-                                        hash(&[key, i as u64]),
-                                        opts
-                                    )
-                                })}
+                                .map(|(i, block)| block.into_element_custom(hash(&[key, i as u64]), opts))}
                         })
                     }
                 }
-            }
+            } else {
+                rsx!(div {
+                    key: key,
+                    class: "multi-part",
+                    {self.content
+                        .iter()
+                        .enumerate()
+                        .map(|(i, block)| block.into_element_custom(hash(&[key, i as u64]), opts))}
+                })
+            }}
         })
     }
 }

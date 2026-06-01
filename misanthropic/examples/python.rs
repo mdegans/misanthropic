@@ -227,7 +227,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
             Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     r#"<thinking>I can't do that myself, but I can run a Python script to count the number of r's in "strawberry". The user did not specify case sensitivity so I will default to case insensitive.</thinking>"#.into(),
                     tool::Use {
                         id: "calibration_000".into(),
@@ -249,7 +249,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             (Role::User, "List the permutations of the first four letters of the alphabet.").into(),
             Message {
                 role: Role::Assistant,
-                content: Content::MultiPart(vec![
+                content: Content(vec![
                     r#"<thinking>This request is complex enough to need Python. I should use the itertools module for this.</thinking>"#.into(),
                     tool::Use {
                         id: "calibration_001".into(),

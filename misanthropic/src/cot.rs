@@ -286,16 +286,9 @@ impl<'a> Thinkable<'a> for Content<'a> {
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
     ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a> {
-        match self {
-            Content::SinglePart(cow_str) => Box::new(Box::new(
-                ThoughtsAndSpeech::new_custom(cow_str, start_tags, end_tags),
-            )),
-            Content::MultiPart(blocks) => {
-                Box::new(blocks.iter().flat_map(move |block| {
-                    block.thoughts_and_speech_custom(start_tags, end_tags)
-                }))
-            }
-        }
+        Box::new(self.iter().flat_map(move |block| {
+            block.thoughts_and_speech_custom(start_tags, end_tags)
+        }))
     }
 }
 

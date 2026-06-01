@@ -88,10 +88,7 @@ impl std::fmt::Display for Role {
 pub struct Message<'a> {
     /// Who is the message from.
     pub role: Role,
-    /// The [`Content`] of the message as [one] or [more] [`Block`]s.
-    ///
-    /// [one]: Content::SinglePart
-    /// [more]: Content::MultiPart
+    /// The [`Content`] of the message as a sequence of [`Block`]s.
     pub content: Content<'a>,
 }
 
@@ -121,15 +118,10 @@ impl Message<'_> {
     /// Returns Some([`tool::Result`]) if the first [`Content`] [`Block`] is a
     /// [`Block::ToolResult`].
     pub fn tool_result(&self) -> Option<&crate::tool::Result<'_>> {
-        match &self.content {
-            Content::SinglePart(_) => None,
-            Content::MultiPart(parts) => {
-                if let Some(Block::ToolResult { result }) = parts.first() {
-                    Some(result)
-                } else {
-                    None
-                }
-            }
+        if let Some(Block::ToolResult { result }) = self.content.first() {
+            Some(result)
+        } else {
+            None
         }
     }
 
@@ -158,11 +150,9 @@ impl Message<'_> {
             return Some(self);
         }
 
-        if let Content::MultiPart(parts) = &mut self.content {
-            if let Some(Block::Thought { signature, .. }) = parts.last() {
-                if signature.is_empty() {
-                    parts.pop();
-                }
+        if let Some(Block::Thought { signature, .. }) = self.content.last() {
+            if signature.is_empty() {
+                self.content.pop();
             }
         }
 
@@ -217,14 +207,7 @@ impl<'a> IntoIterator for Message<'a> {
     type IntoIter = std::vec::IntoIter<Block<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        match self.content {
-            Content::SinglePart(text) => vec![Block::Text {
-                text,
-                cache_control: None,
-            }]
-            .into_iter(),
-            Content::MultiPart(parts) => parts.into_iter(),
-        }
+        self.content.into_iter()
     }
 }
 
@@ -495,14 +478,7 @@ impl<'a> IntoIterator for UserMessage<'a> {
     type IntoIter = std::vec::IntoIter<Block<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        match self.inner.content {
-            Content::SinglePart(text) => vec![Block::Text {
-                text,
-                cache_control: None,
-            }]
-            .into_iter(),
-            Content::MultiPart(parts) => parts.into_iter(),
-        }
+        self.inner.content.into_iter()
     }
 }
 
@@ -575,107 +551,69 @@ impl From<NotTheUser> for Cow<'static, str> {
     }
 }
 
-/// Content of a [`Message`].
+/// Content of a [`Message`], stored as a sequence of [`Block`]s.
+///
+/// [`Content`] derefs to `Vec<Block>`, so the usual slice/`Vec` accessors
+/// (`get`, `get_mut`, `iter`, `iter_mut`, `len`, indexing, ...) are available
+/// directly. On the wire it always serializes as an array of blocks; a bare
+/// JSON string is still accepted when deserializing and becomes a single
+/// [`Block::Text`].
 #[derive(
-    Clone, Debug, Serialize, Deserialize, Hash, derive_more::IsVariant,
+    Clone, Debug, Hash, Serialize, derive_more::Deref, derive_more::DerefMut,
 )]
-#[serde(rename_all = "snake_case")]
-#[serde(untagged)]
+#[serde(transparent)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum Content<'a> {
-    /// Single part text-only content.
-    SinglePart(crate::CowStr<'a>),
-    /// Multiple content [`Block`]s.
-    MultiPart(Vec<Block<'a>>),
+pub struct Content<'a>(pub Vec<Block<'a>>);
+
+impl<'de, 'a> Deserialize<'de> for Content<'a> {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // Mirror the API's "content may be a bare string or an array of blocks"
+        // wire form with the untagged derive, then normalize to blocks. A
+        // hand-written visitor would be more code and harder to reason about.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Wire<'a> {
+            Text(crate::CowStr<'a>),
+            Blocks(Vec<Block<'a>>),
+        }
+
+        Ok(Content(match Wire::deserialize(deserializer)? {
+            Wire::Text(text) => vec![Block::Text {
+                text,
+                cache_control: None,
+            }],
+            Wire::Blocks(blocks) => blocks,
+        }))
+    }
 }
 
 impl<'a> Content<'a> {
-    /// Const constructor for static text content. Not available with the
-    /// `langsan` feature.
-    #[cfg(not(feature = "langsan"))]
-    pub const fn const_text(text: &'static str) -> Self {
-        Self::SinglePart(std::borrow::Cow::Borrowed(text))
-    }
-
-    /// Text content.
+    /// Text content as a single [`Block::Text`].
     pub fn text<T>(text: T) -> Self
     where
         T: Into<crate::CowStr<'a>>,
     {
-        Self::SinglePart(text.into())
+        Self(vec![Block::text(text)])
     }
 
-    /// Returns the number of [`Block`]s in self.
-    pub fn len(&self) -> usize {
-        match self {
-            Self::SinglePart(_) => 1,
-            Self::MultiPart(parts) => parts.len(),
-        }
-    }
-
-    /// Returns true if `self` is empty.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Unwrap [`Content::SinglePart`] as a [`Block::Text`]. This will panic if
-    /// `self` is [`MultiPart`].
-    ///
-    /// [`SinglePart`]: Content::SinglePart
-    /// [`MultiPart`]: Content::MultiPart
-    ///
-    /// # Panics
-    /// - If the content is [`MultiPart`].
-    pub fn unwrap_single_part(self) -> Block<'a> {
-        match self {
-            Self::SinglePart(text) => Block::Text {
-                text,
-                cache_control: None,
-            },
-            Self::MultiPart(_) => {
-                panic!("Content is MultiPart, not SinglePart");
-            }
-        }
-    }
-
-    /// Add a [`Block`] to the [`Content`]. If the [`Content`] is a
-    /// [`SinglePart`], it will be converted to a [`MultiPart`].
-    ///
-    /// The index of the inserted block is returned.
-    ///
-    /// [`SinglePart`]: Content::SinglePart
-    /// [`MultiPart`]: Content::MultiPart
+    /// Add a [`Block`] to the [`Content`], returning the index of the inserted
+    /// block.
     pub fn push<P>(&mut self, part: P) -> usize
     where
         P: Into<Block<'a>>,
     {
-        // If there is a SinglePart message, convert it to a MultiPart message.
-        if self.is_single_part() {
-            // the old switcheroo
-            let mut old = Content::MultiPart(vec![]);
-            std::mem::swap(self, &mut old);
-            // This can never loop because we ensure self is a MultiPart which
-            // will skip this block.
-            self.push(old.unwrap_single_part());
-        }
-
-        if let Content::MultiPart(parts) = self {
-            let index = parts.len();
-            parts.push(part.into());
-            return index;
-        } else {
-            unreachable!()
-        }
+        let index = self.0.len();
+        self.0.push(part.into());
+        index
     }
 
-    /// Add a cache breakpoint to the final [`Block`]. If the [`Content`] is
-    /// [`SinglePart`], it will be converted to [`MultiPart`] first.
+    /// Add a cache breakpoint to the final [`Block`].
     ///
     /// Uses the default 5-minute ephemeral TTL. For a 1-hour TTL, use
     /// [`cache_1h`](Content::cache_1h).
-    ///
-    /// [`SinglePart`]: Content::SinglePart
-    /// [`MultiPart`]: Content::MultiPart
     pub fn cache(&mut self) {
         self.cache_with(CacheControl::ephemeral());
     }
@@ -688,54 +626,24 @@ impl<'a> Content<'a> {
         self.cache_with(CacheControl::one_hour());
     }
 
-    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to
-    /// the final [`Block`]. If the [`Content`] is [`SinglePart`], it will
-    /// be converted to [`MultiPart`] first.
-    ///
-    /// [`SinglePart`]: Content::SinglePart
-    /// [`MultiPart`]: Content::MultiPart
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
+    /// final [`Block`]. Does nothing if the content is empty.
     pub fn cache_with(&mut self, cache_control: CacheControl) {
-        if self.is_single_part() {
-            let mut old = Content::MultiPart(vec![]);
-            std::mem::swap(self, &mut old);
-            self.push(old.unwrap_single_part());
-        }
-
-        if let Content::MultiPart(parts) = self
-            && let Some(block) = parts.last_mut()
-        {
+        if let Some(block) = self.0.last_mut() {
             block.cache_with(cache_control);
         }
     }
 
     /// Remove all cache breakpoints from all blocks in this content.
     pub fn uncache(&mut self) {
-        if let Content::MultiPart(parts) = self {
-            for block in parts {
-                block.uncache();
-            }
+        for block in &mut self.0 {
+            block.uncache();
         }
-        // SinglePart has no cache_control — nothing to do.
     }
 
     /// Returns `true` if any block in this content has a cache breakpoint.
     pub fn has_cache(&self) -> bool {
-        match self {
-            Content::MultiPart(parts) => parts.iter().any(|b| b.is_cached()),
-            Content::SinglePart(_) => false,
-        }
-    }
-
-    /// Get the last [`Block`] in the [`Content`]. Returns [`None`] if the
-    /// [`Content`] is empty or [`SinglePart`].
-    ///
-    /// [`SinglePart`]: Content::SinglePart
-    // Because to make it multi-part on access this would have to be &mut
-    pub fn last(&self) -> Option<&Block<'_>> {
-        match self {
-            Self::SinglePart(_) => None,
-            Self::MultiPart(parts) => parts.last(),
-        }
+        self.0.iter().any(|b| b.is_cached())
     }
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
@@ -743,27 +651,11 @@ impl<'a> Content<'a> {
     ///
     /// [`Cow`]: std::borrow::Cow
     pub fn into_static(self) -> Content<'static> {
-        match self {
-            Self::SinglePart(text) => {
-                #[cfg(not(feature = "langsan"))]
-                {
-                    Content::SinglePart(std::borrow::Cow::Owned(
-                        text.into_owned(),
-                    ))
-                }
-                #[cfg(feature = "langsan")]
-                {
-                    Content::SinglePart(text.into_static())
-                }
-            }
-            Self::MultiPart(parts) => Content::MultiPart(
-                parts.into_iter().map(Block::into_static).collect(),
-            ),
-        }
+        Content(self.0.into_iter().map(Block::into_static).collect())
     }
 
-    /// Push a [`Delta`] into the [`Content`]. The types must be compatible or
-    /// this will return a [`ContentMismatch`] error.
+    /// Push a [`Delta`] into the final [`Block`]. The types must be compatible
+    /// or this will return a [`ContentMismatch`] error.
     ///
     /// It is an error to try to merge a single json delta into a content block.
     pub fn push_delta(
@@ -783,75 +675,17 @@ impl<'a> Content<'a> {
             });
         }
 
-        match self {
-            Self::SinglePart(_) => {
-                let mut old = Content::MultiPart(vec![]);
-                std::mem::swap(self, &mut old);
-                self.push(old.unwrap_single_part());
-                self.push_delta(delta)?;
-            }
-            Self::MultiPart(parts) => {
-                parts
-                    .last_mut()
-                    .unwrap()
-                    .merge_deltas(std::iter::once(delta))?;
-            }
-        }
+        self.0
+            .last_mut()
+            .unwrap()
+            .merge_deltas(std::iter::once(delta))?;
 
         Ok(())
     }
 
     /// Drains the blocks from the content.
     pub fn drain(&'a mut self) -> impl Iterator<Item = Block<'a>> + 'a {
-        let ret: Box<dyn Iterator<Item = Block<'a>>> = match self {
-            Self::SinglePart(_) => {
-                let mut old = Content::MultiPart(vec![]);
-                std::mem::swap(self, &mut old);
-                match old {
-                    Content::SinglePart(text) => {
-                        Box::new(std::iter::once(Block::Text {
-                            text,
-                            cache_control: None,
-                        }))
-                    }
-                    Content::MultiPart(parts) => Box::new(parts.into_iter()),
-                }
-            }
-            Self::MultiPart(parts) => Box::new(parts.drain(..)),
-        };
-
-        ret
-    }
-
-    /// Get a block mutably. If this is [`SinglePart`] content, it will be
-    /// converted to [`MultiPart`] first.
-    pub fn get_mut(&mut self, index: usize) -> Option<&mut Block<'a>> {
-        if self.is_single_part() {
-            let mut old = Content::MultiPart(vec![]);
-            std::mem::swap(self, &mut old);
-            self.push(old.unwrap_single_part());
-        }
-        // Self is now MultiPart
-
-        match self {
-            Self::MultiPart(parts) => parts.get_mut(index),
-            Self::SinglePart(_) => unreachable!(),
-        }
-    }
-
-    /// Iterate mutably over the blocks. If this is [`SinglePart`] content, it
-    /// will be converted to [`MultiPart`] first.
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Block<'a>> {
-        if self.is_single_part() {
-            let mut old = Content::MultiPart(vec![]);
-            std::mem::swap(self, &mut old);
-            self.push(old.unwrap_single_part());
-        }
-
-        match self {
-            Self::MultiPart(parts) => parts.iter_mut(),
-            Self::SinglePart(_) => unreachable!(),
-        }
+        self.0.drain(..)
     }
 }
 
@@ -860,14 +694,7 @@ impl<'a> IntoIterator for Content<'a> {
     type IntoIter = std::vec::IntoIter<Block<'a>>;
 
     fn into_iter(self) -> Self::IntoIter {
-        match self {
-            Content::SinglePart(text) => vec![Block::Text {
-                text,
-                cache_control: None,
-            }]
-            .into_iter(),
-            Content::MultiPart(parts) => parts.into_iter(),
-        }
+        self.0.into_iter()
     }
 }
 
@@ -884,16 +711,11 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
         use pulldown_cmark::Event;
 
-        let it: Box<dyn Iterator<Item = Event<'a>> + 'a> = match self {
-            Self::SinglePart(string) => {
-                Box::new(pulldown_cmark::Parser::new(string))
-            }
-            Self::MultiPart(parts) => Box::new(
-                parts
-                    .iter()
-                    .flat_map(move |part| part.markdown_events_custom(options)),
-            ),
-        };
+        let it: Box<dyn Iterator<Item = Event<'a>> + 'a> = Box::new(
+            self.0
+                .iter()
+                .flat_map(move |part| part.markdown_events_custom(options)),
+        );
 
         it
     }
@@ -902,21 +724,16 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
 #[cfg(not(feature = "markdown"))]
 impl std::fmt::Display for Content<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::SinglePart(string) => write!(f, "{}", string),
-            // This could be derived but the `Join` trait is not stable. Neither
-            // is `Iterator::intersperse`. This also has fewer allocations.
-            Self::MultiPart(parts) => {
-                let mut iter = parts.iter();
-                if let Some(part) = iter.next() {
-                    write!(f, "{}", part)?;
-                    for part in iter {
-                        write!(f, "{}{}", Self::SEP, part)?;
-                    }
-                }
-                Ok(())
+        // This could be derived but the `Join` trait is not stable. Neither is
+        // `Iterator::intersperse`. This also has fewer allocations.
+        let mut iter = self.0.iter();
+        if let Some(part) = iter.next() {
+            write!(f, "{}", part)?;
+            for part in iter {
+                write!(f, "{}{}", Self::SEP, part)?;
             }
         }
+        Ok(())
     }
 }
 
@@ -947,7 +764,7 @@ where
     T: Into<Block<'a>>,
 {
     fn from(block: T) -> Self {
-        Self::MultiPart(vec![block.into()])
+        Self(vec![block.into()])
     }
 }
 
@@ -956,7 +773,7 @@ where
     T: Into<Block<'a>>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::MultiPart(iter.into_iter().map(Into::into).collect())
+        Self(iter.into_iter().map(Into::into).collect())
     }
 }
 
@@ -965,27 +782,7 @@ where
     T: Into<Block<'a>>,
 {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
-        let text = match self {
-            Self::SinglePart(old) => {
-                let mut text: crate::CowStr<'a> = String::new().into();
-                std::mem::swap(old, &mut text);
-                text
-            }
-            Self::MultiPart(parts) => {
-                parts.extend(iter.into_iter().map(Into::into));
-                return;
-            }
-        };
-        // We have single-part content, so we need to convert it to multi-part
-        // and then extend it.
-
-        *self = Self::MultiPart(vec![Block::Text {
-            text,
-            cache_control: None,
-        }]);
-        // This can never recurse infinitely because we just converted to
-        // MultiPart and that will skip this by returning early.
-        self.extend(iter);
+        self.0.extend(iter.into_iter().map(Into::into));
     }
 }
 
@@ -1001,13 +798,13 @@ where
     T: Into<Block<'a>>,
 {
     fn from(blocks: [T; N]) -> Self {
-        Self::MultiPart(blocks.into_iter().map(|t| t.into()).collect())
+        Self(blocks.into_iter().map(|t| t.into()).collect())
     }
 }
 
 impl<'a> From<&'a [&'a str]> for Content<'a> {
     fn from(text: &'a [&'a str]) -> Self {
-        Self::MultiPart(text.iter().map(|t| (*t).into()).collect())
+        Self(text.iter().map(|t| (*t).into()).collect())
     }
 }
 
@@ -1016,7 +813,7 @@ where
     T: Into<Block<'a>>,
 {
     fn from(blocks: Vec<T>) -> Self {
-        Self::MultiPart(blocks.into_iter().map(Into::into).collect())
+        Self(blocks.into_iter().map(Into::into).collect())
     }
 }
 
@@ -1638,9 +1435,7 @@ impl CacheControl {
     }
 }
 
-/// Image content for [`MultiPart`] [`Message`]s.
-///
-/// [`MultiPart`]: Content::MultiPart
+/// Image content [`Block`] of a [`Message`].
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
@@ -1855,8 +1650,6 @@ impl TryFrom<image::ImageFormat> for MediaType {
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
-
     #[cfg(feature = "markdown")]
     use crate::markdown::ToMarkdown;
 
@@ -1918,7 +1711,7 @@ mod tests {
         assert!(!message.is_empty());
         let message: Message = Message {
             role: Role::User,
-            content: Content::MultiPart(vec![]),
+            content: Content(vec![]),
         };
         assert!(message.is_empty());
     }
@@ -1944,7 +1737,7 @@ mod tests {
         let content: Content<'static> = content.into_static();
         assert_eq!(content.to_string(), "Hello, world!");
 
-        let content = Content::SinglePart("Hello, world!".into());
+        let content = Content::text("Hello, world!");
         let content: Content<'static> = content.into_static();
         assert_eq!(content.to_string(), "Hello, world!");
 
@@ -2053,10 +1846,10 @@ mod tests {
     fn test_message_len() {
         let mut message = Message {
             role: Role::User,
-            content: Content::SinglePart("Hello, world!".into()),
+            content: Content::text("Hello, world!"),
         };
 
-        assert_eq!(message.len(), 1); // single part
+        assert_eq!(message.len(), 1); // one text block
 
         message.content.push("How are you?");
 
@@ -2101,24 +1894,11 @@ mod tests {
 
     #[test]
     fn test_content_is_empty() {
-        let mut content = Content::SinglePart("Hello, world!".into());
+        let mut content = Content::text("Hello, world!");
         assert!(!content.is_empty());
 
-        content = Content::MultiPart(vec![]);
+        content = Content(vec![]);
         assert!(content.is_empty());
-    }
-
-    #[test]
-    fn tests_content_unwrap_single_part() {
-        let content = Content::SinglePart("Hello, world!".into());
-        assert_eq!(content.unwrap_single_part().to_string(), "Hello, world!");
-    }
-
-    #[test]
-    #[should_panic]
-    fn test_content_unwrap_single_part_panics() {
-        let content = Content::MultiPart(vec![]);
-        content.unwrap_single_part();
     }
 
     #[test]
@@ -2177,10 +1957,10 @@ mod tests {
     fn test_message_markdown() {
         use crate::markdown::ToMarkdown;
 
-        // test user heading, single part
+        // test user heading, single block
         let message = Message {
             role: Role::User,
-            content: Content::SinglePart("Hello, world!".into()),
+            content: Content::text("Hello, world!"),
         };
 
         let opts = crate::markdown::Options::default()
@@ -2192,10 +1972,10 @@ mod tests {
             "### User\n\nHello, world!"
         );
 
-        // test assistant heading, multi part
+        // test assistant heading, multiple blocks
         let message = Message {
             role: Role::Assistant,
-            content: Content::MultiPart(vec![
+            content: Content(vec![
                 "Hello, world!".into(),
                 "How are you?".into(),
             ]),
@@ -2209,7 +1989,7 @@ mod tests {
         // Test tool result (success)
         let message: Message = tool::Result {
             tool_use_id: "tool_123".into(),
-            content: Content::SinglePart("Hello, world!".into()),
+            content: Content::text("Hello, world!"),
             is_error: false,
             cache_control: None,
         }
@@ -2217,13 +1997,13 @@ mod tests {
 
         assert_eq!(
             message.markdown_custom(opts).to_string(),
-            "### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":false}\n````"
+            "### Tool\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":[{\"type\":\"text\",\"text\":\"Hello, world!\"}],\"is_error\":false}\n````"
         );
 
         // Test tool result (error)
         let message: Message = tool::Result {
             tool_use_id: "tool_123".into(),
-            content: Content::SinglePart("Hello, world!".into()),
+            content: Content::text("Hello, world!"),
             is_error: true,
             cache_control: None,
         }
@@ -2231,7 +2011,7 @@ mod tests {
 
         assert_eq!(
             message.markdown_custom(opts).to_string(),
-            "### Error\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":\"Hello, world!\",\"is_error\":true}\n````"
+            "### Error\n\n````json\n{\"type\":\"tool_result\",\"tool_use_id\":\"tool_123\",\"content\":[{\"type\":\"text\",\"text\":\"Hello, world!\"}],\"is_error\":true}\n````"
         );
     }
 
@@ -2354,9 +2134,7 @@ mod tests {
     fn test_user_message_from_iter() {
         // From an iterator of &str (via blanket Into<Block>).
         let msg: UserMessage = ["Hello,", "world!"].into_iter().collect();
-        let Content::MultiPart(blocks) = msg.content() else {
-            panic!("expected MultiPart");
-        };
+        let blocks = msg.content();
         assert_eq!(blocks.len(), 2);
 
         // From an iterator of tool::Result.
@@ -2375,9 +2153,7 @@ mod tests {
             },
         ];
         let msg: UserMessage = results.into_iter().collect();
-        let Content::MultiPart(blocks) = msg.content() else {
-            panic!("expected MultiPart");
-        };
+        let blocks = msg.content();
         assert_eq!(blocks.len(), 2);
         assert!(matches!(blocks[0], Block::ToolResult { .. }));
         assert!(matches!(blocks[1], Block::ToolResult { .. }));
@@ -2387,9 +2163,7 @@ mod tests {
     fn test_assistant_message_from_iter() {
         let msg: AssistantMessage =
             ["thinking...", "done."].into_iter().collect();
-        let Content::MultiPart(blocks) = msg.content() else {
-            panic!("expected MultiPart");
-        };
+        let blocks = msg.content();
         assert_eq!(blocks.len(), 2);
     }
 
