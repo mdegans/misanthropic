@@ -40,3 +40,65 @@ fn definition_builds_from_derived_consts() {
     assert_eq!(def.schema["type"], "object");
     assert_eq!(def.schema["properties"]["note"]["type"], "string");
 }
+
+/// The derive's actual purpose: a **hand-written** [`Method`] whose `Args` use
+/// `#[derive(ToolArgs)]` instead of a hand-written `impl ToolArgs`. This is the
+/// path `#[tool]` automates; here we drive it manually and dispatch through
+/// [`Typed`] to prove the derive wires up end-to-end.
+mod hand_written_method {
+    use misanthropic::{
+        prompt::message::Content,
+        tool::{ErasedMethod, Method, Methods, Tool, ToolArgs, Typed, Use},
+    };
+
+    /// Greet someone by name.
+    #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
+    #[tool(name = "greet")]
+    struct Greet {
+        name: String,
+    }
+
+    struct Greeter;
+
+    struct GreetMethod;
+
+    #[async_trait::async_trait]
+    impl Method<Greeter> for GreetMethod {
+        type Args = Greet;
+        async fn run(
+            &self,
+            _state: &mut Greeter,
+            args: Greet,
+        ) -> Result<Content<'static>, Content<'static>> {
+            Ok(format!("Hello, {}!", args.name).into())
+        }
+    }
+
+    impl Methods for Greeter {
+        const NAME: &'static str = "Greeter";
+        fn methods(&self) -> Vec<Box<dyn ErasedMethod<Self>>> {
+            vec![Box::new(GreetMethod)]
+        }
+    }
+
+    #[test]
+    fn derived_args_carry_name_and_doc() {
+        assert_eq!(<Greet as ToolArgs>::NAME, "greet");
+        assert_eq!(<Greet as ToolArgs>::DESCRIPTION, "Greet someone by name.");
+    }
+
+    #[tokio::test]
+    async fn derived_args_drive_a_hand_written_method() {
+        let mut greeter = Typed(Greeter);
+        let result = greeter
+            .call(Use {
+                id: "id".into(),
+                name: "Greeter__greet".into(),
+                input: serde_json::json!({ "name": "world" }),
+                cache_control: None,
+            })
+            .await;
+        assert!(!result.is_error, "{}", result.content);
+        assert_eq!(result.content.to_string(), "Hello, world!");
+    }
+}

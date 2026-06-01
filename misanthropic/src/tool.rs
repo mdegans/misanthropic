@@ -13,14 +13,22 @@ pub use toolbox::ToolBox;
 mod typed;
 pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
 
-/// `#[derive(ToolArgs)]` — co-located with the [`ToolArgs`] trait (same path,
-/// different namespaces) so a single `use misanthropic::tool::ToolArgs;` brings
-/// in both, as with `serde`'s `Serialize`.
+/// `#[derive(ToolArgs)]` — the front door for **hand-written** [`Method`]
+/// impls: it generates the [`NAME`](ToolArgs::NAME)/[`DESCRIPTION`](ToolArgs::DESCRIPTION)
+/// consts (from the struct ident + doc comment, overridable with
+/// `#[tool(name = "…", description = "…")]`) so you don't write them by hand.
+/// Most tools instead want the all-in-one [`macro@tool`] attribute, which
+/// derives this for you. Co-located with the [`ToolArgs`] trait (same path,
+/// different namespaces) so one `use misanthropic::tool::ToolArgs;` brings in
+/// both, as with `serde`'s `Serialize`.
 #[cfg(feature = "derive")]
 pub use misanthropic_derive::ToolArgs;
 
-/// `#[tool]` — attribute on an `impl` block that generates the [`Method`] /
-/// [`ToolArgs`] / [`Methods`] wiring from `#[method]`-tagged async fns.
+/// `#[tool]` — the all-in-one path: an attribute on an `impl` block that
+/// generates the [`Method`] / [`ToolArgs`] / [`Methods`] wiring from
+/// `#[method]`-tagged async fns. Wrap the result in [`Typed`] (or
+/// [`ToolBox::add_typed`]) to use as a [`Tool`]. For finer control, hand-write
+/// [`Method`] impls and reach for [`macro@ToolArgs`] instead.
 #[cfg(feature = "derive")]
 pub use misanthropic_derive::tool;
 
