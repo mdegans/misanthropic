@@ -6,7 +6,7 @@ use crate::{
     prompt::message::{Block, Content},
 };
 
-use super::{ErasedMethod, Method, Methods, ToolArgs};
+use super::tool;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -33,38 +33,24 @@ impl<'a> Notepad<'a> {
     }
 }
 
-/// Arguments for the `push` [`Method`]: take a note.
+/// Arguments for the `push` method: take a note.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Push {
     /// The note to take.
     note: String,
 }
 
-impl ToolArgs for Push {
-    const NAME: &'static str = "push";
-    const DESCRIPTION: &'static str = "Take a note for the next chat.";
-}
-
-/// Arguments for the `clear` [`Method`]: a no-arg method (proves heterogeneous
+/// Arguments for the `clear` method: a no-arg method (proves heterogeneous
 /// `Args` coexist on one tool).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct Clear {}
 
-impl ToolArgs for Clear {
-    const NAME: &'static str = "clear";
-    const DESCRIPTION: &'static str = "Erase all saved notes.";
-}
-
-/// The `push` method.
-struct PushMethod;
-
-#[async_trait::async_trait]
-impl<'a> Method<Notepad<'a>> for PushMethod {
-    type Args = Push;
-
-    async fn run(
-        &self,
-        state: &mut Notepad<'a>,
+#[tool]
+impl<'a> Notepad<'a> {
+    /// Take a note for the next chat.
+    #[method]
+    async fn push(
+        &mut self,
         args: Push,
     ) -> std::result::Result<Content<'static>, Content<'static>> {
         let note = args.note;
@@ -88,47 +74,30 @@ impl<'a> Method<Notepad<'a>> for PushMethod {
 
         #[cfg(feature = "log")]
         log::debug!("Note taken: {}", note);
-        state.notes.push(note.into());
+        self.notes.push(note.into());
 
         Ok("Note taken.".into())
     }
-}
 
-/// The `clear` method.
-struct ClearMethod;
-
-#[async_trait::async_trait]
-impl<'a> Method<Notepad<'a>> for ClearMethod {
-    type Args = Clear;
-
-    async fn run(
-        &self,
-        state: &mut Notepad<'a>,
+    /// Erase all saved notes.
+    #[method]
+    async fn clear(
+        &mut self,
         _args: Clear,
     ) -> std::result::Result<Content<'static>, Content<'static>> {
-        state.notes.clear();
+        self.notes.clear();
         Ok("Notes cleared.".into())
-    }
-}
-
-#[async_trait::async_trait]
-impl<'a> Methods for Notepad<'a> {
-    const NAME: &'static str = stringify!(Notepad);
-
-    fn methods(&self) -> Vec<Box<dyn ErasedMethod<Self>>> {
-        vec![
-            Box::new(PushMethod) as Box<dyn ErasedMethod<Self>>,
-            Box::new(ClearMethod),
-        ]
     }
 
     /// Save notepad state.
-    async fn save_json(&mut self) -> serde_json::Value {
+    #[save_json]
+    async fn save(&mut self) -> serde_json::Value {
         json!(self)
     }
 
     /// Load notepad state.
-    async fn load_json(
+    #[load_json]
+    async fn load(
         &mut self,
         json: serde_json::Value,
     ) -> std::result::Result<(), String> {
@@ -148,23 +117,14 @@ impl<'a> Methods for Notepad<'a> {
         Ok(())
     }
 
-    async fn on_init(
+    /// Inject the notepad instructions + notes into the prompt's system block,
+    /// both on session start and on every turn (notes may have been added).
+    #[on_init]
+    #[on_turn]
+    async fn apply(
         &mut self,
-        prompt: &mut Prompt,
+        prompt: &mut Prompt<'_>,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Set up the notepad instructions and initial state.
-        self.sync_apply_to_prompt(prompt).map_err(|e| {
-            let error_string = e.to_string();
-            Box::new(std::io::Error::other(error_string))
-                as Box<dyn std::error::Error + Send + Sync>
-        })
-    }
-
-    async fn on_turn(
-        &mut self,
-        prompt: &mut Prompt,
-    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Update the notepad content (notes may have been added).
         self.sync_apply_to_prompt(prompt).map_err(|e| {
             let error_string = e.to_string();
             Box::new(std::io::Error::other(error_string))

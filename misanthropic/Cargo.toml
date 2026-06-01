@@ -181,8 +181,9 @@ batch = ["client"]
 client = []
 # Enables some Dioxus support. This is not necessary for the client.
 dioxus = ["dep:dioxus"]
-# Notepad tool for the assistant to take notes.
-notepad = []
+# Notepad tool for the assistant to take notes. Implemented with the typed-tool
+# derive macros, so it requires `derive`.
+notepad = ["derive"]
 # MemoryPalace tool for the assistant to store and retrieve memories.
 memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx"]
 # Sqlx support (need for some tools)
