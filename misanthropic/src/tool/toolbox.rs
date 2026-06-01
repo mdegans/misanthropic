@@ -20,7 +20,7 @@ pub struct ToolBox {
     name: Cow<'static, str>,
     /// Map of [`Method::name`] to tool name of the [`Tool`] to call.
     ///
-    /// Stores namespaced function names in the format `tool::function`.
+    /// Stores namespaced function names in the format `tool__function`.
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
     /// Map of tool names to [`Tool`]s.
     pub(crate) tool_name_to_tool: HashMap<String, Box<dyn Tool + Send>>,
@@ -37,6 +37,13 @@ impl Default for ToolBox {
 }
 
 impl ToolBox {
+    /// Separator between namespace segments in a fully-qualified method name
+    /// (`box__tool__method`).
+    ///
+    /// `__` rather than `::` because Anthropic requires tool names to match
+    /// `^[a-zA-Z0-9_-]{1,128}$`, which rejects colons.
+    pub const SEP: &'static str = "__";
+
     /// Create a new [`ToolBox`].
     pub fn new() -> Self {
         Self::default()
@@ -97,7 +104,7 @@ impl ToolBox {
         // Append the function names to self.functions.
         for method in tool.methods() {
             self.method_to_tool_name.insert(
-                format!("{}::{}", self.name, method.name).into(),
+                format!("{}{}{}", self.name, Self::SEP, method.name).into(),
                 tool.name().to_string(),
             );
         }
@@ -134,7 +141,8 @@ impl ToolBox {
         let tool_name = tool.name().to_string();
         let function_names = tool.methods().map(|method| {
             format!(
-                "{self_name}::{tool}::{method}",
+                "{self_name}{sep}{tool}{sep}{method}",
+                sep = Self::SEP,
                 tool = tool.name(),
                 method = method.name
             )
@@ -237,9 +245,13 @@ impl Tool for ToolBox {
         Box::new(self.tool_name_to_tool.values().flat_map(|tool| {
             tool.methods().map(|mut method| {
                 // Append our prefix to the function name, which should already
-                // include `tool::function` format for the function name.
-                method.name =
-                    Cow::Owned(format!("{}::{}", self.name(), method.name));
+                // include `tool__function` format for the function name.
+                method.name = Cow::Owned(format!(
+                    "{}{}{}",
+                    self.name(),
+                    Self::SEP,
+                    method.name
+                ));
                 method
             })
         }))
@@ -410,7 +422,7 @@ mod tests {
 
         fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
             Box::new(std::iter::once(Method {
-                name: "TestTool::test".into(),
+                name: "TestTool__test".into(),
                 description: "Test Tool".into(),
                 schema: serde_json::json!({
                     "type": "object",
@@ -469,7 +481,7 @@ mod tests {
             .add(TestTool { calls: Vec::new() });
         assert_eq!(
             toolbox.method_to_tool_name.keys().next().unwrap(),
-            "tools::TestTool::test"
+            "tools__TestTool__test"
         );
     }
 
@@ -479,7 +491,7 @@ mod tests {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
         let methods = toolbox.methods().collect::<Vec<_>>();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox::TestTool::test");
+        assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
 
     #[tokio::test]
@@ -488,7 +500,7 @@ mod tests {
             ToolBox::new().add_boxed(Box::new(TestTool { calls: Vec::new() }));
         let methods = toolbox.methods().collect::<Vec<_>>();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox::TestTool::test");
+        assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
 
     #[test]
@@ -510,8 +522,8 @@ mod tests {
         );
         let names: Vec<&str> = toolbox.method_names().collect();
         dbg!(&names);
-        assert!(names.contains(&"toolbox::TestTool::test"));
-        assert!(names.contains(&"toolbox::potato::TestTool::test"));
+        assert!(names.contains(&"toolbox__TestTool__test"));
+        assert!(names.contains(&"toolbox__potato__TestTool__test"));
     }
 
     #[test]
@@ -520,7 +532,7 @@ mod tests {
         let tool = TestTool { calls: Vec::new() };
         toolbox.replace(tool);
         let names: Vec<&str> = toolbox.method_names().collect();
-        assert!(names.contains(&"toolbox::TestTool::test"));
+        assert!(names.contains(&"toolbox__TestTool__test"));
     }
 
     #[test]
@@ -535,7 +547,7 @@ mod tests {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
         let methods: Vec<Method> = toolbox.methods().collect();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox::TestTool::test");
+        assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
 
     #[tokio::test]
@@ -543,7 +555,7 @@ mod tests {
         let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
         let call = Use {
             id: "id".into(),
-            name: "toolbox::TestTool::test".into(),
+            name: "toolbox__TestTool__test".into(),
             input: serde_json::json!({}),
             cache_control: None,
         };
@@ -554,14 +566,14 @@ mod tests {
         // Test call with an invalid method.
         let result = toolbox
             .call(Use {
-                name: "toolbox::TestTool::invalid".into(),
+                name: "toolbox__TestTool__invalid".into(),
                 ..call.clone()
             })
             .await;
         assert!(result.is_error);
         assert_eq!(
             result.content,
-            "Method `toolbox::TestTool::invalid` not found in ToolBox `toolbox`. This is almost certainly the developer's fault. Available methods: toolbox::TestTool::test"
+            "Method `toolbox__TestTool__invalid` not found in ToolBox `toolbox`. This is almost certainly the developer's fault. Available methods: toolbox__TestTool__test"
                 .into()
         )
     }
