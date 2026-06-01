@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, Method, Tool, Use},
+    tool::{self, MethodDef, Tool, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -18,7 +18,7 @@ use crate::{
 pub struct ToolBox {
     /// Name of the [`ToolBox`].
     name: Cow<'static, str>,
-    /// Map of [`Method::name`] to tool name of the [`Tool`] to call.
+    /// Map of [`MethodDef::name`] to tool name of the [`Tool`] to call.
     ///
     /// Stores namespaced function names in the format `tool__function`.
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
@@ -75,7 +75,7 @@ impl ToolBox {
     /// Add a [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`Method`]s (by name), will be replaced. This is logged at
+    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
     ///   the `warn` level. This does not remove the original [`Tool`]. If you
     ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
     pub fn add(mut self, tool: impl Tool + Send + 'static) -> Self {
@@ -86,7 +86,7 @@ impl ToolBox {
     /// Add a boxed [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`Method`]s (by name), will be replaced. This is logged at
+    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
     ///   the `warn` level. This does not remove the original [`Tool`]. If you
     ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
     pub fn add_boxed(mut self, tool: Box<dyn Tool + Send>) -> Self {
@@ -101,8 +101,8 @@ impl ToolBox {
 
     /// Push a boxed [`Tool`] to the [`ToolBox`].
     pub fn push_boxed(&mut self, tool: Box<dyn Tool + Send>) {
-        // Append the function names to self.functions.
-        for method in tool.methods() {
+        // Append the method names to self.method_to_tool_name.
+        for method in tool.definitions() {
             self.method_to_tool_name.insert(
                 format!("{}{}{}", self.name, Self::SEP, method.name).into(),
                 tool.name().to_string(),
@@ -123,23 +123,23 @@ impl ToolBox {
         self.tool_name_to_tool.values().map(|tool| tool.name())
     }
 
-    /// Names of all the [`Method`]s in the [`ToolBox`].
+    /// Names of all the [`MethodDef`]s in the [`ToolBox`].
     pub fn method_names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.method_to_tool_name.keys().map(|name| name.as_ref())
     }
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`Method`]s.
+    /// [`MethodDef`]s.
     pub fn replace(&mut self, tool: impl Tool + Send + 'static) {
         self.replace_boxed(Box::new(tool));
     }
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`Method`]s.
+    /// [`MethodDef`]s.
     pub fn replace_boxed(&mut self, tool: Box<dyn Tool + Send>) {
         let self_name = self.name.as_ref();
         let tool_name = tool.name().to_string();
-        let function_names = tool.methods().map(|method| {
+        let function_names = tool.definitions().into_iter().map(|method| {
             format!(
                 "{self_name}{sep}{tool}{sep}{method}",
                 sep = Self::SEP,
@@ -148,7 +148,7 @@ impl ToolBox {
             )
         });
 
-        // Remove the old tool and its functions.
+        // Remove the old tool and its methods.
         for name in function_names {
             if let Some(old_tool_name) = self
                 .method_to_tool_name
@@ -240,21 +240,24 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`Method`]s for all [`Tool`]s in the [`ToolBox`].
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new(self.tool_name_to_tool.values().flat_map(|tool| {
-            tool.methods().map(|mut method| {
-                // Append our prefix to the function name, which should already
-                // include `tool__function` format for the function name.
-                method.name = Cow::Owned(format!(
-                    "{}{}{}",
-                    self.name(),
-                    Self::SEP,
-                    method.name
-                ));
-                method
+    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
+    fn definitions(&self) -> Vec<MethodDef<'static>> {
+        self.tool_name_to_tool
+            .values()
+            .flat_map(|tool| {
+                tool.definitions().into_iter().map(|mut method| {
+                    // Append our prefix to the method name, which should
+                    // already include `tool__method` format for the name.
+                    method.name = Cow::Owned(format!(
+                        "{}{}{}",
+                        self.name(),
+                        Self::SEP,
+                        method.name
+                    ));
+                    method
+                })
             })
-        }))
+            .collect()
     }
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
@@ -269,8 +272,8 @@ impl Tool for ToolBox {
             }
             None => {
                 // This can happen if somehow the Prompt and ToolBox are out of
-                // sync because the ToolBox::functions do not match the
-                // Prompt::functions.
+                // sync because the ToolBox methods do not match the
+                // Prompt::methods.
                 let mut available_methods: String =
                     self.method_names().collect::<Vec<_>>().join(", ");
                 if available_methods.is_empty() {
@@ -420,8 +423,8 @@ mod tests {
             "TestTool"
         }
 
-        fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-            Box::new(std::iter::once(Method {
+        fn definitions(&self) -> Vec<MethodDef<'static>> {
+            vec![MethodDef {
                 name: "TestTool__test".into(),
                 description: "Test Tool".into(),
                 schema: serde_json::json!({
@@ -435,7 +438,7 @@ mod tests {
                 }),
                 cache_control: None,
                 strict: None,
-            }))
+            }]
         }
 
         async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
@@ -489,7 +492,7 @@ mod tests {
     async fn test_toolbox_add_push() {
         // add just calls push
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods = toolbox.methods().collect::<Vec<_>>();
+        let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
@@ -498,7 +501,7 @@ mod tests {
     async fn test_toolbox_add_push_boxed() {
         let toolbox =
             ToolBox::new().add_boxed(Box::new(TestTool { calls: Vec::new() }));
-        let methods = toolbox.methods().collect::<Vec<_>>();
+        let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
@@ -545,7 +548,7 @@ mod tests {
     #[test]
     fn test_methods() {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods: Vec<Method> = toolbox.methods().collect();
+        let methods: Vec<MethodDef> = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }

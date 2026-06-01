@@ -1,20 +1,20 @@
-//! [`Index`] and related types for addressing a [`Method`] or [`Content`]
+//! [`Index`] and related types for addressing a [`MethodDef`] or [`Content`]
 //! [`Block`] inside a [`Prompt`].
 //!
 //! The motivating use is cache-breakpoint placement: [`Prompt::indices`] yields
 //! every addressable position in Anthropic's cache-prefix order (tools →
 //! system → messages), and [`Prompt::get_mut`] resolves one to a `&mut Block`
-//! (or `&mut Method`) so a [`CacheControl`] can be dropped on it.
+//! (or `&mut MethodDef`) so a [`CacheControl`] can be dropped on it.
 //!
 //! [`CacheControl`]: crate::prompt::message::CacheControl
-use super::{Prompt, message::Block, tool::Method};
+use super::{Prompt, message::Block, tool::MethodDef};
 
-/// An index into a [`Prompt`]. Addresses either a [`Method`] in
+/// An index into a [`Prompt`]. Addresses either a [`MethodDef`] in
 /// [`Prompt::tools`] or a [`Content`] [`Block`] in [`Prompt::system`] /
 /// [`Prompt::messages`].
 ///
 /// The derived [`Ord`] matches Anthropic's cache-prefix order: every
-/// [`Method`] sorts before every [`Block`], system blocks before message
+/// [`MethodDef`] sorts before every [`Block`], system blocks before message
 /// blocks. [`Prompt::indices`] yields indices in this order.
 ///
 /// [`Prompt::tools`]: Prompt::tools
@@ -31,13 +31,13 @@ use super::{Prompt, message::Block, tool::Method};
     derive_more::IsVariant,
 )]
 pub enum Index {
-    /// A [`Method`] in [`Prompt::tools`].
+    /// A [`MethodDef`] in [`Prompt::tools`].
     Method(MethodIndex),
     /// A [`Content`] [`Block`] in [`Prompt::system`] or [`Prompt::messages`].
     Block(BlockIndex),
 }
 
-/// Index of a [`Method`] in [`Prompt::tools`].
+/// Index of a [`MethodDef`] in [`Prompt::tools`].
 #[derive(
     Clone,
     Copy,
@@ -72,20 +72,20 @@ pub enum BlockIndex {
     Message((usize, usize)),
 }
 
-/// A shared reference to a [`Method`] or a [`Content`] [`Block`] in a
+/// A shared reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get`].
 pub enum IndexRef<'a, 'p> {
-    /// Reference to a [`Method`] in [`Prompt::tools`].
-    Method(&'a Method<'p>),
+    /// Reference to a [`MethodDef`] in [`Prompt::tools`].
+    Method(&'a MethodDef<'p>),
     /// Reference to a [`Content`] [`Block`] in a [`Prompt`].
     Block(&'a Block<'p>),
 }
 
-/// A mutable reference to a [`Method`] or a [`Content`] [`Block`] in a
+/// A mutable reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get_mut`].
 pub enum IndexMut<'a, 'p> {
-    /// Mutable reference to a [`Method`] in [`Prompt::tools`].
-    Method(&'a mut Method<'p>),
+    /// Mutable reference to a [`MethodDef`] in [`Prompt::tools`].
+    Method(&'a mut MethodDef<'p>),
     /// Mutable reference to a [`Content`] [`Block`] in a [`Prompt`].
     Block(&'a mut Block<'p>),
 }
@@ -109,7 +109,7 @@ impl<'p> Prompt<'p> {
     pub fn get(&self, index: Index) -> Option<IndexRef<'_, 'p>> {
         match index {
             Index::Method(MethodIndex(i)) => {
-                self.functions.as_ref()?.get(i).map(IndexRef::Method)
+                self.methods.as_ref()?.get(i).map(IndexRef::Method)
             }
             Index::Block(BlockIndex::System(i)) => {
                 self.system.as_ref()?.get(i).map(IndexRef::Block)
@@ -125,7 +125,7 @@ impl<'p> Prompt<'p> {
     pub fn get_mut(&mut self, index: Index) -> Option<IndexMut<'_, 'p>> {
         match index {
             Index::Method(MethodIndex(i)) => {
-                self.functions.as_mut()?.get_mut(i).map(IndexMut::Method)
+                self.methods.as_mut()?.get_mut(i).map(IndexMut::Method)
             }
             Index::Block(BlockIndex::System(i)) => {
                 self.system.as_mut()?.get_mut(i).map(IndexMut::Block)
@@ -142,7 +142,7 @@ impl<'p> Prompt<'p> {
     /// Iterate over every addressable [`Index`] in cache-prefix order:
     /// tools, then system blocks, then message blocks.
     pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {
-        let tools = (0..self.functions.as_ref().map_or(0, Vec::len))
+        let tools = (0..self.methods.as_ref().map_or(0, Vec::len))
             .map(|i| Index::Method(MethodIndex(i)));
 
         let system = (0..self.system.as_ref().map_or(0, |c| c.len()))
@@ -158,12 +158,12 @@ impl<'p> Prompt<'p> {
 }
 
 impl<'p> std::ops::Index<MethodIndex> for Prompt<'p> {
-    type Output = Method<'p>;
+    type Output = MethodDef<'p>;
 
     /// # Panics
     /// - If [`Prompt::tools`] is absent or the index is out of bounds.
     fn index(&self, index: MethodIndex) -> &Self::Output {
-        &self.functions.as_ref().expect("no tools on this prompt")[index.0]
+        &self.methods.as_ref().expect("no tools on this prompt")[index.0]
     }
 }
 
@@ -171,7 +171,7 @@ impl std::ops::IndexMut<MethodIndex> for Prompt<'_> {
     /// # Panics
     /// - If [`Prompt::tools`] is absent or the index is out of bounds.
     fn index_mut(&mut self, index: MethodIndex) -> &mut Self::Output {
-        &mut self.functions.as_mut().expect("no tools on this prompt")[index.0]
+        &mut self.methods.as_mut().expect("no tools on this prompt")[index.0]
     }
 }
 
@@ -241,10 +241,10 @@ mod test {
     #[test]
     fn indices_in_cache_prefix_order() {
         use crate::prompt::message::{Content, Role};
-        use crate::tool::Method;
+        use crate::tool::MethodDef;
 
         let prompt = Prompt::default()
-            .add_tool(Method {
+            .add_tool(MethodDef {
                 name: "a".into(),
                 description: "a".into(),
                 schema: serde_json::json!({}),

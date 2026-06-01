@@ -431,7 +431,7 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
 
         // Tools
         let tools = prompt
-            .functions
+            .methods
             .as_ref()
             .map(|methods| methods.iter().map(ChatTool::from).collect());
 
@@ -468,8 +468,8 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
     }
 }
 
-impl<'a> From<&tool::Method<'a>> for ChatTool {
-    fn from(method: &tool::Method<'a>) -> Self {
+impl<'a> From<&tool::MethodDef<'a>> for ChatTool {
+    fn from(method: &tool::MethodDef<'a>) -> Self {
         ChatTool {
             kind: "function".to_string(),
             function: ChatFunction {
@@ -756,7 +756,7 @@ mod tests {
 
     #[test]
     fn tool_method_to_chat_tool() {
-        let method = tool::Method::builder("get_weather")
+        let method = tool::MethodDef::builder("get_weather")
             .description("Get the weather")
             .schema(serde_json::json!({
                 "type": "object",

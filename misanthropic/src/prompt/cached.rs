@@ -50,7 +50,7 @@
 //!
 //! | Field | Invalidates |
 //! |---|---|
-//! | `tools` / `functions` | Everything |
+//! | `tools` / `methods` | Everything |
 //! | `system` | System + messages cache |
 //! | `tool_choice` | Messages cache |
 //! | `thinking` | Messages cache |
@@ -333,7 +333,7 @@ impl<'a> CachedPrompt<'a> {
             self.inner.system.as_ref().is_some_and(|s| s.has_cache()),
         );
         let tool_count =
-            self.inner.functions.as_ref().map_or(0, |tools| {
+            self.inner.methods.as_ref().map_or(0, |tools| {
                 tools.iter().filter(|t| t.is_cached()).count()
             });
         let used = system_count + tool_count + tail_set.len();
@@ -422,7 +422,7 @@ impl<'a> CachedPrompt<'a> {
 /// `Deref` provides read-only access to all [`Prompt`] fields.
 ///
 /// There is intentionally **no** `DerefMut` — preventing direct mutation of
-/// cache-prefix fields like `tool_choice` and `functions`.
+/// cache-prefix fields like `tool_choice` and `methods`.
 impl<'a> Deref for CachedPrompt<'a> {
     type Target = Prompt<'a>;
 
@@ -691,7 +691,7 @@ mod tests {
         // Can read via Deref
         assert_eq!(cached.max_tokens, NonZeroU32::new(1024).unwrap());
         assert!(cached.tool_choice.is_none());
-        assert!(cached.functions.is_none());
+        assert!(cached.methods.is_none());
     }
 
     #[test]

@@ -13,7 +13,7 @@ use misanthropic::{
     Client, Prompt, json,
     markdown::ToMarkdown,
     prompt::{Message, message::Role},
-    tool::{self, Method},
+    tool::{self, MethodDef},
 };
 
 /// Count the number of letters in a word (or any string). An example of tool
@@ -89,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // convertable from a `serde_json::Value`.
     let mut chat = Prompt::default()
         .add_tool(
-            Method::builder("count_letters")
+            MethodDef::builder("count_letters")
                 .description("Count the number of letters in a word.")
                 .schema(json!({
                     "type": "object",

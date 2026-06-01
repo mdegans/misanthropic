@@ -22,42 +22,42 @@ mod notepad;
 #[cfg(feature = "notepad")]
 pub use notepad::Notepad;
 
-/// Constrain the [`Assistant`]'s choice of [`Method`]s.
+/// Constrain the [`Assistant`]'s choice of [`MethodDef`]s.
 ///
 /// # Note:
 /// - Anthropic calls this a "tool" in the API, but since [`Tool`]s can have
-///   multiple [`Method`] in this crate, we use "method" instead.
+///   multiple [`MethodDef`] in this crate, we use "method" instead.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Choice {
-    /// [`Model`] chooses which [`Method`] of a [`Tool`] to use.
+    /// [`Model`] chooses which [`MethodDef`] of a [`Tool`] to use.
     ///
     /// [`Model`]: crate::model::Model
     #[default]
     Auto,
-    /// Model must use at least one of the provided [`Method`]s.
+    /// Model must use at least one of the provided [`MethodDef`]s.
     Any,
-    /// Model must use a specific [`Method`]`.
+    /// Model must use a specific [`MethodDef`]`.
     #[serde(rename = "tool")]
     Method {
-        /// The [`Method::name`] to use.
+        /// The [`MethodDef::name`] to use.
         name: String,
     },
 }
 
 /// A `Tool` that the [`Assistant`] can [`Use`]. Tools can have multiple
-/// [`Method`]s. Tools should generally go in the [`ToolBox`].
+/// [`MethodDef`]s. Tools should generally go in the [`ToolBox`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[async_trait::async_trait]
 pub trait Tool: Send {
     /// [`Tool`] name.
     fn name(&self) -> &str;
-    /// Get the [`Method`](s) provided by the [`Tool`].
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_>;
+    /// Get the [`MethodDef`](s) provided by the [`Tool`].
+    fn definitions(&self) -> Vec<MethodDef<'static>>;
     /// [`Use`] the [`Tool`], returning a [`tool::Result`].
     ///
     /// [`tool::Result`]: Result
@@ -122,7 +122,7 @@ static_assertions::assert_obj_safe!(Tool);
 // Ensure Tool is Send (but not Sync) for use in async contexts and ToolBox
 static_assertions::assert_impl_all!(dyn Tool: Send);
 
-/// `Method` definition for a [`Tool`] a [`Model`] can [`Use`] while
+/// `MethodDef` definition for a [`Tool`] a [`Model`] can [`Use`] while
 /// completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
@@ -131,7 +131,7 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder<'a>")]
 #[serde(rename = "tool")]
-pub struct Method<'a> {
+pub struct MethodDef<'a> {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'a, str>,
     /// Description of the tool. The model will use this as documentation.
@@ -161,14 +161,14 @@ pub struct Method<'a> {
     ///
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     /// [`Use::input`]: crate::tool::Use::input
-    /// [`schema`]: Method::schema
+    /// [`schema`]: MethodDef::schema
     /// [`Prompt::output_config`]: crate::Prompt::output_config
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Method<'a> {
+impl<'a> crate::markdown::ToMarkdown<'a> for MethodDef<'a> {
     fn markdown_events_custom(
         &'a self,
         options: crate::markdown::Options,
@@ -200,7 +200,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Method<'a> {
     }
 }
 
-impl<'a> TryFrom<MethodBuilder<'a>> for Method<'a> {
+impl<'a> TryFrom<MethodBuilder<'a>> for MethodDef<'a> {
     type Error = ToolBuildError;
 
     fn try_from(
@@ -210,20 +210,20 @@ impl<'a> TryFrom<MethodBuilder<'a>> for Method<'a> {
     }
 }
 
-/// A builder for creating a [`Method`] with some basic validation. See
-/// [`Method::builder`] to create one.
+/// A builder for creating a [`MethodDef`] with some basic validation. See
+/// [`MethodDef::builder`] to create one.
 pub struct MethodBuilder<'a> {
-    tool: Method<'a>,
+    tool: MethodDef<'a>,
 }
 
-// `Method` is annotated with `#[serde(try_from = "MethodBuilder<'a>")]`, so
-// deserializing a `Method` routes through `MethodBuilder::deserialize` and
+// `MethodDef` is annotated with `#[serde(try_from = "MethodBuilder<'a>")]`, so
+// deserializing a `MethodDef` routes through `MethodBuilder::deserialize` and
 // then `MethodBuilder::build`. If we derived `Deserialize` on
 // `MethodBuilder`, serde would generate an impl that defers to
-// `Method::deserialize`, which in turn calls back into
+// `MethodDef::deserialize`, which in turn calls back into
 // `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
 // a private `Foreign` helper struct that owns the actual field mapping.
-// Every public field on `Method` must have a matching entry here.
+// Every public field on `MethodDef` must have a matching entry here.
 impl<'de> Deserialize<'de> for MethodBuilder<'_> {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -251,7 +251,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
         } = foreign;
 
         Ok(MethodBuilder {
-            tool: Method {
+            tool: MethodDef {
                 name,
                 description,
                 schema: input_schema,
@@ -269,17 +269,17 @@ impl<'a> MethodBuilder<'a> {
         self
     }
 
-    /// Set the [`strict`] flag on the [`Method`], enabling [strict tool
+    /// Set the [`strict`] flag on the [`MethodDef`], enabling [strict tool
     /// use] (grammar-constrained decoding of tool inputs).
     ///
-    /// [`strict`]: Method::strict
+    /// [`strict`]: MethodDef::strict
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn strict(mut self, strict: bool) -> Self {
         self.tool.strict = Some(strict);
         self
     }
 
-    /// Set a cache breakpoint at this [`Method`] by setting [`cache_control`] to
+    /// Set a cache breakpoint at this [`MethodDef`] by setting [`cache_control`] to
     /// [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// [`cache_control`]: Spec::cache_control
@@ -291,7 +291,7 @@ impl<'a> MethodBuilder<'a> {
         self
     }
 
-    /// Set the [`Method::input_schema`]. The schema should be a JSON Schema
+    /// Set the [`MethodDef::input_schema`]. The schema should be a JSON Schema
     /// object conforming to the [JSON Schema] specification like the following
     /// example:
     ///
@@ -405,9 +405,9 @@ impl<'a> MethodBuilder<'a> {
         self
     }
 
-    /// This will build the [`Method`] without checking any of the fields. This is
+    /// This will build the [`MethodDef`] without checking any of the fields. This is
     /// recommended only with static strings.
-    pub fn build_unchecked(self) -> Method<'a> {
+    pub fn build_unchecked(self) -> MethodDef<'a> {
         self.tool
     }
 
@@ -475,9 +475,9 @@ impl<'a> MethodBuilder<'a> {
         Ok(())
     }
 
-    /// This will build the [`Method`] and do some basic validation on the fields.
+    /// This will build the [`MethodDef`] and do some basic validation on the fields.
     /// This does not guarantee that the tool will be accepted by the API.
-    pub fn build(self) -> std::result::Result<Method<'a>, ToolBuildError> {
+    pub fn build(self) -> std::result::Result<MethodDef<'a>, ToolBuildError> {
         if self.tool.name.is_empty() {
             return Err(ToolBuildError::EmptyName);
         }
@@ -502,8 +502,8 @@ impl<'a> MethodBuilder<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields. If they are already owned, this is a no-op.
-    pub fn into_static(self) -> Method<'static> {
-        Method {
+    pub fn into_static(self) -> MethodDef<'static> {
+        MethodDef {
             name: Cow::Owned(self.tool.name.into_owned()),
             description: Cow::Owned(self.tool.description.into_owned()),
             schema: self.tool.schema,
@@ -513,7 +513,7 @@ impl<'a> MethodBuilder<'a> {
     }
 }
 
-/// Errors that can occur when building a [`Method`] with a [`MethodBuilder`].
+/// Errors that can occur when building a [`MethodDef`] with a [`MethodBuilder`].
 #[derive(Debug, thiserror::Error)]
 #[allow(missing_docs)]
 pub enum ToolBuildError {
@@ -530,11 +530,11 @@ pub enum ToolBuildError {
     },
 }
 
-impl<'a> Method<'a> {
+impl<'a> MethodDef<'a> {
     /// Use a builder to create a new tool with some very basic validation.
     pub fn builder(name: impl Into<Cow<'a, str>>) -> MethodBuilder<'a> {
         MethodBuilder {
-            tool: Method {
+            tool: MethodDef {
                 name: name.into(),
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
@@ -550,7 +550,7 @@ impl<'a> Method<'a> {
         name: impl Into<Cow<'a, str>>,
         description: impl Into<Cow<'a, str>>,
     ) -> Self {
-        Method {
+        MethodDef {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({
@@ -573,7 +573,7 @@ impl<'a> Method<'a> {
     ) -> Self {
         let required_array = if required { vec![param_name] } else { vec![] };
 
-        Method {
+        MethodDef {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({
@@ -591,7 +591,7 @@ impl<'a> Method<'a> {
         }
     }
 
-    /// Create a cache breakpoint at this [`Method`] by setting [`cache_control`]
+    /// Create a cache breakpoint at this [`MethodDef`] by setting [`cache_control`]
     /// to [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// Uses the default 5-minute TTL. For a 1-hour TTL, use
@@ -604,14 +604,14 @@ impl<'a> Method<'a> {
         self.cache_with(crate::prompt::message::CacheControl::ephemeral())
     }
 
-    /// Create a 1-hour cache breakpoint at this [`Method`]. Behaves
+    /// Create a 1-hour cache breakpoint at this [`MethodDef`]. Behaves
     /// identically to [`cache`](Self::cache) but uses
     /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
     pub fn cache_1h(&mut self) -> &mut Self {
         self.cache_with(crate::prompt::message::CacheControl::one_hour())
     }
 
-    /// Create a cache breakpoint at this [`Method`] with a caller-provided
+    /// Create a cache breakpoint at this [`MethodDef`] with a caller-provided
     /// [`CacheControl`](crate::prompt::message::CacheControl).
     pub fn cache_with(
         &mut self,
@@ -621,36 +621,36 @@ impl<'a> Method<'a> {
         self
     }
 
-    /// Returns true if the [`Method`] has a cache breakpoint set (if
+    /// Returns true if the [`MethodDef`] has a cache breakpoint set (if
     /// `cache_control` is [`Some`]).
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
 
-    /// Set the [`strict`] flag on the [`Method`], enabling [strict tool
+    /// Set the [`strict`] flag on the [`MethodDef`], enabling [strict tool
     /// use]. See [`MethodBuilder::strict`] for the builder variant.
     ///
-    /// [`strict`]: Method::strict
+    /// [`strict`]: MethodDef::strict
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn strict(&mut self, strict: bool) -> &mut Self {
         self.strict = Some(strict);
         self
     }
 
-    /// Returns `true` if [strict tool use] is enabled on this [`Method`].
+    /// Returns `true` if [strict tool use] is enabled on this [`MethodDef`].
     ///
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn is_strict(&self) -> bool {
         self.strict == Some(true)
     }
 
-    /// Try to convert from a serializable value to a [`Method`].
+    /// Try to convert from a serializable value to a [`MethodDef`].
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
     // Serialize. This is a bit of a hack but it works.
     pub fn from_serializable<T>(
         value: T,
-    ) -> std::result::Result<Method<'a>, serde_json::Error>
+    ) -> std::result::Result<MethodDef<'a>, serde_json::Error>
     where
         T: Serialize,
     {
@@ -660,8 +660,8 @@ impl<'a> Method<'a> {
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
-    pub fn into_static(self) -> Method<'static> {
-        Method {
+    pub fn into_static(self) -> MethodDef<'static> {
+        MethodDef {
             name: Cow::Owned(self.name.into_owned()),
             description: Cow::Owned(self.description.into_owned()),
             schema: self.schema,
@@ -671,7 +671,7 @@ impl<'a> Method<'a> {
     }
 }
 
-impl TryFrom<serde_json::Value> for Method<'static> {
+impl TryFrom<serde_json::Value> for MethodDef<'static> {
     type Error = serde_json::Error;
 
     fn try_from(
@@ -684,7 +684,7 @@ impl TryFrom<serde_json::Value> for Method<'static> {
     }
 }
 
-/// `Method` [`Use`] of the model. This should be handled and a response sent
+/// `MethodDef` [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///
 /// [`Block::ToolResult`]: crate::prompt::message::Block::ToolResult
@@ -774,7 +774,7 @@ impl std::fmt::Display for Use<'_> {
     }
 }
 
-/// Result of [`Method`] [`Use`] sent back to the [`Assistant`] as a [`User`]
+/// Result of [`MethodDef`] [`Use`] sent back to the [`Assistant`] as a [`User`]
 /// [`Message`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
@@ -848,7 +848,7 @@ mod tests {
 
     #[test]
     fn test_method_simple() {
-        let method = Method::simple("test_method", "A simple test method");
+        let method = MethodDef::simple("test_method", "A simple test method");
 
         assert_eq!(method.name, "test_method");
         assert_eq!(method.description, "A simple test method");
@@ -864,7 +864,7 @@ mod tests {
 
     #[test]
     fn test_method_with_string_param() {
-        let method = Method::with_string_param(
+        let method = MethodDef::with_string_param(
             "get_weather",
             "Get weather for a location",
             "location",
@@ -891,7 +891,7 @@ mod tests {
 
     #[test]
     fn test_method_builder_param_helpers() {
-        let method = Method::builder("test_method")
+        let method = MethodDef::builder("test_method")
             .description("Test method with multiple params")
             .string_param("name", "A person's name", true)
             .number_param("age", "A person's age", false)
@@ -927,7 +927,7 @@ mod tests {
     #[test]
     fn test_method_builder_param_helpers_with_existing_schema() {
         // Start with an existing schema and add to it
-        let method = Method::builder("test_method")
+        let method = MethodDef::builder("test_method")
             .description("Test method")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1047,7 +1047,7 @@ mod tests {
 
     #[test]
     fn test_build() {
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1087,7 +1087,7 @@ mod tests {
         );
 
         // Test error cases
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1111,7 +1111,7 @@ mod tests {
         ));
 
         // input schema not an object
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::Value::String("blah".into()))
             .build();
@@ -1122,7 +1122,7 @@ mod tests {
         ));
 
         // Properties not an object
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1137,7 +1137,7 @@ mod tests {
         ));
 
         // Schema does not have properties
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1152,7 +1152,7 @@ mod tests {
 
         // Schema does not have `required` keys (empty array allowed, but it
         // must be present)
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1175,7 +1175,7 @@ mod tests {
         ));
 
         // required keys not found in properties
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1199,7 +1199,7 @@ mod tests {
         ));
 
         // required keys not strings
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1223,14 +1223,14 @@ mod tests {
         ));
 
         // missing schema
-        let tool = Method::builder("test_name")
+        let tool = MethodDef::builder("test_name")
             .description("test_description")
             .build();
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyInputSchema)));
 
         // with missing names and descriptions
-        let tool = Method::builder("")
+        let tool = MethodDef::builder("")
             .description("foo")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1250,7 +1250,7 @@ mod tests {
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyName)));
 
-        let tool = Method::builder("foo")
+        let tool = MethodDef::builder("foo")
             .description("")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1323,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_tool_from_serializable() {
-        let tool = Method::from_serializable(serde_json::json!({
+        let tool = MethodDef::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
@@ -1365,7 +1365,7 @@ mod tests {
 
         // Test invalid schema. Comprehensive testing of this is in the builder
         // tests. This just makes sure that the error is propagated.
-        let tool = Method::from_serializable(serde_json::json!({
+        let tool = MethodDef::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
@@ -1390,7 +1390,7 @@ mod tests {
 
     #[test]
     fn test_method_strict_defaults_none_and_elides() {
-        let tool = Method::simple("ping", "Ping a server.");
+        let tool = MethodDef::simple("ping", "Ping a server.");
         assert_eq!(tool.strict, None);
         assert!(!tool.is_strict());
 
@@ -1403,7 +1403,7 @@ mod tests {
 
     #[test]
     fn test_method_builder_strict_flag() {
-        let tool = Method::builder("ping")
+        let tool = MethodDef::builder("ping")
             .description("Ping a server.")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1424,7 +1424,7 @@ mod tests {
 
     #[test]
     fn test_method_strict_mut_setter() {
-        let mut tool = Method::simple("ping", "Ping a server.");
+        let mut tool = MethodDef::simple("ping", "Ping a server.");
         tool.strict(true);
         assert_eq!(tool.strict, Some(true));
     }
@@ -1443,13 +1443,13 @@ mod tests {
             },
             "strict": true,
         });
-        let tool = Method::from_serializable(wire).unwrap();
+        let tool = MethodDef::from_serializable(wire).unwrap();
         assert_eq!(tool.strict, Some(true));
     }
 
     #[test]
     fn test_method_into_static_preserves_strict() {
-        let tool = Method::builder("ping")
+        let tool = MethodDef::builder("ping")
             .description("Ping a server.")
             .schema(serde_json::json!({
                 "type": "object",
@@ -1461,7 +1461,7 @@ mod tests {
             .strict(true)
             .build()
             .unwrap();
-        let owned: Method<'static> = tool.into_static();
+        let owned: MethodDef<'static> = tool.into_static();
         assert_eq!(owned.strict, Some(true));
     }
 }

@@ -3,7 +3,7 @@
 //! [`tool`]: super
 use crate::{Prompt, prompt::message::Block};
 
-use super::{Method, Tool, Use};
+use super::{MethodDef, Tool, Use};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -37,9 +37,9 @@ impl<'a> Tool for Notepad<'a> {
         Self::NAME
     }
 
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new(std::iter::once(
-            Method::builder("Notepad__push")
+    fn definitions(&self) -> Vec<MethodDef<'static>> {
+        vec![
+            MethodDef::builder("Notepad__push")
                 .description("Take a note for the next chat.")
                 .schema(json!({
                     "type": "object",
@@ -53,7 +53,7 @@ impl<'a> Tool for Notepad<'a> {
                 }))
                 .build()
                 .unwrap(),
-        ))
+        ]
     }
 
     async fn call<'c>(&mut self, call: Use<'c>) -> super::Result<'c> {
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn test_notepad_functions() {
         let notepad = Notepad::new();
-        let function = notepad.methods().next().unwrap();
+        let function = notepad.definitions().into_iter().next().unwrap();
         assert!(function.name.starts_with(stringify!(Notepad)));
         assert!(function.name.ends_with("__push"));
         assert_eq!(
@@ -339,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn test_notepad_in_toolbox() {
         let mut toolbox = ToolBox::default().add(Notepad::new());
-        for method in toolbox.methods() {
+        for method in toolbox.definitions() {
             assert_eq!(method.name, "toolbox__Notepad__push");
         }
         let call = Use {

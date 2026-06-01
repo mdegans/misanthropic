@@ -19,7 +19,7 @@ use misanthropic::{
         message::{Block, Image, MediaType, UserMessage},
         Prompt,
     },
-    tool::{Method, Tool},
+    tool::{MethodDef, Tool},
 };
 use model::{request::Request, response::Success, toolbox};
 use wasm_bindgen::{prelude::Closure, JsCast};
@@ -49,14 +49,14 @@ fn make_prompt() -> Prompt<'static> {
             message::{Block, Content, Role},
             Message,
         },
-        tool::{self, Method},
+        tool::{self, MethodDef},
         AnthropicModel,
     };
     use AnthropicModel::*;
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(Method {
+        .add_tool(MethodDef {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({
@@ -182,7 +182,7 @@ pub fn Chat() -> Element {
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
     let specs = use_signal(|| {
-        let specs: Vec<Method> = toolbox::create().methods().collect();
+        let specs: Vec<MethodDef> = toolbox::create().definitions();
         specs
     });
     let mut toolbox_state =
@@ -315,7 +315,7 @@ pub fn Chat() -> Element {
                             }
                             Ok(Success::Prompt(mut new)) => {
                                 // Update tools.
-                                new.functions = Some(specs.read().clone());
+                                new.methods = Some(specs.read().clone());
 
                                 // Update the prompt with the tools.
                                 if let Err(e) =
@@ -552,10 +552,10 @@ pub fn Chat() -> Element {
                                     // tools that don't exist, and may have
                                     // changed since the original prompt was
                                     // created. This is always overwritten.
-                                    new_prompt.functions.replace(specs.read().clone());
+                                    new_prompt.methods.replace(specs.read().clone());
 
                                     // Update tools.
-                                    new_prompt.functions = Some(specs.read().clone());
+                                    new_prompt.methods = Some(specs.read().clone());
 
                                     // Update the prompt with the tools.
                                     if let Err(e) = toolbox.write().on_init(&mut new_prompt).await {
