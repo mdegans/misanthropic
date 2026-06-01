@@ -1,0 +1,5 @@
+error: unknown `tool` key; expected `name` or `description`
+ --> tests/ui/unknown_tool_key.rs:5:8
+  |
+5 | #[tool(bogus = "x")]
+  |        ^^^^^

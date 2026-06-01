@@ -1,11 +1,12 @@
 [package]
 name = "misanthropic"
-version = "1.0.0-alpha.1"
-edition = "2024"
-authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 description = "An async, ergonomic, client for Anthropic's Messages API"
-homepage = "https://github.com/mdegans/misanthropic"
-repository = "https://github.com/mdegans/misanthropic"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
 readme = "README.md"
 keywords = ["anthropic", "messages", "client", "async", "stream"]
 categories = [
@@ -15,7 +16,6 @@ categories = [
     "text-processing",
     "web-programming::http-client",
 ]
-license = "MIT"
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
@@ -114,6 +114,9 @@ schemars = { version = "1" }
 serde_path_to_error = { version = "0.1" }
 # SurrealDB support - pinned to 1.x for edition 2021 compatibility
 sqlx = { version = "0.8", optional = true }
+# Derive macros for the typed-tool layer (`#[derive(ToolArgs)]`, `#[tool]`).
+# Gated behind the default-on `derive` feature; emits `::misanthropic::…` paths.
+misanthropic-derive = { workspace = true, optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -130,10 +133,12 @@ subprocess = "0.2"
 tempfile = "3.12"
 # for the memory-palace example
 sqlx = { version = "0.8", features = ["sqlite", "chrono"] }
+# Compile-fail (UI) tests for the `derive` proc-macros.
+trybuild = "1"
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch"]
+default = ["rustls-tls", "langsan", "rate-limiting", "client", "batch", "derive"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself, so it almost always makes sense
 # to enable this and use the image crate.
@@ -189,6 +194,9 @@ kv-mem = []
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
+# Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
+# default; turn off to drop the proc-macro (syn) compile-time cost.
+derive = ["dep:misanthropic-derive"]
 [[example]]
 name = "strawberry"
 required-features = ["client", "markdown"]

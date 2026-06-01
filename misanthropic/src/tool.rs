@@ -13,6 +13,12 @@ pub use toolbox::ToolBox;
 mod typed;
 pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
 
+/// `#[derive(ToolArgs)]` — co-located with the [`ToolArgs`] trait (same path,
+/// different namespaces) so a single `use misanthropic::tool::ToolArgs;` brings
+/// in both, as with `serde`'s `Serialize`.
+#[cfg(feature = "derive")]
+pub use misanthropic_derive::ToolArgs;
+
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
 #[cfg(feature = "memory-palace")]

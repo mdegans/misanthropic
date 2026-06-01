@@ -1,0 +1,22 @@
+[package]
+name = "misanthropic-derive"
+description = "Derive macros for the `misanthropic` typed-tool layer."
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+proc-macro = true
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[dependencies]
+# `full` is required to parse `impl` blocks with function bodies (the `#[tool]`
+# attribute macro); the default `derive`-only feature set can't.
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
