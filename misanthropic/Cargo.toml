@@ -200,7 +200,7 @@ openai = []
 derive = ["dep:misanthropic-derive"]
 [[example]]
 name = "strawberry"
-required-features = ["client", "markdown"]
+required-features = ["client", "markdown", "derive"]
 doc-scrape-examples = true
 
 [[example]]

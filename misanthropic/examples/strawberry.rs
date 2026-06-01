@@ -1,7 +1,13 @@
-//! An example of tool use and tool results. Language models are sometimes
-//! unreasonably mocked since they cannot count letters within tokens (because
-//! they do not see words as humans do). This example demonstrates how easy it
-//! is to overcome this with an assistive device in the form of a tool.
+//! An example of *typed* tool use. Language models are sometimes unreasonably
+//! mocked since they cannot count letters within tokens (because they do not
+//! see words as humans do). This example gives the assistant an assistive
+//! device — a `count_letters` tool — built with the [`tool`] macro.
+//!
+//! The win over hand-written tools: declare an `Args` struct and an annotated
+//! `async fn`, and the JSON schema, argument deserialization, and validation
+//! are all generated. No hand-written schema, no `call.input["letter"]` fishing.
+//!
+//! [`tool`]: misanthropic::tool::tool
 
 // Note: This example uses blocking calls for simplicity such as `println!()`
 // and `stdin().lock()`. In a real application, these should *usually* be
@@ -10,11 +16,13 @@ use std::io::BufRead;
 
 use clap::Parser;
 use misanthropic::{
-    Client, Prompt, json,
+    Client, Prompt,
     markdown::ToMarkdown,
-    prompt::{Message, message::Role},
-    tool::{self, MethodDef},
+    prompt::message::{Content, Role},
+    tool::{Tool, Typed, tool},
 };
+use schemars::JsonSchema;
+use serde::Deserialize;
 
 /// Count the number of letters in a word (or any string). An example of tool
 /// use and tool results.
@@ -33,41 +41,39 @@ struct Args {
     verbose: bool,
 }
 
-/// Count the number of letters in a word (or any string).
-pub fn count_letters(letter: char, string: String) -> usize {
-    let letter = letter.to_ascii_lowercase();
-    let string = string.to_ascii_lowercase();
-
-    string.chars().filter(|c| *c == letter).count()
+/// Arguments for the `count_letters` method. The field docs become the schema
+/// property descriptions the model sees (via `schemars`).
+#[derive(Debug, Deserialize, JsonSchema)]
+struct CountLetters {
+    /// The letter to count.
+    letter: char,
+    /// The string to count letters in.
+    string: String,
 }
 
-/// Handle the tool call. Returns a [`User`] [`Message`] with the result.
+/// A stateless tool that counts letters. The [`tool`] macro generates the
+/// `Method`/`ToolArgs`/`Methods` wiring from the annotated method below; the
+/// fn stays a real inherent method it delegates to.
 ///
-/// [`User`]: Role::User
-pub fn handle_tool_call(call: &tool::Use) -> Result<Message<'static>, String> {
-    if call.name != "count_letters" {
-        return Err(format!("Unknown tool: {}", call.name));
-    }
+/// [`tool`]: misanthropic::tool::tool
+struct Strawberry;
 
-    if let (Some(letter), Some(string)) = (
-        call.input["letter"].as_str().and_then(|s| s.chars().next()),
-        call.input["string"].as_str(),
-    ) {
-        let count = count_letters(letter, string.into());
+#[tool]
+impl Strawberry {
+    /// Count the occurrences of a letter in a string.
+    #[method]
+    async fn count_letters(
+        &mut self,
+        args: CountLetters,
+    ) -> Result<Content<'static>, Content<'static>> {
+        let letter = args.letter.to_ascii_lowercase();
+        let count = args
+            .string
+            .chars()
+            .filter(|c| c.to_ascii_lowercase() == letter)
+            .count();
 
-        Ok(tool::Result {
-            tool_use_id: call.id.to_string().into(),
-            content: count.to_string().into(),
-            is_error: false,
-            cache_control: None,
-        }
-        // A `tool::Result` is always convertable to a `Message`. The `Role` is
-        // always `User` and the `Content` is always a `Block::ToolResult`.
-        .into())
-    } else {
-        // Optionally, we could always return a Message and inform the Assistant
-        // that they called the tool incorrectly so they can try again.
-        Err(format!("Invalid input: {:?}", call.input))
+        Ok(count.to_string().into())
     }
 }
 
@@ -83,34 +89,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a client. `key` will be consumed and zeroized.
     let client = Client::new(key)?;
 
-    // Craft our chat request, providing a Tool definition to call
-    // `count_letters`. In the future this will be derivable from the function
-    // signature and docstring. Like many things in our API, `Tool` is also
-    // convertable from a `serde_json::Value`.
+    // Our typed tool. `Typed` adapts the macro-generated `Methods` impl to the
+    // object-safe `Tool` trait; its `definitions()` are the wire schemas —
+    // derived from `CountLetters` — that we hand to the model.
+    let mut strawberry = Typed(Strawberry);
+
     let mut chat = Prompt::default()
-        .add_tool(
-            MethodDef::builder("count_letters")
-                .description("Count the number of letters in a word.")
-                .schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "letter": {
-                            "type": "string",
-                            "description": "The letter to count",
-                        },
-                        "string": {
-                            "type": "string",
-                            "description": "The string to count letters in",
-                        },
-                    },
-                    "required": ["letter", "string"],
-                }))
-                .build()?,
-        )
         // Inform the assistant about their limitations.
         .set_system("You are a helpful assistant. You cannot count letters in a word by yourself because you see in tokens, not letters. Use the `count_letters` tool to overcome this limitation.")
-    // Add user input.
-    .add_message((Role::User, args.prompt))?;
+        // Add user input.
+        .add_message((Role::User, args.prompt))?;
+
+    // Register the tool's generated definition(s) with the prompt. The method
+    // is namespaced by the tool's name, e.g. `Strawberry__count_letters`.
+    for definition in strawberry.definitions() {
+        chat = chat.add_tool(definition);
+    }
 
     // Generate the next message in the chat.
     let message = client.message(&chat).await?;
@@ -118,9 +112,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Check if the Assistant called the Tool. The `stop_reason` must be
     // `ToolUse` and the last `Content` `Block` must be `ToolUse`.
     if let Some(call) = message.tool_use() {
-        let result = handle_tool_call(call)?;
-        // Append the tool request and result messages to the chat.
+        // Own the call so we can append the assistant's message first.
+        let call = call.clone().into_static();
         chat.push_message(message)?;
+
+        // Typed dispatch: `Use.input` is deserialized into `CountLetters` and
+        // validated for us — bad arguments become a helpful, model-facing
+        // error automatically, no hand-parsing required.
+        let result = strawberry.call(call).await;
         chat.push_message(result)?;
     } else {
         // The Assistant did not call the tool. This may not be an error if the
