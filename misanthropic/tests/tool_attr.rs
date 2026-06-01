@@ -190,8 +190,10 @@ async fn save_and_load_round_trip() {
         acc: 42,
         inited: false,
     };
-    let json = calc.save_json().await;
+    // `Calc` impls both `Tool` and `Methods` (they share these method names),
+    // and both are in scope here, so qualify which one we mean.
+    let json = Tool::save_json(&mut calc).await;
     let mut other = Calc::default();
-    other.load_json(json).await.unwrap();
+    Tool::load_json(&mut other, json).await.unwrap();
     assert_eq!(other.acc, 42);
 }

@@ -9,13 +9,15 @@
 //!   `Args` coexist in one `Vec`; blanket-implemented for every [`Method`].
 //! - [`Methods`] — the author-facing trait: a tool's [`Method`] set plus the
 //!   lifecycle/state hooks mirrored from [`Tool`].
-//! - [`Typed`] — newtype adapter that bridges any [`Methods`] to [`Tool`] so
-//!   it can live in a [`ToolBox`](super::ToolBox).
+//! - [`Typed`] — newtype adapter that bridges a hand-written [`Methods`] to
+//!   [`Tool`] so it can live in a [`ToolBox`](super::ToolBox).
 //!
 //! A blanket `impl<T: Methods> Tool for T` is impossible — Rust coherence
 //! would conflict it with [`ToolBox`](super::ToolBox)'s own `impl Tool` (no
-//! negative reasoning). [`Typed`] sidesteps that as a distinct type, and keeps
-//! the hand-written-`Tool` door open for fully dynamic tools.
+//! negative reasoning). So the [`tool`](macro@crate::tool::tool) macro instead
+//! emits a *concrete* `impl Tool for YourTool` (no wrapper needed), and
+//! [`Typed`] covers the hand-written-[`Methods`] case as a distinct type. Both
+//! reuse [`dispatch_methods`]/[`methods_definitions`].
 //!
 //! [`Tool`]: super::Tool
 //! [`Use::input`]: super::Use::input
@@ -169,9 +171,65 @@ pub trait Methods: Send + Sized {
     }
 }
 
-/// Newtype adapter bridging a [`Methods`] tool to the object-safe [`Tool`]
-/// trait. Add to a [`ToolBox`](super::ToolBox) with
+/// Namespace each of `tool`'s methods as `tool__method` for the wire, so
+/// distinct tools sharing a bare method name (e.g. two `push`es) don't collide
+/// in a [`ToolBox`](super::ToolBox), which further prefixes its own name
+/// (`box__tool__method`). Shared by [`Typed`] and the `#[tool]`-generated
+/// `impl Tool`.
+#[doc(hidden)]
+pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<MethodDef<'static>> {
+    tool.methods()
+        .iter()
+        .map(|m| {
+            let mut def = m.definition();
+            def.name =
+                format!("{}{}{}", M::NAME, ToolBox::SEP, def.name).into();
+            def
+        })
+        .collect()
+}
+
+/// Route a [`Use`] to the matching [`Method`] of `tool` and dispatch it. The
+/// shared body of [`Tool::call`] for [`Typed`] and `#[tool]`-generated tools.
+#[doc(hidden)]
+pub async fn dispatch_methods<'a, M: Methods + Send>(
+    tool: &mut M,
+    call: Use<'a>,
+) -> tool::Result<'a> {
+    let handlers = tool.methods();
+    // `call.name` is the fully-qualified (`box__tool__method`) name; the bare
+    // method name is its last `SEP`-delimited segment.
+    let target = call.name.rsplit(ToolBox::SEP).next().unwrap_or(&call.name);
+    match handlers.iter().find(|m| m.name() == target) {
+        Some(method) => {
+            let (content, is_error) = method.dispatch(tool, call.input).await;
+            tool::Result {
+                tool_use_id: call.id,
+                content,
+                is_error,
+                cache_control: None,
+            }
+        }
+        None => tool::Result {
+            tool_use_id: call.id,
+            content: format!(
+                "Method `{}` not found on `{}`.",
+                call.name,
+                M::NAME
+            )
+            .into(),
+            is_error: true,
+            cache_control: None,
+        },
+    }
+}
+
+/// Newtype adapter bridging a **hand-written** [`Methods`] tool to the
+/// object-safe [`Tool`] trait. Add to a [`ToolBox`](super::ToolBox) with
 /// [`ToolBox::add_typed`](super::ToolBox::add_typed).
+///
+/// Tools written with the [`tool`](macro@crate::tool::tool) macro get a
+/// concrete `impl Tool` directly and need no wrapper — use them as-is.
 pub struct Typed<T>(pub T);
 
 #[async_trait::async_trait]
@@ -181,50 +239,11 @@ impl<T: Methods + Send> Tool for Typed<T> {
     }
 
     fn definitions(&self) -> Vec<MethodDef<'static>> {
-        // Namespace each method as `tool__method` so distinct tools sharing a
-        // bare method name (e.g. two `push`es) don't collide in a `ToolBox`,
-        // which further prefixes its own name (`box__tool__method`).
-        self.0
-            .methods()
-            .iter()
-            .map(|m| {
-                let mut def = m.definition();
-                def.name =
-                    format!("{}{}{}", T::NAME, ToolBox::SEP, def.name).into();
-                def
-            })
-            .collect()
+        methods_definitions(&self.0)
     }
 
     async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {
-        let handlers = self.0.methods();
-        // `call.name` is the fully-qualified (`box__tool__method`) name; the
-        // bare method name is its last `SEP`-delimited segment.
-        let target =
-            call.name.rsplit(ToolBox::SEP).next().unwrap_or(&call.name);
-        match handlers.iter().find(|m| m.name() == target) {
-            Some(method) => {
-                let (content, is_error) =
-                    method.dispatch(&mut self.0, call.input).await;
-                tool::Result {
-                    tool_use_id: call.id,
-                    content,
-                    is_error,
-                    cache_control: None,
-                }
-            }
-            None => tool::Result {
-                tool_use_id: call.id,
-                content: format!(
-                    "Method `{}` not found on `{}`.",
-                    call.name,
-                    T::NAME
-                )
-                .into(),
-                is_error: true,
-                cache_control: None,
-            },
-        }
+        dispatch_methods(&mut self.0, call).await
     }
 
     async fn save_json(&mut self) -> serde_json::Value {

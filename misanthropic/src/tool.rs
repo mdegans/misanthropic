@@ -13,6 +13,11 @@ pub use toolbox::ToolBox;
 mod typed;
 pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
 
+/// Shared `impl Tool` body for [`Typed`] and `#[tool]`-generated tools. Not a
+/// stable API; named by generated code only.
+#[doc(hidden)]
+pub use typed::{dispatch_methods, methods_definitions};
+
 /// `#[derive(ToolArgs)]` — the front door for **hand-written** [`Method`]
 /// impls: it generates the [`NAME`](ToolArgs::NAME)/[`DESCRIPTION`](ToolArgs::DESCRIPTION)
 /// consts (from the struct ident + doc comment, overridable with

@@ -213,7 +213,10 @@ impl<'a> Notepad<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::{Methods, Tool, ToolBox, Typed, Use};
+    // `Notepad` now impls both `Tool` and `Methods` (the macro emits a concrete
+    // `impl Tool`), which share lifecycle method names — so import only `Tool`
+    // here to keep `notepad.save_json()`/`on_init()` calls unambiguous.
+    use crate::tool::{Tool, ToolBox, Typed, Use};
 
     #[test]
     fn test_notepad_name() {

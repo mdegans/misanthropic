@@ -124,6 +124,12 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         quote! { #[::misanthropic::__derive::async_trait::async_trait] }
     };
 
+    let box_err = quote! {
+        ::std::boxed::Box<
+            dyn ::std::error::Error + ::core::marker::Send + ::core::marker::Sync,
+        >
+    };
+
     Ok(quote! {
         #(#wrappers)*
 
@@ -148,6 +154,60 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
             }
 
             #(#lifecycle_methods)*
+        }
+
+        // Concrete `impl Tool` so the type is usable directly (no `Typed`
+        // wrapper). Routing/definitions reuse the shared `Methods` helpers;
+        // lifecycle forwards to the `Methods` impl above.
+        #[automatically_derived]
+        #[::misanthropic::__derive::async_trait::async_trait]
+        impl #ig ::misanthropic::tool::Tool for #self_ty #wc {
+            fn name(&self) -> &str {
+                <Self as ::misanthropic::tool::Methods>::NAME
+            }
+
+            fn definitions(
+                &self,
+            ) -> ::std::vec::Vec<::misanthropic::tool::MethodDef<'static>> {
+                ::misanthropic::tool::methods_definitions(self)
+            }
+
+            async fn call<'tool_call>(
+                &mut self,
+                call: ::misanthropic::tool::Use<'tool_call>,
+            ) -> ::misanthropic::tool::Result<'tool_call> {
+                ::misanthropic::tool::dispatch_methods(self, call).await
+            }
+
+            async fn save_json(
+                &mut self,
+            ) -> ::misanthropic::__derive::serde_json::Value {
+                <Self as ::misanthropic::tool::Methods>::save_json(self).await
+            }
+
+            async fn load_json(
+                &mut self,
+                json: ::misanthropic::__derive::serde_json::Value,
+            ) -> ::core::result::Result<(), ::std::string::String> {
+                <Self as ::misanthropic::tool::Methods>::load_json(self, json)
+                    .await
+            }
+
+            async fn on_init(
+                &mut self,
+                prompt: &mut ::misanthropic::Prompt,
+            ) -> ::core::result::Result<(), #box_err> {
+                <Self as ::misanthropic::tool::Methods>::on_init(self, prompt)
+                    .await
+            }
+
+            async fn on_turn(
+                &mut self,
+                prompt: &mut ::misanthropic::Prompt,
+            ) -> ::core::result::Result<(), #box_err> {
+                <Self as ::misanthropic::tool::Methods>::on_turn(self, prompt)
+                    .await
+            }
         }
     })
 }

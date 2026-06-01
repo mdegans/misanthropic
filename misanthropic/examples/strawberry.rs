@@ -19,7 +19,7 @@ use misanthropic::{
     Client, Prompt,
     markdown::ToMarkdown,
     prompt::message::{Content, Role},
-    tool::{Tool, Typed, tool},
+    tool::{Tool, tool},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -52,8 +52,9 @@ struct CountLetters {
 }
 
 /// A stateless tool that counts letters. The [`tool`] macro generates the
-/// `Method`/`ToolArgs`/`Methods` wiring from the annotated method below; the
-/// fn stays a real inherent method it delegates to.
+/// `Method`/`ToolArgs`/`Methods` wiring *and* a concrete `impl Tool` from the
+/// annotated method below — so `Strawberry` is usable as a tool directly, no
+/// wrapper. Each tagged fn stays a real inherent method it delegates to.
 ///
 /// [`tool`]: misanthropic::tool::tool
 struct Strawberry;
@@ -89,10 +90,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create a client. `key` will be consumed and zeroized.
     let client = Client::new(key)?;
 
-    // Our typed tool. `Typed` adapts the macro-generated `Methods` impl to the
-    // object-safe `Tool` trait; its `definitions()` are the wire schemas —
-    // derived from `CountLetters` — that we hand to the model.
-    let mut strawberry = Typed(Strawberry);
+    // Our typed tool, used directly — the `#[tool]` macro gave `Strawberry` a
+    // concrete `impl Tool`. Its `definitions()` are the wire schemas — derived
+    // from `CountLetters` — that we hand to the model.
+    let mut strawberry = Strawberry;
 
     let mut chat = Prompt::default()
         // Inform the assistant about their limitations.
