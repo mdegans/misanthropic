@@ -1,12 +1,16 @@
-//! [`Notepad`] [`tool`].
+//! [`Notepad`] [`tool`], implemented on the typed-tool layer.
 //!
 //! [`tool`]: super
-use crate::{Prompt, prompt::message::Block};
+use crate::{
+    Prompt,
+    prompt::message::{Block, Content},
+};
 
-use super::{MethodDef, Tool, Use};
+use super::{ErasedMethod, Method, Methods, ToolArgs};
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::json;
 
 const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
@@ -23,125 +27,107 @@ pub struct Notepad<'a> {
 }
 
 impl<'a> Notepad<'a> {
-    const NAME: &'static str = stringify!(Notepad);
-
     /// Creates a new `Notepad` tool.
     pub fn new() -> Self {
         Self { notes: Vec::new() }
     }
 }
 
-#[async_trait::async_trait]
-impl<'a> Tool for Notepad<'a> {
-    fn name(&self) -> &str {
-        Self::NAME
-    }
+/// Arguments for the `push` [`Method`]: take a note.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Push {
+    /// The note to take.
+    note: String,
+}
 
-    fn definitions(&self) -> Vec<MethodDef<'static>> {
+impl ToolArgs for Push {
+    const NAME: &'static str = "push";
+    const DESCRIPTION: &'static str = "Take a note for the next chat.";
+}
+
+/// Arguments for the `clear` [`Method`]: a no-arg method (proves heterogeneous
+/// `Args` coexist on one tool).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct Clear {}
+
+impl ToolArgs for Clear {
+    const NAME: &'static str = "clear";
+    const DESCRIPTION: &'static str = "Erase all saved notes.";
+}
+
+/// The `push` method.
+struct PushMethod;
+
+#[async_trait::async_trait]
+impl<'a> Method<Notepad<'a>> for PushMethod {
+    type Args = Push;
+
+    async fn run(
+        &self,
+        state: &mut Notepad<'a>,
+        args: Push,
+    ) -> std::result::Result<Content<'static>, Content<'static>> {
+        let note = args.note;
+
+        if note.contains("<notepad>") || note.contains("</notepad>") {
+            #[cfg(feature = "log")]
+            log::error!(
+                "Injection attack detected. `<notepad>` or `</notepad>` in note."
+            );
+            return Err(
+                "You cannot put `<notepad>` or `</notepad>` in your note."
+                    .into(),
+            );
+        }
+
+        if note.contains("<note>") || note.contains("</note>") {
+            #[cfg(feature = "log")]
+            log::error!("Agent goofed and put a note tag in their note.");
+            return Err("You cannot put `<note>` or `</note>` in your note. `notepad` will handle it.".into());
+        }
+
+        #[cfg(feature = "log")]
+        log::debug!("Note taken: {}", note);
+        state.notes.push(note.into());
+
+        Ok("Note taken.".into())
+    }
+}
+
+/// The `clear` method.
+struct ClearMethod;
+
+#[async_trait::async_trait]
+impl<'a> Method<Notepad<'a>> for ClearMethod {
+    type Args = Clear;
+
+    async fn run(
+        &self,
+        state: &mut Notepad<'a>,
+        _args: Clear,
+    ) -> std::result::Result<Content<'static>, Content<'static>> {
+        state.notes.clear();
+        Ok("Notes cleared.".into())
+    }
+}
+
+#[async_trait::async_trait]
+impl<'a> Methods for Notepad<'a> {
+    const NAME: &'static str = stringify!(Notepad);
+
+    fn methods(&self) -> Vec<Box<dyn ErasedMethod<Self>>> {
         vec![
-            MethodDef::builder("Notepad__push")
-                .description("Take a note for the next chat.")
-                .schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "note": {
-                            "type": "string",
-                            "description": "The note to take."
-                        }
-                    },
-                    "required": ["note"]
-                }))
-                .build()
-                .unwrap(),
+            Box::new(PushMethod) as Box<dyn ErasedMethod<Self>>,
+            Box::new(ClearMethod),
         ]
     }
 
-    async fn call<'c>(&mut self, call: Use<'c>) -> super::Result<'c> {
-        #[cfg(feature = "log")]
-        log::debug!("Notepad call: {:?}", serde_json::to_string_pretty(&call));
-        if !call.name.ends_with("Notepad__push") {
-            #[cfg(feature = "log")]
-            log::error!("Invalid tool name.");
-            return super::Result {
-                tool_use_id: call.id,
-                content:
-                    "`Notepad__push` is the only method available on `Notepad`"
-                        .into(),
-                is_error: true,
-                cache_control: None,
-            };
-        }
-
-        let mut map = if let Value::Object(map) = call.input {
-            map
-        } else {
-            let detail = serde_json::to_string(&call.input).unwrap();
-            #[cfg(feature = "log")]
-            log::error!("`input` not an object: {detail}");
-            return super::Result {
-                tool_use_id: call.id,
-                content: format!(
-                    "`input` must be an object. This should be impossible is probably the developer's fault. Got: `{}`",
-                    detail
-                ).into(),
-                is_error: true,
-                cache_control: None,
-            };
-        };
-
-        if let Some(Value::String(note)) = map.remove("note") {
-            if note.contains("<notepad>") || note.contains("</notepad>") {
-                #[cfg(feature = "log")]
-                log::error!(
-                    "Injection attack detected. `<notepad>` or `</notepad>` in note."
-                );
-                return super::Result {
-                    tool_use_id: call.id,
-                    content: "You cannot put `<notepad>` or `</notepad>` in your note.".into(),
-                    is_error: true,
-                    cache_control: None,
-                };
-            }
-
-            if note.contains("<note>") || note.contains("</note>") {
-                #[cfg(feature = "log")]
-                log::error!("Agent goofed and put a note tag in their note.");
-                return super::Result {
-                    tool_use_id: call.id,
-                    content: "You cannot put `<note>` or `</note>` in your note. `notepad` will handle it.".into(),
-                    is_error: true,
-                    cache_control: None,
-                };
-            }
-
-            #[cfg(feature = "log")]
-            log::debug!("Note taken: {}", note);
-            self.notes.push(note.into());
-        } else {
-            #[cfg(feature = "log")]
-            log::error!("`note` not a string.");
-            return super::Result {
-                tool_use_id: call.id,
-                content: "`note` must be a string.".into(),
-                is_error: true,
-                cache_control: None,
-            };
-        }
-
-        super::Result {
-            tool_use_id: call.id,
-            content: "Note taken.".into(),
-            is_error: false,
-            cache_control: None,
-        }
-    }
-
-    /// Save notepad state. Now async to support potential future IO operations.
+    /// Save notepad state.
     async fn save_json(&mut self) -> serde_json::Value {
         json!(self)
     }
 
-    /// Load notepad state. Now async to support potential future IO operations.
+    /// Load notepad state.
     async fn load_json(
         &mut self,
         json: serde_json::Value,
@@ -166,13 +152,11 @@ impl<'a> Tool for Notepad<'a> {
         &mut self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Set up the notepad instructions and initial state
+        // Set up the notepad instructions and initial state.
         self.sync_apply_to_prompt(prompt).map_err(|e| {
             let error_string = e.to_string();
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error_string,
-            )) as Box<dyn std::error::Error + Send + Sync>
+            Box::new(std::io::Error::other(error_string))
+                as Box<dyn std::error::Error + Send + Sync>
         })
     }
 
@@ -180,13 +164,11 @@ impl<'a> Tool for Notepad<'a> {
         &mut self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        // Update the notepad content (notes may have been added)
+        // Update the notepad content (notes may have been added).
         self.sync_apply_to_prompt(prompt).map_err(|e| {
             let error_string = e.to_string();
-            Box::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                error_string,
-            )) as Box<dyn std::error::Error + Send + Sync>
+            Box::new(std::io::Error::other(error_string))
+                as Box<dyn std::error::Error + Send + Sync>
         })
     }
 }
@@ -270,60 +252,74 @@ impl<'a> Notepad<'a> {
 
 #[cfg(test)]
 mod tests {
-    use std::borrow::Cow;
-
-    use crate::tool::ToolBox;
-
     use super::*;
+    use crate::tool::{Methods, Tool, ToolBox, Typed, Use};
 
     #[test]
     fn test_notepad_name() {
-        let notepad = Notepad::new();
-        assert_eq!(notepad.name(), stringify!(Notepad));
+        assert_eq!(Typed(Notepad::new()).name(), stringify!(Notepad));
     }
 
     #[test]
-    fn test_notepad_functions() {
-        let notepad = Notepad::new();
-        let function = notepad.definitions().into_iter().next().unwrap();
-        assert!(function.name.starts_with(stringify!(Notepad)));
-        assert!(function.name.ends_with("__push"));
-        assert_eq!(
-            function.description,
-            Cow::Borrowed("Take a note for the next chat.")
-        );
-        assert_eq!(
-            function.schema,
-            json!({
-                "type": "object",
-                "properties": {
-                    "note": {
-                        "type": "string",
-                        "description": "The note to take."
-                    }
-                },
-                "required": ["note"]
-            })
-        );
+    fn test_notepad_push_definition() {
+        let defs = Typed(Notepad::new()).definitions();
+        let push = defs
+            .iter()
+            .find(|d| d.name == "Notepad__push")
+            .expect("push method present");
+        assert_eq!(push.description, "Take a note for the next chat.");
+        let props = push.schema["properties"].as_object().unwrap();
+        assert!(props.contains_key("note"));
+        assert_eq!(props["note"]["type"], "string");
     }
 
     #[tokio::test]
     async fn test_notepad_call() {
-        let mut notepad = Notepad::new();
-        let call = Use {
-            id: "abcd".into(),
-            name: "Notepad__push".into(),
-            input: json!({
-                "note": "Hello, world!"
-            }),
-            cache_control: None,
-        };
-        let result = notepad.call(call).await;
+        let mut notepad = Typed(Notepad::new());
+        let result = notepad
+            .call(Use {
+                id: "abcd".into(),
+                name: "Notepad__push".into(),
+                input: json!({ "note": "Hello, world!" }),
+                cache_control: None,
+            })
+            .await;
         assert_eq!(result.tool_use_id, "abcd");
         assert_eq!(result.content, "Note taken.".into());
-        assert_eq!(result.is_error, false);
-        assert_eq!(notepad.notes.len(), 1);
-        assert_eq!(notepad.notes[0].as_ref(), "Hello, world!");
+        assert!(!result.is_error);
+        assert_eq!(notepad.0.notes.len(), 1);
+        assert_eq!(notepad.0.notes[0].as_ref(), "Hello, world!");
+    }
+
+    #[tokio::test]
+    async fn test_notepad_clear() {
+        let mut notepad = Typed(Notepad::new());
+        notepad.0.notes.push("scratch".into());
+        let result = notepad
+            .call(Use {
+                id: "abcd".into(),
+                name: "Notepad__clear".into(),
+                input: json!({}),
+                cache_control: None,
+            })
+            .await;
+        assert!(!result.is_error);
+        assert!(notepad.0.notes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_notepad_call_injection_rejected() {
+        let mut notepad = Typed(Notepad::new());
+        let result = notepad
+            .call(Use {
+                id: "abcd".into(),
+                name: "Notepad__push".into(),
+                input: json!({ "note": "<notepad>evil</notepad>" }),
+                cache_control: None,
+            })
+            .await;
+        assert!(result.is_error);
+        assert!(notepad.0.notes.is_empty());
     }
 
     #[tokio::test]
@@ -338,36 +334,39 @@ mod tests {
 
     #[tokio::test]
     async fn test_notepad_in_toolbox() {
-        let mut toolbox = ToolBox::default().add(Notepad::new());
-        for method in toolbox.definitions() {
-            assert_eq!(method.name, "toolbox__Notepad__push");
-        }
-        let call = Use {
-            id: "abcd".into(),
-            name: "toolbox__Notepad__push".into(),
-            input: json!({
-                "note": "Hello, world!"
-            }),
-            cache_control: None,
-        };
-        let result = toolbox.call(call).await;
+        let mut toolbox = ToolBox::default().add_typed(Notepad::new());
+
+        let names: Vec<_> = toolbox
+            .definitions()
+            .into_iter()
+            .map(|d| d.name.into_owned())
+            .collect();
+        assert!(names.contains(&"toolbox__Notepad__push".to_string()));
+        assert!(names.contains(&"toolbox__Notepad__clear".to_string()));
+
+        let result = toolbox
+            .call(Use {
+                id: "abcd".into(),
+                name: "toolbox__Notepad__push".into(),
+                input: json!({ "note": "Hello, world!" }),
+                cache_control: None,
+            })
+            .await;
         assert_eq!(result.tool_use_id, "abcd");
         assert_eq!(result.content, "Note taken.".into());
-        assert_eq!(result.is_error, false);
+        assert!(!result.is_error);
 
         let json = toolbox.save_json().await;
-        let mut toolbox2 = ToolBox::default().add(Notepad::new());
+        let mut toolbox2 = ToolBox::default().add_typed(Notepad::new());
         toolbox2.load_json(json).await.unwrap();
 
-        let notepad = toolbox2
-            .tool_name_to_tool
-            .get_mut(Notepad::new().name())
-            .unwrap();
-        let json = notepad.save_json().await;
-        let mut notepad2 = Notepad::new();
-        notepad2.load_json(json).await.unwrap();
-        assert_eq!(notepad2.notes.len(), 1);
-        assert_eq!(notepad2.notes[0].as_ref(), "Hello, world!");
+        // Round-trip the inner Notepad's state back out.
+        let tool = toolbox2.tool_name_to_tool.get_mut("Notepad").unwrap();
+        let json = tool.save_json().await;
+        let mut notepad = Notepad::new();
+        notepad.load_json(json).await.unwrap();
+        assert_eq!(notepad.notes.len(), 1);
+        assert_eq!(notepad.notes[0].as_ref(), "Hello, world!");
     }
 
     #[tokio::test]

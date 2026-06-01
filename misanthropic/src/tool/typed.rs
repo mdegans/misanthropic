@@ -22,7 +22,7 @@
 use crate::{
     Prompt,
     prompt::message::Content,
-    tool::{self, MethodDef, Tool, Use},
+    tool::{self, MethodDef, Tool, ToolBox, Use},
 };
 
 /// A deserializable argument struct for a [`Method`]. The schema is derived
@@ -181,14 +181,28 @@ impl<T: Methods + Send> Tool for Typed<T> {
     }
 
     fn definitions(&self) -> Vec<MethodDef<'static>> {
-        self.0.methods().iter().map(|m| m.definition()).collect()
+        // Namespace each method as `tool__method` so distinct tools sharing a
+        // bare method name (e.g. two `push`es) don't collide in a `ToolBox`,
+        // which further prefixes its own name (`box__tool__method`).
+        self.0
+            .methods()
+            .iter()
+            .map(|m| {
+                let mut def = m.definition();
+                def.name =
+                    format!("{}{}{}", T::NAME, ToolBox::SEP, def.name).into();
+                def
+            })
+            .collect()
     }
 
     async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {
         let handlers = self.0.methods();
-        // `call.name` may be namespaced (`box__tool__method`); match the bare
-        // method name as a suffix.
-        match handlers.iter().find(|m| call.name.ends_with(m.name())) {
+        // `call.name` is the fully-qualified (`box__tool__method`) name; the
+        // bare method name is its last `SEP`-delimited segment.
+        let target =
+            call.name.rsplit(ToolBox::SEP).next().unwrap_or(&call.name);
+        match handlers.iter().find(|m| m.name() == target) {
             Some(method) => {
                 let (content, is_error) =
                     method.dispatch(&mut self.0, call.input).await;
@@ -359,13 +373,13 @@ mod tests {
     }
 
     #[test]
-    fn definitions_lists_both_methods() {
+    fn definitions_are_namespaced_by_tool() {
         let names: Vec<_> = Typed(Notes::default())
             .definitions()
             .into_iter()
             .map(|d| d.name.into_owned())
             .collect();
-        assert!(names.contains(&"push".to_string()));
-        assert!(names.contains(&"clear".to_string()));
+        assert!(names.contains(&"notes__push".to_string()));
+        assert!(names.contains(&"notes__clear".to_string()));
     }
 }
