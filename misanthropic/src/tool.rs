@@ -19,6 +19,11 @@ pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
 #[cfg(feature = "derive")]
 pub use misanthropic_derive::ToolArgs;
 
+/// `#[tool]` — attribute on an `impl` block that generates the [`Method`] /
+/// [`ToolArgs`] / [`Methods`] wiring from `#[method]`-tagged async fns.
+#[cfg(feature = "derive")]
+pub use misanthropic_derive::tool;
+
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
 #[cfg(feature = "memory-palace")]

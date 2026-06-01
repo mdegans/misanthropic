@@ -106,4 +106,5 @@ pub use exports::serde_json::json;
 #[allow(missing_docs)]
 pub mod __derive {
     pub use async_trait;
+    pub use serde_json;
 }

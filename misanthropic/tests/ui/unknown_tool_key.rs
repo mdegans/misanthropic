@@ -1,4 +1,5 @@
 //! `#[derive(ToolArgs)]` rejects unknown `#[tool(...)]` keys.
+#![allow(unused)]
 use misanthropic::tool::ToolArgs;
 
 #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
