@@ -39,7 +39,7 @@ impl<'a> Tool for Notepad<'a> {
 
     fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
         Box::new(std::iter::once(
-            Method::builder("Notepad::push")
+            Method::builder("Notepad__push")
                 .description("Take a note for the next chat.")
                 .schema(json!({
                     "type": "object",
@@ -59,13 +59,13 @@ impl<'a> Tool for Notepad<'a> {
     async fn call<'c>(&mut self, call: Use<'c>) -> super::Result<'c> {
         #[cfg(feature = "log")]
         log::debug!("Notepad call: {:?}", serde_json::to_string_pretty(&call));
-        if !call.name.ends_with("Notepad::push") {
+        if !call.name.ends_with("Notepad__push") {
             #[cfg(feature = "log")]
             log::error!("Invalid tool name.");
             return super::Result {
                 tool_use_id: call.id,
                 content:
-                    "`Notepad::push` is the only method available on `Notepad`"
+                    "`Notepad__push` is the only method available on `Notepad`"
                         .into(),
                 is_error: true,
                 cache_control: None,
@@ -287,7 +287,7 @@ mod tests {
         let notepad = Notepad::new();
         let function = notepad.methods().next().unwrap();
         assert!(function.name.starts_with(stringify!(Notepad)));
-        assert!(function.name.ends_with("::push"));
+        assert!(function.name.ends_with("__push"));
         assert_eq!(
             function.description,
             Cow::Borrowed("Take a note for the next chat.")
@@ -312,7 +312,7 @@ mod tests {
         let mut notepad = Notepad::new();
         let call = Use {
             id: "abcd".into(),
-            name: "Notepad::push".into(),
+            name: "Notepad__push".into(),
             input: json!({
                 "note": "Hello, world!"
             }),
@@ -340,11 +340,11 @@ mod tests {
     async fn test_notepad_in_toolbox() {
         let mut toolbox = ToolBox::default().add(Notepad::new());
         for method in toolbox.methods() {
-            assert_eq!(method.name, "toolbox::Notepad::push");
+            assert_eq!(method.name, "toolbox__Notepad__push");
         }
         let call = Use {
             id: "abcd".into(),
-            name: "toolbox::Notepad::push".into(),
+            name: "toolbox__Notepad__push".into(),
             input: json!({
                 "note": "Hello, world!"
             }),
