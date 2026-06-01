@@ -70,6 +70,7 @@ fn make_prompt() -> Prompt<'static> {
                 "required": ["script"],
             }),
             cache_control: None,
+            strict: Some(true)
         })
         // Inform the assistant about their limitations.
         .set_system(include_str!("../../../../misanthropic/examples/python_system.md"))
