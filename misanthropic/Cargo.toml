@@ -106,8 +106,12 @@ chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
 dioxus = { version = "0.6", optional = true }
-# JSON Schema generation for structured outputs (Prompt::output_config).
-schemars = { version = "1", optional = true }
+# JSON Schema generation for structured outputs and typed tools. Core: tool
+# calling is a core feature, so schemars is non-optional.
+schemars = { version = "1" }
+# Deserializer wrapper that augments serde errors with the path to the failing
+# field — used to give the model actionable tool-argument validation errors.
+serde_path_to_error = { version = "0.1" }
 # SurrealDB support - pinned to 1.x for edition 2021 compatibility
 sqlx = { version = "0.8", optional = true }
 
@@ -185,12 +189,6 @@ kv-mem = []
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
-# JSON Schema integration for structured outputs. Enables
-# `OutputConfig::for_type::<T>()` and `Prompt::structured_output::<T>()` for
-# any `T: schemars::JsonSchema`.
-json-schema = ["dep:schemars"]
-
-
 [[example]]
 name = "strawberry"
 required-features = ["client", "markdown"]
@@ -213,12 +211,12 @@ doc-scrape-examples = true
 
 [[example]]
 name = "structured_commit_classifier"
-required-features = ["client", "json-schema"]
+required-features = ["client"]
 doc-scrape-examples = true
 
 [[example]]
 name = "vote_intent"
-required-features = ["client", "json-schema"]
+required-features = ["client"]
 doc-scrape-examples = true
 
 # See also the `chat` example in the root of the repository.

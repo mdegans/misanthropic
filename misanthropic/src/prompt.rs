@@ -724,8 +724,7 @@ impl<'a> Prompt<'a> {
 
     /// Set [`output_config`] for structured output. See
     /// [`OutputConfig`] for construction helpers including
-    /// [`OutputConfig::json_schema`] and (with the `json-schema` feature)
-    /// [`OutputConfig::for_type`].
+    /// [`OutputConfig::json_schema`] and [`OutputConfig::for_type`].
     ///
     /// [`output_config`]: Prompt::output_config
     pub fn output_config<C>(mut self, config: C) -> Self
@@ -746,9 +745,6 @@ impl<'a> Prompt<'a> {
 
     /// Sugar: constrain output to the schema derived from `T`. Equivalent
     /// to `self.output_config(OutputConfig::for_type::<T>())`.
-    ///
-    /// Requires the `json-schema` feature.
-    #[cfg(feature = "json-schema")]
     pub fn structured_output<T: schemars::JsonSchema>(self) -> Self {
         self.output_config(OutputConfig::for_type::<T>())
     }
@@ -1639,7 +1635,6 @@ mod tests {
         assert!(explicit.output_config.is_some());
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn test_structured_output_from_type() {
         #[derive(schemars::JsonSchema)]

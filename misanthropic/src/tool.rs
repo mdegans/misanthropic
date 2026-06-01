@@ -10,6 +10,9 @@ use crate::prompt::message::Content;
 mod toolbox;
 pub use toolbox::ToolBox;
 
+mod typed;
+pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
+
 #[cfg(feature = "memory-palace")]
 mod memory_palace;
 #[cfg(feature = "memory-palace")]
@@ -429,46 +432,43 @@ impl<'a> MethodBuilder<'a> {
             .into());
         };
 
-        let properties = if let Some(properties) = obj.get("properties") {
-            if let Some(o) = properties.as_object() {
-                o
-            } else {
-                return Err("`properties` must be an object.".into());
-            }
-        } else {
-            return Err("Input `schema` must have `properties`.".into());
+        // `properties` is optional: a no-arg method (e.g. a `clear` with no
+        // fields) has none. Validate its shape only when present, treating
+        // absence as an empty property set.
+        let empty = serde_json::Map::new();
+        let properties = match obj.get("properties") {
+            Some(serde_json::Value::Object(o)) => o,
+            Some(_) => return Err("`properties` must be an object.".into()),
+            None => &empty,
         };
 
-        let required = if let Some(required) = schema.get("required") {
-            if let Some(required) = required.as_array() {
-                required
-            } else {
-                return Err(format!(
+        // `required` is optional per JSON Schema. Validate only when present;
+        // every listed key must exist in `properties`.
+        if let Some(required) = obj.get("required") {
+            let required = required.as_array().ok_or_else(|| {
+                format!(
                     "Input `schema` `required` not an array: `{}`",
                     serde_json::to_string(required).unwrap()
                 )
-                .into());
-            }
-        } else {
-            return Err(
-                "Input `schema` must have a `required` array of keys.".into()
-            );
-        };
+            })?;
 
-        for key in required {
-            if let Some(key) = key.as_str() {
-                if properties.get(key).is_none() {
-                    return Err(format!(
-                        "`required` key `{key}` not found in `properties.",
-                    )
-                    .into());
+            for key in required {
+                match key.as_str() {
+                    Some(key) if properties.contains_key(key) => {}
+                    Some(key) => {
+                        return Err(format!(
+                            "`required` key `{key}` not found in `properties`.",
+                        )
+                        .into());
+                    }
+                    None => {
+                        return Err(format!(
+                            "`required` key not a string: `{}`",
+                            serde_json::to_string(key).unwrap()
+                        )
+                        .into());
+                    }
                 }
-            } else {
-                return Err(format!(
-                    "`required` key not a string: `{}`",
-                    serde_json::to_string(key).unwrap()
-                )
-                .into());
             }
         }
 
@@ -1136,7 +1136,7 @@ mod tests {
             Err(ToolBuildError::InvalidInputSchema { .. })
         ));
 
-        // Schema does not have properties
+        // `required` lists keys absent from (here, missing) `properties`
         let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
@@ -1150,8 +1150,8 @@ mod tests {
             Err(ToolBuildError::InvalidInputSchema { .. })
         ));
 
-        // Schema does not have `required` keys (empty array allowed, but it
-        // must be present)
+        // No `required` array is valid (all-optional / no-arg methods). It is
+        // optional per JSON Schema and treated as empty when absent.
         let tool = MethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
@@ -1169,10 +1169,7 @@ mod tests {
             }))
             .build();
 
-        assert!(matches!(
-            tool,
-            Err(ToolBuildError::InvalidInputSchema { .. })
-        ));
+        assert!(tool.is_ok());
 
         // required keys not found in properties
         let tool = MethodDef::builder("test_name")

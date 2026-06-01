@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, MethodDef, Tool, Use},
+    tool::{self, MethodDef, Methods, Tool, Typed, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -97,6 +97,19 @@ impl ToolBox {
     /// Push a [`Tool`] to the [`ToolBox`].
     pub fn push(&mut self, tool: impl Tool + Send + 'static) {
         self.push_boxed(Box::new(tool));
+    }
+
+    /// Add a typed [`Methods`] tool, wrapping it in [`Typed`] so it satisfies
+    /// [`Tool`].
+    pub fn add_typed<T: Methods + Send + 'static>(mut self, tool: T) -> Self {
+        self.push(Typed(tool));
+        self
+    }
+
+    /// Push a typed [`Methods`] tool, wrapping it in [`Typed`] so it satisfies
+    /// [`Tool`].
+    pub fn push_typed<T: Methods + Send + 'static>(&mut self, tool: T) {
+        self.push(Typed(tool));
     }
 
     /// Push a boxed [`Tool`] to the [`ToolBox`].
