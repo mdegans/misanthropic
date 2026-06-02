@@ -44,21 +44,6 @@ pub struct Client {
     /// Encrypted API [`Key`] for convenience. It can be set to a new [`Key`] to
     /// change the key used for requests.
     pub key: Arc<Key>,
-    /// Rate limiter. Defaults to 50 requests per minute (tier 1).
-    #[cfg(feature = "rate-limiting")]
-    pub rate_limiter: Option<
-        Arc<
-            governor::RateLimiter<
-                governor::state::NotKeyed,
-                governor::state::InMemoryState,
-                governor::clock::DefaultClock,
-                governor::middleware::NoOpMiddleware,
-            >,
-        >,
-    >,
-    /// Rate limit jitter. Defaults to [`Self::DEFAULT_JITTER_MS`].
-    #[cfg(feature = "rate-limiting")]
-    pub jitter: Option<governor::Jitter>,
     /// Custom endpoint for the Messages API. Defaults to [`Self::MESSAGES_URL`].
     pub messages_url: Arc<Url>,
     /// Custom endpoint for the Batch API. Defaults to [`Self::BATCH_URL`].
@@ -91,9 +76,6 @@ impl Client {
     /// Default URL for the token counting API.
     pub const COUNT_TOKENS_URL: &'static str =
         "https://api.anthropic.com/v1/messages/count_tokens";
-    /// Default jitter in milliseconds for rate limiting (max).
-    #[cfg(feature = "rate-limiting")]
-    pub const DEFAULT_JITTER_MS: u64 = 20;
 
     /// Create a new [`Client`] from any type that can be converted into a
     /// [`Key`], like a [`String`] or a [`Vec`], but not a `&str`.
@@ -139,16 +121,6 @@ impl Client {
                 .build()
                 .unwrap(),
             key: Arc::new(key),
-            #[cfg(feature = "rate-limiting")]
-            rate_limiter: Some(Arc::new(governor::RateLimiter::direct(
-                governor::Quota::per_minute(
-                    std::num::NonZeroU32::new(50).unwrap(),
-                ),
-            ))),
-            #[cfg(feature = "rate-limiting")]
-            jitter: Some(governor::Jitter::up_to(
-                std::time::Duration::from_millis(Self::DEFAULT_JITTER_MS),
-            )),
             messages_url: Arc::new(Url::parse(Self::MESSAGES_URL).unwrap()),
             batch_url: Arc::new(Url::parse(Self::BATCH_URL).unwrap()),
             models_url: Arc::new(Url::parse(Self::MODELS_URL).unwrap()),
@@ -191,27 +163,8 @@ impl Client {
         Ok(self)
     }
 
-    /// Set [`Quota`] for the [`RateLimiter`].
-    ///
-    /// [`Quota`]: governor::Quota
-    /// [`RateLimiter`]: governor::RateLimiter
-    #[cfg(feature = "rate-limiting")]
-    pub fn set_rate_limit(&mut self, quota: governor::Quota) {
-        self.rate_limiter =
-            Some(Arc::new(governor::RateLimiter::direct(quota)));
-    }
-
-    /// Set [`Jitter`] for the [`RateLimiter`].
-    ///
-    /// [`Jitter`]: governor::Jitter
-    /// [`RateLimiter`]: governor::RateLimiter
-    #[cfg(feature = "rate-limiting")]
-    pub fn set_rate_limit_jitter(&mut self, jitter: governor::Jitter) {
-        self.jitter = Some(jitter);
-    }
-
     /// Create a [`reqwest::RequestBuilder`] with the API key set as a sensitive
-    /// header value. **Does not check rate limiting**.
+    /// header value.
     pub fn request_raw<U>(
         &self,
         method: reqwest::Method,
@@ -237,32 +190,12 @@ impl Client {
         self.inner.request(method, url).header("x-api-key", val)
     }
 
-    /// Await the rate limiter. It is not necessary to call this manually unless
-    /// you are doing something custom with [`request_raw`] or similar.
-    ///
-    /// [`request_raw`]: Self::request_raw
-    #[cfg(feature = "rate-limiting")]
-    pub async fn await_rate_limiter(&self) {
-        if let Some(limiter) = self.rate_limiter.as_ref() {
-            if let Some(jitter) = self.jitter {
-                limiter.until_ready_with_jitter(jitter).await;
-            } else {
-                limiter.until_ready().await;
-            }
-        }
-    }
-
     /// Send a GET request with the API key set as a sensitive header value.
     /// Returns a [`reqwest::Result`] for maximum flexibility.
     pub async fn get_raw<U>(&self, url: U) -> reqwest::Result<reqwest::Response>
     where
         U: reqwest::IntoUrl,
     {
-        #[cfg(feature = "rate-limiting")]
-        {
-            self.await_rate_limiter().await;
-        }
-
         #[cfg(feature = "log")]
         {
             log::debug!("GET:{}", url.as_str());
@@ -336,11 +269,6 @@ impl Client {
         B: serde::Serialize,
     {
         let url: reqwest::Url = url.into_url()?;
-
-        #[cfg(feature = "rate-limiting")]
-        {
-            self.await_rate_limiter().await;
-        }
 
         #[cfg(feature = "log")]
         {

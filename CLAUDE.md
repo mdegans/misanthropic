@@ -89,7 +89,7 @@ self-describing (`StopReason::EndTurn`).
 
 ## Key features to know about
 
-Default features: `rustls-tls`, `langsan`, `rate-limiting`, `client`, `batch`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`.
 
 Notable optional features: `prompt-caching`, `markdown`, `html`, `memsecurity`,
 `dioxus`, `memory-palace` (requires PostgreSQL), `notepad`, `cot`.
