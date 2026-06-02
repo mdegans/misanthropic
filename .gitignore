@@ -1,4 +1,5 @@
 .vscode
+.claude/
 *.env
 target/
 api.key
