@@ -172,6 +172,28 @@ impl ToolBox {
         }
     }
 
+    /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
+    /// the toolbox's (namespaced) [`definitions`], then run each tool's
+    /// [`on_init`] via [`init_tools`]. Call this once when (re)loading a
+    /// conversation.
+    ///
+    /// The overwrite is intentional: a prompt authored elsewhere or with an
+    /// older tool set always picks up the current methods. Method injection
+    /// lives here, on the top-level box, rather than in [`init_tools`] /
+    /// [`on_init`] so a *nested* [`ToolBox`] never clobbers its parent's method
+    /// set during fan-out.
+    ///
+    /// [`definitions`]: Tool::definitions
+    /// [`on_init`]: Tool::on_init
+    /// [`init_tools`]: Self::init_tools
+    pub async fn prepare(
+        &mut self,
+        prompt: &mut Prompt<'_>,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        prompt.methods = Some(self.definitions());
+        self.init_tools(prompt).await
+    }
+
     /// Initialize all tools in the toolbox. Call this once when setting up a conversation.
     pub async fn init_tools(
         &mut self,
