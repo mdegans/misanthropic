@@ -226,12 +226,18 @@ impl Client {
     {
         let response = self.get_raw(url).await?;
         let status = response.status();
+        // Grab `retry-after` before `text()` consumes the response.
+        let retry_after = parse_retry_after(response.headers());
         let body = response.text().await?;
 
         if status != reqwest::StatusCode::OK {
             // Error path: try the documented Anthropic shape first.
             return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
-                Ok(wrapper) => Err(wrapper.error.into()),
+                Ok(wrapper) => {
+                    let mut error = wrapper.error;
+                    error.set_retry_after(retry_after);
+                    Err(error.into())
+                }
                 Err(_parse_err) => {
                     #[cfg(feature = "log")]
                     {
@@ -303,9 +309,15 @@ impl Client {
 
         if response.status() != reqwest::StatusCode::OK {
             let status = response.status();
+            // Grab `retry-after` before `text()` consumes the response.
+            let retry_after = parse_retry_after(response.headers());
             let body = response.text().await?;
             return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
-                Ok(wrapper) => Err(wrapper.error.into()),
+                Ok(wrapper) => {
+                    let mut error = wrapper.error;
+                    error.set_retry_after(retry_after);
+                    Err(error.into())
+                }
                 Err(_parse_err) => {
                     #[cfg(feature = "log")]
                     {
@@ -708,6 +720,25 @@ where
     }
 }
 
+/// Parse the `retry-after` response header as a whole number of seconds.
+///
+/// Anthropic sends seconds on `429`/`529` responses. The HTTP-date form
+/// of `retry-after` is legal per the spec but Anthropic does not use it,
+/// so we treat anything that isn't a plain integer as `None` rather than
+/// pulling in a date parser. Folded into the parsed [`AnthropicError`]
+/// via [`AnthropicError::set_retry_after`] and surfaced through
+/// [`AnthropicError::retry_after`].
+#[cfg(feature = "client")]
+fn parse_retry_after(headers: &reqwest::header::HeaderMap) -> Option<u64> {
+    headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
 /// Truncate `body` to at most [`NON_JSON_BODY_SNIPPET_LEN`] bytes at a
 /// valid UTF-8 boundary, appending a `... [N more bytes]` suffix if the
 /// body was longer.
@@ -836,13 +867,31 @@ pub enum AnthropicError {
     RequestTooLarge { message: String },
     #[error("rate limit (429): {message}")]
     #[serde(rename = "rate_limit_error")]
-    RateLimit { message: String },
+    RateLimit {
+        message: String,
+        /// Seconds to wait before retrying, taken from the `retry-after`
+        /// response header. `None` if the header was absent or not a
+        /// plain integer. See [`Self::retry_after`] for a [`Duration`].
+        ///
+        /// [`Duration`]: std::time::Duration
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after: Option<u64>,
+    },
     #[error("api error (500): {message}")]
     #[serde(rename = "api_error")]
     API { message: String },
     #[error("overloaded (529): {message}")]
     #[serde(rename = "overloaded_error")]
-    Overloaded { message: String },
+    Overloaded {
+        message: String,
+        /// Seconds to wait before retrying, taken from the `retry-after`
+        /// response header. `None` if the header was absent or not a
+        /// plain integer. See [`Self::retry_after`] for a [`Duration`].
+        ///
+        /// [`Duration`]: std::time::Duration
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_after: Option<u64>,
+    },
     #[error("timeout: {message}")]
     #[serde(rename = "timeout_error")]
     Timeout { message: String },
@@ -879,6 +928,42 @@ impl AnthropicError {
             Self::Timeout { .. } => None,
         }
     }
+
+    /// Suggested wait before retrying, parsed from the `retry-after`
+    /// response header. Only [`RateLimit`] (429) and [`Overloaded`]
+    /// (529) carry one; every other variant — and any error whose
+    /// header was absent or unparseable — returns `None`.
+    ///
+    /// A `Some(_)` here is the crate's signal that the error is worth
+    /// retrying, and for how long.
+    ///
+    /// [`RateLimit`]: Self::RateLimit
+    /// [`Overloaded`]: Self::Overloaded
+    pub fn retry_after(&self) -> Option<std::time::Duration> {
+        match self {
+            Self::RateLimit { retry_after, .. }
+            | Self::Overloaded { retry_after, .. } => {
+                retry_after.map(std::time::Duration::from_secs)
+            }
+            _ => None,
+        }
+    }
+
+    /// Set the `retry-after` hint (in seconds) on the variants that
+    /// carry one ([`RateLimit`], [`Overloaded`]); a no-op for all
+    /// others. Used by the client to fold the response header into the
+    /// parsed error body.
+    ///
+    /// [`RateLimit`]: Self::RateLimit
+    /// [`Overloaded`]: Self::Overloaded
+    #[cfg(feature = "client")]
+    pub(crate) fn set_retry_after(&mut self, seconds: Option<u64>) {
+        if let Self::RateLimit { retry_after, .. }
+        | Self::Overloaded { retry_after, .. } = self
+        {
+            *retry_after = seconds;
+        }
+    }
 }
 
 /// Custom `Deserialize` impl so unknown `type` values fall through to
@@ -912,9 +997,15 @@ impl<'de> Deserialize<'de> for AnthropicError {
             "permission_error" => Self::Permission { message },
             "not_found_error" => Self::NotFound { message },
             "request_too_large" => Self::RequestTooLarge { message },
-            "rate_limit_error" => Self::RateLimit { message },
+            "rate_limit_error" => Self::RateLimit {
+                message,
+                retry_after: None,
+            },
             "api_error" => Self::API { message },
-            "overloaded_error" => Self::Overloaded { message },
+            "overloaded_error" => Self::Overloaded {
+                message,
+                retry_after: None,
+            },
             "timeout_error" => Self::Timeout { message },
             unknown => Self::Unknown {
                 code: None,
@@ -1069,7 +1160,8 @@ mod tests {
         assert_eq!(
             error,
             AnthropicError::RateLimit {
-                message: "Rate limit exceeded".to_string()
+                message: "Rate limit exceeded".to_string(),
+                retry_after: None,
             }
         );
 
@@ -1089,7 +1181,8 @@ mod tests {
         assert_eq!(
             error,
             AnthropicError::Overloaded {
-                message: "Service overloaded".to_string()
+                message: "Service overloaded".to_string(),
+                retry_after: None,
             }
         );
 
@@ -1176,6 +1269,104 @@ mod tests {
             message: "Batch result expired".to_string(),
         };
         assert_eq!(e.status(), Some(NonZeroU16::new(408).unwrap()));
+    }
+
+    // Reactive retry-after handling (issue #33).
+
+    #[test]
+    fn test_retry_after_accessor() {
+        use std::time::Duration;
+
+        // Only RateLimit / Overloaded expose a hint, as a Duration.
+        let e = AnthropicError::RateLimit {
+            message: "slow down".to_string(),
+            retry_after: Some(30),
+        };
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(30)));
+
+        let o = AnthropicError::Overloaded {
+            message: "busy".to_string(),
+            retry_after: None,
+        };
+        assert_eq!(o.retry_after(), None);
+
+        // Variants without the field always return None.
+        let other = AnthropicError::API {
+            message: "boom".to_string(),
+        };
+        assert_eq!(other.retry_after(), None);
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_set_retry_after() {
+        use std::time::Duration;
+
+        let mut e = AnthropicError::RateLimit {
+            message: "slow down".to_string(),
+            retry_after: None,
+        };
+        e.set_retry_after(Some(30));
+        assert_eq!(e.retry_after(), Some(Duration::from_secs(30)));
+
+        let mut o = AnthropicError::Overloaded {
+            message: "busy".to_string(),
+            retry_after: None,
+        };
+        o.set_retry_after(Some(5));
+        assert_eq!(o.retry_after(), Some(Duration::from_secs(5)));
+
+        // No-op on variants without the field.
+        let mut other = AnthropicError::API {
+            message: "boom".to_string(),
+        };
+        other.set_retry_after(Some(99));
+        assert_eq!(other.retry_after(), None);
+    }
+
+    #[test]
+    fn test_retry_after_serde_roundtrip() {
+        // Absent hint is skipped on serialize and round-trips to None.
+        let none = AnthropicError::RateLimit {
+            message: "x".to_string(),
+            retry_after: None,
+        };
+        let json = serde_json::to_value(&none).unwrap();
+        assert!(json.get("retry_after").is_none(), "should skip None");
+
+        // A present hint serializes as a bare integer and survives a
+        // round-trip through the derived Serialize + custom Deserialize.
+        // (Deserialize always yields None — the header, not the body,
+        // is the source — so we only assert the serialized shape here.)
+        let some = AnthropicError::RateLimit {
+            message: "x".to_string(),
+            retry_after: Some(42),
+        };
+        let json = serde_json::to_value(&some).unwrap();
+        assert_eq!(json["retry_after"], 42);
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_parse_retry_after_header() {
+        use reqwest::header::{HeaderMap, HeaderValue, RETRY_AFTER};
+
+        let mut headers = HeaderMap::new();
+        assert_eq!(parse_retry_after(&headers), None, "absent header");
+
+        headers.insert(RETRY_AFTER, HeaderValue::from_static("17"));
+        assert_eq!(parse_retry_after(&headers), Some(17));
+
+        // Surrounding whitespace is tolerated.
+        headers.insert(RETRY_AFTER, HeaderValue::from_static(" 8 "));
+        assert_eq!(parse_retry_after(&headers), Some(8));
+
+        // HTTP-date form (legal but unused by Anthropic) → None, no panic.
+        headers.insert(
+            RETRY_AFTER,
+            HeaderValue::from_static("Wed, 21 Oct 2026 07:28:00 GMT"),
+        );
+        assert_eq!(parse_retry_after(&headers), None);
     }
 
     // Test the Client
@@ -1282,11 +1473,7 @@ mod tests {
             .await
             .unwrap();
 
-        let msg: String = stream
-            .text()
-            .try_collect()
-            .await
-            .unwrap();
+        let msg: String = stream.text().try_collect().await.unwrap();
 
         assert_eq!(msg, "🙏");
     }
