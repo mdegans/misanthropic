@@ -55,6 +55,13 @@ pub async fn events_stream(
         let mut assistant_message: Option<misanthropic::response::Message> = None;
         let mut interrupt_message: Option<UserMessage> = None;
 
+        // Backoff for when Anthropic rejects the prompt. We retry the same
+        // prompt in place (without tearing down the stream) after a growing
+        // delay so a hard-failing prompt can't hammer the API on reconnect.
+        const MAX_BACKOFF: std::time::Duration =
+            std::time::Duration::from_secs(60);
+        let mut backoff = std::time::Duration::from_secs(1);
+
         loop {
             // If we were interrupted, we need to handle the partial message.
             if let Some(user_message) = interrupt_message.take() {
@@ -212,25 +219,53 @@ pub async fn events_stream(
                         .json_data(response)
                         .unwrap();
 
-                    // FIXME: The issue here is if we break here, the stream
-                    // ends, the client reconnects, and we immediately get a new
-                    // one with the same rejected prompt, meaning we hammer the
-                    // api which is not good.
+                    // Don't break: breaking ends the stream, the client
+                    // reconnects, sends GetPrompt, and the same rejected prompt
+                    // (still the last user turn) is re-streamed immediately,
+                    // hammering the API. Instead back off and retry the same
+                    // prompt in place. A new message from the client cancels the
+                    // wait so the user can recover (e.g. edit the prompt via
+                    // SetPrompt) instead of being stuck behind the backoff.
                     //
-                    // Sorry Anthropic! It was an accident!
-                    //
-                    // Right now this is fixed in the client with a wait but we
-                    // probably also want to do an exponential backoff here. An
-                    // async sleep or something. Ideally waiting for a new
-                    // message from the client at the same time using `select!`
-                    // or something. It might just be a better idea to wait for
-                    // a new message from the client which can decide what to do
-                    // about the message. We need to add a modal to the client
-                    // to handle this.
-                    break;
+                    // TODO: the client should grow a modal so the user can edit
+                    // or drop the offending prompt rather than only waiting.
+                    tokio::select! {
+                        _ = tokio::time::sleep(backoff) => {
+                            backoff = (backoff * 2).min(MAX_BACKOFF);
+                        }
+                        // `recv` only returns `None` if the channel closes,
+                        // which can't happen (AppState owns the sender).
+                        request = from_user.recv() => match request.unwrap() {
+                            Request::GetPrompt => {
+                                yield Event::default()
+                                    .event("response")
+                                    .json_data(json!({
+                                        "Ok": { "prompt": prompt.deref() },
+                                    }))
+                                    .unwrap();
+                            }
+                            Request::SetPrompt(new) => {
+                                // User likely fixed the prompt; retry it now.
+                                *prompt = new;
+                                backoff = std::time::Duration::from_secs(1);
+                            }
+                            Request::UserMessage(user_message) => {
+                                yield Event::default()
+                                    .event("response")
+                                    .json_data(json!({
+                                        "Ok": { "user_message": &user_message },
+                                    }))
+                                    .unwrap();
+                                interrupt_message = Some(user_message);
+                            }
+                        },
+                    }
+                    continue;
                 }
             };
             log::info!("Got Stream from Anthropic");
+            // Successfully reached Anthropic; reset the rejection backoff.
+            backoff = std::time::Duration::from_secs(1);
 
             pin_mut!(stream);
 
