@@ -2,7 +2,6 @@ use std::ops::Deref;
 
 use dioxus::{html::HasFileData, prelude::*};
 
-use dioxus_sdk::storage::{use_storage, LocalStorage};
 use misanthropic::{
     dioxus::{
         opts::{self, HeadingLevel},
@@ -31,6 +30,11 @@ const CSS: Asset = asset!("/assets/styling/chat.css");
 static CLIENT: GlobalSignal<crate::client::Client> =
     GlobalSignal::new(crate::client::Client::new);
 const BASE64: GeneralPurpose = base64::engine::general_purpose::STANDARD;
+/// `localStorage` key under which the toolbox state is persisted across
+/// sessions. `localStorage` (not `sessionStorage`): the notepad's whole point
+/// is recalling notes from *other* sessions, so state must survive a tab or
+/// browser close and be shared across tabs.
+const TOOLBOX_STATE_KEY: &str = "toolbox-state";
 static DEFAULT_DRAG_CLOSURE: GlobalSignal<
     Closure<dyn FnMut(web_sys::DragEvent)>,
 > = GlobalSignal::new(|| {
@@ -83,19 +87,23 @@ fn is_empty_tool_state(state: &serde_json::Value) -> bool {
         .unwrap_or(true)
 }
 
-/// Serialize the toolbox and write it to the persistent store — unless it's
+/// Serialize the toolbox and write it to `localStorage` — unless it's
 /// [`is_empty_tool_state`], in which case we leave existing storage untouched.
-/// Signals are `Copy`, so both are taken by value.
-async fn persist_tool_state(
-    mut toolbox: Signal<misanthropic::tool::ToolBox>,
-    mut toolbox_state: Signal<serde_json::Value>,
-) {
+/// Signals are `Copy`, so the toolbox is taken by value.
+///
+/// Writes go straight to `localStorage` via [`crate::utils::storage_set`]
+/// rather than through `dioxus_sdk`'s reactive `use_storage`, whose spawned
+/// watcher task failed to flush our `.set()` under the 0.7 runtime (issue #66).
+async fn persist_tool_state(mut toolbox: Signal<misanthropic::tool::ToolBox>) {
     let saved = toolbox.write().save_json().await;
     if is_empty_tool_state(&saved) {
         log::debug!("Tool state is empty; leaving stored state untouched.");
         return;
     }
-    toolbox_state.set(saved);
+    match serde_json::to_string(&saved) {
+        Ok(json) => crate::utils::storage_set(TOOLBOX_STATE_KEY, &json),
+        Err(e) => log::warn!("Failed to serialize tool state: {e}"),
+    }
 }
 
 /// A test prompt for testing the chat view.
@@ -240,13 +248,6 @@ pub fn Chat() -> Element {
     let mut show_system = use_signal(|| false);
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
-    // `LocalStorage`, not `use_persistent` (which is `SessionStorage` — dies
-    // with the tab and isn't shared across tabs). The notepad's whole point is
-    // notes from *other sessions*, so it needs to survive a tab/browser close.
-    let toolbox_state =
-        use_storage::<LocalStorage, _>("toolbox-state".to_string(), || {
-            serde_json::Value::Null
-        });
     // Created un-loaded; persisted state is restored asynchronously as the
     // first step of the stream task (see below), before the first prompt is
     // requested. Doing it here would require `block_on`, which only works for
@@ -277,24 +278,19 @@ pub fn Chat() -> Element {
     // Our long-running task is the stream task. It will run until the
     // component is dropped, connecting with the
     let _stream_task = use_resource(move || async move {
-        // Restore persisted tool state once, before connecting. `peek()` (not
-        // `read()`) so this resource doesn't subscribe to `toolbox_state` —
-        // it's `.set()` on every tool call, and subscribing would restart the
-        // whole stream each time. Outside the reconnect `loop` so a reconnect
-        // never clobbers in-session tool state with the last snapshot.
+        // Restore persisted tool state once, before connecting. Read directly
+        // from `localStorage` (not a reactive signal) so this resource doesn't
+        // subscribe to anything written on every tool call — subscribing would
+        // restart the whole stream each time. Outside the reconnect `loop` so a
+        // reconnect never clobbers in-session tool state with the last snapshot.
+        let stored = crate::utils::storage_get(TOOLBOX_STATE_KEY)
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .unwrap_or(serde_json::Value::Null);
         log::info!(
             "Restoring tool state from storage ({}).",
-            if toolbox_state.peek().is_null() {
-                "empty"
-            } else {
-                "present"
-            }
+            if stored.is_null() { "empty" } else { "present" }
         );
-        if let Err(e) = toolbox
-            .write()
-            .load_json(toolbox_state.peek().clone())
-            .await
-        {
+        if let Err(e) = toolbox.write().load_json(stored).await {
             log::error!("`Toolbox::load_json` had error(s): {e}");
         } else {
             log::info!("Toolbox state loaded.");
@@ -345,8 +341,7 @@ pub fn Chat() -> Element {
                                         .write()
                                         .call(tool_use.clone())
                                         .await;
-                                    persist_tool_state(toolbox, toolbox_state)
-                                        .await;
+                                    persist_tool_state(toolbox).await;
                                     log::info!("Tool result: {:?}", result);
 
                                     // We send the result back to the server.
@@ -510,6 +505,10 @@ pub fn Chat() -> Element {
         div {
             class: "input",
             form {
+                // Dioxus 0.7 submits forms by default (0.6 prevented it); we
+                // drive sending from the textarea's Enter handler, so suppress
+                // the native submit/reload here.
+                onsubmit: move |e| e.prevent_default(),
                 textarea {
                     class: "input-box",
                     class: if *dragged_over.read() {
@@ -559,18 +558,18 @@ pub fn Chat() -> Element {
                     ondragover: move |e| {
                         e.prevent_default();
                         dragged_over.set(true);
-                        if let Some(files) = e.files() {
-                            let filenames = files.files();
-                            if filenames.len() != 1 {
-                                dragged_file_supported.set(false);
-                                return;
-                            }
-                            let filename = &filenames[0];
-                            if MediaType::is_supported(filename) || filename.ends_with(".json") {
-                                dragged_file_supported.set(true);
-                            } else {
-                                dragged_file_supported.set(false);
-                            }
+                        // Dioxus 0.7: `files()` returns `Vec<FileData>` directly
+                        // (0.6 returned an `Option<FileEngine>`).
+                        let files = e.files();
+                        if files.len() != 1 {
+                            dragged_file_supported.set(false);
+                            return;
+                        }
+                        let filename = files[0].name();
+                        if MediaType::is_supported(&filename) || filename.ends_with(".json") {
+                            dragged_file_supported.set(true);
+                        } else {
+                            dragged_file_supported.set(false);
                         }
                     },
                     ondragleave: move |e| {
@@ -583,133 +582,137 @@ pub fn Chat() -> Element {
                         e.stop_propagation();
                         dragged_over.set(false);
                         dragged_file_supported.set(false);
-                        if let Some(files) = e.files() {
-                            let filenames = files.files();
-                            if filenames.len() == 0 {
-                                log::warn!("No files dropped.");
-                                return;
-                            } else if filenames.len() > 1 {
-                                log::warn!("Only one file can be dropped at a time.");
-                                return;
-                            }
-                            // len is 1
-                            let filename = &filenames[0];
+                        // Dioxus 0.7: `files()` returns `Vec<FileData>` directly
+                        // (0.6 returned an `Option<FileEngine>`), and each file
+                        // is read with `FileData::read_bytes`.
+                        let files = e.files();
+                        if files.is_empty() {
+                            log::warn!("No files dropped.");
+                            return;
+                        } else if files.len() > 1 {
+                            log::warn!("Only one file can be dropped at a time.");
+                            return;
+                        }
+                        // len is 1
+                        let file = &files[0];
+                        let filename = file.name();
 
-                            // Is the file a JSON file? We need to load it, set
-                            // the tools, and send the updated prompt to the
-                            // backend.
-                            if filename.ends_with(".json") {
-                                let data = if let Some(data) = files.read_file(filename).await {
-                                    data
-                                } else {
-                                    log::warn!("Failed to read file.");
-                                    return;
-                                };
-
-                                if data.is_empty() {
-                                    log::warn!("Empty file.");
+                        // Is the file a JSON file? We need to load it, set
+                        // the tools, and send the updated prompt to the
+                        // backend.
+                        if filename.ends_with(".json") {
+                            let data = match file.read_bytes().await {
+                                Ok(data) => data,
+                                Err(e) => {
+                                    log::warn!("Failed to read file: {e}");
                                     return;
                                 }
-
-                                // Sniff whether this is a saved conversation or
-                                // saved tool state by shape (Save writes them as
-                                // separate files). See `Dropped`.
-                                match serde_json::from_slice::<Dropped>(&data) {
-                                    Ok(Dropped::Prompt(new_prompt)) => {
-                                        log::info!("Loading new prompt.");
-                                        let mut new_prompt = *new_prompt;
-
-                                        // Tool definitions track the app's
-                                        // current capabilities, not whatever the
-                                        // loaded (possibly foreign or older)
-                                        // prompt carried. `prepare` overwrites
-                                        // `methods` and runs each tool's
-                                        // `on_init`, so old/foreign prompts just
-                                        // work.
-                                        if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
-                                            log::error!("`Toolbox::prepare` had error(s): {e}");
-                                        } else {
-                                            log::info!("Toolbox prepared.");
-                                        }
-
-                                        match CLIENT.read().send(
-                                            Request::SetPrompt(new_prompt.clone())
-                                        ).await {
-                                            Ok(_) => {
-                                                prompt.set(new_prompt);
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to set prompt: {}", e);
-                                            }
-                                        }
-                                    }
-                                    Ok(Dropped::ToolState(state)) => {
-                                        log::info!("Loading tool state.");
-                                        let value = match serde_json::to_value(state) {
-                                            Ok(value) => value,
-                                            Err(e) => {
-                                                log::warn!("Failed to re-encode tool state: {}", e);
-                                                return;
-                                            }
-                                        };
-                                        if let Err(e) = toolbox.write().load_json(value).await {
-                                            log::warn!("Failed to load tool state: {}", e);
-                                        } else {
-                                            log::info!("Tool state loaded.");
-                                        }
-                                        persist_tool_state(toolbox, toolbox_state).await;
-
-                                        // Re-apply to the current prompt so newly
-                                        // loaded notes appear in the system block,
-                                        // then push the update to the backend.
-                                        let mut new_prompt = prompt.peek().clone();
-                                        if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
-                                            log::error!("`Toolbox::prepare` had error(s): {e}");
-                                        }
-                                        match CLIENT.read().send(
-                                            Request::SetPrompt(new_prompt.clone())
-                                        ).await {
-                                            Ok(_) => {
-                                                prompt.set(new_prompt);
-                                            }
-                                            Err(e) => {
-                                                log::error!("Failed to set prompt after tool state load: {}", e);
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        log::warn!("Dropped .json is neither a prompt nor tool state: {}", e);
-                                    }
-                                }
-
-                                return;
-                            }
-
-
-                            let format = if let Some(format) =  MediaType::detect(&filename) {
-                                format
-                            } else {
-                                log::warn!("Unsupported file type.");
-                                return;
-                            };
-
-                            let data = if let Some(data) = files.read_file(filename).await {
-                                data
-                            } else {
-                                log::warn!("Failed to read file.");
-                                return;
                             };
 
                             if data.is_empty() {
                                 log::warn!("Empty file.");
                                 return;
                             }
-                            // We have a file data with a supported format. Load
-                            // it and push it to the attachments.
 
-                            let image = Image::from_compressed(format, data);
-                            attachments.write().push(image.into());
+                            // Sniff whether this is a saved conversation or
+                            // saved tool state by shape (Save writes them as
+                            // separate files). See `Dropped`.
+                            match serde_json::from_slice::<Dropped>(&data) {
+                                Ok(Dropped::Prompt(new_prompt)) => {
+                                    log::info!("Loading new prompt.");
+                                    let mut new_prompt = *new_prompt;
+
+                                    // Tool definitions track the app's
+                                    // current capabilities, not whatever the
+                                    // loaded (possibly foreign or older)
+                                    // prompt carried. `prepare` overwrites
+                                    // `methods` and runs each tool's
+                                    // `on_init`, so old/foreign prompts just
+                                    // work.
+                                    if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
+                                        log::error!("`Toolbox::prepare` had error(s): {e}");
+                                    } else {
+                                        log::info!("Toolbox prepared.");
+                                    }
+
+                                    match CLIENT.read().send(
+                                        Request::SetPrompt(new_prompt.clone())
+                                    ).await {
+                                        Ok(_) => {
+                                            prompt.set(new_prompt);
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to set prompt: {}", e);
+                                        }
+                                    }
+                                }
+                                Ok(Dropped::ToolState(state)) => {
+                                    log::info!("Loading tool state.");
+                                    let value = match serde_json::to_value(state) {
+                                        Ok(value) => value,
+                                        Err(e) => {
+                                            log::warn!("Failed to re-encode tool state: {}", e);
+                                            return;
+                                        }
+                                    };
+                                    if let Err(e) = toolbox.write().load_json(value).await {
+                                        log::warn!("Failed to load tool state: {}", e);
+                                    } else {
+                                        log::info!("Tool state loaded.");
+                                    }
+                                    persist_tool_state(toolbox).await;
+
+                                    // Re-apply to the current prompt so newly
+                                    // loaded notes appear in the system block,
+                                    // then push the update to the backend.
+                                    let mut new_prompt = prompt.peek().clone();
+                                    if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
+                                        log::error!("`Toolbox::prepare` had error(s): {e}");
+                                    }
+                                    match CLIENT.read().send(
+                                        Request::SetPrompt(new_prompt.clone())
+                                    ).await {
+                                        Ok(_) => {
+                                            prompt.set(new_prompt);
+                                        }
+                                        Err(e) => {
+                                            log::error!("Failed to set prompt after tool state load: {}", e);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    log::warn!("Dropped .json is neither a prompt nor tool state: {}", e);
+                                }
+                            }
+
+                            return;
                         }
+
+
+                        let format = if let Some(format) =  MediaType::detect(&filename) {
+                            format
+                        } else {
+                            log::warn!("Unsupported file type.");
+                            return;
+                        };
+
+                        let data = match file.read_bytes().await {
+                            Ok(data) => data,
+                            Err(e) => {
+                                log::warn!("Failed to read file: {e}");
+                                return;
+                            }
+                        };
+
+                        if data.is_empty() {
+                            log::warn!("Empty file.");
+                            return;
+                        }
+                        // We have a file data with a supported format. Load
+                        // it and push it to the attachments.
+
+                        let image = Image::from_compressed(format, data);
+                        attachments.write().push(image.into());
                     }
                 }
             }

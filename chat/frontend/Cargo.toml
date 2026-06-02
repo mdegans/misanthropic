@@ -7,7 +7,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dioxus = { version = "0.6", features = ["router"] }
+dioxus = { version = "0.7", features = ["router"] }
 eventsource-stream = "0.2"
 reqwest = { version = "0.12", features = [
     "json",
@@ -29,7 +29,7 @@ serde-wasm-bindgen = "0.4"
 wasm-logger = "0.2"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3" }
+web-sys = { version = "0.3", features = ["Storage"] }
 thiserror = "1"
 js-sys = "0.3"
 futures = "0.3"
@@ -37,7 +37,14 @@ lazy_static = "1"
 
 # This is the model crate, which is shared between the frontend and backend.
 model = { path = "../model" }
-dioxus-sdk = { version = "0.6", features = ["storage", "system_theme"] }
+
+# misanthropic pulls in `uuid` 1.x; since uuid 1.11 its `v4` feature no longer
+# implies a RNG backend, so on wasm we must opt into one. `js` gives uuid its
+# own wasm-bindgen backend (no `getrandom_backend` cfg needed). Features are
+# additive, so this enables the backend on the shared uuid build without
+# touching native targets or the library's own dependency.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"], default-features = false }
 
 [features]
 default = ["web"]
