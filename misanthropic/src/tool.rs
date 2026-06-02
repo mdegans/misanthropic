@@ -37,13 +37,6 @@ pub use misanthropic_derive::ToolArgs;
 #[cfg(feature = "derive")]
 pub use misanthropic_derive::tool;
 
-#[cfg(feature = "memory-palace")]
-mod memory_palace;
-#[cfg(feature = "memory-palace")]
-pub use memory_palace::MemoryPalace;
-#[cfg(all(test, feature = "memory-palace"))]
-mod memory_palace_tests;
-
 #[cfg(feature = "notepad")]
 mod notepad;
 #[cfg(feature = "notepad")]

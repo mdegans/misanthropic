@@ -92,11 +92,9 @@ self-describing (`StopReason::EndTurn`).
 Default features: `rustls-tls`, `langsan`, `client`, `batch`.
 
 Notable optional features: `prompt-caching`, `markdown`, `html`, `memsecurity`,
-`dioxus`, `memory-palace` (requires PostgreSQL), `notepad`, `cot`.
+`dioxus`, `notepad`, `cot`.
 
-`memory-palace` is slated for removal and will move to a separate crate. Its
-PostgreSQL/sqlx dependencies are too heavy for the core library. The default
-tool suite should stay minimal.
+The default tool suite should stay minimal.
 
 The `batch` and `client` features don't build on wasm32.
 
@@ -104,5 +102,3 @@ The `batch` and `client` features don't build on wasm32.
 
 - Some tests are `#[ignore]`d and require an API key in `api.key` at the repo
   root (CI provides this via secrets on push to main).
-- The `memory-palace` feature tests require a PostgreSQL instance. CI runs
-  Postgres 17 on `localhost:5432` (see `.github/workflows/tests.yaml`).

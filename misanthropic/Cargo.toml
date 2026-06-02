@@ -110,8 +110,6 @@ schemars = { version = "1" }
 # Deserializer wrapper that augments serde errors with the path to the failing
 # field — used to give the model actionable tool-argument validation errors.
 serde_path_to_error = { version = "0.1" }
-# SurrealDB support - pinned to 1.x for edition 2021 compatibility
-sqlx = { version = "0.8", optional = true }
 # Derive macros for the typed-tool layer (`#[derive(ToolArgs)]`, `#[tool]`).
 # Gated behind the default-on `derive` feature; emits `::misanthropic::…` paths.
 misanthropic-derive = { workspace = true, optional = true }
@@ -129,8 +127,6 @@ itertools = "0.13"
 # for the python example
 subprocess = "0.2"
 tempfile = "3.12"
-# for the memory-palace example
-sqlx = { version = "0.8", features = ["sqlite", "chrono"] }
 # Compile-fail (UI) tests for the `derive` proc-macros.
 trybuild = "1"
 
@@ -180,14 +176,6 @@ dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes. Implemented with the typed-tool
 # derive macros, so it requires `derive`.
 notepad = ["derive"]
-# MemoryPalace tool for the assistant to store and retrieve memories.
-memory-palace = ["sqlx/postgres", "sqlx/chrono", "sqlx"]
-# Sqlx support (need for some tools)
-sqlx = ["dep:sqlx"]
-# Tokio for sqlx support
-tokio-sqlx = ["sqlx/runtime-tokio-rustls"]
-# Feature for testing with in-memory database
-kv-mem = []
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []

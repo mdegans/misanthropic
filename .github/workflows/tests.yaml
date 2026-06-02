@@ -1,9 +1,6 @@
 # Credit to GitHub Copilot for generating this file
 name: Rust CI
 
-env:
-  TEST_DATABASE_URL: postgresql://postgres:test_password@localhost:5432/misanthropic_test
-
 on:
   push:
     branches: [main]
@@ -13,20 +10,6 @@ on:
 jobs:
   build:
     runs-on: ${{ matrix.os }}
-    services:
-      postgres:
-        image: postgres:17
-        ports:
-          - 5432:5432
-        env:
-          POSTGRES_DB: misanthropic_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: test_password
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
     strategy:
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
