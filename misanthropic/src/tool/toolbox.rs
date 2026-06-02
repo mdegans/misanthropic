@@ -328,6 +328,19 @@ impl Tool for ToolBox {
         };
 
         if let Some(tool) = self.tool_name_to_tool.get_mut(&tool_name) {
+            // Strip this box's own namespace segment before descending, so a
+            // sub-tool sees a name relative to itself. A nested [`ToolBox`]
+            // keys its routes by its *own* name only (`tool__method`), so it
+            // would not recognize the outer-qualified `box__tool__method` we
+            // looked up here. Leaf tools rsplit on [`Self::SEP`] and read only
+            // the final segment, so this is a no-op for them.
+            let mut call = call;
+            let prefix = format!("{}{}", self.name, Self::SEP);
+            if let Some(rest) =
+                call.name.strip_prefix(prefix.as_str()).map(str::to_owned)
+            {
+                call.name = Cow::Owned(rest);
+            }
             tool.call(call).await
         } else {
             tool::Result {
@@ -665,6 +678,33 @@ mod tests {
             "Method `toolbox__TestTool__invalid` not found in ToolBox `toolbox`. This is almost certainly the developer's fault. Available methods: toolbox__TestTool__test"
                 .into()
         )
+    }
+
+    #[tokio::test]
+    async fn test_nested_call() {
+        // Outer box "toolbox" -> inner box "potato" -> leaf TestTool. Each box
+        // must strip its own namespace segment when descending; otherwise the
+        // inner box never recognizes the outer-qualified name it's handed.
+        let mut toolbox = ToolBox::new().add(
+            ToolBox::named("potato")
+                .unwrap()
+                .add(TestTool { calls: Vec::new() }),
+        );
+
+        // The name `definitions()` advertises must be routable end to end.
+        let advertised = toolbox.definitions()[0].name.to_string();
+        assert_eq!(advertised, "toolbox__potato__TestTool__test");
+
+        let result = toolbox
+            .call(Use {
+                id: "id".into(),
+                name: advertised.into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            })
+            .await;
+        assert!(!result.is_error, "nested call did not route: {result:?}");
+        assert_eq!(result.content, "Tool called".into());
     }
 
     #[tokio::test]
