@@ -16,7 +16,7 @@ use shuttle_runtime::SecretStore;
 
 use misanthropic::{prompt::message::Role, stream::FilterExt};
 
-use crate::{AppState, UserMessage};
+use crate::{AppState, AssistantMessage, UserMessage};
 
 use model::request::Request;
 
@@ -332,8 +332,29 @@ pub async fn events_stream(
 
                         let event = response.unwrap().unwrap_stream();
 
-                        // Handle it with the same code that the client uses.
-                        prompt.handle_stream_event(event).unwrap();
+                        // The client rebuilds its own prompt from the raw stream
+                        // events; ours only needs *complete* messages for the
+                        // next request. Push the synthesized `Event::Message`
+                        // (the whole assistant turn) as a typed
+                        // `AssistantMessage` rather than rebuilding it
+                        // incrementally with `handle_stream_event`. The latter
+                        // tracked the turn here *and* in `assistant_message`, so
+                        // a tool result racing in before `MessageStop` pushed the
+                        // assistant twice (a `TurnOrderError`). On interrupt
+                        // (break before `MessageStop`) the partial turn is pushed
+                        // from `assistant_message` instead — and since
+                        // `with_message_ip` `take`s the accumulator exactly at
+                        // `MessageStop`, only one of the two paths ever fires.
+                        if let misanthropic::stream::Event::Message { message } =
+                            event
+                        {
+                            let assistant = AssistantMessage::from(message);
+                            if let Err(e) = prompt.push_message(assistant) {
+                                log::error!(
+                                    "Turn order error pushing assistant message: {e}"
+                                );
+                            }
+                        }
                     }
                     Err(e) => {
                         // Something went wrong getting an event from the stream.
