@@ -96,12 +96,9 @@ impl OutputConfig {
     /// Anthropic rejects (numeric ranges, string lengths, etc.) are
     /// stripped. See [`sanitize_for_anthropic`] for the full list.
     ///
-    /// Requires the `json-schema` feature.
-    ///
     /// [`JsonSchema`]: schemars::JsonSchema
     /// [supported subset]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#json-schema-limitations>
     /// [`sanitize_for_anthropic`]: self::sanitize_for_anthropic
-    #[cfg(feature = "json-schema")]
     pub fn for_type<T: schemars::JsonSchema>() -> Self {
         let mut schema = serde_json::to_value(schemars::schema_for!(T))
             .expect("schemars Schema always serializes");
@@ -164,7 +161,6 @@ impl From<OutputFormat> for OutputConfig {
 ///
 /// [`schemars`]: https://docs.rs/schemars
 /// [Anthropic's limits]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#json-schema-limitations>
-#[cfg(feature = "json-schema")]
 pub fn sanitize_for_anthropic(value: &mut serde_json::Value) {
     /// Keywords Anthropic rejects on any subschema.
     const UNSUPPORTED: &[&str] = &[
@@ -282,7 +278,6 @@ mod tests {
         assert!(cfg.format.is_json_schema());
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn for_type_emits_additional_properties_false() {
         #[derive(schemars::JsonSchema)]
@@ -307,15 +302,14 @@ mod tests {
     }
 
     /// Live end-to-end smoke test against the Anthropic API. Requires
-    /// `api.key` in the crate root and the `json-schema` + `client`
-    /// features. Run with `cargo test -p misanthropic --features
-    /// json-schema -- --ignored live`.
+    /// `api.key` in the crate root and the `client` feature. Run with
+    /// `cargo test -p misanthropic --features client -- --ignored live`.
     ///
     /// Validates that the serialized `output_config` is accepted by the
     /// API and that the response round-trips through
     /// [`Message::json::<T>()`](crate::response::Message::json) into a
     /// typed struct.
-    #[cfg(all(feature = "json-schema", feature = "client"))]
+    #[cfg(feature = "client")]
     #[tokio::test]
     #[ignore = "live — requires API key at misanthropic/api.key"]
     async fn live_structured_output_roundtrip() {
@@ -355,7 +349,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn for_type_strips_unsupported_numeric_keywords() {
         // u32 makes schemars emit `minimum: 0`, which Anthropic rejects.
@@ -384,7 +377,6 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn for_type_rewrites_one_of_to_any_of_for_enums_with_descriptions() {
         // schemars emits `oneOf` when enum variants carry per-variant
@@ -416,7 +408,6 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn sanitize_preserves_any_of_when_both_present() {
         let mut schema = serde_json::json!({
@@ -432,7 +423,6 @@ mod tests {
         assert!(schema.get("oneOf").is_none());
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn sanitize_is_idempotent() {
         let mut schema = serde_json::json!({
@@ -455,7 +445,6 @@ mod tests {
         assert!(!schema.to_string().contains("\"minimum\""));
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn for_type_recurses_into_nested_objects() {
         #[derive(schemars::JsonSchema)]

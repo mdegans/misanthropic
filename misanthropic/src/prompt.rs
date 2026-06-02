@@ -12,7 +12,7 @@ use std::{
 use crate::{
     model,
     stream::{self, DeltaError},
-    tool::{self, Method},
+    tool::{self, MethodDef},
 };
 use message::Content;
 
@@ -90,7 +90,7 @@ pub struct Prompt<'a> {
     /// Tool definitions for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "tools")]
-    pub functions: Option<Vec<Method<'a>>>,
+    pub methods: Option<Vec<MethodDef<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -120,7 +120,7 @@ pub struct Prompt<'a> {
     ///
     /// [`Text`]: crate::prompt::message::Block::Text
     /// [`Block`]: crate::prompt::message::Block
-    /// [`strict`]: crate::tool::Method::strict
+    /// [`strict`]: crate::tool::MethodDef::strict
     /// [`Refusal`]: crate::response::StopReason::Refusal
     /// [`StopReason`]: crate::response::StopReason
     /// [`citations`]: <https://docs.anthropic.com/en/docs/build-with-claude/citations>
@@ -146,7 +146,7 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("system", &self.system)
             .field("temperature", &self.temperature)
             .field("tool_choice", &self.tool_choice)
-            .field("tools", &self.functions)
+            .field("tools", &self.methods)
             .field("top_k", &self.top_k)
             .field("output_config", &self.output_config)
             .field("...", &"...")
@@ -168,7 +168,7 @@ impl Default for Prompt<'_> {
             system: Default::default(),
             temperature: Default::default(),
             tool_choice: Default::default(),
-            functions: Default::default(),
+            methods: Default::default(),
             top_k: Default::default(),
             top_p: Default::default(),
             thinking: Default::default(),
@@ -634,10 +634,10 @@ impl<'a> Prompt<'a> {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<Method<'a>>,
+        T: Into<MethodDef<'a>>,
         Ts: IntoIterator<Item = T>,
     {
-        self.functions = Some(tools.into_iter().map(Into::into).collect());
+        self.methods = Some(tools.into_iter().map(Into::into).collect());
         self
     }
 
@@ -664,10 +664,10 @@ impl<'a> Prompt<'a> {
     /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<Method<'a>, Error = E>,
+        T: TryInto<MethodDef<'a>, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
-        self.functions = Some(
+        self.methods = Some(
             tools
                 .into_iter()
                 .map(TryInto::try_into)
@@ -679,9 +679,9 @@ impl<'a> Prompt<'a> {
     /// Add a tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<Method<'a>>,
+        T: Into<MethodDef<'a>>,
     {
-        self.functions
+        self.methods
             .get_or_insert_with(Default::default)
             .push(tool.into());
         self
@@ -691,9 +691,9 @@ impl<'a> Prompt<'a> {
     /// be converted into a [`Tool`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<Method<'a>, Error = E>,
+        T: TryInto<MethodDef<'a>, Error = E>,
     {
-        self.functions
+        self.methods
             .get_or_insert_with(Default::default)
             .push(tool.try_into()?);
         Ok(self)
@@ -724,8 +724,7 @@ impl<'a> Prompt<'a> {
 
     /// Set [`output_config`] for structured output. See
     /// [`OutputConfig`] for construction helpers including
-    /// [`OutputConfig::json_schema`] and (with the `json-schema` feature)
-    /// [`OutputConfig::for_type`].
+    /// [`OutputConfig::json_schema`] and [`OutputConfig::for_type`].
     ///
     /// [`output_config`]: Prompt::output_config
     pub fn output_config<C>(mut self, config: C) -> Self
@@ -746,9 +745,6 @@ impl<'a> Prompt<'a> {
 
     /// Sugar: constrain output to the schema derived from `T`. Equivalent
     /// to `self.output_config(OutputConfig::for_type::<T>())`.
-    ///
-    /// Requires the `json-schema` feature.
-    #[cfg(feature = "json-schema")]
     pub fn structured_output<T: schemars::JsonSchema>(self) -> Self {
         self.output_config(OutputConfig::for_type::<T>())
     }
@@ -810,7 +806,7 @@ impl<'a> Prompt<'a> {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.functions.as_mut().and_then(|tools| tools.last_mut())
+            self.methods.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache_with(cache_control);
             return self;
@@ -837,9 +833,9 @@ impl<'a> Prompt<'a> {
             system: self.system.map(Content::into_static),
             temperature: self.temperature,
             tool_choice: self.tool_choice,
-            functions: self
-                .functions
-                .map(|t| t.into_iter().map(Method::into_static).collect()),
+            methods: self
+                .methods
+                .map(|t| t.into_iter().map(MethodDef::into_static).collect()),
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
@@ -1248,7 +1244,7 @@ mod tests {
         assert!(request.system.is_none());
         assert!(request.temperature.is_none());
         assert!(request.tool_choice.is_none());
-        assert!(request.functions.is_none());
+        assert!(request.methods.is_none());
         assert!(request.top_k.is_none());
         assert!(request.top_p.is_none());
     }
@@ -1452,7 +1448,7 @@ mod tests {
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Prompt::default().add_tool(Method {
+        let request = Prompt::default().add_tool(MethodDef {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: json!({}),
@@ -1462,7 +1458,7 @@ mod tests {
 
         assert!(
             !request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1474,7 +1470,7 @@ mod tests {
 
         assert!(
             request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1485,7 +1481,7 @@ mod tests {
         // remove the cache breakpoint
         // TODO: add an un_cache method? set_cache?
         request
-            .functions
+            .methods
             .as_mut()
             .unwrap()
             .last_mut()
@@ -1503,7 +1499,7 @@ mod tests {
         // ensure the tools are not affected
         assert!(
             !request
-                .functions
+                .methods
                 .as_ref()
                 .unwrap()
                 .last()
@@ -1639,7 +1635,6 @@ mod tests {
         assert!(explicit.output_config.is_some());
     }
 
-    #[cfg(feature = "json-schema")]
     #[test]
     fn test_structured_output_from_type() {
         #[derive(schemars::JsonSchema)]
@@ -1687,7 +1682,7 @@ mod tests {
         // A tool can be created from a Tool itself. This is infallible, however
         // the API might reject the request if the tool is invalid. There is
         // currently no schema validation in this crate.
-        let tool = Method {
+        let tool = MethodDef {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: schema.clone(),
@@ -1700,18 +1695,18 @@ mod tests {
             .try_add_tool(json_tool)
             .unwrap();
 
-        assert_eq!(request.functions.as_ref().unwrap().len(), 2);
-        assert_eq!(request.functions.as_ref().unwrap()[0].name, "ping");
-        assert_eq!(request.functions.as_ref().unwrap()[1].name, "ping2");
+        assert_eq!(request.methods.as_ref().unwrap().len(), 2);
+        assert_eq!(request.methods.as_ref().unwrap()[0].name, "ping");
+        assert_eq!(request.methods.as_ref().unwrap()[1].name, "ping2");
         assert_eq!(
-            request.functions.as_ref().unwrap()[0].description,
+            request.methods.as_ref().unwrap()[0].description,
             "Ping a server."
         );
         assert_eq!(
-            request.functions.as_ref().unwrap()[1].description,
+            request.methods.as_ref().unwrap()[1].description,
             "Ping a server. Part deux."
         );
-        assert_eq!(request.functions.as_ref().unwrap()[0].schema, schema);
+        assert_eq!(request.methods.as_ref().unwrap()[0].schema, schema);
 
         // Test with a fallible tool. This should fail.
 
@@ -1777,7 +1772,7 @@ mod tests {
         use crate::markdown::{Markdown, ToMarkdown};
 
         let request = Prompt::default()
-            .tools([Method {
+            .tools([MethodDef {
                 name: "ping".into(),
                 description: "Ping a server.".into(),
                 schema: json!({

@@ -1,6 +1,6 @@
 use super::MemoryPalace;
 use crate::tool::memory_palace::db::ensure_initialized;
-use crate::tool::{self, Method, Tool, Use};
+use crate::tool::{self, MethodDef, Tool, Use};
 use crate::{Prompt, prompt::message::Block};
 use serde_json::json;
 
@@ -33,9 +33,9 @@ impl Tool for MemoryPalace {
         Ok(())
     }
 
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new([
-            Method::builder("MemoryPalace::store")
+    fn definitions(&self) -> Vec<MethodDef<'static>> {
+        vec![
+            MethodDef::builder("MemoryPalace::store")
                 .description("Store a new memory in the palace.")
                 .schema(json!({
                     "type": "object",
@@ -58,7 +58,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::search")
+            MethodDef::builder("MemoryPalace::search")
                 .description("Search for memories by content, room, or tags.")
                 .schema(json!({
                     "type": "object",
@@ -72,7 +72,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::summary")
+            MethodDef::builder("MemoryPalace::summary")
                 .description("Get a summary of recent and important memories.")
                 .schema(json!({
                     "type": "object",
@@ -81,7 +81,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::connect")
+            MethodDef::builder("MemoryPalace::connect")
                 .description("Connect two rooms in the palace.")
                 .schema(json!({
                     "type": "object",
@@ -99,7 +99,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::list_rooms")
+            MethodDef::builder("MemoryPalace::list_rooms")
                 .description("List all rooms with their memory counts and connections.")
                 .schema(json!({
                     "type": "object",
@@ -108,7 +108,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::relate")
+            MethodDef::builder("MemoryPalace::relate")
                 .description("Create or update a relationship between two memories.")
                 .schema(json!({
                     "type": "object",
@@ -135,7 +135,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::find_related")
+            MethodDef::builder("MemoryPalace::find_related")
                 .description("Find memories related to a given memory.")
                 .schema(json!({
                     "type": "object",
@@ -159,7 +159,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::extract_concepts")
+            MethodDef::builder("MemoryPalace::extract_concepts")
                 .description("Extract and link concepts from memory content.")
                 .schema(json!({
                     "type": "object",
@@ -178,7 +178,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::find_by_concept")
+            MethodDef::builder("MemoryPalace::find_by_concept")
                 .description("Find memories by concept with enhanced scoring.")
                 .schema(json!({
                     "type": "object",
@@ -192,7 +192,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::graph_stats")
+            MethodDef::builder("MemoryPalace::graph_stats")
                 .description("Get statistics and insights about the memory graph.")
                 .schema(json!({
                     "type": "object",
@@ -201,7 +201,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-            Method::builder("MemoryPalace::find_bfs")
+            MethodDef::builder("MemoryPalace::find_bfs")
                 .description("Find memories using breadth-first search with decay factor for semantic distance.")
                 .schema(json!({
                     "type": "object",
@@ -230,7 +230,7 @@ impl Tool for MemoryPalace {
                 }))
                 .build()
                 .unwrap(),
-        ].into_iter())
+        ]
     }
 
     async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {

@@ -292,7 +292,7 @@ mod tests {
         assert_eq!(palace.name(), "MemoryPalace");
 
         // Test methods
-        let methods: Vec<_> = palace.methods().collect();
+        let methods: Vec<_> = palace.definitions();
         assert!(!methods.is_empty());
 
         let method_names: Vec<_> =

@@ -1,6 +1,27 @@
 [workspace]
 resolver = "2"
-members = ["misanthropic", "chat/backend", "chat/frontend", "chat/model"]
+members = [
+    "misanthropic",
+    "misanthropic-derive",
+    "chat/backend",
+    "chat/frontend",
+    "chat/model",
+]
+
+# Shared package metadata. Members opt in per-field with `version.workspace =
+# true` etc., so the version lives in exactly one place.
+[workspace.package]
+version = "1.0.0-alpha.1"
+edition = "2024"
+authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
+homepage = "https://github.com/mdegans/misanthropic"
+repository = "https://github.com/mdegans/misanthropic"
+license = "MIT"
+
+# Shared dependency declarations. The inter-crate version/path is defined once
+# here; members use `misanthropic-derive = { workspace = true }`.
+[workspace.dependencies]
+misanthropic-derive = { version = "1.0.0-alpha.1", path = "misanthropic-derive" }
 
 [profile.release]
 lto = true

@@ -1,0 +1,7 @@
+error: a `#[method]` fn must take exactly one argument besides `self` (its `Args` type, deriving `Deserialize` + `JsonSchema`)
+  --> tests/ui/method_wrong_arity.rs:13:9
+   |
+13 | /         &mut self,
+14 | |         a: String,
+15 | |         b: String,
+   | |__________________^

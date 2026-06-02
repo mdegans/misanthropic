@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, Method, Tool, Use},
+    tool::{self, MethodDef, Methods, Tool, Typed, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -18,7 +18,7 @@ use crate::{
 pub struct ToolBox {
     /// Name of the [`ToolBox`].
     name: Cow<'static, str>,
-    /// Map of [`Method::name`] to tool name of the [`Tool`] to call.
+    /// Map of [`MethodDef::name`] to tool name of the [`Tool`] to call.
     ///
     /// Stores namespaced function names in the format `tool__function`.
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
@@ -75,7 +75,7 @@ impl ToolBox {
     /// Add a [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`Method`]s (by name), will be replaced. This is logged at
+    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
     ///   the `warn` level. This does not remove the original [`Tool`]. If you
     ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
     pub fn add(mut self, tool: impl Tool + Send + 'static) -> Self {
@@ -86,7 +86,7 @@ impl ToolBox {
     /// Add a boxed [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`Method`]s (by name), will be replaced. This is logged at
+    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
     ///   the `warn` level. This does not remove the original [`Tool`]. If you
     ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
     pub fn add_boxed(mut self, tool: Box<dyn Tool + Send>) -> Self {
@@ -99,10 +99,23 @@ impl ToolBox {
         self.push_boxed(Box::new(tool));
     }
 
+    /// Add a typed [`Methods`] tool, wrapping it in [`Typed`] so it satisfies
+    /// [`Tool`].
+    pub fn add_typed<T: Methods + Send + 'static>(mut self, tool: T) -> Self {
+        self.push(Typed(tool));
+        self
+    }
+
+    /// Push a typed [`Methods`] tool, wrapping it in [`Typed`] so it satisfies
+    /// [`Tool`].
+    pub fn push_typed<T: Methods + Send + 'static>(&mut self, tool: T) {
+        self.push(Typed(tool));
+    }
+
     /// Push a boxed [`Tool`] to the [`ToolBox`].
     pub fn push_boxed(&mut self, tool: Box<dyn Tool + Send>) {
-        // Append the function names to self.functions.
-        for method in tool.methods() {
+        // Append the method names to self.method_to_tool_name.
+        for method in tool.definitions() {
             self.method_to_tool_name.insert(
                 format!("{}{}{}", self.name, Self::SEP, method.name).into(),
                 tool.name().to_string(),
@@ -123,23 +136,23 @@ impl ToolBox {
         self.tool_name_to_tool.values().map(|tool| tool.name())
     }
 
-    /// Names of all the [`Method`]s in the [`ToolBox`].
+    /// Names of all the [`MethodDef`]s in the [`ToolBox`].
     pub fn method_names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.method_to_tool_name.keys().map(|name| name.as_ref())
     }
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`Method`]s.
+    /// [`MethodDef`]s.
     pub fn replace(&mut self, tool: impl Tool + Send + 'static) {
         self.replace_boxed(Box::new(tool));
     }
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`Method`]s.
+    /// [`MethodDef`]s.
     pub fn replace_boxed(&mut self, tool: Box<dyn Tool + Send>) {
         let self_name = self.name.as_ref();
         let tool_name = tool.name().to_string();
-        let function_names = tool.methods().map(|method| {
+        let function_names = tool.definitions().into_iter().map(|method| {
             format!(
                 "{self_name}{sep}{tool}{sep}{method}",
                 sep = Self::SEP,
@@ -148,7 +161,7 @@ impl ToolBox {
             )
         });
 
-        // Remove the old tool and its functions.
+        // Remove the old tool and its methods.
         for name in function_names {
             if let Some(old_tool_name) = self
                 .method_to_tool_name
@@ -157,6 +170,28 @@ impl ToolBox {
                 self.tool_name_to_tool.remove(&old_tool_name);
             }
         }
+    }
+
+    /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
+    /// the toolbox's (namespaced) [`definitions`], then run each tool's
+    /// [`on_init`] via [`init_tools`]. Call this once when (re)loading a
+    /// conversation.
+    ///
+    /// The overwrite is intentional: a prompt authored elsewhere or with an
+    /// older tool set always picks up the current methods. Method injection
+    /// lives here, on the top-level box, rather than in [`init_tools`] /
+    /// [`on_init`] so a *nested* [`ToolBox`] never clobbers its parent's method
+    /// set during fan-out.
+    ///
+    /// [`definitions`]: Tool::definitions
+    /// [`on_init`]: Tool::on_init
+    /// [`init_tools`]: Self::init_tools
+    pub async fn prepare(
+        &mut self,
+        prompt: &mut Prompt<'_>,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        prompt.methods = Some(self.definitions());
+        self.init_tools(prompt).await
     }
 
     /// Initialize all tools in the toolbox. Call this once when setting up a conversation.
@@ -240,21 +275,24 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`Method`]s for all [`Tool`]s in the [`ToolBox`].
-    fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-        Box::new(self.tool_name_to_tool.values().flat_map(|tool| {
-            tool.methods().map(|mut method| {
-                // Append our prefix to the function name, which should already
-                // include `tool__function` format for the function name.
-                method.name = Cow::Owned(format!(
-                    "{}{}{}",
-                    self.name(),
-                    Self::SEP,
-                    method.name
-                ));
-                method
+    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
+    fn definitions(&self) -> Vec<MethodDef<'static>> {
+        self.tool_name_to_tool
+            .values()
+            .flat_map(|tool| {
+                tool.definitions().into_iter().map(|mut method| {
+                    // Append our prefix to the method name, which should
+                    // already include `tool__method` format for the name.
+                    method.name = Cow::Owned(format!(
+                        "{}{}{}",
+                        self.name(),
+                        Self::SEP,
+                        method.name
+                    ));
+                    method
+                })
             })
-        }))
+            .collect()
     }
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
@@ -269,8 +307,8 @@ impl Tool for ToolBox {
             }
             None => {
                 // This can happen if somehow the Prompt and ToolBox are out of
-                // sync because the ToolBox::functions do not match the
-                // Prompt::functions.
+                // sync because the ToolBox methods do not match the
+                // Prompt::methods.
                 let mut available_methods: String =
                     self.method_names().collect::<Vec<_>>().join(", ");
                 if available_methods.is_empty() {
@@ -317,6 +355,13 @@ impl Tool for ToolBox {
         &mut self,
         json: serde_json::Value,
     ) -> std::result::Result<(), String> {
+        // `null` is the "nothing saved yet" sentinel (e.g. an empty persistent
+        // store). Treat it as a no-op rather than a deserialization error, in
+        // keeping with the permissive [`Tool::load_json`] default.
+        if json.is_null() {
+            return Ok(());
+        }
+
         let mut errors = Vec::new();
 
         let state: State = match serde_json::from_value(json) {
@@ -420,8 +465,8 @@ mod tests {
             "TestTool"
         }
 
-        fn methods(&self) -> Box<dyn Iterator<Item = Method<'static>> + '_> {
-            Box::new(std::iter::once(Method {
+        fn definitions(&self) -> Vec<MethodDef<'static>> {
+            vec![MethodDef {
                 name: "TestTool__test".into(),
                 description: "Test Tool".into(),
                 schema: serde_json::json!({
@@ -435,7 +480,7 @@ mod tests {
                 }),
                 cache_control: None,
                 strict: None,
-            }))
+            }]
         }
 
         async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
@@ -489,7 +534,7 @@ mod tests {
     async fn test_toolbox_add_push() {
         // add just calls push
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods = toolbox.methods().collect::<Vec<_>>();
+        let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
@@ -498,7 +543,7 @@ mod tests {
     async fn test_toolbox_add_push_boxed() {
         let toolbox =
             ToolBox::new().add_boxed(Box::new(TestTool { calls: Vec::new() }));
-        let methods = toolbox.methods().collect::<Vec<_>>();
+        let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
@@ -545,7 +590,7 @@ mod tests {
     #[test]
     fn test_methods() {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods: Vec<Method> = toolbox.methods().collect();
+        let methods: Vec<MethodDef> = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name, "toolbox__TestTool__test");
     }
@@ -586,5 +631,13 @@ mod tests {
         let json = a.save_json().await;
         b.load_json(json).await.unwrap();
         assert_eq!(a.save_json().await, b.save_json().await);
+    }
+
+    #[tokio::test]
+    async fn test_load_json_null_is_noop() {
+        // `null` is the "nothing saved yet" sentinel (e.g. an empty persistent
+        // store). It must load cleanly rather than erroring.
+        let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
+        toolbox.load_json(serde_json::Value::Null).await.unwrap();
     }
 }
