@@ -102,3 +102,12 @@ The `batch` and `client` features don't build on wasm32.
 
 - Some tests are `#[ignore]`d and require an API key in `api.key` at the repo
   root (CI provides this via secrets on push to main).
+
+## GitHub conventions
+
+- When Claude files an issue or opens a PR on Michael's behalf (via `gh`),
+  attribute it. Commits already carry a `Co-Authored-By: Claude …` trailer;
+  issues and PRs should close with a footer line noting they were authored by
+  Claude Code (e.g. `🤖 Filed by Claude Code` on issues, the standard
+  `🤖 Generated with Claude Code` footer on PRs) so authorship is never
+  ambiguous.
