@@ -117,10 +117,14 @@ impl<'a> Notepad<'a> {
         Ok(())
     }
 
-    /// Inject the notepad instructions + notes into the prompt's system block,
-    /// both on session start and on every turn (notes may have been added).
+    /// Inject the notepad instructions + notes into the prompt's system block.
+    ///
+    /// Applied on init only — deliberately *not* on every turn. The notes are
+    /// already in context once injected and the agent knows the tool exists, so
+    /// rewriting the system block each turn would only bust the prompt cache.
+    /// Notes taken mid-session still persist via [`Self::save`] and are applied
+    /// on the next init.
     #[on_init]
-    #[on_turn]
     async fn apply(
         &mut self,
         prompt: &mut Prompt<'_>,
