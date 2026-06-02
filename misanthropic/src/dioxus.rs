@@ -78,33 +78,14 @@ pub mod opts {
 
     impl HeadingLevel {
         /// Convert to a [`HeadingLevel::element`] with the given text `content`.
-        #[allow(unused_variables)] // because macros break this lint
-        pub fn element<'a>(self, key: u64, content: Cow<'a, str>) -> Element {
+        pub fn element<'a>(self, content: Cow<'a, str>) -> Element {
             match self {
-                HeadingLevel::H1 => rsx!(h1 {
-                    key: "{key}",
-                    "{content}"
-                }),
-                HeadingLevel::H2 => rsx!(h2 {
-                    key: "{key}",
-                    "{content}"
-                }),
-                HeadingLevel::H3 => rsx!(h3 {
-                    key: "{key}",
-                    "{content}"
-                }),
-                HeadingLevel::H4 => rsx!(h4 {
-                    key: "{key}",
-                    "{content}"
-                }),
-                HeadingLevel::H5 => rsx!(h5 {
-                    key: "{key}",
-                    "{content}"
-                }),
-                HeadingLevel::H6 => rsx!(h6 {
-                    key: "{key}",
-                    "{content}"
-                }),
+                HeadingLevel::H1 => rsx!(h1 { "{content}" }),
+                HeadingLevel::H2 => rsx!(h2 { "{content}" }),
+                HeadingLevel::H3 => rsx!(h3 { "{content}" }),
+                HeadingLevel::H4 => rsx!(h4 { "{content}" }),
+                HeadingLevel::H5 => rsx!(h5 { "{content}" }),
+                HeadingLevel::H6 => rsx!(h6 { "{content}" }),
             }
         }
     }
@@ -251,8 +232,14 @@ fn hash<T: std::hash::Hash>(t: &[T]) -> u64 {
 
 /// A type that can convert into an [`Element`].
 pub trait IntoElement {
-    /// Convert into an [`Element`] with custom options. `key` should be unique
-    /// for each element. It will be combined with any children's keys.
+    /// Convert into an [`Element`] with custom options.
+    ///
+    /// `key` seeds the keys of the message list: each message is rendered as a
+    /// keyed sibling (`key` combined with its index) so dioxus can move
+    /// messages by identity. Every *other* sibling list is left unkeyed —
+    /// dioxus 0.7 requires each fragment to be either all-keyed or all-unkeyed,
+    /// and the inner lists contain conditionally-hidden (empty) blocks that
+    /// can't carry a key.
     fn into_element_custom(self, key: u64, opts: &Options) -> Element;
 }
 
@@ -266,14 +253,12 @@ impl IntoElement for ThoughtOrSpeech<'_> {
                 opts::Thought::Hidden => rsx!(),
                 opts::Thought::Placeholder { class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                         "Thinking..."
                     })
                 }
                 opts::Thought::Show { class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                         "{thought}"
                     })
@@ -283,13 +268,11 @@ impl IntoElement for ThoughtOrSpeech<'_> {
                 opts::Speech::Hidden => rsx!(),
                 opts::Speech::Placeholder { class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                     })
                 }
                 opts::Speech::Show { class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                         "{speech}"
                     })
@@ -322,7 +305,6 @@ impl IntoElement for &Block<'_> {
                 #[cfg(not(feature = "cot"))]
                 {
                     rsx!(div {
-                        key: "{key}",
                         class: "text",
                         class: if cache_control.is_some() { "cache" } else { "" },
                         {text.as_ref()}
@@ -336,14 +318,12 @@ impl IntoElement for &Block<'_> {
                 opts::Thought::Hidden => rsx!(),
                 opts::Thought::Placeholder { class } => {
                     rsx!(div {
-                        key: "{key}",
                         id: signature.as_ref(),
                         class: class.as_ref(),
                     })
                 }
                 opts::Thought::Show { class } => {
                     rsx!(div {
-                        key: "{key}",
                         id: signature.as_ref(),
                         class: class.as_ref(),
                         "{thinking}"
@@ -354,14 +334,12 @@ impl IntoElement for &Block<'_> {
                 opts::Thought::Hidden => rsx!(),
                 opts::Thought::Placeholder { class } => {
                     rsx!(div {
-                        key: "{key}",
                         id: signature.as_ref(),
                         class: class.as_ref(),
                     })
                 }
                 opts::Thought::Show { class } => {
                     rsx!(div {
-                        key: "{key}",
                         id: signature.as_ref(),
                         class: format!("{} redacted", class),
                         "Anthropic redacted a thought."
@@ -375,13 +353,11 @@ impl IntoElement for &Block<'_> {
                 opts::Image::Hidden => rsx!(),
                 opts::Image::Placeholder { class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                     })
                 }
                 opts::Image::Show { class } => {
                     rsx!(img {
-                        key: "{key}",
                         class: class.as_ref(),
                         src: {
                             match image {
@@ -400,16 +376,14 @@ impl IntoElement for &Block<'_> {
                 opts::ToolUse::Hidden => rsx!(),
                 opts::ToolUse::Placeholder { show_name, class } => {
                     rsx!(div {
-                        key: "{key}",
                         class: class.as_ref(),
                         {show_name.map(
-                            |level| level.element(key, call.name.as_ref().into()
+                            |level| level.element(call.name.as_ref().into()
                         ))}
                     })
                 }
                 opts::ToolUse::Show { show_name, class } => {
                     rsx!(code {
-                        key: "{key}",
                         lang: "json",
                         class: class.as_ref(),
                         {serde_json::to_string_pretty(call).unwrap()}
@@ -420,7 +394,6 @@ impl IntoElement for &Block<'_> {
                 opts::ToolResult::Hidden => rsx!(),
                 opts::ToolResult::Placeholder { error, ok } => {
                     rsx!(div {
-                        key: "{key}",
                         title: if result.is_error { "Error" } else { "Ok" },
                         class: if result.is_error {
                             error.as_ref()
@@ -431,7 +404,6 @@ impl IntoElement for &Block<'_> {
                 }
                 opts::ToolResult::Show { error, ok } => {
                     rsx!(code {
-                        key: "{key}",
                         title: if result.is_error { "Error" } else { "Ok" },
                         lang: "json",
                         class: if result.is_error {
@@ -450,7 +422,6 @@ impl IntoElement for &Block<'_> {
 impl IntoElement for &message::Content<'_> {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         rsx!(div {
-            key: "{key}",
             class: "multi-part",
             {self
                 .iter()
@@ -462,6 +433,8 @@ impl IntoElement for &message::Content<'_> {
 
 impl IntoElement for &message::Message<'_> {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
+        // The message is the one keyed sibling (see [`IntoElement`]); its inner
+        // content stays unkeyed.
         rsx!(div {
             key: "{key}",
             class: if self.tool_result().is_some() {
@@ -482,15 +455,12 @@ impl IntoElement for &message::Message<'_> {
                 match &opts.speech {
                     opts::Speech::Hidden => rsx!(),
                     opts::Speech::Placeholder { class } => {
-                        let k = hash(&[key, 0]);
                         rsx!(div {
-                            key: "{k}",
                             class: class.as_ref(),
                         })
                     }
                     opts::Speech::Show { class } => {
                         rsx!(div {
-                            key: "{key}",
                             class: class.as_ref(),
                             {self.content
                                 .iter()
@@ -501,7 +471,6 @@ impl IntoElement for &message::Message<'_> {
                 }
             } else {
                 rsx!(div {
-                    key: "{key}",
                     class: "multi-part",
                     {self.content
                         .iter()
@@ -515,25 +484,19 @@ impl IntoElement for &message::Message<'_> {
 
 impl IntoElement for &prompt::Prompt<'_> {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
-        let messages_key = hash(&[key, 2]);
         rsx!(
             div {
-                key: "{key}",
                 class: "prompt",
                 if let Some(system) = &self.system {
                     match &opts.system {
                         opts::System::Hidden => rsx!(),
                         opts::System::Placeholder { class } => {
-                            let k = hash(&[key, 1]);
                             rsx!(div {
-                                key: "{k}",
                                 class: class.as_ref(),
                             })
                         }
                         opts::System::Show { class } => {
-                            let k = hash(&[key, 0]);
                             rsx!(div {
-                                key: "{k}",
                                 class: class.as_ref(),
                                 {system.into_element_custom(hash(&[key, 1]), opts)}
                             })
@@ -541,7 +504,6 @@ impl IntoElement for &prompt::Prompt<'_> {
                     }
                 }
                 div {
-                    key: "{messages_key}",
                     class: "messages",
                     {(2..).zip(self.messages.iter()).map(|(i, message)| {
                         message.into_element_custom(hash(&[key, i as u64]), opts)
