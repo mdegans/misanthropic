@@ -3,7 +3,6 @@ use std::ops::Deref;
 use dioxus::{html::HasFileData, prelude::*};
 
 use dioxus_sdk::storage::use_persistent;
-use futures::executor::block_on;
 use misanthropic::{
     dioxus::{
         opts::{self, HeadingLevel},
@@ -14,12 +13,11 @@ use misanthropic::{
         futures::StreamExt,
         serde_json,
     },
-    json,
     prompt::{
         message::{Block, Image, MediaType, UserMessage},
         Prompt,
     },
-    tool::{MethodDef, Tool},
+    tool::Tool,
 };
 use model::{request::Request, response::Success, toolbox};
 use wasm_bindgen::{prelude::Closure, JsCast};
@@ -39,6 +37,29 @@ static DEFAULT_DRAG_CLOSURE: GlobalSignal<
     Closure::wrap(Box::new(|e: web_sys::DragEvent| e.prevent_default())
         as Box<dyn FnMut(_)>)
 });
+
+/// A dropped `.json` file: either a saved conversation or saved tool state.
+///
+/// Distinguished by shape via serde `untagged` (the same way we sniff image
+/// types) since Save writes the two as separate files. The shapes are mutually
+/// exclusive: a tool-state file fails the `Prompt` arm because its `tools` is a
+/// map rather than the array `Prompt::methods` (serialized as `tools`) expects,
+/// and a prompt fails the `ToolState` arm because it has no top-level `name`.
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum Dropped {
+    /// A saved conversation. Tried first as the common case.
+    Prompt(Box<Prompt<'static>>),
+    /// Saved toolbox state, mirroring [`ToolBox::save_json`]'s `{name, tools}`.
+    ToolState(ToolStateFile),
+}
+
+/// Mirror of the toolbox's `save_json` shape, used only to sniff dropped files.
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ToolStateFile {
+    name: String,
+    tools: serde_json::Map<String, serde_json::Value>,
+}
 
 /// A test prompt for testing the chat view.
 #[cfg(debug_assertions)]
@@ -177,29 +198,18 @@ pub fn Chat() -> Element {
     let mut options = use_signal(Options::default);
     let mut prompt = use_signal(make_prompt);
     let mut ready_json = use_signal(|| None);
+    let mut ready_tool_json = use_signal(|| None);
     let mut shift_held = use_signal(|| false);
     let mut show_system = use_signal(|| false);
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
-    let specs = use_signal(|| {
-        let specs: Vec<MethodDef> = toolbox::create().definitions();
-        specs
-    });
     let mut toolbox_state =
         use_persistent("toolbox-state", || serde_json::Value::Null);
-    let mut toolbox = use_signal(|| {
-        let mut toolbox = toolbox::create();
-        log::info!("Loading toolbox state.");
-        if let Err(e) =
-            block_on(toolbox.load_json(toolbox_state.peek().clone()))
-        {
-            log::error!("`Toolbox::load_json` had error(s): {e}");
-        } else {
-            log::info!("Toolbox state loaded.")
-        }
-
-        toolbox
-    });
+    // Created un-loaded; persisted state is restored asynchronously as the
+    // first step of the stream task (see below), before the first prompt is
+    // requested. Doing it here would require `block_on`, which only works for
+    // tools whose `load_json` never actually awaits.
+    let mut toolbox = use_signal(toolbox::create);
 
     // Suppress the default drag and drop behavior.
     use_effect(|| {
@@ -225,6 +235,21 @@ pub fn Chat() -> Element {
     // Our long-running task is the stream task. It will run until the
     // component is dropped, connecting with the
     let _stream_task = use_resource(move || async move {
+        // Restore persisted tool state once, before connecting. `peek()` (not
+        // `read()`) so this resource doesn't subscribe to `toolbox_state` —
+        // it's `.set()` on every tool call, and subscribing would restart the
+        // whole stream each time. Outside the reconnect `loop` so a reconnect
+        // never clobbers in-session tool state with the last snapshot.
+        if let Err(e) = toolbox
+            .write()
+            .load_json(toolbox_state.peek().clone())
+            .await
+        {
+            log::error!("`Toolbox::load_json` had error(s): {e}");
+        } else {
+            log::info!("Toolbox state loaded.");
+        }
+
         loop {
             let mut stream = loop {
                 match CLIENT.read().stream().await {
@@ -314,20 +339,32 @@ pub fn Chat() -> Element {
                                 }
                             }
                             Ok(Success::Prompt(mut new)) => {
-                                // Update tools.
-                                new.methods = Some(specs.read().clone());
-
-                                // Update the prompt with the tools.
+                                // Install our tools: overwrites `methods` with
+                                // the toolbox's definitions and runs each tool's
+                                // `on_init` (e.g. Notepad injects its notes).
                                 if let Err(e) =
-                                    toolbox.write().on_init(&mut new).await
+                                    toolbox.write().prepare(&mut new).await
                                 {
                                     log::error!(
-                                        "`Toolbox::setup` had error(s): {e}"
+                                        "`Toolbox::prepare` had error(s): {e}"
                                     );
                                 } else {
-                                    // Send it back to the server.
+                                    log::info!("Toolbox prepared.")
+                                }
 
-                                    log::info!("Toolbox setup sucessful.")
+                                // Run the per-turn hook. A no-op for Notepad
+                                // (notes apply on init only, to keep the cache
+                                // warm) but wires the lifecycle for tools that
+                                // do need per-turn context. Must run before
+                                // SetPrompt so any mutation reaches the backend.
+                                if let Err(e) = toolbox
+                                    .write()
+                                    .update_turn_context(&mut new)
+                                    .await
+                                {
+                                    log::error!(
+                                        "`Toolbox::update_turn_context` had error(s): {e}"
+                                    );
                                 }
 
                                 // We updated tools and applied state to the
@@ -524,71 +561,75 @@ pub fn Chat() -> Element {
                                     return;
                                 }
 
-                                let mut json: serde_json::Value = match serde_json::from_slice(&data) {
-                                    Ok(prompt) => prompt,
+                                // Sniff whether this is a saved conversation or
+                                // saved tool state by shape (Save writes them as
+                                // separate files). See `Dropped`.
+                                match serde_json::from_slice::<Dropped>(&data) {
+                                    Ok(Dropped::Prompt(new_prompt)) => {
+                                        log::info!("Loading new prompt.");
+                                        let mut new_prompt = *new_prompt;
+
+                                        // Tool definitions track the app's
+                                        // current capabilities, not whatever the
+                                        // loaded (possibly foreign or older)
+                                        // prompt carried. `prepare` overwrites
+                                        // `methods` and runs each tool's
+                                        // `on_init`, so old/foreign prompts just
+                                        // work.
+                                        if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
+                                            log::error!("`Toolbox::prepare` had error(s): {e}");
+                                        } else {
+                                            log::info!("Toolbox prepared.");
+                                        }
+
+                                        match CLIENT.read().send(
+                                            Request::SetPrompt(new_prompt.clone())
+                                        ).await {
+                                            Ok(_) => {
+                                                prompt.set(new_prompt);
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to set prompt: {}", e);
+                                            }
+                                        }
+                                    }
+                                    Ok(Dropped::ToolState(state)) => {
+                                        log::info!("Loading tool state.");
+                                        let value = match serde_json::to_value(state) {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                log::warn!("Failed to re-encode tool state: {}", e);
+                                                return;
+                                            }
+                                        };
+                                        if let Err(e) = toolbox.write().load_json(value).await {
+                                            log::warn!("Failed to load tool state: {}", e);
+                                        } else {
+                                            log::info!("Tool state loaded.");
+                                        }
+                                        toolbox_state.set(toolbox.write().save_json().await);
+
+                                        // Re-apply to the current prompt so newly
+                                        // loaded notes appear in the system block,
+                                        // then push the update to the backend.
+                                        let mut new_prompt = prompt.peek().clone();
+                                        if let Err(e) = toolbox.write().prepare(&mut new_prompt).await {
+                                            log::error!("`Toolbox::prepare` had error(s): {e}");
+                                        }
+                                        match CLIENT.read().send(
+                                            Request::SetPrompt(new_prompt.clone())
+                                        ).await {
+                                            Ok(_) => {
+                                                prompt.set(new_prompt);
+                                            }
+                                            Err(e) => {
+                                                log::error!("Failed to set prompt after tool state load: {}", e);
+                                            }
+                                        }
+                                    }
                                     Err(e) => {
-                                        log::warn!("Failed to deserialize JSON: {}", e);
-                                        return;
+                                        log::warn!("Dropped .json is neither a prompt nor tool state: {}", e);
                                     }
-                                };
-
-                                // Load any prompt from the JSON file.
-                                if let serde_json::Value::Object(new_prompt) = json["prompt"].take() {
-                                    log::info!("Loading new prompt.");
-                                    let mut new_prompt: Prompt = match serde_json::from_value(
-                                        new_prompt.into()
-                                    ) {
-                                        Ok(prompt) => prompt,
-                                        Err(e) => {
-                                            log::warn!("Failed to deserialize prompt: {}", e);
-                                            return;
-                                        }
-                                    };
-
-                                    // Tool use has a 1:1 relationship with the
-                                    // app's current capabilities, not any given
-                                    // prompt or backend so it wouldn't make
-                                    // sense for the user to be able to specify
-                                    // tools that don't exist, and may have
-                                    // changed since the original prompt was
-                                    // created. This is always overwritten.
-                                    new_prompt.methods.replace(specs.read().clone());
-
-                                    // Update tools.
-                                    new_prompt.methods = Some(specs.read().clone());
-
-                                    // Update the prompt with the tools.
-                                    if let Err(e) = toolbox.write().on_init(&mut new_prompt).await {
-                                        log::error!(
-                                            "`Toolbox::setup` had error(s): {e}"
-                                        );
-                                    } else {
-                                        // Send it back to the server.
-
-                                        log::info!("Toolbox setup sucessful.")
-                                    }
-
-                                    match CLIENT.read().send(
-                                        Request::SetPrompt(new_prompt.clone())
-                                    ).await {
-                                        Ok(_) => {
-                                            prompt.set(new_prompt);
-                                        }
-                                        Err(e) => {
-                                            log::error!("Failed to set prompt: {}", e);
-                                        }
-                                    }
-                                }
-
-                                // Load any tool state from the JSON file.
-                                if let serde_json::Value::Object(tool_state) = json["tool_state"].take() {
-                                    log::info!("Loading tool state.");
-                                    if let Err(e) = toolbox.write().load_json(tool_state.into()).await {
-                                        log::warn!("Failed to load tool state: {}", e);
-                                    } else {
-                                        log::info!("Tool state loaded.")
-                                    }
-                                    toolbox_state.set(toolbox.write().save_json().await);
                                 }
 
                                 return;
@@ -696,17 +737,21 @@ pub fn Chat() -> Element {
             }
             // This is kind of hacky, but it's actually the cleanest way to
             // do this without incomprehensible web_sys code.
+            //
+            // Prompt and tool state are saved separately: the prompt is just
+            // conversation data, while tool state lives in browser storage and
+            // is only exported on demand. Drag either file back in to load it
+            // (the drop handler sniffs which is which).
             button {
                 class: "toggle",
                 class: "save",
                 class: if ready_json.read().is_some() { "ready" } else { "" },
                 // Serialize on hover.
-                onmouseover: move |e| async move {
+                onmouseover: move |e| {
                     e.prevent_default();
-                    let json = serde_json::to_string_pretty(&json!({
-                        "prompt": prompt.read().deref(),
-                        "tool_state": toolbox.write().save_json().await,
-                    })).unwrap();
+                    let json = serde_json::to_string_pretty(
+                        prompt.read().deref()
+                    ).unwrap();
                     ready_json.write().replace(json);
                 },
                 onmouseleave: move |e| {
@@ -725,6 +770,36 @@ pub fn Chat() -> Element {
                     },
                     download: "prompt.json",
                     "Save"
+                }
+            }
+            button {
+                class: "toggle",
+                class: "save",
+                class: if ready_tool_json.read().is_some() { "ready" } else { "" },
+                // Serialize on hover.
+                onmouseover: move |e| async move {
+                    e.prevent_default();
+                    let json = serde_json::to_string_pretty(
+                        &toolbox.write().save_json().await
+                    ).unwrap();
+                    ready_tool_json.write().replace(json);
+                },
+                onmouseleave: move |e| {
+                    e.prevent_default();
+                    ready_tool_json.write().take();
+                },
+                // Download the JSON.
+                a {
+                    href: if let Some(json) = ready_tool_json.read().deref() {
+                        Some(format!(
+                            "data:application/json;base64,{}",
+                            BASE64.encode(json.as_bytes())
+                        ))
+                    } else {
+                        None
+                    },
+                    download: "tool_state.json",
+                    "Save Tools"
                 }
             }
         }
