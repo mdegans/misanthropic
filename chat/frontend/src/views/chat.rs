@@ -61,6 +61,43 @@ struct ToolStateFile {
     tools: serde_json::Map<String, serde_json::Value>,
 }
 
+/// Whether a toolbox `save_json` value carries no actual state — every tool
+/// serialized to `null`, `[]`, or `{}`.
+///
+/// An empty toolbox is perfectly valid in general (so the library doesn't
+/// forbid it), but the demo must never *persist* one over existing browser
+/// storage: a transient empty (e.g. a save firing before notes are restored)
+/// would otherwise wipe real notes that survive across sessions.
+fn is_empty_tool_state(state: &serde_json::Value) -> bool {
+    state
+        .get("tools")
+        .and_then(serde_json::Value::as_object)
+        .map(|tools| {
+            tools.values().all(|v| match v {
+                serde_json::Value::Null => true,
+                serde_json::Value::Array(a) => a.is_empty(),
+                serde_json::Value::Object(o) => o.is_empty(),
+                _ => false,
+            })
+        })
+        .unwrap_or(true)
+}
+
+/// Serialize the toolbox and write it to the persistent store — unless it's
+/// [`is_empty_tool_state`], in which case we leave existing storage untouched.
+/// Signals are `Copy`, so both are taken by value.
+async fn persist_tool_state(
+    mut toolbox: Signal<misanthropic::tool::ToolBox>,
+    mut toolbox_state: Signal<serde_json::Value>,
+) {
+    let saved = toolbox.write().save_json().await;
+    if is_empty_tool_state(&saved) {
+        log::debug!("Tool state is empty; leaving stored state untouched.");
+        return;
+    }
+    toolbox_state.set(saved);
+}
+
 /// A test prompt for testing the chat view.
 #[cfg(debug_assertions)]
 fn make_prompt() -> Prompt<'static> {
@@ -206,7 +243,7 @@ pub fn Chat() -> Element {
     // `LocalStorage`, not `use_persistent` (which is `SessionStorage` — dies
     // with the tab and isn't shared across tabs). The notepad's whole point is
     // notes from *other sessions*, so it needs to survive a tab/browser close.
-    let mut toolbox_state =
+    let toolbox_state =
         use_storage::<LocalStorage, _>("toolbox-state".to_string(), || {
             serde_json::Value::Null
         });
@@ -245,6 +282,14 @@ pub fn Chat() -> Element {
         // it's `.set()` on every tool call, and subscribing would restart the
         // whole stream each time. Outside the reconnect `loop` so a reconnect
         // never clobbers in-session tool state with the last snapshot.
+        log::info!(
+            "Restoring tool state from storage ({}).",
+            if toolbox_state.peek().is_null() {
+                "empty"
+            } else {
+                "present"
+            }
+        );
         if let Err(e) = toolbox
             .write()
             .load_json(toolbox_state.peek().clone())
@@ -300,8 +345,8 @@ pub fn Chat() -> Element {
                                         .write()
                                         .call(tool_use.clone())
                                         .await;
-                                    toolbox_state
-                                        .set(toolbox.write().save_json().await);
+                                    persist_tool_state(toolbox, toolbox_state)
+                                        .await;
                                     log::info!("Tool result: {:?}", result);
 
                                     // We send the result back to the server.
@@ -612,7 +657,7 @@ pub fn Chat() -> Element {
                                         } else {
                                             log::info!("Tool state loaded.");
                                         }
-                                        toolbox_state.set(toolbox.write().save_json().await);
+                                        persist_tool_state(toolbox, toolbox_state).await;
 
                                         // Re-apply to the current prompt so newly
                                         // loaded notes appear in the system block,
