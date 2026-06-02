@@ -2,7 +2,7 @@ use std::ops::Deref;
 
 use dioxus::{html::HasFileData, prelude::*};
 
-use dioxus_sdk::storage::use_persistent;
+use dioxus_sdk::storage::{use_storage, LocalStorage};
 use misanthropic::{
     dioxus::{
         opts::{self, HeadingLevel},
@@ -203,8 +203,13 @@ pub fn Chat() -> Element {
     let mut show_system = use_signal(|| false);
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
+    // `LocalStorage`, not `use_persistent` (which is `SessionStorage` — dies
+    // with the tab and isn't shared across tabs). The notepad's whole point is
+    // notes from *other sessions*, so it needs to survive a tab/browser close.
     let mut toolbox_state =
-        use_persistent("toolbox-state", || serde_json::Value::Null);
+        use_storage::<LocalStorage, _>("toolbox-state".to_string(), || {
+            serde_json::Value::Null
+        });
     // Created un-loaded; persisted state is restored asynchronously as the
     // first step of the stream task (see below), before the first prompt is
     // requested. Doing it here would require `block_on`, which only works for
