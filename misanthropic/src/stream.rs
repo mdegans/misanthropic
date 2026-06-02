@@ -501,39 +501,15 @@ impl futures::Stream for Stream {
     }
 }
 
-/// Extension trait for our crate [`Event`] [`Stream`]s to filter out
-/// [`RateLimit`] and [`Overloaded`] [`AnthropicError`]s, as well as several
-/// other common use cases.
+/// Extension trait for our crate [`Event`] [`Stream`]s covering several common
+/// use cases such as extracting [`Delta`]s or [`text`] and assembling complete
+/// [`Message`]s in place.
 ///
-/// This is recommended for most use cases.
-///
-/// [`RateLimit`]: AnthropicError::RateLimit
-/// [`Overloaded`]: AnthropicError::Overloaded
+/// [`text`]: FilterExt::text
+/// [`Message`]: response::Message
 pub trait FilterExt:
     futures::stream::Stream<Item = Result<Event, Error>> + Sized + Send
 {
-    /// Filter out rate limit and overload errors. Because the server sends
-    /// these events there isn't a need to retry or backoff. The stream will
-    /// continue when ready.
-    ///
-    /// This is recommended for most use cases.
-    fn filter_rate_limit(
-        self,
-    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
-        self.filter_map(|result| async move {
-            match result {
-                Ok(event) => Some(Ok(event)),
-                Err(Error::Anthropic {
-                    error:
-                        AnthropicError::Overloaded { .. }
-                        | AnthropicError::RateLimit { .. },
-                    ..
-                }) => None,
-                Err(error) => Some(Err(error)),
-            }
-        })
-    }
-
     /// Filter out everything but [`Event::ContentBlockDelta`]. This can include
     /// text, JSON, and tool use.
     fn deltas(
@@ -1067,12 +1043,7 @@ pub(crate) mod tests {
         // path in the `Stream` struct and every event type.
         let stream = mock_stream(include_str!("../test/data/sse.stream.txt"));
 
-        let text: String = stream
-            .filter_rate_limit()
-            .text()
-            .try_collect()
-            .await
-            .unwrap();
+        let text: String = stream.text().try_collect().await.unwrap();
 
         assert_eq!(
             text,
@@ -1102,12 +1073,7 @@ pub(crate) mod tests {
             mock_stream(include_str!("../test/data/thinking.sse.stream.txt"));
 
         // Test the text stream filters out the thinking delta.
-        let text: String = stream
-            .filter_rate_limit()
-            .text()
-            .try_collect()
-            .await
-            .unwrap();
+        let text: String = stream.text().try_collect().await.unwrap();
 
         assert_eq!(text, "27 * 453 = 12,231");
     }
@@ -1200,12 +1166,7 @@ pub(crate) mod tests {
         let stream = mock_stream_jsonl(JSON);
 
         // Test the text stream filters out the thinking delta.
-        let text: String = stream
-            .filter_rate_limit()
-            .text()
-            .try_collect()
-            .await
-            .unwrap();
+        let text: String = stream.text().try_collect().await.unwrap();
 
         assert_eq!(
             text,
@@ -1252,11 +1213,7 @@ pub(crate) mod tests {
 
         // In a real app you could RwLock the prompt and pass a reference, and
         // then append to the same prompt with `.write().await.extend(stream)`.
-        let stream = client
-            .stream(prompt.clone())
-            .await
-            .unwrap()
-            .filter_rate_limit();
+        let stream = client.stream(prompt.clone()).await.unwrap();
 
         pin_mut!(stream);
 

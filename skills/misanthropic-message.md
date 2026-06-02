@@ -23,7 +23,6 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 |------|---------|---------|
 | `client` | yes | Enables `Client` (HTTP). Disable for wasm data-only. |
 | `rustls-tls` | yes | Use rustls instead of system OpenSSL. |
-| `rate-limiting` | yes | Client-side rate limiting via `governor`. |
 | `prompt-caching` | no | Anthropic prompt-caching beta headers. |
 | `markdown` | no | `ToMarkdown` trait, markdown rendering. |
 | `image` / `png` / `jpeg` / `gif` / `webp` | no | Image support via the `image` crate. |
