@@ -106,8 +106,9 @@ The `batch` and `client` features don't build on wasm32.
 ## GitHub conventions
 
 - When Claude files an issue or opens a PR on Michael's behalf (via `gh`),
-  attribute it. Commits already carry a `Co-Authored-By: Claude …` trailer;
-  issues and PRs should close with a footer line noting they were authored by
-  Claude Code (e.g. `🤖 Filed by Claude Code` on issues, the standard
-  `🤖 Generated with Claude Code` footer on PRs) so authorship is never
-  ambiguous.
+  attribute it — even when Michael explicitly asked for it. This is about
+  Claude getting credit for the work it does on the project, not only about
+  avoiding misattribution to Michael. Commits already carry a
+  `Co-Authored-By: Claude …` trailer; issues and PRs should close with a
+  footer line crediting Claude Code (e.g. `🤖 Filed by Claude Code` on issues,
+  the standard `🤖 Generated with Claude Code` footer on PRs).
