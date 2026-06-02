@@ -355,6 +355,13 @@ impl Tool for ToolBox {
         &mut self,
         json: serde_json::Value,
     ) -> std::result::Result<(), String> {
+        // `null` is the "nothing saved yet" sentinel (e.g. an empty persistent
+        // store). Treat it as a no-op rather than a deserialization error, in
+        // keeping with the permissive [`Tool::load_json`] default.
+        if json.is_null() {
+            return Ok(());
+        }
+
         let mut errors = Vec::new();
 
         let state: State = match serde_json::from_value(json) {
@@ -624,5 +631,13 @@ mod tests {
         let json = a.save_json().await;
         b.load_json(json).await.unwrap();
         assert_eq!(a.save_json().await, b.save_json().await);
+    }
+
+    #[tokio::test]
+    async fn test_load_json_null_is_noop() {
+        // `null` is the "nothing saved yet" sentinel (e.g. an empty persistent
+        // store). It must load cleanly rather than erroring.
+        let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
+        toolbox.load_json(serde_json::Value::Null).await.unwrap();
     }
 }
