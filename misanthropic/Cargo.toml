@@ -105,7 +105,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # for request ids
 uuid = { version = "1", features = ["v4", "serde"] }
 # Dioxus support
-dioxus = { version = "0.6", optional = true }
+dioxus = { version = "0.7", optional = true }
 # JSON Schema generation for structured outputs and typed tools. Core: tool
 # calling is a core feature, so schemars is non-optional.
 schemars = { version = "1" }
