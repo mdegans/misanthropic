@@ -149,27 +149,22 @@ impl ToolBox {
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
     /// [`MethodDef`]s.
+    ///
+    /// If no [`Tool`] of the same name is present this is equivalent to
+    /// [`Self::push_boxed`].
     pub fn replace_boxed(&mut self, tool: Box<dyn Tool + Send>) {
-        let self_name = self.name.as_ref();
         let tool_name = tool.name().to_string();
-        let function_names = tool.definitions().into_iter().map(|method| {
-            format!(
-                "{self_name}{sep}{tool}{sep}{method}",
-                sep = Self::SEP,
-                tool = tool.name(),
-                method = method.name
-            )
-        });
 
-        // Remove the old tool and its methods.
-        for name in function_names {
-            if let Some(old_tool_name) = self
-                .method_to_tool_name
-                .insert(name.into(), tool_name.clone())
-            {
-                self.tool_name_to_tool.remove(&old_tool_name);
-            }
-        }
+        // Drop every route belonging to the tool we're replacing, so a
+        // replacement exposing a *different* set of methods leaves no stale
+        // entries behind.
+        self.method_to_tool_name
+            .retain(|_, routed| routed != &tool_name);
+
+        // Re-add via `push_boxed` so the `box__tool__method` key shape has a
+        // single source of truth; its insert overwrites the old same-named
+        // tool in `tool_name_to_tool`.
+        self.push_boxed(tool);
     }
 
     /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
@@ -571,13 +566,62 @@ mod tests {
         assert!(names.contains(&"toolbox__potato__TestTool__test"));
     }
 
-    #[test]
-    fn test_replace_tool() {
+    /// A second tool that shares [`TestTool`]'s name but exposes a *different*
+    /// method, so [`test_replace_tool`] can tell the two apart after a replace.
+    struct ReplacementTool;
+
+    #[async_trait::async_trait]
+    impl Tool for ReplacementTool {
+        fn name(&self) -> &str {
+            "TestTool"
+        }
+
+        fn definitions(&self) -> Vec<MethodDef<'static>> {
+            vec![MethodDef {
+                name: "TestTool__replaced".into(),
+                description: "Replacement Tool".into(),
+                schema: serde_json::json!({ "type": "object" }),
+                cache_control: None,
+                strict: None,
+            }]
+        }
+
+        async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
+            Result {
+                tool_use_id: call.id,
+                content: "Replaced tool called".into(),
+                is_error: false,
+                cache_control: None,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_replace_tool() {
         let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let tool = TestTool { calls: Vec::new() };
-        toolbox.replace(tool);
+
+        // Replace it with a same-named tool exposing a different method.
+        toolbox.replace(ReplacementTool);
+
         let names: Vec<&str> = toolbox.method_names().collect();
-        assert!(names.contains(&"toolbox__TestTool__test"));
+        // The old tool's route is gone...
+        assert!(!names.contains(&"toolbox__TestTool__test"));
+        // ...and the replacement is keyed under its advertised name.
+        assert!(names.contains(&"toolbox__TestTool__replaced"));
+        // The old tool was evicted, not merely shadowed.
+        assert_eq!(toolbox.tool_names().count(), 1);
+
+        // A call to the advertised name routes to the replacement.
+        let result = toolbox
+            .call(Use {
+                id: "id".into(),
+                name: "toolbox__TestTool__replaced".into(),
+                input: serde_json::json!({}),
+                cache_control: None,
+            })
+            .await;
+        assert!(!result.is_error);
+        assert_eq!(result.content, "Replaced tool called".into());
     }
 
     #[test]
