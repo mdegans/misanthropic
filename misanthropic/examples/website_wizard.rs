@@ -72,10 +72,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
           ],
         }))
         .await?
-        // Filter out rate limit and overloaded errors. This is optional but
-        // recommended for most use cases. The stream will continue when the
-        // server is ready. Otherwise the stream will include these errors.
-        .filter_rate_limit()
         // Filter out everything but text pieces (and errors).
         .text();
 

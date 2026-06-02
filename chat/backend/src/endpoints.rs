@@ -198,10 +198,6 @@ pub async fn events_stream(
             // full messages and tool use events.
             let stream = match state.client.stream(prompt.deref()).await {
                 Ok(stream) => stream
-                    // Anthropic is sending *us* messages so this is not very
-                    // important, however with many users it might be useful to
-                    // include rate limit errors.
-                    .filter_rate_limit()
                     // Adds a full message event, `Event::Message` and tool use.
                     .with_message_ip(&mut assistant_message),
                 Err(e) => {

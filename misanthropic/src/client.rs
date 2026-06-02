@@ -1355,7 +1355,6 @@ mod tests {
             .unwrap();
 
         let msg: String = stream
-            .filter_rate_limit()
             .text()
             .try_collect()
             .await
