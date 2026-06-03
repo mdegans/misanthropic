@@ -997,9 +997,10 @@ impl<'a> Prompt<'a> {
     ///   for `Event::Message` and `Event::ToolUse` events, checking for the
     ///   consistency of the final message or tool use. Otherwise these messages
     ///   are ignored.
-    // TODO(1.0): `ApplyEventError` variants carry the offending message/block
-    // (~216 bytes), which sizes every `Result` on this per-delta hot path.
-    // Boxing them is a breaking change deferred to the 1.0 error pass.
+    // `ApplyEventError` embeds the offending message/block (~216 B), so the
+    // `Result<(), _>` is ~216 B. Permanent allow: boxing is breaking, this
+    // isn't stored in bulk (an apply failure is fatal, only the last kept),
+    // and a per-event move is negligible next to per-event JSON parsing.
     #[allow(clippy::result_large_err)]
     pub fn handle_stream_event(
         &mut self,
