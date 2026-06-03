@@ -73,6 +73,7 @@ impl<'a> Id<'a> {
                 AnthropicModel::Opus45 => "claude-opus-4-5",
                 AnthropicModel::Sonnet46 => "claude-sonnet-4-6",
                 AnthropicModel::Opus46 => "claude-opus-4-6",
+                AnthropicModel::Opus48 => "claude-opus-4-8",
             },
             Id::Custom(name) => name,
         }
@@ -228,9 +229,13 @@ pub enum AnthropicModel {
     /// Sonnet 4.6
     #[serde(rename = "claude-sonnet-4-6")]
     Sonnet46,
-    /// Opus 4.6 (latest flagship)
+    /// Opus 4.6
     #[serde(rename = "claude-opus-4-6")]
     Opus46,
+    /// Opus 4.8 (latest flagship). First model to support
+    /// [mid-conversation system messages](crate::prompt::message::Role::System).
+    #[serde(rename = "claude-opus-4-8")]
+    Opus48,
 }
 
 impl AnthropicModel {
@@ -260,6 +265,7 @@ impl AnthropicModel {
         AnthropicModel::Opus45,
         AnthropicModel::Sonnet46,
         AnthropicModel::Opus46,
+        AnthropicModel::Opus48,
     ];
 
     /// Get the display name of the model.
@@ -289,6 +295,7 @@ impl AnthropicModel {
             AnthropicModel::Opus45 => "opus-4.5-latest",
             AnthropicModel::Sonnet46 => "sonnet-4.6",
             AnthropicModel::Opus46 => "opus-4.6",
+            AnthropicModel::Opus48 => "opus-4.8",
         }
     }
 }
