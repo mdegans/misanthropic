@@ -232,4 +232,9 @@ name = "tool_search"
 required-features = ["client", "derive"]
 doc-scrape-examples = true
 
+[[example]]
+name = "interleaved_thinking"
+required-features = ["client", "derive"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.
