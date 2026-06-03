@@ -150,13 +150,24 @@ pub struct Prompt<'a> {
 }
 
 impl std::fmt::Debug for Prompt<'_> {
-    /// For the sake of user privacy, the debug repr of a [`Prompt`] will hide
-    /// the user's chat history. Otherwise it's likely to end up in logs.
+    /// For the sake of user privacy, the debug repr of a [`Prompt`] hides the
+    /// `messages` (the chat history) — only their count is shown — since this
+    /// is the field most likely to carry user data into logs. Every other
+    /// field is request configuration and is shown in full.
     ///
-    /// Metadata is still shown, so don't put PII in there. If you do, somewhere
-    /// in your design you've made a mistake. Rethink your design.
+    /// `metadata` is shown too, so don't put PII there. If you do, somewhere in
+    /// your design you've made a mistake. Rethink your design.
+    ///
+    /// Fields are listed in declaration order so this stays easy to reconcile
+    /// against the struct when new ones are added.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Prompt")
+            .field("model", &self.model)
+            .field(
+                "messages",
+                &format_args!("<{} hidden>", self.messages.len()),
+            )
+            .field("max_tokens", &self.max_tokens)
             .field("metadata", &self.metadata)
             .field("stop_sequences", &self.stop_sequences)
             .field("stream", &self.stream)
@@ -165,12 +176,14 @@ impl std::fmt::Debug for Prompt<'_> {
             .field("tool_choice", &self.tool_choice)
             .field("tools", &self.methods)
             .field("top_k", &self.top_k)
+            .field("top_p", &self.top_p)
+            .field("thinking", &self.thinking)
             .field("output_config", &self.output_config)
-            .field("...", &"...")
+            .field("service_tier", &self.service_tier)
+            .field("inference_geo", &self.inference_geo)
+            .field("container", &self.container)
             .finish()
     }
-    // For all sorts of reasons like user privacy we are going to hide the
-    // contents of the prompt as in `Prompts`
 }
 
 impl Default for Prompt<'_> {
@@ -1532,6 +1545,31 @@ mod tests {
             .find(|t| t["type"] == "tool_search_tool_regex_20251119")
             .unwrap();
         assert!(search.get("defer_loading").is_none());
+    }
+
+    #[test]
+    fn debug_hides_messages_shows_config() {
+        let prompt = Prompt {
+            top_p: Some(0.9),
+            container: Some("container-xyz".into()),
+            service_tier: Some(ServiceTier::Auto),
+            inference_geo: Some(InferenceGeo::Us),
+            ..Default::default()
+        }
+        .add_message((Role::User, "SECRET-USER-DATA"))
+        .unwrap();
+
+        let dbg = format!("{prompt:?}");
+        // The chat history is the privacy-sensitive part: content hidden, only
+        // the count shown.
+        assert!(!dbg.contains("SECRET-USER-DATA"), "messages leaked: {dbg}");
+        assert!(dbg.contains("messages: <1 hidden>"), "{dbg}");
+        // Request configuration is shown in full — these fields were all
+        // missing from the Debug impl before #73.
+        assert!(dbg.contains("container-xyz"), "container hidden: {dbg}");
+        assert!(dbg.contains("top_p: Some(0.9)"), "top_p hidden: {dbg}");
+        assert!(dbg.contains("service_tier"), "service_tier hidden: {dbg}");
+        assert!(dbg.contains("inference_geo"), "inference_geo hidden: {dbg}");
     }
 
     // Credit to GitHub Copilot for the following tests.
