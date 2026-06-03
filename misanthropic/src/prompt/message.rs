@@ -1988,6 +1988,13 @@ pub enum Image<'a> {
         /// Base64 encoded compressed image data.
         data: Cow<'a, str>,
     },
+    /// URL to a hosted image. Anthropic fetches it server-side; the crate never
+    /// downloads it. When displayed, rendered as a markdown image to the URL.
+    #[display("![Image]({url})")]
+    Url {
+        /// The image URL.
+        url: Cow<'a, str>,
+    },
 }
 
 impl<'a> Image<'a> {
@@ -1995,6 +2002,12 @@ impl<'a> Image<'a> {
     /// image data or the API will reject it.
     pub fn from_parts(media_type: MediaType, data: Cow<'a, str>) -> Self {
         Self::Base64 { media_type, data }
+    }
+
+    /// From a URL to a hosted image. Anthropic fetches it server-side; the
+    /// crate never downloads it.
+    pub fn from_url(url: impl Into<Cow<'a, str>>) -> Self {
+        Self::Url { url: url.into() }
     }
 
     /// Encode from compressed image data (not base64 encoded). This cannot fail
@@ -2039,6 +2052,7 @@ impl<'a> Image<'a> {
                 let data = general_purpose::STANDARD.decode(data.as_bytes())?;
                 Ok(image::load_from_memory(&data)?.to_rgba8())
             }
+            Self::Url { .. } => Err(ImageDecodeError::Url),
         }
     }
 
@@ -2052,6 +2066,9 @@ impl<'a> Image<'a> {
                 media_type,
                 data: std::borrow::Cow::Owned(data.into_owned()),
             },
+            Self::Url { url } => Image::Url {
+                url: std::borrow::Cow::Owned(url.into_owned()),
+            },
         }
     }
 
@@ -2061,6 +2078,7 @@ impl<'a> Image<'a> {
     pub fn len(&self) -> usize {
         match self {
             Self::Base64 { data, .. } => data.len(),
+            Self::Url { url } => url.len(),
         }
     }
 }
@@ -2075,6 +2093,9 @@ pub enum ImageDecodeError {
     /// Invalid image data.
     #[error("Image decode error: {0}")]
     Image(#[from] image::ImageError),
+    /// The source is a URL, not embedded data — fetch the URL yourself first.
+    #[error("cannot decode a URL image source; fetch the URL first")]
+    Url,
 }
 
 #[cfg(feature = "image")]
@@ -2698,6 +2719,35 @@ mod tests {
         let actual: image::RgbaImage = image.try_into().unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_image_url_source() {
+        // URL sources need no image feature: construct, serde round-trip, and
+        // render as a markdown image link via `Display`.
+        let image = Image::from_url("https://example.com/cat.png");
+        assert!(matches!(image, Image::Url { .. }));
+        assert_eq!(image.to_string(), "![Image](https://example.com/cat.png)");
+        assert_eq!(image.len(), "https://example.com/cat.png".len());
+
+        let json = serde_json::to_value(&image).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "type": "url",
+                "url": "https://example.com/cat.png",
+            })
+        );
+
+        let back: Image = serde_json::from_value(json).unwrap();
+        assert_eq!(back.into_static().to_string(), image.to_string());
+    }
+
+    #[test]
+    #[cfg(feature = "image")]
+    fn test_image_url_cannot_decode() {
+        let image = Image::from_url("https://example.com/cat.png");
+        assert!(matches!(image.decode(), Err(ImageDecodeError::Url)));
     }
 
     #[test]

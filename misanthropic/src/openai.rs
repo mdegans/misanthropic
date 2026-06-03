@@ -569,16 +569,18 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
                 text_parts.push(text.to_string());
             }
             Block::Image { image, .. } => {
-                let Image::Base64 {
-                    media_type, data, ..
-                } = image;
-                let mt = match media_type {
-                    MediaType::Jpeg => "image/jpeg",
-                    MediaType::Png => "image/png",
-                    MediaType::Gif => "image/gif",
-                    MediaType::Webp => "image/webp",
+                let data_url = match image {
+                    Image::Base64 { media_type, data } => {
+                        let mt = match media_type {
+                            MediaType::Jpeg => "image/jpeg",
+                            MediaType::Png => "image/png",
+                            MediaType::Gif => "image/gif",
+                            MediaType::Webp => "image/webp",
+                        };
+                        format!("data:{};base64,{}", mt, data)
+                    }
+                    Image::Url { url } => url.to_string(),
                 };
-                let data_url = format!("data:{};base64,{}", mt, data);
                 image_parts.push(ChatContentPart::ImageUrl {
                     image_url: ImageUrl {
                         url: data_url,

@@ -368,6 +368,7 @@ impl IntoElement for &Block<'_> {
                                         media_type, data
                                     )
                                 }
+                                message::Image::Url { url } => url.to_string(),
                             }
                         }
                     })
