@@ -137,6 +137,15 @@ pub struct Prompt<'a> {
     /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
+    /// Capacity tier for the request. See [`ServiceTier`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
+    /// Geographic region constraint for inference. See [`InferenceGeo`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<InferenceGeo>,
+    /// Container ID to reuse across requests (used with code execution).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub container: Option<Cow<'a, str>>,
 }
 
 impl std::fmt::Debug for Prompt<'_> {
@@ -180,8 +189,34 @@ impl Default for Prompt<'_> {
             top_p: Default::default(),
             thinking: Default::default(),
             output_config: Default::default(),
+            service_tier: Default::default(),
+            inference_geo: Default::default(),
+            container: Default::default(),
         }
     }
+}
+
+/// Capacity tier for a request. Set via [`Prompt::service_tier`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+#[serde(rename_all = "snake_case")]
+pub enum ServiceTier {
+    /// Let the API choose the tier (priority when available).
+    Auto,
+    /// Use only the standard tier — never priority capacity.
+    StandardOnly,
+}
+
+/// Geographic region constraint for inference. Set via
+/// [`Prompt::inference_geo`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceGeo {
+    /// United States.
+    Us,
+    /// European Union.
+    Eu,
 }
 
 /// Message turn order is incorrect. A pure prompt-construction fault the caller
@@ -675,6 +710,30 @@ impl<'a> Prompt<'a> {
         self
     }
 
+    /// Set the [`service_tier`] (capacity tier) for the request.
+    ///
+    /// [`service_tier`]: Prompt::service_tier
+    pub fn service_tier(mut self, tier: ServiceTier) -> Self {
+        self.service_tier = Some(tier);
+        self
+    }
+
+    /// Set the [`inference_geo`] (region constraint) for the request.
+    ///
+    /// [`inference_geo`]: Prompt::inference_geo
+    pub fn inference_geo(mut self, geo: InferenceGeo) -> Self {
+        self.inference_geo = Some(geo);
+        self
+    }
+
+    /// Set the [`container`] ID to reuse across requests (code execution).
+    ///
+    /// [`container`]: Prompt::container
+    pub fn container(mut self, id: impl Into<Cow<'a, str>>) -> Self {
+        self.container = Some(id.into());
+        self
+    }
+
     /// Set the [`tool::Choice`]. This constrains how the model uses tools.
     ///
     /// [`tool::Choice`]: crate::tool::Choice
@@ -986,6 +1045,9 @@ impl<'a> Prompt<'a> {
             top_p: self.top_p,
             thinking: self.thinking,
             output_config: self.output_config,
+            service_tier: self.service_tier,
+            inference_geo: self.inference_geo,
+            container: self.container.map(Cow::into_owned).map(Cow::Owned),
         }
     }
 
@@ -1631,6 +1693,31 @@ mod tests {
             .add_message((Role::Assistant, "hello again"))
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_request_params_serde() {
+        let prompt = Prompt::default()
+            .service_tier(ServiceTier::StandardOnly)
+            .inference_geo(InferenceGeo::Eu)
+            .container("ctr_123");
+
+        let json = serde_json::to_value(&prompt).unwrap();
+        assert_eq!(json["service_tier"], "standard_only");
+        assert_eq!(json["inference_geo"], "eu");
+        assert_eq!(json["container"], "ctr_123");
+
+        // Omitted entirely when unset.
+        let bare = serde_json::to_value(Prompt::default()).unwrap();
+        assert!(bare.get("service_tier").is_none());
+        assert!(bare.get("inference_geo").is_none());
+        assert!(bare.get("container").is_none());
+
+        // Round-trip.
+        let back: Prompt = serde_json::from_value(json).unwrap();
+        assert_eq!(back.service_tier, Some(ServiceTier::StandardOnly));
+        assert_eq!(back.inference_geo, Some(InferenceGeo::Eu));
+        assert_eq!(back.container.as_deref(), Some("ctr_123"));
     }
 
     #[test]
