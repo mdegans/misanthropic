@@ -1221,10 +1221,8 @@ pub(crate) mod tests {
         let prompt = Prompt::default()
             // Only sonnet 3.7 and newer will respond to the trigger.
             .model(AnthropicModel::Sonnet37)
-            .thinking(prompt::Thinking {
-                budget_tokens: 1024.try_into().unwrap(),
-                kind: prompt::thinking::Kind::Enabled,
-            })
+            // Sonnet 3.7 still accepts the deprecated fixed-budget mode.
+            .thinking(prompt::Thinking::enabled(1024.try_into().unwrap()))
             .add_message(Message {
                 role: Role::User,
                 content: TRIGGER.into(),

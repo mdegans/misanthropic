@@ -26,6 +26,7 @@ pub mod message;
 pub use message::{AssistantMessage, Message, UserMessage};
 
 pub mod thinking;
+pub use thinking::Display as ThinkingDisplay;
 pub use thinking::Thinking;
 
 pub mod cached;
@@ -109,10 +110,10 @@ pub struct Prompt<'a> {
     /// randomness.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
-    /// Thinking support. Note that this is only required for using Anthropic's
-    /// built-in COT support with Sonnet 3.7 and later models. The `cot` feature
-    /// can be used with all models, provided the system prompt instructs the
-    /// Assistant to use `<thiking>` tags.
+    /// Extended thinking support, for Anthropic's built-in chain-of-thought on
+    /// Sonnet 3.7 and later. Use [`Thinking::adaptive`] on current models. The
+    /// `cot` feature works with all models instead, provided the system prompt
+    /// instructs the Assistant to use `<thinking>` tags.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     /// Structured output configuration. When set, the response is
