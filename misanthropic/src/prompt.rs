@@ -180,16 +180,40 @@ impl Default for Prompt<'_> {
     }
 }
 
-/// Message turn order is incorrect.
+/// Message turn order is incorrect. A pure prompt-construction fault the caller
+/// can fix before any request is sent.
+///
+/// [`User`] and [`Assistant`] turns must alternate. A [`System`] turn may not
+/// open the conversation; it must follow a user turn and either end the array
+/// or immediately precede an assistant turn.
+///
+/// [`User`]: crate::prompt::message::Role::User
+/// [`Assistant`]: crate::prompt::message::Role::Assistant
+/// [`System`]: crate::prompt::message::Role::System
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
-#[error(
-    "The message turn order must alternate between User and Assistant. The first message is {first:?} and the second message is {second:?}."
-)]
-pub struct TurnOrderError {
-    /// First message in the pair of duplicate roles.
-    pub first: Message<'static>,
-    /// Second message in the pair of duplicate roles.
-    pub second: Message<'static>,
+pub enum TurnOrderError {
+    /// The first message must be from the user — assistant and system turns
+    /// cannot open a conversation. Use the top-level [`Prompt::system`] field
+    /// for from-the-start instructions.
+    ///
+    /// [`Prompt::system`]: Prompt::system
+    #[error("the first message must be from the user, but it is a {} turn", .message.role)]
+    BadFirst {
+        /// The offending first message.
+        message: Message<'static>,
+    },
+    /// `second` is not a legal turn after `first`. Either two same-role turns
+    /// are adjacent, or a [`System`] turn is misplaced (not preceded by a user
+    /// turn, or not followed by an assistant turn).
+    ///
+    /// [`System`]: crate::prompt::message::Role::System
+    #[error("a {} turn may not immediately follow a {} turn", .second.role, .first.role)]
+    BadTransition {
+        /// The earlier message.
+        first: Message<'static>,
+        /// The message that may not follow it.
+        second: Message<'static>,
+    },
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
@@ -267,12 +291,20 @@ impl<'a> Prompt<'a> {
         Ok(self)
     }
 
-    /// Check the turn order of [`messages`]. Returns the **first** pair of
-    /// messages that are the same role.
+    /// Check the turn order of [`messages`]. Returns the **first** placement
+    /// violation found.
+    ///
+    /// [`messages`]: Prompt::messages
     pub fn check_turn_order(&self) -> Result<(), TurnOrderError> {
+        if let Some(first) = self.messages.first().filter(|m| !m.role.is_user())
+        {
+            return Err(TurnOrderError::BadFirst {
+                message: first.clone().into_static(),
+            });
+        }
         for pair in self.messages.windows(2) {
-            if pair[0].role == pair[1].role {
-                return Err(TurnOrderError {
+            if !pair[0].role.may_precede(pair[1].role) {
+                return Err(TurnOrderError::BadTransition {
                     first: pair[0].clone().into_static(),
                     second: pair[1].clone().into_static(),
                 });
@@ -333,20 +365,22 @@ impl<'a> Prompt<'a> {
         M: Into<Message<'a>>,
     {
         let message: Message<'a> = message.into();
-        if let Some(last) = self.messages.last() {
-            if last.role == message.role {
-                return Err(TurnOrderError {
-                    first: last.clone().into_static(),
-                    second: message.clone().into_static(),
-                });
+        match self.messages.last() {
+            Some(last) => {
+                if !last.role.may_precede(message.role) {
+                    return Err(TurnOrderError::BadTransition {
+                        first: last.clone().into_static(),
+                        second: message.clone().into_static(),
+                    });
+                }
             }
-        } else {
-            // The first message must be a user message.
-            if message.role.is_assistant() {
-                return Err(TurnOrderError {
-                    first: message.clone().into_static(),
-                    second: message.clone().into_static(),
-                });
+            None => {
+                // The first message must be a user message.
+                if !message.role.is_user() {
+                    return Err(TurnOrderError::BadFirst {
+                        message: message.clone().into_static(),
+                    });
+                }
             }
         }
         self.messages.push(message);
@@ -1431,6 +1465,89 @@ mod tests {
             prompt.push_messages([(Role::User, "Hello"), (Role::User, "Hi")]);
         assert!(result.is_err());
         assert!(prompt.messages.is_empty());
+    }
+
+    #[test]
+    fn test_system_cannot_be_first() {
+        let err = Prompt::default()
+            .add_message((Role::System, "be terse"))
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::BadFirst { .. }));
+    }
+
+    #[test]
+    fn test_system_follows_user_and_ends_array() {
+        // user → system, with system as the last entry, is legal.
+        let prompt = Prompt::default()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .add_message((Role::System, "be terse"))
+            .unwrap();
+        assert_eq!(prompt.messages.len(), 2);
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_system_between_user_and_assistant() {
+        // user → system → assistant is legal.
+        let prompt = Prompt::default()
+            .add_messages([
+                (Role::User, "hi"),
+                (Role::System, "be terse"),
+                (Role::Assistant, "ok."),
+            ])
+            .unwrap();
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_system_cannot_follow_assistant() {
+        // assistant → system is rejected (legal only after server tool use,
+        // which the crate cannot yet construct).
+        let err = Prompt::default()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .add_message((Role::Assistant, "hello!"))
+            .unwrap()
+            .add_message((Role::System, "be terse"))
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_system_must_be_followed_by_assistant() {
+        // system → user is rejected: a system turn must end the array or be
+        // immediately followed by an assistant turn.
+        let err = Prompt::default()
+            .add_messages([
+                (Role::User, "hi"),
+                (Role::System, "be terse"),
+                (Role::User, "still there?"),
+            ])
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_consecutive_system_rejected() {
+        let err = Prompt::default()
+            .add_messages([
+                (Role::User, "hi"),
+                (Role::System, "be terse"),
+                (Role::System, "and polite"),
+            ])
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_system_message_serde_roundtrip() {
+        let message: message::Message =
+            (Role::System, "operator policy").into();
+        let json = serde_json::to_value(&message).unwrap();
+        assert_eq!(json["role"], "system");
+        let back: message::Message = serde_json::from_value(json).unwrap();
+        assert_eq!(back.role, Role::System);
     }
 
     #[test]

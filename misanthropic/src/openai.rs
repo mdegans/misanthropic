@@ -713,6 +713,7 @@ fn chat_message_to_message(msg: ChatMessage) -> Message<'static> {
 
     let role = match msg.role {
         ChatRole::Assistant => Role::Assistant,
+        ChatRole::System => Role::System,
         _ => Role::User,
     };
 
@@ -726,6 +727,7 @@ fn role_to_chat_role(role: Role) -> ChatRole {
     match role {
         Role::User => ChatRole::User,
         Role::Assistant => ChatRole::Assistant,
+        Role::System => ChatRole::System,
     }
 }
 

@@ -197,7 +197,7 @@ impl<'a> CachedPrompt<'a> {
     /// # Errors
     ///
     /// Returns [`TurnOrderError`] if the turn order would be violated
-    /// (consecutive messages from the same role).
+    /// (consecutive same-role turns, or a misplaced system turn).
     pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
     where
         M: Into<Message<'a>>,

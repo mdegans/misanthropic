@@ -34,6 +34,25 @@ pub enum Role {
     User,
     /// From the AI.
     Assistant,
+    /// An operator-authoritative instruction injected *within* the
+    /// conversation, distinct from the top-level [`Prompt::system`] field.
+    ///
+    /// Unlike a [`User`] turn, a system turn is treated as authoritative: when
+    /// instructions conflict, system outranks user. It also overrides the
+    /// top-level system prompt for the turns that follow it, and — appended
+    /// after the cached prefix — does not bust the prompt cache.
+    ///
+    /// Placement is constrained; see [turn order]. Available on
+    /// [Opus 4.8](crate::model::AnthropicModel::Opus48) and later.
+    ///
+    /// Never place untrusted content (raw tool output, retrieved documents,
+    /// web content) in a system turn — keep it in [`tool::Result`] blocks.
+    ///
+    /// [`User`]: Role::User
+    /// [`Prompt::system`]: crate::Prompt::system
+    /// [`tool::Result`]: crate::tool::Result
+    /// [turn order]: crate::prompt::TurnOrderError
+    System,
 }
 
 impl Role {
@@ -42,6 +61,7 @@ impl Role {
         match self {
             Self::User => "User",
             Self::Assistant => "Assistant",
+            Self::System => "System",
         }
     }
 
@@ -50,15 +70,38 @@ impl Role {
         match self {
             Self::User => "user",
             Self::Assistant => "assistant",
+            Self::System => "system",
         }
     }
 
     /// Toggle the role between [`Role::User`] and [`Role::Assistant`].
+    ///
+    /// [`Role::System`] is not part of the user/assistant alternation, so it
+    /// toggles to itself.
     pub const fn toggle(&self) -> Self {
         match self {
             Self::User => Self::Assistant,
             Self::Assistant => Self::User,
+            Self::System => Self::System,
         }
+    }
+
+    /// Whether a turn of role `self` may be immediately followed by a `next`
+    /// turn in the `messages` array.
+    ///
+    /// Encodes the user/assistant alternation plus the placement rules for a
+    /// mid-conversation [`System`](Role::System) turn: it must follow a user
+    /// turn and immediately precede an assistant turn. The
+    /// `assistant → system` transition (legal only after *server* tool use,
+    /// which the crate cannot yet construct) is intentionally rejected.
+    pub(crate) const fn may_precede(self, next: Role) -> bool {
+        matches!(
+            (self, next),
+            (Self::User, Self::Assistant)
+                | (Self::Assistant, Self::User)
+                | (Self::User, Self::System)
+                | (Self::System, Self::Assistant)
+        )
     }
 }
 

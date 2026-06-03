@@ -450,6 +450,8 @@ impl IntoElement for &message::Message<'_> {
                 "tool"
             } else if self.role.is_user() {
                 "user"
+            } else if self.role.is_system() {
+                "system"
             } else {
                 "assistant"
             },
