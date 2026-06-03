@@ -217,4 +217,14 @@ name = "few_shot_triage"
 required-features = ["client"]
 doc-scrape-examples = true
 
+[[example]]
+name = "mid_conversation_system"
+required-features = ["client"]
+doc-scrape-examples = true
+
+[[example]]
+name = "web_search"
+required-features = ["client"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.
