@@ -619,7 +619,8 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
             | Block::RedactedThought { .. }
             | Block::Document { .. }
             | Block::ServerToolUse { .. }
-            | Block::WebSearchToolResult { .. } => {}
+            | Block::WebSearchToolResult { .. }
+            | Block::ToolSearchToolResult { .. } => {}
         }
     }
 

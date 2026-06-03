@@ -212,6 +212,10 @@ pub struct Usage {
 pub struct ServerToolUsage {
     /// Number of web searches performed.
     pub web_search_requests: u64,
+    /// Number of [tool-search](crate::tool::ServerTool::tool_search_regex)
+    /// queries performed.
+    #[serde(default)]
+    pub tool_search_requests: u64,
 }
 
 impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
@@ -221,6 +225,8 @@ impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
         Self {
             web_search_requests: self.web_search_requests
                 + rhs.web_search_requests,
+            tool_search_requests: self.tool_search_requests
+                + rhs.tool_search_requests,
         }
     }
 }

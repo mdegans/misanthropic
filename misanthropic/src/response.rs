@@ -342,6 +342,7 @@ mod tests {
             output_tokens: 4,
             server_tool_use: Some(ServerToolUsage {
                 web_search_requests: 1,
+                tool_search_requests: 10,
             }),
         };
 
@@ -352,6 +353,7 @@ mod tests {
             output_tokens: 8,
             server_tool_use: Some(ServerToolUsage {
                 web_search_requests: 2,
+                tool_search_requests: 20,
             }),
         };
 
@@ -365,6 +367,7 @@ mod tests {
             a.server_tool_use,
             Some(ServerToolUsage {
                 web_search_requests: 3,
+                tool_search_requests: 30,
             })
         );
     }

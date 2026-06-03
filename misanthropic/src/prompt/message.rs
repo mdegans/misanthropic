@@ -1041,6 +1041,21 @@ pub enum Block<'a> {
         /// The search results, or an error.
         content: WebSearchToolResultContent<'a>,
     },
+    /// Result of a [tool-search] server tool call (`tool_search_tool_result`),
+    /// appearing in the assistant turn right after its
+    /// [`ServerToolUse`](Block::ServerToolUse) block. Carries the
+    /// [`tool_reference`](ToolReference)s the API discovered (and expands into
+    /// full definitions automatically), or an error.
+    ///
+    /// [tool-search]: crate::tool::ServerTool::tool_search_regex
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    ToolSearchToolResult {
+        /// The [`id`](tool::Use::id) of the
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'a, str>,
+        /// The discovered tool references, or an error.
+        content: ToolSearchToolResultContent<'a>,
+    },
 }
 
 /// The `content` of a [`Block::WebSearchToolResult`]: either the search results
@@ -1120,6 +1135,72 @@ impl WebSearchToolError<'_> {
     pub fn into_static(self) -> WebSearchToolError<'static> {
         WebSearchToolError {
             error_code: Cow::Owned(self.error_code.into_owned()),
+        }
+    }
+}
+
+/// The `content` of a [`Block::ToolSearchToolResult`]: either the discovered
+/// tool references or an error. Tagged on `type` (unlike the untagged
+/// [`WebSearchToolResultContent`], both arms here are objects carrying a
+/// `type`).
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum ToolSearchToolResultContent<'a> {
+    /// The tools the search discovered. The API expands each
+    /// [`ToolReference`] into the matching deferred tool's full definition
+    /// before the model sees it.
+    #[serde(rename = "tool_search_tool_search_result")]
+    Results {
+        /// The discovered references, in relevance order (3–5 per search).
+        tool_references: Vec<ToolReference<'a>>,
+    },
+    /// The search failed.
+    #[serde(rename = "tool_search_tool_result_error")]
+    Error {
+        /// The error code, e.g. `"too_many_requests"`, `"invalid_pattern"`,
+        /// `"pattern_too_long"`, or `"unavailable"`.
+        error_code: Cow<'a, str>,
+    },
+}
+
+/// A pointer to a deferred tool discovered by the [tool-search
+/// tool](crate::tool::ServerTool::tool_search_regex), naming a tool whose full
+/// definition lives in the request's tools array with
+/// [`defer_loading`](crate::tool::MethodDef::defer_loading) set. Appears in
+/// [`ToolSearchToolResultContent::Results`].
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "tool_reference")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct ToolReference<'a> {
+    /// The [`name`](crate::tool::MethodDef::name) of the discovered tool.
+    pub tool_name: Cow<'a, str>,
+}
+
+impl ToolSearchToolResultContent<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> ToolSearchToolResultContent<'static> {
+        match self {
+            Self::Results { tool_references } => {
+                ToolSearchToolResultContent::Results {
+                    tool_references: tool_references
+                        .into_iter()
+                        .map(ToolReference::into_static)
+                        .collect(),
+                }
+            }
+            Self::Error { error_code } => ToolSearchToolResultContent::Error {
+                error_code: Cow::Owned(error_code.into_owned()),
+            },
+        }
+    }
+}
+
+impl ToolReference<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> ToolReference<'static> {
+        ToolReference {
+            tool_name: Cow::Owned(self.tool_name.into_owned()),
         }
     }
 }
@@ -1335,6 +1416,9 @@ impl<'a> Block<'a> {
                     Block::WebSearchToolResult { .. } => {
                         stringify!(Block::WebSearchToolResult)
                     }
+                    Block::ToolSearchToolResult { .. } => {
+                        stringify!(Block::ToolSearchToolResult)
+                    }
                     Block::Image { .. } => stringify!(Block::Image),
                     Block::Document { .. } => stringify!(Block::Document),
                 };
@@ -1399,7 +1483,8 @@ impl<'a> Block<'a> {
             // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
             Self::Thought { .. }
             | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. } => false,
+            | Self::WebSearchToolResult { .. }
+            | Self::ToolSearchToolResult { .. } => false,
         }
     }
 
@@ -1427,7 +1512,8 @@ impl<'a> Block<'a> {
             }
             Self::Thought { .. }
             | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. } => false,
+            | Self::WebSearchToolResult { .. }
+            | Self::ToolSearchToolResult { .. } => false,
         }
     }
 
@@ -1450,7 +1536,8 @@ impl<'a> Block<'a> {
             } => cache_control.is_some(),
             Self::Thought { .. }
             | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. } => false,
+            | Self::WebSearchToolResult { .. }
+            | Self::ToolSearchToolResult { .. } => false,
         }
     }
 
@@ -1526,6 +1613,13 @@ impl<'a> Block<'a> {
                 tool_use_id: Cow::Owned(tool_use_id.into_owned()),
                 content: content.into_static(),
             },
+            Self::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            } => Block::ToolSearchToolResult {
+                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
+                content: content.into_static(),
+            },
         }
     }
 
@@ -1544,7 +1638,8 @@ impl<'a> Block<'a> {
             | Self::ToolUse { .. }
             | Self::ToolResult { .. }
             | Self::ServerToolUse { .. }
-            | Self::WebSearchToolResult { .. } => 0,
+            | Self::WebSearchToolResult { .. }
+            | Self::ToolSearchToolResult { .. } => 0,
         }
     }
 }
@@ -1599,7 +1694,9 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
             // Anthropic says to be transparent with the user but I think this
             // is naive. Users do not need to know if a thought was redacted.
             Block::RedactedThought { .. } => Box::new(std::iter::empty()),
-            Block::ToolResult { .. } | Block::WebSearchToolResult { .. } => {
+            Block::ToolResult { .. }
+            | Block::WebSearchToolResult { .. }
+            | Block::ToolSearchToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
                         [
@@ -2288,6 +2385,63 @@ mod tests {
                 ));
             }
             _ => panic!("expected WebSearchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn tool_search_tool_result_block_roundtrip() {
+        // The success shape from the docs: a `server_tool_use` answered by a
+        // `tool_search_tool_result` carrying `tool_reference`s.
+        let json = serde_json::json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtoolu_01ABC123",
+            "content": {
+                "type": "tool_search_tool_search_result",
+                "tool_references": [
+                    { "type": "tool_reference", "tool_name": "get_weather" }
+                ]
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::ToolSearchToolResult {
+                tool_use_id,
+                content,
+            } => {
+                assert_eq!(tool_use_id, "srvtoolu_01ABC123");
+                let ToolSearchToolResultContent::Results { tool_references } =
+                    content
+                else {
+                    panic!("expected Results");
+                };
+                assert_eq!(tool_references[0].tool_name, "get_weather");
+            }
+            _ => panic!("expected ToolSearchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn tool_search_tool_result_error_roundtrip() {
+        let json = serde_json::json!({
+            "type": "tool_search_tool_result",
+            "tool_use_id": "srvtoolu_01ABC123",
+            "content": {
+                "type": "tool_search_tool_result_error",
+                "error_code": "invalid_pattern"
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::ToolSearchToolResult { content, .. } => {
+                assert!(matches!(
+                    content,
+                    ToolSearchToolResultContent::Error { error_code }
+                        if error_code == "invalid_pattern"
+                ));
+            }
+            _ => panic!("expected ToolSearchToolResult"),
         }
         assert_eq!(serde_json::to_value(&block).unwrap(), json);
     }
