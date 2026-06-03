@@ -91,6 +91,31 @@ langsan = { version = "0", features = [
     "verbose",
     "general-punctuation",
     "arrows",
+    # Symbol blocks that legitimate model output (markdown tables, technical
+    # prose, ASCII-art diagrams) reaches for constantly. Every block listed
+    # here contains only *visible* printable glyphs — none re-admit the
+    # hidden-text vectors langsan guards against (zero-width / bidi controls
+    # stay denied via its `FORBIDDEN_BIDI` list, tag chars stay denied because
+    # the `tags` block is not enabled), so widening the allow-list here does
+    # not weaken the defense. See #74: a stray `−` (U+2212) or `≈` (U+2248)
+    # used to take the whole run of text around it with it.
+    "mathematical-operators",          # − ≈ ≤ ≥ ≠ √ ∑ ∞ ∫ …
+    "supplemental-mathematical-operators",
+    "miscellaneous-mathematical-symbols-a",
+    "miscellaneous-mathematical-symbols-b",
+    "superscripts-and-subscripts",     # x² H₂O
+    "letterlike-symbols",              # ™ № ℃ ℓ
+    "number-forms",                    # ½ ⅓ Ⅷ
+    "currency-symbols",                # € £ ¥ ₹
+    "box-drawing",                     # ─ │ ┌ └ (trees, tables)
+    "block-elements",                  # ░ ▒ █ (bars, shading)
+    "geometric-shapes",                # ■ ● ▶ ○ (bullets, callouts)
+    "miscellaneous-symbols",           # ★ ☆ ⚠ ☑
+    "miscellaneous-symbols-and-arrows",
+    "dingbats",                        # ✓ ✗ ✔ ✘ ➜
+    "enclosed-alphanumerics",          # ① ② ⓐ
+    "supplemental-arrows-a",
+    "supplemental-arrows-b",
 ], optional = true }
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
