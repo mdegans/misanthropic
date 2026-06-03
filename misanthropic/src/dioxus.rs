@@ -487,6 +487,8 @@ impl IntoElement for &Block<'_> {
                     }
                 }
             }
+            // A `tool_reference` is tool-search plumbing, not user content.
+            Block::ToolReference { .. } => rsx!(),
         }
     }
 }

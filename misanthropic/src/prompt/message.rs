@@ -1056,6 +1056,22 @@ pub enum Block<'a> {
         /// The discovered tool references, or an error.
         content: ToolSearchToolResultContent<'a>,
     },
+    /// A `tool_reference` block naming a [`defer_loading`] tool to expand. Used
+    /// to implement [custom client-side tool search]: a custom tool returns
+    /// these in its [`tool::Result`] content (a [`User`] turn) and the API
+    /// expands each into the matching tool's full definition. (The server-side
+    /// tool-search tool instead nests [`ToolReference`]s in a
+    /// [`ToolSearchToolResult`](Block::ToolSearchToolResult).)
+    ///
+    /// [`defer_loading`]: crate::tool::MethodDef::defer_loading
+    /// [custom client-side tool search]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation>
+    /// [`tool::Result`]: crate::tool::Result
+    /// [`User`]: Role::User
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    ToolReference {
+        /// The [`name`](crate::tool::MethodDef::name) of the tool to expand.
+        tool_name: Cow<'a, str>,
+    },
 }
 
 /// The `content` of a [`Block::WebSearchToolResult`]: either the search results
@@ -1240,6 +1256,22 @@ impl<'a> Block<'a> {
         }
     }
 
+    /// A [`tool_reference`](Block::ToolReference) block naming a
+    /// [`defer_loading`] tool. Return these in a custom tool's
+    /// [`tool::Result`] content to implement [custom client-side tool search].
+    ///
+    /// [`defer_loading`]: crate::tool::MethodDef::defer_loading
+    /// [`tool::Result`]: crate::tool::Result
+    /// [custom client-side tool search]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation>
+    pub fn tool_reference<T>(tool_name: T) -> Self
+    where
+        T: Into<Cow<'a, str>>,
+    {
+        Self::ToolReference {
+            tool_name: tool_name.into(),
+        }
+    }
+
     /// [`Document`] content block. Use [`document_with_citations`] to enable
     /// [`Citation`]s.
     ///
@@ -1419,6 +1451,9 @@ impl<'a> Block<'a> {
                     Block::ToolSearchToolResult { .. } => {
                         stringify!(Block::ToolSearchToolResult)
                     }
+                    Block::ToolReference { .. } => {
+                        stringify!(Block::ToolReference)
+                    }
                     Block::Image { .. } => stringify!(Block::Image),
                     Block::Document { .. } => stringify!(Block::Document),
                 };
@@ -1484,7 +1519,8 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
-            | Self::ToolSearchToolResult { .. } => false,
+            | Self::ToolSearchToolResult { .. }
+            | Self::ToolReference { .. } => false,
         }
     }
 
@@ -1513,7 +1549,8 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
-            | Self::ToolSearchToolResult { .. } => false,
+            | Self::ToolSearchToolResult { .. }
+            | Self::ToolReference { .. } => false,
         }
     }
 
@@ -1537,7 +1574,8 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
-            | Self::ToolSearchToolResult { .. } => false,
+            | Self::ToolSearchToolResult { .. }
+            | Self::ToolReference { .. } => false,
         }
     }
 
@@ -1620,6 +1658,9 @@ impl<'a> Block<'a> {
                 tool_use_id: Cow::Owned(tool_use_id.into_owned()),
                 content: content.into_static(),
             },
+            Self::ToolReference { tool_name } => Block::ToolReference {
+                tool_name: Cow::Owned(tool_name.into_owned()),
+            },
         }
     }
 
@@ -1639,7 +1680,8 @@ impl<'a> Block<'a> {
             | Self::ToolResult { .. }
             | Self::ServerToolUse { .. }
             | Self::WebSearchToolResult { .. }
-            | Self::ToolSearchToolResult { .. } => 0,
+            | Self::ToolSearchToolResult { .. }
+            | Self::ToolReference { .. } => 0,
         }
     }
 }
@@ -1693,7 +1735,10 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
             ))),
             // Anthropic says to be transparent with the user but I think this
             // is naive. Users do not need to know if a thought was redacted.
-            Block::RedactedThought { .. } => Box::new(std::iter::empty()),
+            // A `tool_reference` is tool-search plumbing, not user content.
+            Block::RedactedThought { .. } | Block::ToolReference { .. } => {
+                Box::new(std::iter::empty())
+            }
             Block::ToolResult { .. }
             | Block::WebSearchToolResult { .. }
             | Block::ToolSearchToolResult { .. } => {
@@ -2443,6 +2488,53 @@ mod tests {
             }
             _ => panic!("expected ToolSearchToolResult"),
         }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn tool_reference_block_roundtrip() {
+        let json = serde_json::json!({
+            "type": "tool_reference",
+            "tool_name": "get_weather",
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::ToolReference { tool_name } => {
+                assert_eq!(tool_name, "get_weather");
+            }
+            _ => panic!("expected ToolReference"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        // The constructor produces the same block.
+        assert_eq!(Block::tool_reference("get_weather"), block);
+    }
+
+    #[test]
+    fn tool_references_nest_in_a_tool_result() {
+        // The custom client-side tool-search shape: a `tool_result` whose
+        // content is an array of `tool_reference` blocks.
+        let json = serde_json::json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_your_tool_id",
+            "content": [
+                { "type": "tool_reference", "tool_name": "get_weather" },
+                { "type": "tool_reference", "tool_name": "search_files" },
+            ],
+            "is_error": false,
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        let Block::ToolResult { result } = &block else {
+            panic!("expected ToolResult");
+        };
+        let refs: Vec<_> = result
+            .content
+            .iter()
+            .map(|b| match b {
+                Block::ToolReference { tool_name } => tool_name.as_ref(),
+                _ => panic!("expected ToolReference"),
+            })
+            .collect();
+        assert_eq!(refs, ["get_weather", "search_files"]);
         assert_eq!(serde_json::to_value(&block).unwrap(), json);
     }
 
