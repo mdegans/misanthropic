@@ -212,4 +212,9 @@ name = "vote_intent"
 required-features = ["client"]
 doc-scrape-examples = true
 
+[[example]]
+name = "few_shot_triage"
+required-features = ["client"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.

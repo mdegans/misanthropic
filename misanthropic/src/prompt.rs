@@ -190,6 +190,25 @@ pub struct TurnOrderError {
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
+/// Error from [`Prompt::with_examples`]: an exemplar failed to serialize, or
+/// inserting the example pairs violated [turn order].
+///
+/// Kept separate from the runtime [`crate::Error`] (reqwest, Anthropic, …)
+/// because both arms are pure prompt-construction faults the caller can fix
+/// before any request is sent.
+///
+/// [turn order]: TurnOrderError
+#[derive(Debug, thiserror::Error)]
+pub enum ExamplesError {
+    /// An exemplar could not be serialized to JSON.
+    #[error("failed to serialize example to JSON: {0}")]
+    Serialize(#[from] serde_json::Error),
+    /// Appending the example pairs collided with a preceding turn.
+    #[error(transparent)]
+    TurnOrder(#[from] TurnOrderError),
+}
+static_assertions::assert_impl_all!(ExamplesError: Send, Sync);
+
 impl<'a> Prompt<'a> {
     /// Turn streaming on.
     ///
@@ -747,6 +766,57 @@ impl<'a> Prompt<'a> {
     /// to `self.output_config(OutputConfig::for_type::<T>())`.
     pub fn structured_output<T: schemars::JsonSchema>(self) -> Self {
         self.output_config(OutputConfig::for_type::<T>())
+    }
+
+    /// Append schema-conformant few-shot examples for structured output.
+    ///
+    /// Each `(input, output)` pair becomes a [`Role::User`] turn followed by a
+    /// [`Role::Assistant`] turn whose single text block is `output` serialized
+    /// to JSON — exactly the form the model emits under [`output_config`]. One
+    /// or two well-populated exemplars before the real prompt nudge the model
+    /// toward the desired depth of field population.
+    ///
+    /// The exemplar type `A` is also the *schema* type: this **overwrites**
+    /// [`output_config`] with `A`'s schema (via [`OutputConfig::for_type`]), so
+    /// the constraint and the examples can never drift apart. Set any custom
+    /// [`output_config`] / [`json_schema`] *after* this call if you need one.
+    ///
+    /// `U: Into<UserMessage>` accepts `&str`, `String`, or [`Content`] — so
+    /// image exemplars (e.g. classification) work, not just text.
+    ///
+    /// # Errors
+    /// - [`ExamplesError::Serialize`] if an exemplar will not serialize.
+    /// - [`ExamplesError::TurnOrder`] if the first pair's user turn collides
+    ///   with a preceding user turn (the prompt is left unmodified).
+    ///
+    /// [`output_config`]: Prompt::output_config
+    /// [`json_schema`]: Prompt::json_schema
+    pub fn with_examples<I, U, A>(
+        mut self,
+        examples: I,
+    ) -> Result<Self, ExamplesError>
+    where
+        I: IntoIterator<Item = (U, A)>,
+        U: Into<UserMessage<'a>>,
+        A: Serialize + schemars::JsonSchema,
+    {
+        self.output_config = Some(OutputConfig::for_type::<A>());
+
+        // Serialize every exemplar first so a failure leaves `messages`
+        // untouched, then push the flattened User/Assistant turns through the
+        // turn-order check in one all-or-nothing batch.
+        let pairs = examples
+            .into_iter()
+            .map(|(input, output)| {
+                let user: UserMessage<'a> = input.into();
+                let json = serde_json::to_string(&output)?;
+                Ok([user.into(), AssistantMessage::text(json).into()])
+            })
+            .collect::<Result<Vec<[Message<'a>; 2]>, serde_json::Error>>()?;
+
+        self.push_messages(pairs.into_iter().flatten())?;
+
+        Ok(self)
     }
 
     /// Add a cache breakpoint to the end of the prompt, setting `cache_control`
@@ -1656,6 +1726,77 @@ mod tests {
         for name in ["post_id", "support", "rationale"] {
             assert!(props.contains_key(name), "missing property: {name}");
         }
+    }
+
+    #[derive(serde::Serialize, schemars::JsonSchema)]
+    struct Triage {
+        component: String,
+        is_regression: bool,
+    }
+
+    #[test]
+    fn test_with_examples_sets_config_and_pairs() {
+        let ex = Triage {
+            component: "auth-ui".into(),
+            is_regression: true,
+        };
+        // Serialize before the move so we can assert the assistant turn.
+        let expected = serde_json::to_string(&ex).unwrap();
+
+        let prompt = Prompt::default()
+            .with_examples([("login broken on safari", ex)])
+            .unwrap();
+
+        // output_config is seeded from the exemplar type `A`.
+        let cfg = prompt.output_config.as_ref().unwrap();
+        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let props = schema.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("component"));
+
+        // Exactly one (User input, Assistant JSON) pair, in order.
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(
+            prompt.messages[0],
+            (Role::User, "login broken on safari").into()
+        );
+        assert_eq!(
+            prompt.messages[1],
+            (Role::Assistant, expected.as_str()).into()
+        );
+    }
+
+    #[test]
+    fn test_with_examples_turn_order_error() {
+        // A user turn already at the tail collides with the first example's
+        // user turn, and the prompt is left unmodified.
+        let err = Prompt::default()
+            .add_message((Role::User, "real question"))
+            .unwrap()
+            .with_examples([(
+                "example input",
+                Triage {
+                    component: "x".into(),
+                    is_regression: false,
+                },
+            )])
+            .unwrap_err();
+        assert!(matches!(err, ExamplesError::TurnOrder(_)));
+    }
+
+    #[test]
+    fn test_with_examples_clobbers_output_config() {
+        // An explicitly-set config is overwritten by the exemplar's schema,
+        // even when no examples are supplied.
+        let prompt = Prompt::default()
+            .json_schema(serde_json::json!({ "type": "object" }))
+            .with_examples(std::iter::empty::<(&str, Triage)>())
+            .unwrap();
+
+        let cfg = prompt.output_config.as_ref().unwrap();
+        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let props = schema.get("properties").unwrap().as_object().unwrap();
+        assert!(props.contains_key("is_regression"));
+        assert!(prompt.messages.is_empty());
     }
 
     #[test]
