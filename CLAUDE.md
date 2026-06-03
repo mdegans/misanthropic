@@ -100,8 +100,11 @@ The `batch` and `client` features don't build on wasm32.
 
 ## Testing notes
 
-- Some tests are `#[ignore]`d and require an API key in `api.key` at the repo
-  root (CI provides this via secrets on push to main).
+- Some tests are `#[ignore]`d and require an API key in `api.key` in the
+  `misanthropic/` crate directory — i.e. `misanthropic/api.key`, which is the
+  `CRATE_ROOT` that `load_api_key` reads, not the workspace root (CI provides
+  this via secrets on push to main). Run them with e.g. `cargo test -p
+  misanthropic --features client <name> -- --ignored`.
 
 ## GitHub conventions
 
