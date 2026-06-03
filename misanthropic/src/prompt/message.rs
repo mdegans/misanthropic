@@ -2568,4 +2568,76 @@ mod tests {
         let deserialized: CacheControl = serde_json::from_str(&json).unwrap();
         assert_eq!(original, deserialized);
     }
+
+    #[test]
+    fn test_document_block_wire_shape() {
+        // A plain-text document with citations enabled serializes to the
+        // wire shape the API expects, and round-trips.
+        let block = Block::document_with_citations(DocumentSource::from_text(
+            "The sky on planet Zorblax is purple.",
+        ));
+
+        let value = serde_json::to_value(&block).unwrap();
+        assert_eq!(value["type"], "document");
+        assert_eq!(value["source"]["type"], "text");
+        assert_eq!(value["source"]["media_type"], "text/plain");
+        assert_eq!(value["citations"]["enabled"], true);
+
+        let back: Block = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            back,
+            Block::Document {
+                citations: Some(CitationsConfig { enabled: true }),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_base64_document_source_wire_shape() {
+        let value =
+            serde_json::to_value(DocumentSource::from_base64("Zm9v")).unwrap();
+        assert_eq!(value["type"], "base64");
+        assert_eq!(value["media_type"], "application/pdf");
+        assert_eq!(value["data"], "Zm9v");
+    }
+
+    #[test]
+    fn test_text_block_citations_field_roundtrips() {
+        // A response text block carrying a CharLocation citation deserializes
+        // and the citation survives a round-trip. Mirrors the response wire
+        // form (citations omitted when absent, present when the API cites a
+        // document).
+        let json = r#"{
+            "type": "text",
+            "text": "The sky is purple.",
+            "citations": [{
+                "type": "char_location",
+                "cited_text": "The sky on planet Zorblax is purple.",
+                "document_index": 0,
+                "start_char_index": 0,
+                "end_char_index": 36
+            }]
+        }"#;
+
+        let block: Block = serde_json::from_str(json).unwrap();
+        let Block::Text {
+            citations: Some(cs),
+            ..
+        } = &block
+        else {
+            panic!("expected a Text block with citations: {block:?}");
+        };
+        assert!(matches!(
+            cs.as_slice(),
+            [Citation::CharLocation {
+                end_char_index: 36,
+                ..
+            }]
+        ));
+
+        // Absent citations are elided on the wire (not `"citations": null`).
+        let plain = serde_json::to_value(Block::text("hi")).unwrap();
+        assert!(plain.get("citations").is_none());
+    }
 }

@@ -256,4 +256,71 @@ mod tests {
         let json = serde_json::to_string(&citation).unwrap();
         assert!(!json.contains("document_title"));
     }
+
+    /// End-to-end citations check against the live API.
+    ///
+    /// The document states counterfactual "facts" (a purple sky, orange
+    /// ground) so the *only* way for the model to answer correctly is to read
+    /// and cite the document — a grass-is-green example could be answered from
+    /// training data, telling us nothing about whether citations actually
+    /// round-tripped.
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "This test requires a real API key."]
+    async fn live_text_document_returns_citation() {
+        use crate::{
+            Client, Prompt,
+            prompt::message::{Block, DocumentSource, Role},
+        };
+
+        const DOC: &str = "The sky on planet Zorblax is purple. \
+                           The ground on planet Zorblax is orange.";
+
+        let key = crate::utils::load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let prompt = Prompt::default()
+            .add_message((
+                Role::User,
+                vec![
+                    Block::document_with_citations(DocumentSource::from_text(
+                        DOC,
+                    )),
+                    Block::text(
+                        "What color is the sky on planet Zorblax? \
+                         Answer in one short sentence.",
+                    ),
+                ],
+            ))
+            .unwrap();
+
+        let message = client.message(prompt).await.unwrap();
+
+        // The answer must be grounded in the document, not world knowledge.
+        assert!(
+            message.to_string().to_lowercase().contains("purple"),
+            "expected 'purple' in response: {message}"
+        );
+
+        // At least one response text block should carry a `CharLocation`
+        // citation quoting the purple sentence from our plain-text document.
+        let cited = message.inner.content.iter().any(|block| {
+            matches!(
+                block,
+                Block::Text {
+                    citations: Some(cs),
+                    ..
+                } if cs.iter().any(|c| matches!(
+                    c,
+                    Citation::CharLocation { cited_text, .. }
+                        if cited_text.to_lowercase().contains("purple")
+                ))
+            )
+        });
+        assert!(
+            cited,
+            "expected a CharLocation citation quoting the document: \
+             {message:#?}"
+        );
+    }
 }
