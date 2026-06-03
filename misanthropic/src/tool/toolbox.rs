@@ -185,7 +185,12 @@ impl ToolBox {
         &mut self,
         prompt: &mut Prompt<'_>,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        prompt.methods = Some(self.definitions());
+        prompt.methods = Some(
+            self.definitions()
+                .into_iter()
+                .map(super::ToolDef::Custom)
+                .collect(),
+        );
         self.init_tools(prompt).await
     }
 

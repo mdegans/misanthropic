@@ -68,6 +68,251 @@ pub enum Choice {
     },
 }
 
+/// A server-side (Anthropic-executed) tool, as opposed to a custom
+/// [`MethodDef`] you run yourself via [`Tool::call`].
+///
+/// The API runs these internally: you add one to the prompt's tools array (see
+/// [`Prompt::add_server_tool`]) and receive a [`Block::ServerToolUse`] plus the
+/// tool's result block *in the response* — you never handle execution and never
+/// return a [`tool::Result`]. Long-running server tools may pause the turn; see
+/// [`StopReason::PauseTurn`].
+///
+/// Each variant's wire `type` is **versioned** (e.g. `web_search_20250305`);
+/// new versions become new variants.
+///
+/// [`Block::ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
+/// [`tool::Result`]: Result
+/// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
+/// [`Prompt::add_server_tool`]: crate::Prompt::add_server_tool
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum ServerTool<'a> {
+    /// Anthropic's web search tool (`web_search_20250305`). The model issues
+    /// queries and receives results it can cite via
+    /// [`Citation::WebSearchResultLocation`].
+    ///
+    /// [`Citation::WebSearchResultLocation`]: crate::prompt::Citation::WebSearchResultLocation
+    #[serde(rename = "web_search_20250305")]
+    WebSearch(WebSearch<'a>),
+}
+
+impl<'a> ServerTool<'a> {
+    /// A [`WebSearch`] server tool with default configuration. Configure it
+    /// with struct-update syntax, e.g.
+    /// `ServerTool::web_search(WebSearch { max_uses: Some(5), ..Default::default() })`.
+    pub fn web_search(config: WebSearch<'a>) -> Self {
+        Self::WebSearch(config)
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> ServerTool<'static> {
+        match self {
+            Self::WebSearch(c) => ServerTool::WebSearch(c.into_static()),
+        }
+    }
+}
+
+/// Configuration for the [`ServerTool::WebSearch`] tool.
+///
+/// All fields are optional; the wire `name` (`"web_search"`) is fixed and
+/// supplied automatically. Use either [`allowed_domains`] or [`blocked_domains`],
+/// not both.
+///
+/// [`allowed_domains`]: WebSearch::allowed_domains
+/// [`blocked_domains`]: WebSearch::blocked_domains
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct WebSearch<'a> {
+    /// The fixed tool `name` (`"web_search"`), supplied automatically by
+    /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: WebSearchName,
+    /// Maximum number of searches the model may run per request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u32>,
+    /// Only return results from these domains (bare host, no scheme). Mutually
+    /// exclusive with [`blocked_domains`](WebSearch::blocked_domains).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_domains: Option<Vec<Cow<'a, str>>>,
+    /// Never return results from these domains (bare host, no scheme). Mutually
+    /// exclusive with [`allowed_domains`](WebSearch::allowed_domains).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_domains: Option<Vec<Cow<'a, str>>>,
+    /// Approximate user location used to bias results.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_location: Option<UserLocation<'a>>,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
+impl<'a> WebSearch<'a> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebSearch<'static> {
+        let owned = |v: Vec<Cow<'a, str>>| -> Vec<Cow<'static, str>> {
+            v.into_iter().map(|d| Cow::Owned(d.into_owned())).collect()
+        };
+        WebSearch {
+            name: WebSearchName,
+            max_uses: self.max_uses,
+            allowed_domains: self.allowed_domains.map(owned),
+            blocked_domains: self.blocked_domains.map(owned),
+            user_location: self.user_location.map(UserLocation::into_static),
+            cache_control: self.cache_control,
+        }
+    }
+}
+
+/// Zero-sized marker that always (de)serializes as the constant tool name
+/// `"web_search"`, so it can never be set to anything else. Public only so
+/// [`WebSearch`] supports `..Default::default()`; not part of the stable API.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct WebSearchName;
+
+impl Serialize for WebSearchName {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str("web_search")
+    }
+}
+
+impl<'de> Deserialize<'de> for WebSearchName {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let name = Cow::<str>::deserialize(deserializer)?;
+        if name == "web_search" {
+            Ok(WebSearchName)
+        } else {
+            Err(serde::de::Error::custom(
+                "expected web search tool name \"web_search\"",
+            ))
+        }
+    }
+}
+
+/// Approximate user location used to bias [`WebSearch`] results. Serializes
+/// with `type: "approximate"`.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "approximate")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct UserLocation<'a> {
+    /// City name, e.g. `"San Francisco"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub city: Option<Cow<'a, str>>,
+    /// Region or state, e.g. `"California"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<Cow<'a, str>>,
+    /// ISO 3166-1 alpha-2 country code, e.g. `"US"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub country: Option<Cow<'a, str>>,
+    /// IANA timezone, e.g. `"America/Los_Angeles"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timezone: Option<Cow<'a, str>>,
+}
+
+impl<'a> UserLocation<'a> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> UserLocation<'static> {
+        let owned = |c: Cow<'a, str>| -> Cow<'static, str> {
+            Cow::Owned(c.into_owned())
+        };
+        UserLocation {
+            city: self.city.map(owned),
+            region: self.region.map(owned),
+            country: self.country.map(owned),
+            timezone: self.timezone.map(owned),
+        }
+    }
+}
+
+/// An entry in a [`Prompt`]'s tools array: either a custom [`MethodDef`] you
+/// execute yourself via [`Tool::call`], or a [`ServerTool`] the API runs
+/// internally.
+///
+/// Distinguished on the wire by the presence of a `type` field — server tools
+/// carry a versioned one, custom tools do not. Most users never name this type:
+/// [`Prompt::add_tool`] and [`Prompt::add_server_tool`] wrap the right variant.
+///
+/// [`Prompt::add_tool`]: crate::Prompt::add_tool
+/// [`Prompt::add_server_tool`]: crate::Prompt::add_server_tool
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
+#[serde(untagged)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum ToolDef<'a> {
+    /// A server-side tool the API executes (carries a `type`).
+    Server(ServerTool<'a>),
+    /// A custom tool you execute via [`Tool::call`].
+    Custom(MethodDef<'a>),
+}
+
+impl<'a> ToolDef<'a> {
+    /// The custom [`MethodDef`], if this is a [`ToolDef::Custom`].
+    pub fn as_method(&self) -> Option<&MethodDef<'a>> {
+        match self {
+            Self::Custom(method) => Some(method),
+            Self::Server(_) => None,
+        }
+    }
+
+    /// The custom [`MethodDef`] mutably, if this is a [`ToolDef::Custom`].
+    pub fn as_method_mut(&mut self) -> Option<&mut MethodDef<'a>> {
+        match self {
+            Self::Custom(method) => Some(method),
+            Self::Server(_) => None,
+        }
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> ToolDef<'static> {
+        match self {
+            Self::Custom(method) => ToolDef::Custom(method.into_static()),
+            Self::Server(tool) => ToolDef::Server(tool.into_static()),
+        }
+    }
+
+    /// Returns true if this tool has a cache breakpoint set.
+    pub fn is_cached(&self) -> bool {
+        match self {
+            Self::Custom(method) => method.is_cached(),
+            Self::Server(ServerTool::WebSearch(config)) => {
+                config.cache_control.is_some()
+            }
+        }
+    }
+
+    /// Set a cache breakpoint on this tool (custom or server), with a
+    /// caller-provided [`CacheControl`](crate::prompt::message::CacheControl).
+    pub fn cache_with(
+        &mut self,
+        cache_control: crate::prompt::message::CacheControl,
+    ) -> &mut Self {
+        match self {
+            Self::Custom(method) => {
+                method.cache_with(cache_control);
+            }
+            Self::Server(ServerTool::WebSearch(config)) => {
+                config.cache_control = Some(cache_control);
+            }
+        }
+        self
+    }
+}
+
+impl<'a> From<WebSearch<'a>> for ServerTool<'a> {
+    fn from(config: WebSearch<'a>) -> Self {
+        ServerTool::WebSearch(config)
+    }
+}
+
 /// A `Tool` that the [`Assistant`] can [`Use`]. Tools can have multiple
 /// [`MethodDef`]s. Tools should generally go in the [`ToolBox`].
 ///
@@ -862,6 +1107,83 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Result<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn web_search_server_tool_wire_shape() {
+        let tool = ServerTool::web_search(WebSearch {
+            max_uses: Some(5),
+            allowed_domains: Some(vec!["anthropic.com".into()]),
+            ..Default::default()
+        });
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "web_search_20250305");
+        assert_eq!(json["name"], "web_search");
+        assert_eq!(json["max_uses"], 5);
+        assert_eq!(json["allowed_domains"][0], "anthropic.com");
+        // blocked_domains/user_location/cache_control are skipped when None.
+        assert!(json.get("blocked_domains").is_none());
+
+        let back: ServerTool = serde_json::from_value(json).unwrap();
+        let ServerTool::WebSearch(config) = back;
+        assert_eq!(config.max_uses, Some(5));
+    }
+
+    #[test]
+    fn web_search_name_must_be_web_search() {
+        // A wrong `name` is rejected on deserialize.
+        let bad = serde_json::json!({
+            "type": "web_search_20250305",
+            "name": "not_web_search",
+        });
+        assert!(serde_json::from_value::<ServerTool>(bad).is_err());
+    }
+
+    #[test]
+    fn tooldef_untagged_discriminates_by_type() {
+        // A custom tool (no `type`) round-trips as Custom; a server tool (has a
+        // versioned `type`) round-trips as Server.
+        let custom: ToolDef =
+            MethodDef::simple("ping", "Ping a server.").into();
+        let server: ToolDef =
+            ServerTool::web_search(WebSearch::default()).into();
+
+        let custom_json = serde_json::to_value(&custom).unwrap();
+        assert!(custom_json.get("type").is_none());
+        assert!(custom_json.get("input_schema").is_some());
+        assert!(matches!(
+            serde_json::from_value::<ToolDef>(custom_json).unwrap(),
+            ToolDef::Custom(_)
+        ));
+
+        let server_json = serde_json::to_value(&server).unwrap();
+        assert_eq!(server_json["type"], "web_search_20250305");
+        assert!(matches!(
+            serde_json::from_value::<ToolDef>(server_json).unwrap(),
+            ToolDef::Server(_)
+        ));
+    }
+
+    #[test]
+    fn prompt_mixes_custom_and_server_tools_in_tools_array() {
+        let prompt = crate::Prompt::default()
+            .add_tool(MethodDef::simple("ping", "Ping a server."))
+            .add_server_tool(ServerTool::web_search(WebSearch::default()));
+
+        let json = serde_json::to_value(&prompt).unwrap();
+        let tools = json["tools"].as_array().unwrap();
+        assert_eq!(tools.len(), 2);
+        // Custom tool: no `type`, has `input_schema`.
+        assert!(tools[0].get("type").is_none());
+        assert_eq!(tools[0]["name"], "ping");
+        // Server tool: versioned `type`.
+        assert_eq!(tools[1]["type"], "web_search_20250305");
+
+        // The whole prompt round-trips, preserving both tool kinds.
+        let back: crate::Prompt = serde_json::from_value(json).unwrap();
+        let methods = back.methods.unwrap();
+        assert!(matches!(methods[0], ToolDef::Custom(_)));
+        assert!(matches!(methods[1], ToolDef::Server(_)));
+    }
 
     #[test]
     fn test_method_simple() {

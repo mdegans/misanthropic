@@ -141,6 +141,7 @@ mod tests {
                     cache_creation_input_tokens: Some(2),
                     cache_read_input_tokens: Some(3),
                     output_tokens: 4,
+                    server_tool_use: None,
                 },
             },
         }
@@ -332,11 +333,16 @@ mod tests {
 
     #[test]
     fn test_usage_add() {
+        use crate::response::message::ServerToolUsage;
+
         let mut a = Usage {
             input_tokens: 1,
             cache_creation_input_tokens: Some(2),
             cache_read_input_tokens: Some(3),
             output_tokens: 4,
+            server_tool_use: Some(ServerToolUsage {
+                web_search_requests: 1,
+            }),
         };
 
         let b = Usage {
@@ -344,6 +350,9 @@ mod tests {
             cache_creation_input_tokens: Some(6),
             cache_read_input_tokens: Some(7),
             output_tokens: 8,
+            server_tool_use: Some(ServerToolUsage {
+                web_search_requests: 2,
+            }),
         };
 
         a += b;
@@ -352,5 +361,11 @@ mod tests {
         assert_eq!(a.cache_creation_input_tokens, Some(8));
         assert_eq!(a.cache_read_input_tokens, Some(10));
         assert_eq!(a.output_tokens, 12);
+        assert_eq!(
+            a.server_tool_use,
+            Some(ServerToolUsage {
+                web_search_requests: 3,
+            })
+        );
     }
 }

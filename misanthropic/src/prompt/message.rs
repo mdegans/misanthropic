@@ -1001,6 +1001,112 @@ pub enum Block<'a> {
         #[serde(flatten)]
         result: tool::Result<'a>,
     },
+    /// A server tool invocation the API executed itself (`server_tool_use`),
+    /// e.g. a [`web_search`]. Like [`Block::ToolUse`], but Anthropic ran it: its
+    /// result block follows in the same assistant turn and you never return a
+    /// [`tool::Result`]. The [`id`](tool::Use::id) carries a `srvtoolu_` prefix.
+    ///
+    /// [`web_search`]: crate::tool::ServerTool::web_search
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    ServerToolUse {
+        /// The server tool call.
+        #[serde(flatten)]
+        call: tool::Use<'a>,
+    },
+    /// Result of a [`web_search`] server tool call (`web_search_tool_result`),
+    /// appearing in the assistant turn right after its
+    /// [`ServerToolUse`](Block::ServerToolUse) block.
+    ///
+    /// [`web_search`]: crate::tool::ServerTool::web_search
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    WebSearchToolResult {
+        /// The [`id`](tool::Use::id) of the
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'a, str>,
+        /// The search results, or an error.
+        content: WebSearchToolResultContent<'a>,
+    },
+}
+
+/// The `content` of a [`Block::WebSearchToolResult`]: either the search results
+/// or an error.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(untagged)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum WebSearchToolResultContent<'a> {
+    /// Successful search results.
+    Results(Vec<WebSearchResult<'a>>),
+    /// The search failed.
+    Error(WebSearchToolError<'a>),
+}
+
+/// A single result in a [`Block::WebSearchToolResult`], cited on the model's
+/// response [`Text`](Block::Text) blocks via
+/// [`Citation::WebSearchResultLocation`](crate::prompt::Citation::WebSearchResultLocation).
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "web_search_result")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct WebSearchResult<'a> {
+    /// The result URL.
+    pub url: Cow<'a, str>,
+    /// The result title.
+    pub title: Cow<'a, str>,
+    /// Opaque content the model uses to cite this result. Pass it back verbatim
+    /// when echoing the turn (e.g. to continue a [`pause_turn`]).
+    ///
+    /// [`pause_turn`]: crate::response::StopReason::PauseTurn
+    pub encrypted_content: Cow<'a, str>,
+    /// Approximate age of the page, e.g. `"3 days ago"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_age: Option<Cow<'a, str>>,
+}
+
+/// An error reported in a [`Block::WebSearchToolResult`].
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "web_search_tool_result_error")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct WebSearchToolError<'a> {
+    /// The error code, e.g. `"max_uses_exceeded"`, `"too_many_requests"`,
+    /// `"query_too_long"`, `"invalid_input"`, or `"unavailable"`.
+    pub error_code: Cow<'a, str>,
+}
+
+impl WebSearchToolResultContent<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebSearchToolResultContent<'static> {
+        match self {
+            Self::Results(results) => WebSearchToolResultContent::Results(
+                results
+                    .into_iter()
+                    .map(WebSearchResult::into_static)
+                    .collect(),
+            ),
+            Self::Error(error) => {
+                WebSearchToolResultContent::Error(error.into_static())
+            }
+        }
+    }
+}
+
+impl WebSearchResult<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebSearchResult<'static> {
+        WebSearchResult {
+            url: Cow::Owned(self.url.into_owned()),
+            title: Cow::Owned(self.title.into_owned()),
+            encrypted_content: Cow::Owned(self.encrypted_content.into_owned()),
+            page_age: self.page_age.map(|a| Cow::Owned(a.into_owned())),
+        }
+    }
+}
+
+impl WebSearchToolError<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebSearchToolError<'static> {
+        WebSearchToolError {
+            error_code: Cow::Owned(self.error_code.into_owned()),
+        }
+    }
 }
 
 #[cfg(feature = "markdown")]
@@ -1208,6 +1314,12 @@ impl<'a> Block<'a> {
                     }
                     Block::ToolUse { .. } => stringify!(Block::ToolUse),
                     Block::ToolResult { .. } => stringify!(Block::ToolResult),
+                    Block::ServerToolUse { .. } => {
+                        stringify!(Block::ServerToolUse)
+                    }
+                    Block::WebSearchToolResult { .. } => {
+                        stringify!(Block::WebSearchToolResult)
+                    }
                     Block::Image { .. } => stringify!(Block::Image),
                     Block::Document { .. } => stringify!(Block::Document),
                 };
@@ -1260,14 +1372,19 @@ impl<'a> Block<'a> {
             }
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
+            }
+            | Self::ServerToolUse {
+                call: tool::Use { cache_control, .. },
             } => {
                 *cache_control = Some(cache_control_value);
 
                 true
             }
-            // These are automatically cached.
+            // These are automatically cached or carry no cache_control.
             // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
-            Self::Thought { .. } | Self::RedactedThought { .. } => false,
+            Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::WebSearchToolResult { .. } => false,
         }
     }
 
@@ -1285,12 +1402,17 @@ impl<'a> Block<'a> {
             }
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
+            }
+            | Self::ServerToolUse {
+                call: tool::Use { cache_control, .. },
             } => {
                 let was_cached = cache_control.is_some();
                 *cache_control = None;
                 was_cached
             }
-            Self::Thought { .. } | Self::RedactedThought { .. } => false,
+            Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::WebSearchToolResult { .. } => false,
         }
     }
 
@@ -1307,8 +1429,13 @@ impl<'a> Block<'a> {
             }
             | Self::ToolResult {
                 result: tool::Result { cache_control, .. },
+            }
+            | Self::ServerToolUse {
+                call: tool::Use { cache_control, .. },
             } => cache_control.is_some(),
-            Self::Thought { .. } | Self::RedactedThought { .. } => false,
+            Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::WebSearchToolResult { .. } => false,
         }
     }
 
@@ -1374,6 +1501,16 @@ impl<'a> Block<'a> {
             Self::ToolResult { result } => Block::ToolResult {
                 result: result.into_static(),
             },
+            Self::ServerToolUse { call } => Block::ServerToolUse {
+                call: call.into_static(),
+            },
+            Self::WebSearchToolResult {
+                tool_use_id,
+                content,
+            } => Block::WebSearchToolResult {
+                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
+                content: content.into_static(),
+            },
         }
     }
 
@@ -1390,7 +1527,9 @@ impl<'a> Block<'a> {
             Self::Document { source, .. } => source.len(),
             Self::RedactedThought { .. }
             | Self::ToolUse { .. }
-            | Self::ToolResult { .. } => 0,
+            | Self::ToolResult { .. }
+            | Self::ServerToolUse { .. }
+            | Self::WebSearchToolResult { .. } => 0,
         }
     }
 }
@@ -1418,7 +1557,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
                 // markdown images with embedded base64 data.
                 Box::new([Event::Text(image.to_string().into())].into_iter())
             }
-            Block::ToolUse { .. } => {
+            Block::ToolUse { .. } | Block::ServerToolUse { .. } => {
                 if options.tool_use {
                     Box::new(
                         [
@@ -1445,7 +1584,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
             // Anthropic says to be transparent with the user but I think this
             // is naive. Users do not need to know if a thought was redacted.
             Block::RedactedThought { .. } => Box::new(std::iter::empty()),
-            Block::ToolResult { .. } => {
+            Block::ToolResult { .. } | Block::WebSearchToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
                         [
@@ -2038,6 +2177,79 @@ mod tests {
     use crate::markdown::ToMarkdown;
 
     use super::*;
+
+    #[test]
+    fn server_tool_use_block_roundtrip() {
+        let json = serde_json::json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_01A2B3",
+            "name": "web_search",
+            "input": { "query": "latest anthropic news" }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        assert!(block.is_server_tool_use());
+        match &block {
+            Block::ServerToolUse { call } => {
+                assert_eq!(call.id, "srvtoolu_01A2B3");
+                assert_eq!(call.name, "web_search");
+            }
+            _ => panic!("expected ServerToolUse"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn web_search_tool_result_block_roundtrip() {
+        let json = serde_json::json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_01A2B3",
+            "content": [{
+                "type": "web_search_result",
+                "url": "https://anthropic.com/news",
+                "title": "News",
+                "encrypted_content": "abc123"
+            }]
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::WebSearchToolResult {
+                tool_use_id,
+                content,
+            } => {
+                assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+                assert!(matches!(
+                    content,
+                    WebSearchToolResultContent::Results(r) if r.len() == 1
+                ));
+            }
+            _ => panic!("expected WebSearchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn web_search_tool_result_error_roundtrip() {
+        let json = serde_json::json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_01A2B3",
+            "content": {
+                "type": "web_search_tool_result_error",
+                "error_code": "max_uses_exceeded"
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::WebSearchToolResult { content, .. } => {
+                assert!(matches!(
+                    content,
+                    WebSearchToolResultContent::Error(e)
+                        if e.error_code == "max_uses_exceeded"
+                ));
+            }
+            _ => panic!("expected WebSearchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
 
     pub const CONTENT_SINGLE: &str = "\"Hello, world!\"";
     pub const CONTENT_MULTI: &str = r#"[

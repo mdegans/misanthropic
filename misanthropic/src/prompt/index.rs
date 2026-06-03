@@ -108,9 +108,12 @@ impl<'p> Prompt<'p> {
     /// bounds (or addresses [`Prompt::system`] / [`Prompt::tools`] when absent).
     pub fn get(&self, index: Index) -> Option<IndexRef<'_, 'p>> {
         match index {
-            Index::Method(MethodIndex(i)) => {
-                self.methods.as_ref()?.get(i).map(IndexRef::Method)
-            }
+            Index::Method(MethodIndex(i)) => self
+                .methods
+                .as_ref()?
+                .get(i)?
+                .as_method()
+                .map(IndexRef::Method),
             Index::Block(BlockIndex::System(i)) => {
                 self.system.as_ref()?.get(i).map(IndexRef::Block)
             }
@@ -124,9 +127,12 @@ impl<'p> Prompt<'p> {
     /// bounds (or addresses [`Prompt::system`] / [`Prompt::tools`] when absent).
     pub fn get_mut(&mut self, index: Index) -> Option<IndexMut<'_, 'p>> {
         match index {
-            Index::Method(MethodIndex(i)) => {
-                self.methods.as_mut()?.get_mut(i).map(IndexMut::Method)
-            }
+            Index::Method(MethodIndex(i)) => self
+                .methods
+                .as_mut()?
+                .get_mut(i)?
+                .as_method_mut()
+                .map(IndexMut::Method),
             Index::Block(BlockIndex::System(i)) => {
                 self.system.as_mut()?.get_mut(i).map(IndexMut::Block)
             }
@@ -142,8 +148,15 @@ impl<'p> Prompt<'p> {
     /// Iterate over every addressable [`Index`] in cache-prefix order:
     /// tools, then system blocks, then message blocks.
     pub fn indices(&self) -> impl Iterator<Item = Index> + '_ {
-        let tools = (0..self.methods.as_ref().map_or(0, Vec::len))
-            .map(|i| Index::Method(MethodIndex(i)));
+        // Only custom tools are addressable as a `MethodIndex`; server tools
+        // carry their own `cache_control` and are skipped here.
+        let tools = self
+            .methods
+            .iter()
+            .flatten()
+            .enumerate()
+            .filter(|(_, t)| t.as_method().is_some())
+            .map(|(i, _)| Index::Method(MethodIndex(i)));
 
         let system = (0..self.system.as_ref().map_or(0, |c| c.len()))
             .map(|i| Index::Block(BlockIndex::System(i)));
@@ -161,17 +174,25 @@ impl<'p> std::ops::Index<MethodIndex> for Prompt<'p> {
     type Output = MethodDef<'p>;
 
     /// # Panics
-    /// - If [`Prompt::tools`] is absent or the index is out of bounds.
+    /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
+    ///   addressed tool is a [`ServerTool`](crate::tool::ServerTool) rather
+    ///   than a custom [`MethodDef`].
     fn index(&self, index: MethodIndex) -> &Self::Output {
-        &self.methods.as_ref().expect("no tools on this prompt")[index.0]
+        self.methods.as_ref().expect("no tools on this prompt")[index.0]
+            .as_method()
+            .expect("tool at this index is a server tool, not a MethodDef")
     }
 }
 
 impl std::ops::IndexMut<MethodIndex> for Prompt<'_> {
     /// # Panics
-    /// - If [`Prompt::tools`] is absent or the index is out of bounds.
+    /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
+    ///   addressed tool is a [`ServerTool`](crate::tool::ServerTool) rather
+    ///   than a custom [`MethodDef`].
     fn index_mut(&mut self, index: MethodIndex) -> &mut Self::Output {
-        &mut self.methods.as_mut().expect("no tools on this prompt")[index.0]
+        self.methods.as_mut().expect("no tools on this prompt")[index.0]
+            .as_method_mut()
+            .expect("tool at this index is a server tool, not a MethodDef")
     }
 }
 

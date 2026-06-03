@@ -90,10 +90,14 @@ pub struct Prompt<'a> {
     /// [`tool::Choice`] for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<tool::Choice>,
-    /// Tool definitions for the model.
+    /// Tool definitions for the model — custom [`MethodDef`]s you execute and
+    /// [`ServerTool`]s the API runs, intermixed via [`ToolDef`].
+    ///
+    /// [`ServerTool`]: crate::tool::ServerTool
+    /// [`ToolDef`]: crate::tool::ToolDef
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "tools")]
-    pub methods: Option<Vec<MethodDef<'a>>>,
+    pub methods: Option<Vec<tool::ToolDef<'a>>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -693,7 +697,12 @@ impl<'a> Prompt<'a> {
         T: Into<MethodDef<'a>>,
         Ts: IntoIterator<Item = T>,
     {
-        self.methods = Some(tools.into_iter().map(Into::into).collect());
+        self.methods = Some(
+            tools
+                .into_iter()
+                .map(|t| tool::ToolDef::Custom(t.into()))
+                .collect(),
+        );
         self
     }
 
@@ -726,33 +735,50 @@ impl<'a> Prompt<'a> {
         self.methods = Some(
             tools
                 .into_iter()
-                .map(TryInto::try_into)
+                .map(|t| t.try_into().map(tool::ToolDef::Custom))
                 .collect::<Result<_, _>>()?,
         );
         Ok(self)
     }
 
-    /// Add a tool to the request.
+    /// Add a custom tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
         T: Into<MethodDef<'a>>,
     {
         self.methods
             .get_or_insert_with(Default::default)
-            .push(tool.into());
+            .push(tool::ToolDef::Custom(tool.into()));
         self
     }
 
-    /// Try to add a tool to the request. Returns an error if the value cannot
-    /// be converted into a [`Tool`].
+    /// Try to add a custom tool to the request. Returns an error if the value
+    /// cannot be converted into a [`MethodDef`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
         T: TryInto<MethodDef<'a>, Error = E>,
     {
         self.methods
             .get_or_insert_with(Default::default)
-            .push(tool.try_into()?);
+            .push(tool::ToolDef::Custom(tool.try_into()?));
         Ok(self)
+    }
+
+    /// Add a [`ServerTool`] (Anthropic-executed, e.g.
+    /// [`web_search`](tool::ServerTool::web_search)) to the request. Unlike a
+    /// custom tool, the API runs it internally and returns its
+    /// [`Block::ServerToolUse`] and result blocks in the response.
+    ///
+    /// [`ServerTool`]: crate::tool::ServerTool
+    /// [`Block::ServerToolUse`]: message::Block::ServerToolUse
+    pub fn add_server_tool<S>(mut self, server_tool: S) -> Self
+    where
+        S: Into<tool::ServerTool<'a>>,
+    {
+        self.methods
+            .get_or_insert_with(Default::default)
+            .push(tool::ToolDef::Server(server_tool.into()));
+        self
     }
 
     // No extend for tools because it's not very common or useful. If somebody
@@ -940,9 +966,9 @@ impl<'a> Prompt<'a> {
             system: self.system.map(Content::into_static),
             temperature: self.temperature,
             tool_choice: self.tool_choice,
-            methods: self
-                .methods
-                .map(|t| t.into_iter().map(MethodDef::into_static).collect()),
+            methods: self.methods.map(|t| {
+                t.into_iter().map(tool::ToolDef::into_static).collect()
+            }),
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
@@ -1676,6 +1702,8 @@ mod tests {
             .unwrap()
             .last_mut()
             .unwrap()
+            .as_method_mut()
+            .unwrap()
             .cache_control = None;
 
         // Test with a system prompt. The call to cache should affect the final
@@ -1956,18 +1984,14 @@ mod tests {
             .try_add_tool(json_tool)
             .unwrap();
 
-        assert_eq!(request.methods.as_ref().unwrap().len(), 2);
-        assert_eq!(request.methods.as_ref().unwrap()[0].name, "ping");
-        assert_eq!(request.methods.as_ref().unwrap()[1].name, "ping2");
-        assert_eq!(
-            request.methods.as_ref().unwrap()[0].description,
-            "Ping a server."
-        );
-        assert_eq!(
-            request.methods.as_ref().unwrap()[1].description,
-            "Ping a server. Part deux."
-        );
-        assert_eq!(request.methods.as_ref().unwrap()[0].schema, schema);
+        let methods = request.methods.as_ref().unwrap();
+        let method = |i: usize| methods[i].as_method().unwrap();
+        assert_eq!(methods.len(), 2);
+        assert_eq!(method(0).name, "ping");
+        assert_eq!(method(1).name, "ping2");
+        assert_eq!(method(0).description, "Ping a server.");
+        assert_eq!(method(1).description, "Ping a server. Part deux.");
+        assert_eq!(method(0).schema, schema);
 
         // Test with a fallible tool. This should fail.
 

@@ -165,6 +165,15 @@ pub enum StopReason {
     StopSequence,
     /// A tool was used.
     ToolUse,
+    /// A long-running [`ServerTool`] (e.g. web search) paused the turn. Send
+    /// the response's content back as an [`Assistant`] message in a follow-up
+    /// request — keeping the same tools — to let the model continue. See
+    /// [server tools].
+    ///
+    /// [`ServerTool`]: crate::tool::ServerTool
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    /// [server tools]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools>
+    PauseTurn,
     /// The model refused to produce output, typically due to a conflict
     /// between the request and its safety constraints. When this occurs
     /// with [`Prompt::output_config`], the response body may not match
@@ -189,6 +198,31 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+    /// Server-tool invocation counts (e.g. web searches), when any server tool
+    /// ran. See [`ServerTool`](crate::tool::ServerTool).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_tool_use: Option<ServerToolUsage>,
+}
+
+/// Per-request counts of [`ServerTool`](crate::tool::ServerTool) invocations,
+/// reported in [`Usage::server_tool_use`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
+pub struct ServerToolUsage {
+    /// Number of web searches performed.
+    pub web_search_requests: u64,
+}
+
+impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            web_search_requests: self.web_search_requests
+                + rhs.web_search_requests,
+        }
+    }
 }
 
 impl std::ops::Add<Usage> for Usage {
@@ -206,6 +240,10 @@ impl std::ops::Add<Usage> for Usage {
                 .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
                 .or(rhs.cache_read_input_tokens),
             output_tokens: self.output_tokens + rhs.output_tokens,
+            server_tool_use: match (self.server_tool_use, rhs.server_tool_use) {
+                (Some(a), Some(b)) => Some(a + b),
+                (a, b) => a.or(b),
+            },
         }
     }
 }
@@ -461,6 +499,7 @@ mod tests {
                 cache_creation_input_tokens: Some(2),
                 cache_read_input_tokens: Some(3),
                 output_tokens: 4,
+                server_tool_use: None,
             },
         };
 

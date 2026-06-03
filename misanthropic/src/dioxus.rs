@@ -373,24 +373,26 @@ impl IntoElement for &Block<'_> {
                     })
                 }
             },
-            Block::ToolUse { call } => match &opts.tool_use {
-                opts::ToolUse::Hidden => rsx!(),
-                opts::ToolUse::Placeholder { show_name, class } => {
-                    rsx!(div {
-                        class: class.as_ref(),
-                        {show_name.map(
-                            |level| level.element(call.name.as_ref().into()
-                        ))}
-                    })
+            Block::ToolUse { call } | Block::ServerToolUse { call } => {
+                match &opts.tool_use {
+                    opts::ToolUse::Hidden => rsx!(),
+                    opts::ToolUse::Placeholder { show_name, class } => {
+                        rsx!(div {
+                            class: class.as_ref(),
+                            {show_name.map(
+                                |level| level.element(call.name.as_ref().into()
+                            ))}
+                        })
+                    }
+                    opts::ToolUse::Show { show_name, class } => {
+                        rsx!(code {
+                            lang: "json",
+                            class: class.as_ref(),
+                            {serde_json::to_string_pretty(call).unwrap()}
+                        })
+                    }
                 }
-                opts::ToolUse::Show { show_name, class } => {
-                    rsx!(code {
-                        lang: "json",
-                        class: class.as_ref(),
-                        {serde_json::to_string_pretty(call).unwrap()}
-                    })
-                }
-            },
+            }
             Block::ToolResult { result } => match &opts.tool_result {
                 opts::ToolResult::Hidden => rsx!(),
                 opts::ToolResult::Placeholder { error, ok } => {
@@ -421,6 +423,37 @@ impl IntoElement for &Block<'_> {
                     class: "document",
                     {source.to_string()}
                 })
+            }
+            Block::WebSearchToolResult { content, .. } => {
+                let is_error = matches!(
+                    content,
+                    message::WebSearchToolResultContent::Error(_)
+                );
+                match &opts.tool_result {
+                    opts::ToolResult::Hidden => rsx!(),
+                    opts::ToolResult::Placeholder { error, ok } => {
+                        rsx!(div {
+                            title: if is_error { "Error" } else { "Ok" },
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                        })
+                    }
+                    opts::ToolResult::Show { error, ok } => {
+                        rsx!(code {
+                            title: if is_error { "Error" } else { "Ok" },
+                            lang: "json",
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                            {serde_json::to_string_pretty(content).unwrap()}
+                        })
+                    }
+                }
             }
         }
     }

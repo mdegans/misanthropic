@@ -430,11 +430,15 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
             messages.extend(message_to_chat_messages(msg));
         }
 
-        // Tools
-        let tools = prompt
-            .methods
-            .as_ref()
-            .map(|methods| methods.iter().map(ChatTool::from).collect());
+        // Tools. Server tools have no OpenAI chat-completions equivalent in
+        // this shim, so only custom methods are forwarded.
+        let tools = prompt.methods.as_ref().map(|methods| {
+            methods
+                .iter()
+                .filter_map(|t| t.as_method())
+                .map(ChatTool::from)
+                .collect()
+        });
 
         // Tool choice
         let tool_choice =
@@ -604,11 +608,13 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
                     name: None,
                 });
             }
-            // Thought and Document blocks have no OpenAI chat-completions
-            // equivalent in this shim — skip them.
+            // Thought, Document, and server-tool blocks have no OpenAI
+            // chat-completions equivalent in this shim — skip them.
             Block::Thought { .. }
             | Block::RedactedThought { .. }
-            | Block::Document { .. } => {}
+            | Block::Document { .. }
+            | Block::ServerToolUse { .. }
+            | Block::WebSearchToolResult { .. } => {}
         }
     }
 
