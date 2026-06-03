@@ -1486,6 +1486,7 @@ mod tests {
 
         let mut total_searches = 0u64;
         let mut urls: Vec<String> = Vec::new();
+        let mut pauses = 0u32;
         loop {
             let response = client.message(&prompt).await.unwrap();
             if let Some(usage) = response.usage.server_tool_use {
@@ -1494,13 +1495,26 @@ mod tests {
             urls.extend(collect(&response.inner.content));
 
             if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
-                prompt.messages.push(response.into());
+                pauses += 1;
+                assert!(
+                    pauses <= 5,
+                    "runaway pause_turn loop: {pauses} pauses"
+                );
+                // `push_message` accepts the adjacent assistant turn because
+                // the paused turn carries a server-tool-use block.
+                prompt.push_message(response).unwrap();
                 continue;
             }
             break;
         }
 
+        // `max_uses` caps searches per turn, and the continuations are the
+        // *same* turn, so the total must stay within the cap.
         assert!(total_searches >= 1, "the model should have searched once");
+        assert!(
+            total_searches <= 1,
+            "searches exceeded max_uses: {total_searches}"
+        );
         assert!(!urls.is_empty(), "expected at least one search result");
         assert!(
             urls.iter().all(|u| u.contains("anthropic.com")),

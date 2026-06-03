@@ -191,9 +191,22 @@ impl Default for Prompt<'_> {
 /// open the conversation; it must follow a user turn and either end the array
 /// or immediately precede an assistant turn.
 ///
+/// **Server-tool exception:** two adjacent [`Assistant`] turns are permitted
+/// when the first contains a [`ServerToolUse`] block. Anthropic pauses a
+/// long-running server-tool turn with [`StopReason::PauseTurn`]; you continue
+/// it by appending the paused turn back and resending, which yields adjacent
+/// assistant turns that Anthropic merges server-side. Backends that emit
+/// server-tool blocks accept this relaxed ordering, so the presence of such a
+/// block is treated as evidence the backend allows it. This is a heuristic,
+/// not a guarantee: a backend that emits `server_tool_use` yet enforces strict
+/// alternation would be wrongly permitted here — but the failure surfaces as a
+/// backend-side error, not silent corruption.
+///
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 /// [`System`]: crate::prompt::message::Role::System
+/// [`ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
+/// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
 #[derive(Debug, thiserror::Error, Serialize, Deserialize)]
 pub enum TurnOrderError {
     /// The first message must be from the user — assistant and system turns
@@ -307,7 +320,7 @@ impl<'a> Prompt<'a> {
             });
         }
         for pair in self.messages.windows(2) {
-            if !pair[0].role.may_precede(pair[1].role) {
+            if !pair[0].may_precede(&pair[1]) {
                 return Err(TurnOrderError::BadTransition {
                     first: pair[0].clone().into_static(),
                     second: pair[1].clone().into_static(),
@@ -371,7 +384,7 @@ impl<'a> Prompt<'a> {
         let message: Message<'a> = message.into();
         match self.messages.last() {
             Some(last) => {
-                if !last.role.may_precede(message.role) {
+                if !last.may_precede(&message) {
                     return Err(TurnOrderError::BadTransition {
                         first: last.clone().into_static(),
                         second: message.clone().into_static(),
@@ -1562,6 +1575,55 @@ mod tests {
                 (Role::System, "be terse"),
                 (Role::System, "and polite"),
             ])
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_adjacent_assistant_allowed_after_server_tool_use() {
+        // A paused server-tool turn followed by its continuation: two adjacent
+        // assistant turns are legal because the first carries a server-tool-use
+        // block (the `pause_turn` continuation case).
+        let paused: message::Message =
+            serde_json::from_value(serde_json::json!({
+                "role": "assistant",
+                "content": [
+                    { "type": "text", "text": "searching..." },
+                    {
+                        "type": "server_tool_use",
+                        "id": "srvtoolu_1",
+                        "name": "web_search",
+                        "input": { "query": "anthropic products" }
+                    }
+                ]
+            }))
+            .unwrap();
+
+        let prompt = Prompt::default()
+            .add_message((Role::User, "name an Anthropic product"))
+            .unwrap()
+            .add_message(paused)
+            .unwrap()
+            .add_message((Role::Assistant, "Claude Code."))
+            .unwrap();
+
+        // Both the incremental check (in `push_message`) and the whole-array
+        // check must accept it.
+        prompt.check_turn_order().unwrap();
+        assert_eq!(prompt.messages.len(), 3);
+    }
+
+    #[test]
+    fn test_adjacent_assistant_rejected_without_server_tool_use() {
+        // Two plain assistant turns remain a turn-order error: the exception is
+        // gated on a server-tool-use block, so ordinary back-to-back assistant
+        // turns are still caught as the programmer error they usually are.
+        let err = Prompt::default()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .add_message((Role::Assistant, "hello"))
+            .unwrap()
+            .add_message((Role::Assistant, "hello again"))
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
     }

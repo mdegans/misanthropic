@@ -85,24 +85,6 @@ impl Role {
             Self::System => Self::System,
         }
     }
-
-    /// Whether a turn of role `self` may be immediately followed by a `next`
-    /// turn in the `messages` array.
-    ///
-    /// Encodes the user/assistant alternation plus the placement rules for a
-    /// mid-conversation [`System`](Role::System) turn: it must follow a user
-    /// turn and immediately precede an assistant turn. The
-    /// `assistant → system` transition (legal only after *server* tool use,
-    /// which the crate cannot yet construct) is intentionally rejected.
-    pub(crate) const fn may_precede(self, next: Role) -> bool {
-        matches!(
-            (self, next),
-            (Self::User, Self::Assistant)
-                | (Self::Assistant, Self::User)
-                | (Self::User, Self::System)
-                | (Self::System, Self::Assistant)
-        )
-    }
 }
 
 impl std::fmt::Display for Role {
@@ -167,6 +149,39 @@ impl Message<'_> {
         } else {
             None
         }
+    }
+
+    /// Whether this turn may be immediately followed by `next` in the
+    /// `messages` array.
+    ///
+    /// Encodes the user/assistant alternation plus the placement rules for a
+    /// mid-conversation [`System`](Role::System) turn (it must follow a user
+    /// turn and immediately precede an assistant turn), with one
+    /// content-sensitive exception: two adjacent [`Assistant`](Role::Assistant)
+    /// turns are allowed when the first carries a
+    /// [`ServerToolUse`](Block::ServerToolUse) block — see [`TurnOrderError`]
+    /// for the rationale.
+    ///
+    /// [`TurnOrderError`]: crate::prompt::TurnOrderError
+    pub(crate) fn may_precede(&self, next: &Self) -> bool {
+        use Role::{Assistant, System, User};
+        matches!(
+            (self.role, next.role),
+            (User, Assistant)
+                | (Assistant, User)
+                | (User, System)
+                | (System, Assistant)
+        ) || (self.role == Assistant
+            && next.role == Assistant
+            && self.has_server_tool_use())
+    }
+
+    /// Whether any [`Content`] [`Block`] is a
+    /// [`ServerToolUse`](Block::ServerToolUse).
+    fn has_server_tool_use(&self) -> bool {
+        self.content
+            .iter()
+            .any(|b| matches!(b, Block::ServerToolUse { .. }))
     }
 
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]

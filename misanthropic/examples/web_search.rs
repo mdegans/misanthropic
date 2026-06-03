@@ -12,10 +12,9 @@
 //! A long-running search can make the API yield mid-turn with
 //! [`StopReason::PauseTurn`]. To continue, you send the paused assistant turn
 //! back — keeping the same tools — and the model picks up where it left off.
-//! Across *several* pauses this produces consecutive assistant turns, which the
-//! crate's user/assistant alternation check rejects, so the loop below appends
-//! the continuation straight to [`Prompt::messages`] (the escape hatch) rather
-//! than via [`push_message`].
+//! Across *several* pauses this produces consecutive assistant turns;
+//! [`push_message`] accepts them because the paused turn carries a
+//! [`ServerToolUse`] block (see [`TurnOrderError`]).
 //!
 //! # Usage
 //!
@@ -33,8 +32,8 @@
 //! [`Text`]: misanthropic::prompt::message::Block::Text
 //! [`tool::Result`]: misanthropic::tool::Result
 //! [`StopReason::PauseTurn`]: misanthropic::response::StopReason::PauseTurn
-//! [`Prompt::messages`]: misanthropic::Prompt::messages
 //! [`push_message`]: misanthropic::Prompt::push_message
+//! [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
 
 use std::io::{BufRead, stdin};
 
@@ -80,11 +79,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let response = client.message(&prompt).await?;
 
         if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
-            // The API paused mid-turn after a search. Append the partial
-            // assistant turn and resend to let it continue. A second pause
-            // would make two assistant turns adjacent — which `push_message`
-            // rejects — so push to `messages` directly.
-            prompt.messages.push(response.into());
+            // Paused mid-turn after a search; append the partial assistant turn
+            // and resend so the model can continue. `push_message` accepts the
+            // adjacent assistant turn because it carries a server-tool-use
+            // block.
+            prompt.push_message(response)?;
             continue;
         }
 
