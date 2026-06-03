@@ -150,10 +150,10 @@ pub struct Prompt<'a> {
 }
 
 impl std::fmt::Debug for Prompt<'_> {
-    /// For the sake of user privacy, the debug repr of a [`Prompt`] hides the
-    /// `messages` (the chat history) — only their count is shown — since this
-    /// is the field most likely to carry user data into logs. Every other
-    /// field is request configuration and is shown in full.
+    /// The debug repr of a [`Prompt`] hides the `messages` (the chat history)
+    /// — only their count is shown. Two reasons: it's the field most likely to
+    /// carry user data into logs, and dumping a full conversation is *huge*.
+    /// Every other field is request configuration and is shown in full.
     ///
     /// `metadata` is shown too, so don't put PII there. If you do, somewhere in
     /// your design you've made a mistake. Rethink your design.
