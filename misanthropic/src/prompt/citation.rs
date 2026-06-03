@@ -18,8 +18,11 @@ pub enum Citation<'a> {
         cited_text: Cow<'a, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
-        /// Title of the cited document, if provided.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Title of the cited document. `None` serializes as `null` rather
+        /// than being omitted: the API requires this field to be *present*
+        /// (`string | null`) on citations sent in a request, so dropping it
+        /// breaks multi-turn conversations that echo a prior cited response.
+        #[serde(default)]
         document_title: Option<Cow<'a, str>>,
         /// Start character index (0-indexed, inclusive).
         start_char_index: u64,
@@ -33,8 +36,11 @@ pub enum Citation<'a> {
         cited_text: Cow<'a, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
-        /// Title of the cited document, if provided.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Title of the cited document. `None` serializes as `null` rather
+        /// than being omitted: the API requires this field to be *present*
+        /// (`string | null`) on citations sent in a request, so dropping it
+        /// breaks multi-turn conversations that echo a prior cited response.
+        #[serde(default)]
         document_title: Option<Cow<'a, str>>,
         /// Start page number (1-indexed, inclusive).
         start_page_number: u64,
@@ -48,8 +54,11 @@ pub enum Citation<'a> {
         cited_text: Cow<'a, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
-        /// Title of the cited document, if provided.
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Title of the cited document. `None` serializes as `null` rather
+        /// than being omitted: the API requires this field to be *present*
+        /// (`string | null`) on citations sent in a request, so dropping it
+        /// breaks multi-turn conversations that echo a prior cited response.
+        #[serde(default)]
         document_title: Option<Cow<'a, str>>,
         /// Start block index (0-indexed, inclusive).
         start_block_index: u64,
@@ -245,7 +254,11 @@ mod tests {
     }
 
     #[test]
-    fn no_title_omitted() {
+    fn absent_title_serializes_as_null() {
+        // The API requires `document_title` to be present on request-side
+        // citations (it's `string | null`), so a `None` must serialize as
+        // `null`, not be omitted — otherwise echoing a prior cited response
+        // back in a multi-turn conversation 400s with "Field required".
         let citation = Citation::CharLocation {
             cited_text: "text".into(),
             document_index: 0,
@@ -253,8 +266,19 @@ mod tests {
             start_char_index: 0,
             end_char_index: 4,
         };
-        let json = serde_json::to_string(&citation).unwrap();
-        assert!(!json.contains("document_title"));
+        let value = serde_json::to_value(&citation).unwrap();
+        assert!(value.get("document_title").is_some());
+        assert!(value["document_title"].is_null());
+
+        // And it round-trips back to `None`.
+        let back: Citation = serde_json::from_value(value).unwrap();
+        assert!(matches!(
+            back,
+            Citation::CharLocation {
+                document_title: None,
+                ..
+            }
+        ));
     }
 
     /// End-to-end citations check against the live API.
@@ -385,6 +409,58 @@ mod tests {
         assert!(
             cited,
             "expected a PageLocation citation quoting the PDF: {message:#?}"
+        );
+    }
+
+    /// Regression for a multi-turn round-trip: echoing a prior assistant turn
+    /// that carries an untitled citation back into the next request must not
+    /// drop `document_title`. Previously this 400'd with
+    /// `citations.0.page_location.document_title: Field required`.
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "This test requires a real API key."]
+    async fn live_multi_turn_echoes_untitled_citation() {
+        use crate::{
+            Client, Prompt,
+            prompt::message::{Block, DocumentSource, Message, Role},
+        };
+
+        const PDF: &str =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/test/data/zorblax.pdf");
+
+        let key = crate::utils::load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let source = DocumentSource::from_file(PDF).unwrap();
+        let prompt = Prompt::default()
+            .add_message((
+                Role::User,
+                vec![
+                    Block::document_with_citations(source),
+                    Block::text("What color is the sky on planet Zorblax?"),
+                ],
+            ))
+            .unwrap();
+
+        // First turn: the model cites the PDF. Our fixture has no title, so
+        // the returned citation's `document_title` is `None` — the exact shape
+        // that broke the round-trip.
+        let first = client.message(&prompt).await.unwrap();
+        let assistant: Message = Message::from(first).into_static();
+
+        // Second turn: echo the cited assistant turn back, then follow up.
+        let prompt = prompt
+            .into_static()
+            .add_message(assistant)
+            .unwrap()
+            .add_message((Role::User, "And what are its two moons named?"))
+            .unwrap();
+
+        let second = client.message(&prompt).await.unwrap();
+        let answer = second.to_string().to_lowercase();
+        assert!(
+            answer.contains("pim") && answer.contains("wassel"),
+            "expected the moon names in the follow-up answer: {second}"
         );
     }
 }
