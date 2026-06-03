@@ -1430,6 +1430,84 @@ mod tests {
         assert!(message.to_string().contains("🙏"));
     }
 
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "This test requires a real API key."]
+    async fn test_web_search_server_tool() {
+        use crate::prompt::message::{Block, WebSearchToolResultContent};
+        use crate::response::StopReason;
+        use crate::tool::{ServerTool, WebSearch};
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        // Constrain the search to a single result on anthropic.com, so the
+        // domain of whatever comes back is a deterministic invariant even
+        // though search content is not.
+        let mut prompt = Prompt::default()
+            .model(crate::AnthropicModel::Opus48)
+            .add_message((
+                Role::User,
+                "Search anthropic.com and name one product Anthropic makes. \
+                 Cite the page you used.",
+            ))
+            .unwrap()
+            .add_server_tool(ServerTool::web_search(WebSearch {
+                max_uses: Some(1),
+                allowed_domains: Some(vec!["anthropic.com".into()]),
+                ..Default::default()
+            }));
+
+        // Collect result URLs from every assistant turn and drive the
+        // server-side loop to completion, resuming on `pause_turn`.
+        let collect =
+            |content: &crate::prompt::message::Content| -> Vec<String> {
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::WebSearchToolResult {
+                            content:
+                                WebSearchToolResultContent::Results(results),
+                            ..
+                        } => Some(
+                            results
+                                .iter()
+                                .map(|r| r.url.to_string())
+                                .collect::<Vec<_>>(),
+                        ),
+                        _ => None,
+                    })
+                    .flatten()
+                    .collect()
+            };
+
+        let mut total_searches = 0u64;
+        let mut urls: Vec<String> = Vec::new();
+        loop {
+            let response = client.message(&prompt).await.unwrap();
+            if let Some(usage) = response.usage.server_tool_use {
+                total_searches += usage.web_search_requests;
+            }
+            urls.extend(collect(&response.inner.content));
+
+            if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
+                prompt.messages.push(response.into());
+                continue;
+            }
+            break;
+        }
+
+        assert!(total_searches >= 1, "the model should have searched once");
+        assert!(!urls.is_empty(), "expected at least one search result");
+        assert!(
+            urls.iter().all(|u| u.contains("anthropic.com")),
+            "results must stay within the allowed domain: {urls:?}"
+        );
+    }
+
     #[test]
     #[cfg(feature = "client")]
     fn test_with_base_url() {
