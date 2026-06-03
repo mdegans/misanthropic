@@ -635,24 +635,86 @@ impl<P> Ready<P> {
         results
     }
 
-    /// Iterate over all prompts and their [`BatchResult`]s.
-    pub fn iter(&self) -> impl Iterator<Item = (Id, &P, &BatchResult)> {
-        self.results
-            .iter()
-            .map(move |(id, result)| (*id, &self.pending.prompts[id], result))
+    /// Iterate over all prompts and their [`BatchResult`]s by reference.
+    ///
+    /// To consume the batch into owned `(Id, P, BatchResult)` triples, use the
+    /// [`IntoIterator`] impl directly (`for … in ready`, `.into_iter()`, or
+    /// `.collect()`).
+    pub fn iter(&self) -> Iter<'_, P> {
+        Iter {
+            prompts: &self.pending.prompts,
+            results: self.results.iter(),
+        }
+    }
+}
+
+/// Owning iterator over a [`Ready`] batch, yielding `(Id, prompt, BatchResult)`
+/// triples. Created by [`Ready`]'s [`IntoIterator`] impl.
+pub struct IntoIter<P> {
+    /// Drained as `results` is consumed; every `results` [`Id`] is present here.
+    prompts: HashMap<Id, P>,
+    results: std::collections::hash_map::IntoIter<Id, BatchResult>,
+}
+
+impl<P> Iterator for IntoIter<P> {
+    type Item = (Id, P, BatchResult);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (id, result) = self.results.next()?;
+        // Class invariant: every `results` Id is in `prompts`.
+        let prompt = self.prompts.remove(&id).unwrap();
+        Some((id, prompt, result))
     }
 
-    /// Convert into an iterator of (prompt, result) tuples.
-    // Named `into_iter` deliberately for discoverability; it consumes `self`
-    // but yields owned 3-tuples, so it can't be the `IntoIterator::into_iter`
-    // method itself.
-    #[allow(clippy::should_implement_trait)]
-    pub fn into_iter(self) -> impl Iterator<Item = (Id, P, BatchResult)> {
-        let (mut pending, results) = self.decompose();
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.results.size_hint()
+    }
+}
 
-        results.into_iter().map(move |(id, result)| {
-            (id, pending.prompts.prompts.remove(&id).unwrap(), result)
-        })
+impl<P> ExactSizeIterator for IntoIter<P> {}
+
+impl<P> IntoIterator for Ready<P> {
+    type Item = (Id, P, BatchResult);
+    type IntoIter = IntoIter<P>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let (pending, results) = self.decompose();
+        IntoIter {
+            prompts: pending.prompts.into_inner(),
+            results: results.into_iter(),
+        }
+    }
+}
+
+/// Borrowing iterator over a [`Ready`] batch, yielding `(Id, &prompt,
+/// &BatchResult)` triples. Created by [`Ready::iter`] or `&Ready`'s
+/// [`IntoIterator`].
+pub struct Iter<'a, P> {
+    prompts: &'a Prompts<P>,
+    results: std::collections::hash_map::Iter<'a, Id, BatchResult>,
+}
+
+impl<'a, P> Iterator for Iter<'a, P> {
+    type Item = (Id, &'a P, &'a BatchResult);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let (id, result) = self.results.next()?;
+        Some((*id, &self.prompts[id], result))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.results.size_hint()
+    }
+}
+
+impl<P> ExactSizeIterator for Iter<'_, P> {}
+
+impl<'a, P> IntoIterator for &'a Ready<P> {
+    type Item = (Id, &'a P, &'a BatchResult);
+    type IntoIter = Iter<'a, P>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
@@ -1060,6 +1122,29 @@ mod tests {
         assert_eq!(msg.id, PENDING_ID);
         assert_eq!(msg.inner, Content::from("Hello roboto!").into());
         assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_ready_into_iter_and_collect() {
+        let (id, ready) = gen_ready();
+
+        // By reference: borrows without consuming, and reports an exact size.
+        assert_eq!(ready.iter().len(), 4);
+        let ids: Vec<Id> = (&ready).into_iter().map(|(id, ..)| id).collect();
+        assert_eq!(ids.len(), 4);
+        assert!(ids.contains(&id));
+
+        // By value: consumes into owned triples.
+        let owned: Vec<_> = ready.into_iter().collect();
+        assert_eq!(owned.len(), 4);
+        assert!(owned.iter().any(|(i, _p, _r)| *i == id));
+
+        // Plays well with `FromIterator` — the point of the trait impl.
+        let (id, ready) = gen_ready();
+        let map: HashMap<Id, BatchResult> =
+            ready.into_iter().map(|(id, _p, r)| (id, r)).collect();
+        assert_eq!(map.len(), 4);
+        assert!(map.contains_key(&id));
     }
 
     #[test]
