@@ -169,6 +169,24 @@ pub enum ServerTool<'a> {
     /// [`Citation::WebSearchResultLocation`]: crate::prompt::Citation::WebSearchResultLocation
     #[serde(rename = "web_search_20250305")]
     WebSearch(WebSearch<'a>),
+    /// The [tool-search tool], regex variant (`tool_search_tool_regex_20251119`).
+    /// The model writes Python-`re`-style patterns to discover tools marked
+    /// [`defer_loading`](MethodDef::defer_loading); the matching definitions are
+    /// expanded into the conversation on demand. See [`tool_search_regex`].
+    ///
+    /// [tool-search tool]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool>
+    /// [`tool_search_regex`]: ServerTool::tool_search_regex
+    #[serde(rename = "tool_search_tool_regex_20251119")]
+    ToolSearchRegex(ToolSearch<ToolSearchRegexName>),
+    /// The [tool-search tool], BM25 variant (`tool_search_tool_bm25_20251119`).
+    /// Like [`ToolSearchRegex`](Self::ToolSearchRegex) but the model searches
+    /// with natural-language queries instead of regex. See
+    /// [`tool_search_bm25`].
+    ///
+    /// [tool-search tool]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool>
+    /// [`tool_search_bm25`]: ServerTool::tool_search_bm25
+    #[serde(rename = "tool_search_tool_bm25_20251119")]
+    ToolSearchBm25(ToolSearch<ToolSearchBm25Name>),
 }
 
 impl<'a> ServerTool<'a> {
@@ -179,12 +197,78 @@ impl<'a> ServerTool<'a> {
         Self::WebSearch(config)
     }
 
+    /// The regex [tool-search tool](Self::ToolSearchRegex). Add it alongside a
+    /// catalog of [`defer_loading`](MethodDef::defer_loading) tools (see
+    /// [`Prompt::defer_tools`]) so the model can find them on demand without
+    /// paying for every schema up front.
+    ///
+    /// [`Prompt::defer_tools`]: crate::Prompt::defer_tools
+    pub fn tool_search_regex() -> Self {
+        Self::ToolSearchRegex(ToolSearch::default())
+    }
+
+    /// The BM25 [tool-search tool](Self::ToolSearchBm25), the
+    /// natural-language counterpart to [`tool_search_regex`](Self::tool_search_regex).
+    pub fn tool_search_bm25() -> Self {
+        Self::ToolSearchBm25(ToolSearch::default())
+    }
+
+    /// Whether this server tool carries a cache breakpoint.
+    pub fn is_cached(&self) -> bool {
+        self.cache_control().is_some()
+    }
+
+    /// This tool's cache breakpoint, if any.
+    fn cache_control(&self) -> Option<&crate::prompt::message::CacheControl> {
+        match self {
+            Self::WebSearch(c) => c.cache_control.as_ref(),
+            Self::ToolSearchRegex(c) => c.cache_control.as_ref(),
+            Self::ToolSearchBm25(c) => c.cache_control.as_ref(),
+        }
+    }
+
+    /// Set this tool's cache breakpoint.
+    fn set_cache_control(
+        &mut self,
+        cache_control: crate::prompt::message::CacheControl,
+    ) {
+        match self {
+            Self::WebSearch(c) => c.cache_control = Some(cache_control),
+            Self::ToolSearchRegex(c) => c.cache_control = Some(cache_control),
+            Self::ToolSearchBm25(c) => c.cache_control = Some(cache_control),
+        }
+    }
+
     /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
     pub fn into_static(self) -> ServerTool<'static> {
         match self {
             Self::WebSearch(c) => ServerTool::WebSearch(c.into_static()),
+            // Tool-search configs borrow nothing, so they are already `'static`.
+            Self::ToolSearchRegex(c) => ServerTool::ToolSearchRegex(c),
+            Self::ToolSearchBm25(c) => ServerTool::ToolSearchBm25(c),
         }
     }
+}
+
+/// Configuration for the tool-search server tools
+/// ([`ServerTool::ToolSearchRegex`] / [`ServerTool::ToolSearchBm25`]). The wire
+/// `name` (`tool_search_tool_regex` / `tool_search_tool_bm25`) is fixed by the
+/// marker type `N` and supplied automatically; the only knob is an optional
+/// cache breakpoint. Construct via [`ServerTool::tool_search_regex`] /
+/// [`ServerTool::tool_search_bm25`].
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct ToolSearch<N> {
+    /// The fixed tool `name`, supplied automatically by [`Default`]. Not meant
+    /// to be set by hand.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: N,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
 /// Configuration for the [`ServerTool::WebSearch`] tool.
@@ -241,37 +325,61 @@ impl<'a> WebSearch<'a> {
     }
 }
 
-/// Zero-sized marker that always (de)serializes as the constant tool name
-/// `"web_search"`, so it can never be set to anything else. Public only so
-/// [`WebSearch`] supports `..Default::default()`; not part of the stable API.
-#[doc(hidden)]
-#[derive(Clone, Copy, Debug, Default)]
-#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct WebSearchName;
+/// Define a zero-sized server-tool `name` marker that always (de)serializes as
+/// one constant string, so the wire `name` can never be set to anything else.
+/// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
+/// `..Default::default()` (a *private* field would hit E0451 under FRU); none
+/// are part of the stable API.
+macro_rules! tool_name_marker {
+    ($(#[$meta:meta])* $name:ident => $wire:literal) => {
+        $(#[$meta])*
+        #[doc(hidden)]
+        #[derive(Clone, Copy, Debug, Default)]
+        #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+        pub struct $name;
 
-impl Serialize for WebSearchName {
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> std::result::Result<S::Ok, S::Error> {
-        serializer.serialize_str("web_search")
-    }
-}
-
-impl<'de> Deserialize<'de> for WebSearchName {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        let name = Cow::<str>::deserialize(deserializer)?;
-        if name == "web_search" {
-            Ok(WebSearchName)
-        } else {
-            Err(serde::de::Error::custom(
-                "expected web search tool name \"web_search\"",
-            ))
+        impl Serialize for $name {
+            fn serialize<S: serde::Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
+                serializer.serialize_str($wire)
+            }
         }
-    }
+
+        impl<'de> Deserialize<'de> for $name {
+            fn deserialize<D: serde::Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
+                let name = Cow::<str>::deserialize(deserializer)?;
+                if name == $wire {
+                    Ok($name)
+                } else {
+                    Err(serde::de::Error::custom(concat!(
+                        "expected tool name \"",
+                        $wire,
+                        "\"",
+                    )))
+                }
+            }
+        }
+    };
 }
+
+tool_name_marker!(
+    /// The fixed `"web_search"` name for [`WebSearch`].
+    WebSearchName => "web_search"
+);
+tool_name_marker!(
+    /// The fixed `"tool_search_tool_regex"` name for
+    /// [`ServerTool::ToolSearchRegex`].
+    ToolSearchRegexName => "tool_search_tool_regex"
+);
+tool_name_marker!(
+    /// The fixed `"tool_search_tool_bm25"` name for
+    /// [`ServerTool::ToolSearchBm25`].
+    ToolSearchBm25Name => "tool_search_tool_bm25"
+);
 
 /// Approximate user location used to bias [`WebSearch`] results. Serializes
 /// with `type: "approximate"`.
@@ -357,9 +465,7 @@ impl<'a> ToolDef<'a> {
     pub fn is_cached(&self) -> bool {
         match self {
             Self::Custom(method) => method.is_cached(),
-            Self::Server(ServerTool::WebSearch(config)) => {
-                config.cache_control.is_some()
-            }
+            Self::Server(server) => server.is_cached(),
         }
     }
 
@@ -373,9 +479,7 @@ impl<'a> ToolDef<'a> {
             Self::Custom(method) => {
                 method.cache_with(cache_control);
             }
-            Self::Server(ServerTool::WebSearch(config)) => {
-                config.cache_control = Some(cache_control);
-            }
+            Self::Server(server) => server.set_cache_control(cache_control),
         }
         self
     }
@@ -1220,8 +1324,56 @@ mod tests {
         assert!(json.get("blocked_domains").is_none());
 
         let back: ServerTool = serde_json::from_value(json).unwrap();
-        let ServerTool::WebSearch(config) = back;
+        let ServerTool::WebSearch(config) = back else {
+            panic!("expected WebSearch");
+        };
         assert_eq!(config.max_uses, Some(5));
+    }
+
+    #[test]
+    fn tool_search_variants_wire_shape() {
+        for (tool, ty, name) in [
+            (
+                ServerTool::tool_search_regex(),
+                "tool_search_tool_regex_20251119",
+                "tool_search_tool_regex",
+            ),
+            (
+                ServerTool::tool_search_bm25(),
+                "tool_search_tool_bm25_20251119",
+                "tool_search_tool_bm25",
+            ),
+        ] {
+            let json = serde_json::to_value(&tool).unwrap();
+            assert_eq!(json["type"], ty);
+            assert_eq!(json["name"], name);
+            // No config beyond type/name when uncached.
+            assert!(json.get("cache_control").is_none());
+
+            // Round-trips back to the same variant.
+            let back: ServerTool = serde_json::from_value(json).unwrap();
+            assert_eq!(back, tool);
+        }
+    }
+
+    #[test]
+    fn tool_search_is_cacheable() {
+        let mut def: ToolDef = ServerTool::tool_search_regex().into();
+        assert!(!def.is_cached());
+        def.cache_with(crate::prompt::message::CacheControl::ephemeral());
+        assert!(def.is_cached());
+        // The breakpoint survives serialization.
+        let json = serde_json::to_value(&def).unwrap();
+        assert!(json.get("cache_control").is_some());
+    }
+
+    #[test]
+    fn tool_search_name_is_fixed() {
+        let bad = serde_json::json!({
+            "type": "tool_search_tool_regex_20251119",
+            "name": "not_the_right_name",
+        });
+        assert!(serde_json::from_value::<ServerTool>(bad).is_err());
     }
 
     #[test]
