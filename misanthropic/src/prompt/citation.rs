@@ -323,4 +323,68 @@ mod tests {
              {message:#?}"
         );
     }
+
+    /// Same as [`live_text_document_returns_citation`] but for the PDF path: a
+    /// base64-encoded [`DocumentSource`] should produce a [`PageLocation`]
+    /// citation. The fixture (`test/data/zorblax.pdf`) carries the same
+    /// counterfactual "facts" so a correct answer can only come from the doc.
+    ///
+    /// [`PageLocation`]: Citation::PageLocation
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "This test requires a real API key."]
+    async fn live_pdf_document_returns_page_citation() {
+        use crate::{
+            Client, Prompt,
+            prompt::message::{Block, DocumentSource, Role},
+        };
+
+        const PDF: &str =
+            concat!(env!("CARGO_MANIFEST_DIR"), "/test/data/zorblax.pdf");
+
+        let key = crate::utils::load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let source = DocumentSource::from_file(PDF).unwrap();
+        let prompt = Prompt::default()
+            .add_message((
+                Role::User,
+                vec![
+                    Block::document_with_citations(source),
+                    Block::text(
+                        "What are the two moons of planet Zorblax named? \
+                         Answer in one short sentence.",
+                    ),
+                ],
+            ))
+            .unwrap();
+
+        let message = client.message(prompt).await.unwrap();
+
+        // Grounded in the PDF, not world knowledge.
+        let answer = message.to_string().to_lowercase();
+        assert!(
+            answer.contains("pim") && answer.contains("wassel"),
+            "expected the moon names in response: {message}"
+        );
+
+        // A PDF cites by page, so expect a `PageLocation`.
+        let cited = message.inner.content.iter().any(|block| {
+            matches!(
+                block,
+                Block::Text {
+                    citations: Some(cs),
+                    ..
+                } if cs.iter().any(|c| matches!(
+                    c,
+                    Citation::PageLocation { cited_text, .. }
+                        if cited_text.to_lowercase().contains("pim")
+                ))
+            )
+        });
+        assert!(
+            cited,
+            "expected a PageLocation citation quoting the PDF: {message:#?}"
+        );
+    }
 }
