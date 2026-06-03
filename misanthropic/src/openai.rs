@@ -443,16 +443,19 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
         // Tool choice
         let tool_choice =
             prompt.tool_choice.as_ref().map(|choice| match choice {
-                tool::Choice::Auto => {
+                tool::Choice::Auto { .. } => {
                     ChatToolChoice::String("auto".to_string())
                 }
-                tool::Choice::Any => {
+                tool::Choice::Any { .. } => {
                     ChatToolChoice::String("required".to_string())
                 }
-                tool::Choice::Method { name } => ChatToolChoice::Object {
+                tool::Choice::Method { name, .. } => ChatToolChoice::Object {
                     kind: "function".to_string(),
                     function: ChatToolChoiceFunction { name: name.clone() },
                 },
+                tool::Choice::None => {
+                    ChatToolChoice::String("none".to_string())
+                }
             });
 
         ChatCompletionRequest {
@@ -813,7 +816,7 @@ mod tests {
             model: "test".into(),
             messages: vec![],
             max_tokens: NonZeroU32::new(100).unwrap(),
-            tool_choice: Some(tool::Choice::Any),
+            tool_choice: Some(tool::Choice::any()),
             ..Default::default()
         };
 

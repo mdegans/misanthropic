@@ -49,23 +49,97 @@ pub use notepad::Notepad;
 ///   multiple [`MethodDef`] in this crate, we use "method" instead.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Choice {
-    /// [`Model`] chooses which [`MethodDef`] of a [`Tool`] to use.
+    /// [`Model`] chooses whether and which [`MethodDef`] of a [`Tool`] to use.
     ///
     /// [`Model`]: crate::model::Model
-    #[default]
-    Auto,
+    Auto {
+        /// If `true`, the model uses at most one tool (no parallel calls).
+        #[serde(default, skip_serializing_if = "is_false")]
+        disable_parallel_tool_use: bool,
+    },
     /// Model must use at least one of the provided [`MethodDef`]s.
-    Any,
-    /// Model must use a specific [`MethodDef`]`.
+    Any {
+        /// If `true`, the model uses at most one tool (no parallel calls).
+        #[serde(default, skip_serializing_if = "is_false")]
+        disable_parallel_tool_use: bool,
+    },
+    /// Model must use a specific [`MethodDef`].
     #[serde(rename = "tool")]
     Method {
         /// The [`MethodDef::name`] to use.
         name: String,
+        /// If `true`, the model uses at most one tool (no parallel calls).
+        #[serde(default, skip_serializing_if = "is_false")]
+        disable_parallel_tool_use: bool,
     },
+    /// The model must not use any tool, even if tools are provided.
+    None,
+}
+
+/// Serde helper: skip a `bool` field when it is `false`.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+impl Default for Choice {
+    /// [`Choice::Auto`] with parallel tool use enabled.
+    fn default() -> Self {
+        Self::Auto {
+            disable_parallel_tool_use: false,
+        }
+    }
+}
+
+impl Choice {
+    /// [`Model`] chooses whether and which tool to use (the default).
+    ///
+    /// [`Model`]: crate::model::Model
+    pub fn auto() -> Self {
+        Self::default()
+    }
+
+    /// Model must use at least one of the provided tools.
+    pub fn any() -> Self {
+        Self::Any {
+            disable_parallel_tool_use: false,
+        }
+    }
+
+    /// Model must use the [`MethodDef`] with this name.
+    pub fn method(name: impl Into<String>) -> Self {
+        Self::Method {
+            name: name.into(),
+            disable_parallel_tool_use: false,
+        }
+    }
+
+    /// Model must not use any tool.
+    pub fn none() -> Self {
+        Self::None
+    }
+
+    /// Constrain the model to at most one tool call (no parallel use). A no-op
+    /// for [`Choice::None`].
+    pub fn disable_parallel_tool_use(mut self) -> Self {
+        match &mut self {
+            Self::Auto {
+                disable_parallel_tool_use,
+            }
+            | Self::Any {
+                disable_parallel_tool_use,
+            }
+            | Self::Method {
+                disable_parallel_tool_use,
+                ..
+            } => *disable_parallel_tool_use = true,
+            Self::None => {}
+        }
+        self
+    }
 }
 
 /// A server-side (Anthropic-executed) tool, as opposed to a custom
@@ -1607,22 +1681,38 @@ mod tests {
 
     #[test]
     fn test_choice_serde() {
-        let choice = Choice::Auto;
-        let json = serde_json::to_string(&choice).unwrap();
-        let choice2: Choice = serde_json::from_str(&json).unwrap();
-        assert_eq!(choice, choice2);
+        for choice in [
+            Choice::auto(),
+            Choice::any(),
+            Choice::method("test_name"),
+            Choice::none(),
+            Choice::any().disable_parallel_tool_use(),
+        ] {
+            let json = serde_json::to_string(&choice).unwrap();
+            let choice2: Choice = serde_json::from_str(&json).unwrap();
+            assert_eq!(choice, choice2);
+        }
 
-        let choice = Choice::Any;
-        let json = serde_json::to_string(&choice).unwrap();
-        let choice2: Choice = serde_json::from_str(&json).unwrap();
-        assert_eq!(choice, choice2);
-
-        let choice = Choice::Method {
-            name: "test_name".into(),
-        };
-        let json = serde_json::to_string(&choice).unwrap();
-        let choice2: Choice = serde_json::from_str(&json).unwrap();
-        assert_eq!(choice, choice2);
+        // `disable_parallel_tool_use` is omitted when false.
+        assert_eq!(
+            serde_json::to_value(Choice::auto()).unwrap(),
+            serde_json::json!({ "type": "auto" })
+        );
+        assert_eq!(
+            serde_json::to_value(Choice::none()).unwrap(),
+            serde_json::json!({ "type": "none" })
+        );
+        assert_eq!(
+            serde_json::to_value(
+                Choice::method("t").disable_parallel_tool_use()
+            )
+            .unwrap(),
+            serde_json::json!({
+                "type": "tool",
+                "name": "t",
+                "disable_parallel_tool_use": true,
+            })
+        );
     }
 
     #[test]

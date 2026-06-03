@@ -2187,9 +2187,12 @@ mod tests {
     #[test]
     #[allow(unused_variables)] // because the compiler is silly sometimes
     fn test_tool_choice() {
-        let choice = tool::Choice::Any;
+        let choice = tool::Choice::any();
         let request = Prompt::default().tool_choice(choice);
-        assert!(matches!(request.tool_choice, Some(choice)));
+        assert!(matches!(
+            request.tool_choice,
+            Some(tool::Choice::Any { .. })
+        ));
     }
 
     #[test]
