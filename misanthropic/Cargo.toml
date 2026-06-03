@@ -81,41 +81,91 @@ static_assertions = "1"
 # ensuring the output is sanitized. Or simply hide agent thoughts. Log them
 # instead. Users only need see "thinking" unless you really, really want to
 # expose customers to the random thoughts of a machine learning model.
+# The allow-list below is deliberately broad. langsan 0.0.14+ resolves
+# membership through an O(1) two-level table, so cost no longer scales with the
+# number of enabled blocks — we can admit everything legitimate model output
+# uses. The one rule: **visible glyphs only.** Every block here contains
+# printable characters and nothing else. We do NOT enable any block carrying
+# invisible / format / spoofing code points — those stay denied so langsan can
+# still do its job:
+#   - Arabic / Hebrew & RTL — Arabic carries U+061C (invisible bidi mark) and
+#     U+0600–0605 format marks; RTL needs the `bidi` feature, intentionally off.
+#   - Hangul Jamo / Compatibility Jamo — blank filler chars (U+115F/1160/3164).
+#   - Variation Selectors (+Supp), Tags, Specials, Arabic Presentation Forms-B
+#     (BOM U+FEFF) — invisible / format.
+#   - Combining-mark blocks (Zalgo/overlay), Private Use Areas, Halfwidth and
+#     Fullwidth Forms (filler + homoglyph spoofing).
+# Independently, zero-width/bidi controls stay denied via langsan's
+# `FORBIDDEN_BIDI` list and tag chars because the `tags` block is off, so even
+# the enabled blocks can't smuggle the known vectors. See #74.
 langsan = { version = "0", features = [
+    "serde",
+    "verbose",
+    # Languages (each pulls the Latin-1 Supplement etc. it needs).
     "english",
     "french",
     "german",
     "italian",
-    "serde",
-    "emoji",
-    "verbose",
-    "general-punctuation",
-    "arrows",
-    # Symbol blocks that legitimate model output (markdown tables, technical
-    # prose, ASCII-art diagrams) reaches for constantly. Every block listed
-    # here contains only *visible* printable glyphs — none re-admit the
-    # hidden-text vectors langsan guards against (zero-width / bidi controls
-    # stay denied via its `FORBIDDEN_BIDI` list, tag chars stay denied because
-    # the `tags` block is not enabled), so widening the allow-list here does
-    # not weaken the defense. See #74: a stray `−` (U+2212) or `≈` (U+2248)
-    # used to take the whole run of text around it with it.
-    "mathematical-operators",          # − ≈ ≤ ≥ ≠ √ ∑ ∞ ∫ …
+    "russian",                              # -> cyrillic
+    "emoji",                                # -> emoticons
+    # Latin/phonetic extensions for the rest of the Latin-script languages.
+    "latin-extended-a",                     # š č ż ğ (Polish, Czech, Turkish…)
+    "latin-extended-b",
+    "latin-extended-additional",            # Vietnamese
+    "ipa-extensions",                       # phonetic transcription
+    # Greek & Cyrillic — math/science variables and Slavic text.
+    "greek-and-coptic",                     # α β γ π Σ Ω
+    "greek-extended",
+    "cyrillic-supplement",
+    # CJK — Chinese, Japanese, Korean (precomposed; Jamo excluded, see above).
+    "cjk-symbols-and-punctuation",          # 。、「」
+    "hiragana",
+    "katakana",
+    "cjk-unified-ideographs",               # the main Han block
+    "cjk-unified-ideographs-extension-a",
+    "hangul-syllables",                     # 한국어
+    "enclosed-cjk-letters-and-months",      # ㊙ ㈱
+    "cjk-compatibility",                    # ㎏ ㎞ squared units
+    # Punctuation & technical.
+    "general-punctuation",                  # — “ ” • … (bidi subset stays denied)
+    "supplemental-punctuation",
+    "miscellaneous-technical",              # ⌘ ⌥ ⏎ ⌫
+    "control-pictures",                     # ␀ ␉
+    "optical-character-recognition",
+    # Math.
+    "mathematical-operators",               # − ≈ ≤ ≥ ≠ √ ∑ ∞ ∫
     "supplemental-mathematical-operators",
     "miscellaneous-mathematical-symbols-a",
     "miscellaneous-mathematical-symbols-b",
-    "superscripts-and-subscripts",     # x² H₂O
-    "letterlike-symbols",              # ™ № ℃ ℓ
-    "number-forms",                    # ½ ⅓ Ⅷ
-    "currency-symbols",                # € £ ¥ ₹
-    "box-drawing",                     # ─ │ ┌ └ (trees, tables)
-    "block-elements",                  # ░ ▒ █ (bars, shading)
-    "geometric-shapes",                # ■ ● ▶ ○ (bullets, callouts)
-    "miscellaneous-symbols",           # ★ ☆ ⚠ ☑
-    "miscellaneous-symbols-and-arrows",
-    "dingbats",                        # ✓ ✗ ✔ ✘ ➜
-    "enclosed-alphanumerics",          # ① ② ⓐ
+    "mathematical-alphanumeric-symbols",    # 𝔸 𝕏 𝒞 blackboard/script
+    "superscripts-and-subscripts",          # x² H₂O
+    "letterlike-symbols",                   # ™ № ℃ ℓ ℝ
+    "number-forms",                         # ½ ⅓ Ⅷ
+    "currency-symbols",                     # € £ ¥ ₹
+    # Arrows.
+    "arrows",
     "supplemental-arrows-a",
     "supplemental-arrows-b",
+    "supplemental-arrows-c",
+    # Shapes, boxes, bars — tables, trees, TUI/ASCII art.
+    "box-drawing",                          # ─ │ ┌ └
+    "block-elements",                       # ░ ▒ █
+    "geometric-shapes",                     # ■ ● ▶ ○
+    "geometric-shapes-extended",            # 🔴 🟢 🟡
+    "symbols-for-legacy-computing",
+    "braille-patterns",                     # ⠿ (ASCII art)
+    # Symbols, dingbats, emoji/pictographs.
+    "miscellaneous-symbols",                # ★ ☆ ⚠ ☑ ♔ ♪
+    "miscellaneous-symbols-and-arrows",
+    "dingbats",                             # ✓ ✗ ✔ ✘ ➜
+    "ornamental-dingbats",
+    "miscellaneous-symbols-and-pictographs", # 🔧 📊 🔥 🚀
+    "supplemental-symbols-and-pictographs", # 🧠 🤖 🦀
+    "symbols-and-pictographs-extended-a",   # 🩹 🪐
+    "transport-and-map-symbols",            # 🚗 ✈
+    "enclosed-alphanumerics",               # ① ② ⓐ
+    "enclosed-alphanumeric-supplement",     # 🇺🇳 regional indicators (flags)
+    "enclosed-ideographic-supplement",
 ], optional = true }
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
