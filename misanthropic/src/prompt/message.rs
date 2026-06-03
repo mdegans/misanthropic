@@ -1706,6 +1706,10 @@ impl From<image::DynamicImage> for Block<'_> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum CacheTtl {
+    /// Cache for 5 minutes — the default. Equivalent to omitting `ttl`; this
+    /// variant exists so an explicit `"5m"` round-trips.
+    #[serde(rename = "5m")]
+    FiveMinutes,
     /// Cache for 1 hour. Costs 2x base input token price.
     #[serde(rename = "1h")]
     OneHour,
@@ -1714,6 +1718,7 @@ pub enum CacheTtl {
 impl std::fmt::Display for CacheTtl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            CacheTtl::FiveMinutes => write!(f, "5m"),
             CacheTtl::OneHour => write!(f, "1h"),
         }
     }
@@ -2859,6 +2864,20 @@ mod tests {
         let json = r#"{"type":"ephemeral"}"#;
         let cc: CacheControl = serde_json::from_str(json).unwrap();
         assert_eq!(cc, CacheControl::Ephemeral { ttl: None });
+    }
+
+    #[test]
+    fn test_cache_control_explicit_5m_deserialization() {
+        // An explicit "5m" ttl round-trips (equivalent to omitting it).
+        let json = r#"{"type":"ephemeral","ttl":"5m"}"#;
+        let cc: CacheControl = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            cc,
+            CacheControl::Ephemeral {
+                ttl: Some(CacheTtl::FiveMinutes)
+            }
+        );
+        assert_eq!(serde_json::to_string(&cc).unwrap(), json);
     }
 
     #[test]
