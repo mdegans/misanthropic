@@ -459,20 +459,31 @@ impl Client {
             // Get body as JSON.
             let body = response.bytes().await?;
 
+            // Log the *raw* response body before deserialization. Parsing into
+            // a [`response::Message`] constructs [`crate::CowStr`]s, which
+            // sanitize content under the `langsan` feature, so this is the only
+            // place we can see exactly what the API sent. We round-trip through
+            // [`serde_json::Value`] (plain `String`s, never sanitized) purely to
+            // pretty-print; on failure we fall back to a lossy string so the
+            // bytes are never hidden.
+            #[cfg(feature = "log")]
+            {
+                log::debug!(
+                    "RECV:{}",
+                    serde_json::from_slice::<serde_json::Value>(&body)
+                        .as_ref()
+                        .ok()
+                        .and_then(|v| serde_json::to_string_pretty(v).ok())
+                        .unwrap_or_else(
+                            || String::from_utf8_lossy(&body).into_owned()
+                        )
+                );
+            }
+
             // Get a single response message.
             Ok(crate::Response::Message {
                 message: match serde_json::from_slice(&body) {
-                    Ok(msg) => {
-                        #[cfg(feature = "log")]
-                        {
-                            log::debug!(
-                                "RECV:{}",
-                                serde_json::to_string_pretty(&msg).unwrap()
-                            );
-                        }
-
-                        msg
-                    }
+                    Ok(msg) => msg,
                     Err(e) => {
                         #[cfg(feature = "log")]
                         {

@@ -130,6 +130,9 @@ impl Calculator {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "log")]
+    env_logger::init();
+
     let args = Args::parse();
 
     // Get API key from stdin.
