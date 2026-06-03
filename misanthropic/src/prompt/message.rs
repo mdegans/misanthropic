@@ -291,6 +291,16 @@ pub struct AssistantMessage<'a> {
 }
 
 impl<'a> AssistantMessage<'a> {
+    /// An assistant turn whose [`Content`] is a single [`Block::Text`]. Handy
+    /// for prefill and for hand-authored examples (see
+    /// [`Prompt::with_examples`](crate::Prompt::with_examples)).
+    pub fn text<T>(text: T) -> Self
+    where
+        T: Into<crate::CowStr<'a>>,
+    {
+        Content::text(text).into()
+    }
+
     /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
     /// fields.
     pub fn into_static(self) -> AssistantMessage<'static> {
@@ -326,6 +336,18 @@ impl<'a> From<Content<'a>> for AssistantMessage<'a> {
                 content,
             },
         }
+    }
+}
+
+impl From<String> for AssistantMessage<'_> {
+    fn from(string: String) -> Self {
+        Content::text(string).into()
+    }
+}
+
+impl<'a> From<&'a str> for AssistantMessage<'a> {
+    fn from(string: &'a str) -> Self {
+        Content::text(string).into()
     }
 }
 
