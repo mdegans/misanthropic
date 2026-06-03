@@ -3,10 +3,6 @@
 //! see words as humans do). This example gives the assistant an assistive
 //! device — a `count_letters` tool — built with the [`tool`] macro.
 //!
-//! The win over hand-written tools: declare an `Args` struct and an annotated
-//! `async fn`, and the JSON schema, argument deserialization, and validation
-//! are all generated. No hand-written schema, no `call.input["letter"]` fishing.
-//!
 //! [`tool`]: misanthropic::tool::tool
 
 // Note: This example uses blocking calls for simplicity such as `println!()`
