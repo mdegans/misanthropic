@@ -49,6 +49,11 @@ pub struct Client {
     /// Custom endpoint for the token counting API. Defaults to
     /// [`Self::COUNT_TOKENS_URL`].
     pub count_tokens_url: Arc<Url>,
+    /// Value for the `anthropic-beta` header, or `None` to omit it. A
+    /// comma-separated list of beta feature flags (e.g.
+    /// [`Self::INTERLEAVED_THINKING_BETA`]). Injected on every request via
+    /// [`Self::request_raw`]. Set with [`Self::with_beta`].
+    pub beta: Arc<Option<String>>,
 }
 
 /// Claude client. Uses the Messages API.
@@ -57,6 +62,12 @@ impl Client {
     /// Version of the API. This is appended to the header as
     /// "anthropic-version".
     pub const ANTHROPIC_VERSION: &'static str = "2023-06-01";
+    /// `anthropic-beta` flag enabling interleaved thinking — thinking between
+    /// tool calls — on models that still gate it behind a header (older Claude
+    /// 4). Opus 4.7+ enable it automatically with adaptive thinking. Pass to
+    /// [`Self::with_beta`].
+    pub const INTERLEAVED_THINKING_BETA: &'static str =
+        "interleaved-thinking-2025-05-14";
     /// Our user agent.
     pub const USER_AGENT: &'static str =
         concat!(env!("CARGO_PKG_NAME"), "-", env!("CARGO_PKG_VERSION"));
@@ -123,7 +134,28 @@ impl Client {
             count_tokens_url: Arc::new(
                 Url::parse(Self::COUNT_TOKENS_URL).unwrap(),
             ),
+            beta: Arc::new(None),
         }
+    }
+
+    /// Set the `anthropic-beta` header sent on every request, replacing any
+    /// previous value. Pass a comma-separated list to enable multiple beta
+    /// features at once.
+    ///
+    /// Most current features need no beta header — for example adaptive
+    /// thinking auto-enables interleaved thinking on Opus 4.7+. This is for
+    /// the cases that still gate behind one, such as
+    /// [`Self::INTERLEAVED_THINKING_BETA`] on older Claude 4 models.
+    ///
+    /// ```rust
+    /// # use misanthropic::Client;
+    /// let client = Client::new("x".repeat(108))?
+    ///     .with_beta(Client::INTERLEAVED_THINKING_BETA);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn with_beta(mut self, beta: impl Into<String>) -> Self {
+        self.beta = Arc::new(Some(beta.into()));
+        self
     }
 
     /// Set a custom base URL for all API endpoints.
@@ -186,7 +218,14 @@ impl Client {
                 .unwrap();
         val.set_sensitive(true);
 
-        self.inner.request(method, url).header("x-api-key", val)
+        let builder = self.inner.request(method, url).header("x-api-key", val);
+
+        // Inject the `anthropic-beta` header here — the single chokepoint every
+        // GET and POST routes through — so all requests pick it up.
+        match self.beta.as_deref() {
+            Some(beta) => builder.header("anthropic-beta", beta),
+            None => builder,
+        }
     }
 
     /// Send a GET request with the API key set as a sensitive header value.
@@ -1029,6 +1068,24 @@ mod tests {
     use futures::TryStreamExt;
 
     use super::*;
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_with_beta_sets_header_value() {
+        let client = Client::new("x".repeat(108)).unwrap();
+        // Off by default — no header is sent.
+        assert!(client.beta.is_none());
+
+        let client = client.with_beta(Client::INTERLEAVED_THINKING_BETA);
+        assert_eq!(
+            client.beta.as_deref(),
+            Some(Client::INTERLEAVED_THINKING_BETA)
+        );
+
+        // Setting again replaces, and clones share the value cheaply.
+        let client = client.with_beta("a,b");
+        assert_eq!(client.clone().beta.as_deref(), Some("a,b"));
+    }
 
     // Test body truncation for NonJsonResponse payloads.
 
