@@ -136,6 +136,9 @@ impl Client {
     /// preserving their paths and query strings. Useful for pointing at
     /// Ollama's Anthropic-compatible endpoint, proxies, or test servers.
     ///
+    /// Accepts anything [`reqwest::IntoUrl`] does — `&str`, `String`, or an
+    /// already-parsed [`Url`], the last of which skips a redundant reparse.
+    ///
     /// ```rust,no_run
     /// # use misanthropic::Client;
     /// let client = Client::new("x".repeat(108))?
@@ -144,9 +147,9 @@ impl Client {
     /// ```
     pub fn with_base_url(
         mut self,
-        base: &str,
-    ) -> std::result::Result<Self, url::ParseError> {
-        let base = Url::parse(base)?;
+        base: impl reqwest::IntoUrl,
+    ) -> reqwest::Result<Self> {
+        let base = base.into_url()?;
 
         let rebase = |endpoint: &Url| -> Arc<Url> {
             let mut new = base.clone();
