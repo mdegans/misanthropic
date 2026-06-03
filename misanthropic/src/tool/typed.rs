@@ -38,6 +38,16 @@ pub trait ToolArgs:
     const NAME: &'static str;
     /// Method description shown to the model.
     const DESCRIPTION: &'static str;
+    /// When `true`, the generated [`MethodDef`] is marked
+    /// [`defer_loading`](MethodDef::defer_loading) so the API loads its schema
+    /// only when the model discovers it through the [tool-search
+    /// tool](crate::tool::ServerTool::tool_search_regex). Defaults to `false`.
+    /// Set it on a `#[tool]`/`#[derive(ToolArgs)]` type with
+    /// `#[tool(defer_loading)]` (or `#[method(defer_loading)]`), or flip a whole
+    /// toolset at assembly time with [`Prompt::defer_tools`].
+    ///
+    /// [`Prompt::defer_tools`]: crate::Prompt::defer_tools
+    const DEFER_LOADING: bool = false;
 
     /// JSON Schema for `Self`, sanitized for Anthropic. See
     /// [`sanitize_for_anthropic`](crate::prompt::output::sanitize_for_anthropic).
@@ -51,11 +61,13 @@ pub trait ToolArgs:
     /// The wire [`MethodDef`] assembled from [`NAME`](Self::NAME),
     /// [`DESCRIPTION`](Self::DESCRIPTION), and [`schema`](Self::schema).
     fn definition() -> MethodDef<'static> {
-        MethodDef::builder(Self::NAME)
+        let mut def = MethodDef::builder(Self::NAME)
             .description(Self::DESCRIPTION)
             .schema(Self::schema())
             .build()
-            .expect("a ToolArgs-derived schema is valid")
+            .expect("a ToolArgs-derived schema is valid");
+        def.defer_loading = Self::DEFER_LOADING.then_some(true);
+        def
     }
 }
 
@@ -389,6 +401,26 @@ mod tests {
         let def = <Clear as ToolArgs>::definition();
         assert_eq!(def.name, "clear");
         assert_eq!(def.schema["type"], "object");
+    }
+
+    // A `ToolArgs` whose `DEFER_LOADING` is overridden to `true`.
+    #[derive(Deserialize, schemars::JsonSchema)]
+    struct Deferred {}
+    impl ToolArgs for Deferred {
+        const NAME: &'static str = "deferred";
+        const DESCRIPTION: &'static str = "A deferred method.";
+        const DEFER_LOADING: bool = true;
+    }
+
+    #[test]
+    fn defer_loading_const_flows_into_definition() {
+        // Default is `false`, so the field elides.
+        assert_eq!(<Clear as ToolArgs>::definition().defer_loading, None);
+        // Overridden to `true`, so it is carried onto the `MethodDef`.
+        assert_eq!(
+            <Deferred as ToolArgs>::definition().defer_loading,
+            Some(true)
+        );
     }
 
     #[test]

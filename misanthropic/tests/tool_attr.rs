@@ -41,7 +41,7 @@ impl Calc {
     }
 
     /// Reset the accumulator.
-    #[method]
+    #[method(defer_loading)]
     async fn reset(
         &mut self,
         _args: Reset,
@@ -127,6 +127,21 @@ fn derived_tool_args_from_fn() {
         "Add x and y to the accumulator."
     );
     assert_eq!(<Reset as ToolArgs>::NAME, "reset");
+}
+
+#[test]
+fn method_defer_loading_attribute_flows_through() {
+    // `#[method(defer_loading)]` on `reset` defers only that method; `add`
+    // (a bare `#[method]`) is left loaded.
+    assert!(!<Add as ToolArgs>::DEFER_LOADING);
+    assert!(<Reset as ToolArgs>::DEFER_LOADING);
+
+    let defs = Typed(Calc::default()).definitions();
+    let defer = |name: &str| {
+        defs.iter().find(|d| d.name == name).unwrap().defer_loading
+    };
+    assert_eq!(defer("Calc__add"), None);
+    assert_eq!(defer("Calc__reset"), Some(true));
 }
 
 #[tokio::test]

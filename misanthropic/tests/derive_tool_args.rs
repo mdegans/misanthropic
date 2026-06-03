@@ -20,6 +20,15 @@ struct Push {
 #[tool(name = "clear_all", description = "Erase everything.")]
 struct Clear {}
 
+/// A deferred tool: `#[tool(defer_loading)]` flips
+/// [`ToolArgs::DEFER_LOADING`].
+#[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
+#[allow(dead_code)]
+#[tool(defer_loading)]
+struct Lookup {
+    query: String,
+}
+
 #[test]
 fn name_defaults_to_ident_and_description_from_doc() {
     assert_eq!(<Push as ToolArgs>::NAME, "Push");
@@ -30,6 +39,16 @@ fn name_defaults_to_ident_and_description_from_doc() {
 fn attributes_override_name_and_description() {
     assert_eq!(<Clear as ToolArgs>::NAME, "clear_all");
     assert_eq!(<Clear as ToolArgs>::DESCRIPTION, "Erase everything.");
+}
+
+#[test]
+fn defer_loading_defaults_false_and_is_overridable() {
+    // Default: the const is `false` and the field elides on the wire.
+    assert!(!<Push as ToolArgs>::DEFER_LOADING);
+    assert_eq!(<Push as ToolArgs>::definition().defer_loading, None);
+    // `#[tool(defer_loading)]` flips it and carries onto the `MethodDef`.
+    assert!(<Lookup as ToolArgs>::DEFER_LOADING);
+    assert_eq!(<Lookup as ToolArgs>::definition().defer_loading, Some(true));
 }
 
 #[test]

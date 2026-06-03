@@ -853,6 +853,34 @@ impl<'a> Prompt<'a> {
         self
     }
 
+    /// Mark every custom tool's [`MethodDef`] as
+    /// [`defer_loading`](MethodDef::defer_loading), so the API loads their
+    /// schemas only when the model discovers them through the [tool-search
+    /// tool](tool::ServerTool::tool_search_regex). Server tools are left
+    /// untouched (they are never deferred).
+    ///
+    /// The Messages API requires at least one non-deferred tool, so pair this
+    /// with a tool-search server tool — which stays non-deferred and gives the
+    /// model a way to find the deferred ones:
+    ///
+    /// ```
+    /// # use misanthropic::{Prompt, tool::{MethodDef, ServerTool}};
+    /// let prompt = Prompt::default()
+    ///     .add_tool(MethodDef::simple("get_weather", "Get the weather."))
+    ///     .add_server_tool(ServerTool::tool_search_regex())
+    ///     .defer_tools();
+    /// ```
+    pub fn defer_tools(mut self) -> Self {
+        if let Some(methods) = self.methods.as_mut() {
+            for method in
+                methods.iter_mut().filter_map(tool::ToolDef::as_method_mut)
+            {
+                method.defer_loading = Some(true);
+            }
+        }
+        self
+    }
+
     // No extend for tools because it's not very common or useful. If somebody
     // really wants this they can submit a PR.
 
@@ -1442,6 +1470,30 @@ mod tests {
     use crate::{AnthropicModel, prompt::message::Role};
 
     const STOP_SEQUENCES: [&str; 2] = ["stop1", "stop2"];
+
+    #[test]
+    fn defer_tools_marks_only_custom_tools() {
+        let prompt = Prompt::default()
+            .add_tool(crate::tool::MethodDef::simple("a", "Tool A."))
+            .add_tool(crate::tool::MethodDef::simple("b", "Tool B."))
+            .add_server_tool(crate::tool::ServerTool::tool_search_regex())
+            .defer_tools();
+
+        let methods = prompt.methods.as_ref().unwrap();
+        // Both custom tools are now deferred...
+        for def in methods.iter().filter_map(|d| d.as_method()) {
+            assert_eq!(def.defer_loading, Some(true));
+        }
+        // ...and the server tool-search tool is untouched (never deferred),
+        // satisfying the API's "at least one non-deferred tool" rule.
+        let json = serde_json::to_value(&prompt).unwrap();
+        let tools = json["tools"].as_array().unwrap();
+        let search = tools
+            .iter()
+            .find(|t| t["type"] == "tool_search_tool_regex_20251119")
+            .unwrap();
+        assert!(search.get("defer_loading").is_none());
+    }
 
     // Credit to GitHub Copilot for the following tests.
 

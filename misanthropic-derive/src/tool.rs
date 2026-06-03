@@ -19,7 +19,7 @@ use syn::{
     Type, parse::Parser,
 };
 
-use crate::util::doc_string;
+use crate::util::{doc_string, parse_defer_loading};
 
 /// Marker attributes recognized (and stripped) inside a `#[tool]` impl.
 const MARKERS: &[&str] =
@@ -84,6 +84,10 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         let fn_ident = &m.ident;
         let name = m.ident.to_string();
         let desc = &m.doc;
+        // Only emit the const when set, so the trait default (`false`) stands.
+        let defer = m
+            .defer_loading
+            .map(|v| quote! { const DEFER_LOADING: bool = #v; });
 
         wrappers.push(quote! {
             #[doc(hidden)]
@@ -94,6 +98,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
             impl ::misanthropic::tool::ToolArgs for #args_ty {
                 const NAME: &'static str = #name;
                 const DESCRIPTION: &'static str = #desc;
+                #defer
             }
 
             #[automatically_derived]
@@ -212,11 +217,13 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
     })
 }
 
-/// One `#[method]` fn: its name, doc, and `Args` type.
+/// One `#[method]` fn: its name, doc, `Args` type, and optional
+/// `defer_loading` override (from `#[method(defer_loading)]`).
 struct MethodInfo {
     ident: Ident,
     doc: String,
     args_ty: Type,
+    defer_loading: Option<bool>,
 }
 
 impl MethodInfo {
@@ -225,8 +232,31 @@ impl MethodInfo {
             ident: f.sig.ident.clone(),
             doc: doc_string(&f.attrs),
             args_ty: method_arg_type(&f.sig)?,
+            defer_loading: parse_method_args(&f.attrs)?,
         })
     }
+}
+
+/// Parse the `#[method(…)]` attribute's keys. Currently only `defer_loading`
+/// (bare or `= true|false`); a bare `#[method]` has no keys.
+fn parse_method_args(attrs: &[Attribute]) -> syn::Result<Option<bool>> {
+    let mut defer_loading = None;
+    for attr in attrs.iter().filter(|a| a.path().is_ident("method")) {
+        // A bare `#[method]` (path-only) carries no keys to parse.
+        if matches!(attr.meta, syn::Meta::Path(_)) {
+            continue;
+        }
+        attr.parse_nested_meta(|meta| {
+            if meta.path.is_ident("defer_loading") {
+                defer_loading = Some(parse_defer_loading(&meta)?);
+                Ok(())
+            } else {
+                Err(meta
+                    .error("unknown `method` key; expected `defer_loading`"))
+            }
+        })?;
+    }
+    Ok(defer_loading)
 }
 
 /// The `Args` type of a `#[method]` fn: it must take `&mut self` (or `&self`)
