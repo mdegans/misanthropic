@@ -655,16 +655,14 @@ impl<'a> MethodBuilder<'a> {
         }
 
         // Add to required array if needed
-        if required {
-            if let Some(required_array) = self
+        if required
+            && let Some(required_array) = self
                 .tool
                 .schema
                 .get_mut("required")
                 .and_then(|r| r.as_array_mut())
-            {
-                required_array
-                    .push(serde_json::Value::String(name.to_string()));
-            }
+        {
+            required_array.push(serde_json::Value::String(name.to_string()));
         }
 
         self

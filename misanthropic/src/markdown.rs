@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_markdown() {
         let expected = "Hello, **world**!";
-        let events = pulldown_cmark::Parser::new(&expected);
+        let events = pulldown_cmark::Parser::new(expected);
         let markdown: Markdown = events.into();
         let actual: &str = markdown.borrow();
         assert_eq!(actual, expected);

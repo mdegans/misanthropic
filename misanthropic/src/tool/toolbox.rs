@@ -78,7 +78,9 @@ impl ToolBox {
     /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
     ///   the `warn` level. This does not remove the original [`Tool`]. If you
     ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
-    pub fn add(mut self, tool: impl Tool + Send + 'static) -> Self {
+    // Deliberate builder-style name (mirrors `add_boxed`); not `ops::Add::add`.
+    #[allow(clippy::should_implement_trait)]
+    pub fn add(mut self, tool: impl Tool + 'static) -> Self {
         self.push(tool);
         self
     }
@@ -95,7 +97,7 @@ impl ToolBox {
     }
 
     /// Push a [`Tool`] to the [`ToolBox`].
-    pub fn push(&mut self, tool: impl Tool + Send + 'static) {
+    pub fn push(&mut self, tool: impl Tool + 'static) {
         self.push_boxed(Box::new(tool));
     }
 
@@ -143,7 +145,7 @@ impl ToolBox {
 
     /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
     /// [`MethodDef`]s.
-    pub fn replace(&mut self, tool: impl Tool + Send + 'static) {
+    pub fn replace(&mut self, tool: impl Tool + 'static) {
         self.replace_boxed(Box::new(tool));
     }
 
@@ -202,7 +204,7 @@ impl ToolBox {
         let mut errors = Vec::new();
         let backup = prompt.clone();
 
-        for (_, tool) in &mut self.tool_name_to_tool {
+        for tool in self.tool_name_to_tool.values_mut() {
             #[cfg(feature = "log")]
             log::debug!("Initializing tool: {}", tool.name());
 
@@ -234,7 +236,7 @@ impl ToolBox {
         let mut errors = Vec::new();
         let backup = prompt.clone();
 
-        for (_, tool) in &mut self.tool_name_to_tool {
+        for tool in self.tool_name_to_tool.values_mut() {
             #[cfg(feature = "log")]
             log::debug!("Updating turn context for tool: {}", tool.name());
 
@@ -382,7 +384,7 @@ impl Tool for ToolBox {
             Err(e) => {
                 return Err(format!(
                     "Error deserializing ToolBox state: {}",
-                    e.to_string()
+                    e
                 ));
             }
         };
@@ -435,7 +437,7 @@ impl Tool for ToolBox {
     async fn save_json(&mut self) -> serde_json::Value {
         let mut tools = serde_json::Map::new();
 
-        for (_, tool) in &mut self.tool_name_to_tool {
+        for tool in self.tool_name_to_tool.values_mut() {
             let tool_state = tool.save_json().await;
             tools.insert(tool.name().to_string(), tool_state);
         }

@@ -316,7 +316,7 @@ impl<'a> Delta<'a> {
                         to: stringify!(Delta::Thinking),
                     });
                 }
-                signature.replace(signature_delta.into());
+                signature.replace(signature_delta);
             }
             // Every other case is a mismatch.
             (to, from) => {
@@ -461,6 +461,10 @@ static_assertions::assert_impl_all!(Stream: futures::Stream, Send);
 impl Stream {
     /// Create a new stream from an [`eventsource_stream::EventStream`] or
     /// similar stream of [`eventsource_stream::Event`]s.
+    // `stream::Error` is 136 B, but `Result<Event, Error>` is sized by the
+    // `Event` success variant (184 B) regardless, so boxing the error wouldn't
+    // shrink it. Permanent allow, not a deferral.
+    #[allow(clippy::result_large_err)]
     pub fn new<S>(stream: S) -> Self
     where
         S: futures::Stream<
@@ -900,6 +904,7 @@ pub(crate) mod tests {
         Stream::new(inner)
     }
 
+    #[allow(clippy::result_large_err)] // see `Stream::new`: `Event` dominates.
     pub fn mock_stream_jsonl(
         text: &'static str,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
@@ -1075,9 +1080,8 @@ pub(crate) mod tests {
 
         let mut errors = Vec::new();
         while let Some(event) = stream.next().await {
-            match event {
-                Err(error) => errors.push(error),
-                Ok(_) => {}
+            if let Err(error) = event {
+                errors.push(error)
             }
         }
         if !errors.is_empty() {
@@ -1196,14 +1200,12 @@ pub(crate) mod tests {
         pin_mut!(stream);
 
         while let Some(event) = stream.next().await {
-            match event {
-                Ok(Event::ContentBlockStart { content_block, .. }) => {
-                    if let Block::RedactedThought { signature } = content_block
-                    {
-                        assert!(!signature.is_empty());
-                    }
-                }
-                _ => {}
+            if let Ok(Event::ContentBlockStart {
+                content_block: Block::RedactedThought { signature },
+                ..
+            }) = event
+            {
+                assert!(!signature.is_empty());
             }
         }
     }
@@ -1292,12 +1294,9 @@ pub(crate) mod tests {
         pin_mut!(stream);
         while let Some(event) = stream.next().await {
             dbg!(&event);
-            match event {
-                Ok(Event::ToolUse { tool_use: new }) => {
-                    tool_use = Some(new);
-                    break;
-                }
-                _ => {}
+            if let Ok(Event::ToolUse { tool_use: new }) = event {
+                tool_use = Some(new);
+                break;
             }
         }
 

@@ -302,7 +302,7 @@ mod tests {
             pulldown_cmark::Event::End(pulldown_cmark::TagEnd::Paragraph),
         ];
 
-        html.extend(events.into_iter());
+        html.extend(events);
         assert_eq!(html.as_ref(), "<p>Hello, world!</p>\n");
     }
 

@@ -997,6 +997,10 @@ impl<'a> Prompt<'a> {
     ///   for `Event::Message` and `Event::ToolUse` events, checking for the
     ///   consistency of the final message or tool use. Otherwise these messages
     ///   are ignored.
+    // TODO(1.0): `ApplyEventError` variants carry the offending message/block
+    // (~216 bytes), which sizes every `Result` on this per-delta hot path.
+    // Boxing them is a breaking change deferred to the 1.0 error pass.
+    #[allow(clippy::result_large_err)]
     pub fn handle_stream_event(
         &mut self,
         event: stream::Event,

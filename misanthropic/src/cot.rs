@@ -145,15 +145,15 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
             self.text[self.index..].find(tag).map(|end| (end, tag))
         });
 
-        if let Some((start, _)) = &start_pair {
-            if *start != 0 {
-                // There is speech before the start tag. Return it.
-                let speech = Some(ThoughtOrSpeech::Speech(Speech {
-                    text: self.text[self.index..self.index + *start].into(),
-                }));
-                self.index += start;
-                return speech;
-            }
+        if let Some((start, _)) = &start_pair
+            && *start != 0
+        {
+            // There is speech before the start tag. Return it.
+            let speech = Some(ThoughtOrSpeech::Speech(Speech {
+                text: self.text[self.index..self.index + *start].into(),
+            }));
+            self.index += start;
+            return speech;
         }
 
         match (start_pair, end_pair) {

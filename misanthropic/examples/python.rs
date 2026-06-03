@@ -113,13 +113,13 @@ pub fn handle_tool_call(
                     .read_to_string(&mut output)
                     .unwrap();
 
-                return Ok(tool::Result {
+                Ok(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: false,
                     cache_control: None,
                 }
-                .into());
+                .into())
             } else {
                 // Send stderr to the Assistant (the exception).
                 p.stderr
@@ -128,23 +128,23 @@ pub fn handle_tool_call(
                     .read_to_string(&mut output)
                     .unwrap();
 
-                return Err(tool::Result {
+                Err(tool::Result {
                     tool_use_id: call.id.to_string().into(),
                     content: output.into(),
                     is_error: true,
                     cache_control: None,
                 }
-                .into());
+                .into())
             }
         } else {
             // The Python script timed out.
-            return Ok(tool::Result {
+            Ok(tool::Result {
                 tool_use_id: call.id.to_string().into(),
                 content: "Python script timed out.".into(),
                 is_error: true,
                 cache_control: None,
             }
-            .into());
+            .into())
         }
     } else {
         // The Assistant did not use the `script` key. This should never happen.

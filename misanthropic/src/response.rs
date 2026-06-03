@@ -318,14 +318,14 @@ mod tests {
     fn test_usage_serde() {
         const A: &str = r#"{"output_tokens":89}"#;
 
-        let deserialized: Usage = serde_json::from_str(&A).unwrap();
+        let deserialized: Usage = serde_json::from_str(A).unwrap();
 
         assert_eq!(deserialized.input_tokens, 0);
         assert_eq!(deserialized.output_tokens, 89);
 
         const B: &str = r#"{"input_tokens":1,"output_tokens":2}"#;
 
-        let deserialized: Usage = serde_json::from_str(&B).unwrap();
+        let deserialized: Usage = serde_json::from_str(B).unwrap();
 
         assert_eq!(deserialized.input_tokens, 1);
         assert_eq!(deserialized.output_tokens, 2);

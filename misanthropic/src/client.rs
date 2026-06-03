@@ -19,10 +19,6 @@ use crate::batch::{self, IdentifiedBatchResult, Prompts};
 /// Result type for the client. See also [`Error`].
 pub type Result<T> = std::result::Result<T, Error>;
 
-/// FIXME: Prompt caching is now out of beta so we can remove the feature flag
-/// for it. This will require a breaking change. Additionally, it should be
-/// possible to set the beta version at runtime.
-
 /// Client for the Anthropic Messages API. Cheap to clone.
 ///
 /// See [`Self::new`] for creating a new client and [`Self::message`] and
@@ -595,9 +591,9 @@ impl Client {
             let mut results = HashMap::new();
 
             for line in response.lines() {
-                match serde_json::from_str::<serde_json::Value>(line).and_then(
-                    |v| serde_json::from_value::<IdentifiedBatchResult>(v),
-                ) {
+                match serde_json::from_str::<serde_json::Value>(line)
+                    .and_then(serde_json::from_value::<IdentifiedBatchResult>)
+                {
                     Ok(IdentifiedBatchResult { id, result }) => {
                         // We do need to check for this to maintain the Ready
                         // invariant that every result has a corresponding

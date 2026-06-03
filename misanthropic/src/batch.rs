@@ -163,7 +163,7 @@ impl<P: Serialize> Serialize for Prompts<P> {
 
         // Serialize the inner struct as the structure Anthropic API expects.
         let wrapper = Outer {
-            requests: Inner { prompts: &self },
+            requests: Inner { prompts: self },
         };
 
         wrapper.serialize(serializer)
@@ -643,6 +643,10 @@ impl<P> Ready<P> {
     }
 
     /// Convert into an iterator of (prompt, result) tuples.
+    // Named `into_iter` deliberately for discoverability; it consumes `self`
+    // but yields owned 3-tuples, so it can't be the `IntoIterator::into_iter`
+    // method itself.
+    #[allow(clippy::should_implement_trait)]
     pub fn into_iter(self) -> impl Iterator<Item = (Id, P, BatchResult)> {
         let (mut pending, results) = self.decompose();
 

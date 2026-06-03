@@ -461,7 +461,7 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
             tools,
             tool_choice,
             temperature: prompt.temperature,
-            max_tokens: prompt.max_tokens.get().try_into().ok(),
+            max_tokens: Some(prompt.max_tokens.get()),
             top_p: prompt.top_p,
             stop: prompt
                 .stop_sequences

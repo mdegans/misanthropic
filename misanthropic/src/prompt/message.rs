@@ -209,10 +209,10 @@ impl Message<'_> {
             return Some(self);
         }
 
-        if let Some(Block::Thought { signature, .. }) = self.content.last() {
-            if signature.is_empty() {
-                self.content.pop();
-            }
+        if let Some(Block::Thought { signature, .. }) = self.content.last()
+            && signature.is_empty()
+        {
+            self.content.pop();
         }
 
         if self.is_empty() { None } else { Some(self) }
@@ -1262,8 +1262,8 @@ impl<'a> Block<'a> {
                     // This is legal because it's possible to merge a bunch of
                     // deltas outside this function in which case this would be
                     // considered a complete thought. So we re-assign.
-                    *thought = delta_thinking.into();
-                    *signature = delta_signature.into();
+                    *thought = delta_thinking;
+                    *signature = delta_signature;
                 } else {
                     // Normal case, partial thought. Simple append.
                     thought.to_mut().push_str(&delta_thinking);
@@ -1534,7 +1534,7 @@ impl<'a> Block<'a> {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
-            Self::Text { text, .. } => text.as_bytes().len(),
+            Self::Text { text, .. } => text.len(),
             Self::Thought {
                 thought: thinking, ..
             } => thinking.len(),
@@ -1940,13 +1940,13 @@ impl<'a> DocumentSource<'a> {
     pub fn len(&self) -> usize {
         match self {
             Self::Base64 { data, .. } | Self::PlainText { data, .. } => {
-                data.as_bytes().len()
+                data.len()
             }
-            Self::Url { url } => url.as_bytes().len(),
+            Self::Url { url } => url.len(),
             Self::Content { content } => {
-                content.iter().map(|c| c.text.as_bytes().len()).sum()
+                content.iter().map(|c| c.text.len()).sum()
             }
-            Self::File { file_id } => file_id.as_bytes().len(),
+            Self::File { file_id } => file_id.len(),
         }
     }
 }
@@ -2060,7 +2060,7 @@ impl<'a> Image<'a> {
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {
-            Self::Base64 { data, .. } => data.as_bytes().len(),
+            Self::Base64 { data, .. } => data.len(),
         }
     }
 }

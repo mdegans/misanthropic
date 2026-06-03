@@ -191,10 +191,10 @@ impl<'a> Notepad<'a> {
         if let Some(system) = &mut prompt.system {
             // Existing system prompt. Try to find the notepad instructions.
             for block in system.iter_mut() {
-                if let Block::Text { text, .. } = block {
-                    if write_text(text) {
-                        return Ok(());
-                    }
+                if let Block::Text { text, .. } = block
+                    && write_text(text)
+                {
+                    return Ok(());
                 }
             }
 
