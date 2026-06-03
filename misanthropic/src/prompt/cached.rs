@@ -553,6 +553,7 @@ mod tests {
         let prompt = Prompt {
             system: Some(Content(vec![Block::Text {
                 text: "You are a helpful assistant.".into(),
+                citations: None,
                 cache_control: Some(CacheControl::one_hour()),
             }])),
             ..Default::default()

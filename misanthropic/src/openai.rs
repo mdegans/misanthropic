@@ -380,6 +380,7 @@ impl ChatStreamAccumulator {
         if has_content {
             blocks.push(Block::Text {
                 text: CowStr::from(self.content),
+                citations: None,
                 cache_control: None,
             });
         }
@@ -603,8 +604,11 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
                     name: None,
                 });
             }
-            // Thought blocks have no OpenAI equivalent — skip them
-            Block::Thought { .. } | Block::RedactedThought { .. } => {}
+            // Thought and Document blocks have no OpenAI chat-completions
+            // equivalent in this shim — skip them.
+            Block::Thought { .. }
+            | Block::RedactedThought { .. }
+            | Block::Document { .. } => {}
         }
     }
 
@@ -673,6 +677,7 @@ fn chat_message_to_message(msg: ChatMessage) -> Message<'static> {
                 if !text.is_empty() {
                     blocks.push(Block::Text {
                         text: CowStr::from(text),
+                        citations: None,
                         cache_control: None,
                     });
                 }
@@ -683,6 +688,7 @@ fn chat_message_to_message(msg: ChatMessage) -> Message<'static> {
                         ChatContentPart::Text { text } => {
                             blocks.push(Block::Text {
                                 text: CowStr::from(text),
+                                citations: None,
                                 cache_control: None,
                             });
                         }
@@ -900,6 +906,7 @@ mod tests {
                 },
                 Block::Text {
                     text: "Hello!".into(),
+                    citations: None,
                     cache_control: None,
                 },
             ]),

@@ -375,6 +375,7 @@ mod tests {
             },
             Block::Text {
                 text: r#"{"post_id":"abc","support":false}"#.into(),
+                citations: None,
                 cache_control: None,
             },
         ]);

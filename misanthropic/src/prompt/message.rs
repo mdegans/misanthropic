@@ -10,6 +10,7 @@ use base64::engine::{Engine as _, general_purpose};
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    prompt::Citation,
     response,
     stream::{ContentMismatch, Delta, DeltaError},
     tool,
@@ -605,6 +606,7 @@ impl<'de, 'a> Deserialize<'de> for Content<'a> {
         Ok(Content(match Wire::deserialize(deserializer)? {
             Wire::Text(text) => vec![Block::Text {
                 text,
+                citations: None,
                 cache_control: None,
             }],
             Wire::Blocks(blocks) => blocks,
@@ -854,6 +856,13 @@ pub enum Block<'a> {
     Text {
         /// The actual text content.
         text: crate::CowStr<'a>,
+        /// Citations referencing source [`Document`]s, populated by the API on
+        /// response [`Text`] blocks when a document had citations enabled.
+        ///
+        /// [`Document`]: Block::Document
+        /// [`Text`]: Block::Text
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<Vec<Citation<'a>>>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
@@ -903,6 +912,30 @@ pub enum Block<'a> {
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
     },
+    /// Document content (PDF, plain text, or custom content). Enable
+    /// [`citations`] to have the model return [`Citation`]s on its response
+    /// [`Text`] blocks.
+    ///
+    /// [`citations`]: Block::document_with_citations
+    /// [`Text`]: Block::Text
+    #[cfg_attr(not(feature = "markdown"), display("{}", source))]
+    Document {
+        /// The document source.
+        #[serde(rename = "source")]
+        source: DocumentSource<'a>,
+        /// Optional title (passed to the model, not citable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        title: Option<Cow<'a, str>>,
+        /// Optional context (passed to the model, not citable).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context: Option<Cow<'a, str>>,
+        /// Enable citations for this document.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        citations: Option<CitationsConfig>,
+        /// Use prompt caching. See [`Block::cache`] for more information.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControl>,
+    },
     /// [`Tool`] call. This should only be used with the [`Assistant`] role.
     ///
     /// [`Assistant`]: Role::Assistant
@@ -945,6 +978,7 @@ impl<'a> Block<'a> {
     pub const fn const_text(text: &'a str) -> Self {
         Self::Text {
             text: std::borrow::Cow::Borrowed(text),
+            citations: None,
             cache_control: None,
         }
     }
@@ -956,6 +990,37 @@ impl<'a> Block<'a> {
     {
         Self::Text {
             text: text.into(),
+            citations: None,
+            cache_control: None,
+        }
+    }
+
+    /// [`Document`] content block. Use [`document_with_citations`] to enable
+    /// [`Citation`]s.
+    ///
+    /// [`Document`]: Block::Document
+    /// [`document_with_citations`]: Block::document_with_citations
+    pub fn document(source: DocumentSource<'a>) -> Self {
+        Self::Document {
+            source,
+            title: None,
+            context: None,
+            citations: None,
+            cache_control: None,
+        }
+    }
+
+    /// [`Document`] content block with citations enabled, so the model returns
+    /// [`Citation`]s referencing it on its response [`Text`] blocks.
+    ///
+    /// [`Document`]: Block::Document
+    /// [`Text`]: Block::Text
+    pub fn document_with_citations(source: DocumentSource<'a>) -> Self {
+        Self::Document {
+            source,
+            title: None,
+            context: None,
+            citations: Some(CitationsConfig { enabled: true }),
             cache_control: None,
         }
     }
@@ -1084,6 +1149,13 @@ impl<'a> Block<'a> {
                 // Lhs is empty, so we just assign. Thought is now complete.
                 *signature = delta_signature;
             }
+            // A citations delta appends a single citation to a text block.
+            (
+                Block::Text { citations, .. },
+                Delta::CitationsDelta { citation },
+            ) => {
+                citations.get_or_insert_with(Vec::new).push(citation);
+            }
             (this, acc) => {
                 let variant_name = match this {
                     Block::Text { .. } => stringify!(Block::Text),
@@ -1094,6 +1166,7 @@ impl<'a> Block<'a> {
                     Block::ToolUse { .. } => stringify!(Block::ToolUse),
                     Block::ToolResult { .. } => stringify!(Block::ToolResult),
                     Block::Image { .. } => stringify!(Block::Image),
+                    Block::Document { .. } => stringify!(Block::Document),
                 };
 
                 return Err(ContentMismatch {
@@ -1138,6 +1211,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text { cache_control, .. }
             | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
@@ -1162,6 +1236,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text { cache_control, .. }
             | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
@@ -1183,6 +1258,7 @@ impl<'a> Block<'a> {
         match self {
             Self::Text { cache_control, .. }
             | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
             | Self::ToolUse {
                 call: tool::Use { cache_control, .. },
             }
@@ -1210,12 +1286,16 @@ impl<'a> Block<'a> {
         match self {
             Self::Text {
                 text,
+                citations,
                 cache_control,
             } => Block::Text {
                 #[cfg(not(feature = "langsan"))]
                 text: std::borrow::Cow::Owned(text.into_owned()),
                 #[cfg(feature = "langsan")]
                 text: text.into_static(),
+                citations: citations.map(|cs| {
+                    cs.into_iter().map(Citation::into_static).collect()
+                }),
                 cache_control,
             },
             Self::Thought { thought, signature } => Block::Thought {
@@ -1230,6 +1310,19 @@ impl<'a> Block<'a> {
                 cache_control,
             } => Block::Image {
                 image: image.into_static(),
+                cache_control,
+            },
+            Self::Document {
+                source,
+                title,
+                context,
+                citations,
+                cache_control,
+            } => Block::Document {
+                source: source.into_static(),
+                title: title.map(|t| Cow::Owned(t.into_owned())),
+                context: context.map(|c| Cow::Owned(c.into_owned())),
+                citations,
                 cache_control,
             },
             Self::ToolUse { call } => Block::ToolUse {
@@ -1251,6 +1344,7 @@ impl<'a> Block<'a> {
                 thought: thinking, ..
             } => thinking.len(),
             Self::Image { image, .. } => image.len(),
+            Self::Document { source, .. } => source.len(),
             Self::RedactedThought { .. }
             | Self::ToolUse { .. }
             | Self::ToolResult { .. } => 0,
@@ -1326,6 +1420,9 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
                     Box::new(std::iter::empty())
                 }
             }
+            Block::Document { source, .. } => {
+                Box::new([Event::Text(source.to_string().into())].into_iter())
+            }
         };
 
         it
@@ -1342,6 +1439,7 @@ impl From<String> for Block<'_> {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
+            citations: None,
             cache_control: None,
         }
     }
@@ -1351,6 +1449,7 @@ impl<'a> From<crate::CowStr<'a>> for Block<'a> {
     fn from(text: crate::CowStr<'a>) -> Self {
         Self::Text {
             text,
+            citations: None,
             cache_control: None,
         }
     }
@@ -1362,6 +1461,12 @@ impl<'a> From<Image<'a>> for Block<'a> {
             image,
             cache_control: None,
         }
+    }
+}
+
+impl<'a> From<DocumentSource<'a>> for Block<'a> {
+    fn from(source: DocumentSource<'a>) -> Self {
+        Self::document(source)
     }
 }
 
@@ -1453,6 +1558,220 @@ impl CacheControl {
     pub fn one_hour() -> Self {
         CacheControl::Ephemeral {
             ttl: Some(CacheTtl::OneHour),
+        }
+    }
+}
+
+/// Configuration to enable citations on a [`Document`] block.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct CitationsConfig {
+    /// Whether citations are enabled for this document.
+    pub enabled: bool,
+}
+
+/// Media type for PDF [`Document`]s.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum DocumentMediaType {
+    /// `application/pdf`
+    #[serde(rename = "application/pdf")]
+    Pdf,
+}
+
+impl std::fmt::Display for DocumentMediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Pdf => write!(f, "application/pdf"),
+        }
+    }
+}
+
+/// Media type for plain text [`Document`]s.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum PlainTextMediaType {
+    /// `text/plain`
+    #[serde(rename = "text/plain")]
+    Plain,
+}
+
+impl std::fmt::Display for PlainTextMediaType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Plain => write!(f, "text/plain"),
+        }
+    }
+}
+
+/// A text chunk for a custom-content [`DocumentSource`].
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(tag = "type", rename = "text")]
+pub struct ContentText<'a> {
+    /// The text content of this chunk.
+    pub text: Cow<'a, str>,
+}
+
+impl<'a> ContentText<'a> {
+    /// Convert to a `'static` lifetime.
+    pub fn into_static(self) -> ContentText<'static> {
+        ContentText {
+            text: Cow::Owned(self.text.into_owned()),
+        }
+    }
+}
+
+/// Source of a [`Document`] content block. Analogous to [`Image`] for image
+/// content.
+///
+/// [`Document`]: Block::Document
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(rename_all = "snake_case", tag = "type")]
+pub enum DocumentSource<'a> {
+    /// Base64-encoded document (PDF).
+    Base64 {
+        /// Document encoding format.
+        media_type: DocumentMediaType,
+        /// Base64-encoded document data.
+        data: Cow<'a, str>,
+    },
+    /// URL to a hosted document.
+    Url {
+        /// The URL.
+        url: Cow<'a, str>,
+    },
+    /// Plain text document (auto-chunked into sentences for citations).
+    #[serde(rename = "text")]
+    PlainText {
+        /// Always `text/plain`.
+        media_type: PlainTextMediaType,
+        /// The plain text content.
+        data: Cow<'a, str>,
+    },
+    /// Custom content blocks (the caller controls citation granularity).
+    Content {
+        /// The content blocks.
+        content: Vec<ContentText<'a>>,
+    },
+    /// Reference to a file uploaded via the Files API.
+    File {
+        /// The file ID.
+        file_id: Cow<'a, str>,
+    },
+}
+
+impl<'a> DocumentSource<'a> {
+    /// Create a base64-encoded PDF document source.
+    pub fn from_base64(data: impl Into<Cow<'a, str>>) -> Self {
+        Self::Base64 {
+            media_type: DocumentMediaType::Pdf,
+            data: data.into(),
+        }
+    }
+
+    /// Create a URL document source.
+    pub fn from_url(url: impl Into<Cow<'a, str>>) -> Self {
+        Self::Url { url: url.into() }
+    }
+
+    /// Create a plain text document source.
+    pub fn from_text(data: impl Into<Cow<'a, str>>) -> Self {
+        Self::PlainText {
+            media_type: PlainTextMediaType::Plain,
+            data: data.into(),
+        }
+    }
+
+    /// Create a custom content document source from text chunks.
+    pub fn from_content(blocks: Vec<ContentText<'a>>) -> Self {
+        Self::Content { content: blocks }
+    }
+
+    /// Create a Files API reference document source.
+    pub fn from_file_id(id: impl Into<Cow<'a, str>>) -> Self {
+        Self::File { file_id: id.into() }
+    }
+
+    /// Read a file, base64-encode it, and create a PDF document source.
+    pub fn from_file(
+        path: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        let data = std::fs::read(path)?;
+        let encoded = general_purpose::STANDARD.encode(&data);
+        Ok(Self::Base64 {
+            media_type: DocumentMediaType::Pdf,
+            data: Cow::Owned(encoded),
+        })
+    }
+
+    /// Convert to a `'static` lifetime.
+    pub fn into_static(self) -> DocumentSource<'static> {
+        match self {
+            Self::Base64 { media_type, data } => DocumentSource::Base64 {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
+            Self::Url { url } => DocumentSource::Url {
+                url: Cow::Owned(url.into_owned()),
+            },
+            Self::PlainText { media_type, data } => DocumentSource::PlainText {
+                media_type,
+                data: Cow::Owned(data.into_owned()),
+            },
+            Self::Content { content } => DocumentSource::Content {
+                content: content
+                    .into_iter()
+                    .map(ContentText::into_static)
+                    .collect(),
+            },
+            Self::File { file_id } => DocumentSource::File {
+                file_id: Cow::Owned(file_id.into_owned()),
+            },
+        }
+    }
+
+    /// Returns the byte length of the source data.
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Base64 { data, .. } | Self::PlainText { data, .. } => {
+                data.as_bytes().len()
+            }
+            Self::Url { url } => url.as_bytes().len(),
+            Self::Content { content } => {
+                content.iter().map(|c| c.text.as_bytes().len()).sum()
+            }
+            Self::File { file_id } => file_id.as_bytes().len(),
+        }
+    }
+}
+
+impl std::fmt::Display for DocumentSource<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Base64 { media_type, .. } => {
+                write!(f, "[Document ({media_type})]")
+            }
+            Self::Url { url } => {
+                write!(f, "[Document ({url})]")
+            }
+            Self::PlainText { .. } => {
+                write!(f, "[Document (text/plain)]")
+            }
+            Self::Content { content } => {
+                write!(f, "[Document ({} blocks)]", content.len())
+            }
+            Self::File { file_id } => {
+                write!(f, "[Document (file:{file_id})]")
+            }
         }
     }
 }
@@ -1854,6 +2173,7 @@ mod tests {
         }];
         let mut block = Block::Text {
             text: "Hello, world!".into(),
+            citations: None,
             cache_control: None,
         };
 

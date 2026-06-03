@@ -19,6 +19,9 @@ use message::Content;
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
 
+pub mod citation;
+pub use citation::Citation;
+
 pub mod message;
 pub use message::{AssistantMessage, Message, UserMessage};
 

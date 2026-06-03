@@ -289,6 +289,7 @@ impl IntoElement for &Block<'_> {
             Block::Text {
                 text,
                 cache_control,
+                ..
             } => {
                 {
                     rsx!({
@@ -415,6 +416,12 @@ impl IntoElement for &Block<'_> {
                     })
                 }
             },
+            Block::Document { source, .. } => {
+                rsx!(div {
+                    class: "document",
+                    {source.to_string()}
+                })
+            }
         }
     }
 }

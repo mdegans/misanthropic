@@ -143,6 +143,17 @@ pub enum Delta<'a> {
         /// [`Delta::Thought`]` to complete the thought.
         signature: Cow<'a, str>,
     },
+    /// A single [`Citation`] to append to the current [`Text`] block's
+    /// citations. Available when a [`Document`] had citations enabled.
+    ///
+    /// [`Citation`]: crate::prompt::Citation
+    /// [`Text`]: crate::prompt::message::Block::Text
+    /// [`Document`]: crate::prompt::message::Block::Document
+    #[serde(rename = "citations_delta")]
+    CitationsDelta {
+        /// The citation to append.
+        citation: crate::prompt::Citation<'a>,
+    },
 }
 
 impl Delta<'_> {
@@ -168,6 +179,9 @@ impl Delta<'_> {
             },
             Delta::RedactedThought { signature } => Delta::RedactedThought {
                 signature: signature.into_owned().into(),
+            },
+            Delta::CitationsDelta { citation } => Delta::CitationsDelta {
+                citation: citation.into_static(),
             },
         }
     }
@@ -317,6 +331,7 @@ impl<'a> Delta<'a> {
                         Delta::RedactedThought { .. } => {
                             "Delta::RedactedThought"
                         }
+                        Delta::CitationsDelta { .. } => "Delta::CitationsDelta",
                     },
                 });
             }
@@ -922,6 +937,7 @@ pub(crate) mod tests {
                 if let Block::Text {
                     text,
                     cache_control,
+                    ..
                 } = content_block
                 {
                     assert_eq!(text.as_ref(), "");
@@ -1110,6 +1126,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
+                        citations: None,
                         cache_control: None
                     }
                 ])
@@ -1152,6 +1169,7 @@ pub(crate) mod tests {
                     },
                     Block::Text {
                         text: "27 * 453 = 12,231".to_string().into(),
+                        citations: None,
                         cache_control: None
                     }
                 ])
