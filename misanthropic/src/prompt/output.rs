@@ -29,12 +29,47 @@ use serde::{Deserialize, Serialize};
 /// [`StopReason`]: crate::response::StopReason
 /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
 /// [Anthropic structured outputs guide]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs>
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
 pub struct OutputConfig {
-    /// Desired [`OutputFormat`] for the response.
-    pub format: OutputFormat,
+    /// Desired [`OutputFormat`] for the response. `None` leaves the response
+    /// unconstrained — useful for an [`effort`](Self::effort)-only config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub format: Option<OutputFormat>,
+    /// How eagerly the model spends tokens. `None` uses the API default
+    /// ([`Effort::High`]). Orthogonal to [`format`](Self::format); see
+    /// [`Effort`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
+}
+
+/// How eagerly the model spends tokens, set on [`OutputConfig::effort`].
+///
+/// Affects *all* output tokens — text, tool calls, and extended thinking — so
+/// it works with or without [`Thinking`] enabled. On Claude 4 it is the
+/// recommended way to control thinking depth, paired with
+/// [`Thinking::adaptive`]. No beta header is required.
+///
+/// [`Thinking`]: crate::prompt::Thinking
+/// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+#[serde(rename_all = "lowercase")]
+#[non_exhaustive]
+pub enum Effort {
+    /// Most efficient — significant token savings with some capability
+    /// reduction. Good for simple or latency-sensitive tasks.
+    Low,
+    /// Balanced token savings. A solid default for agentic work.
+    Medium,
+    /// High capability. The API default — identical to omitting effort.
+    High,
+    /// Extended capability for long-horizon agentic and coding work. Only
+    /// Opus 4.7 and newer. Pair with a large `max_tokens`.
+    XHigh,
+    /// Absolute maximum capability, no constraint on token spend.
+    Max,
 }
 
 /// Format the response must conform to.
@@ -86,7 +121,41 @@ impl OutputConfig {
     /// [supported subset]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#json-schema-limitations>
     pub fn json_schema(schema: serde_json::Value) -> Self {
         Self {
-            format: OutputFormat::JsonSchema(JsonSchemaFormat { schema }),
+            format: Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema })),
+            effort: None,
+        }
+    }
+
+    /// An [`effort`]-only config, leaving the response [`format`]
+    /// unconstrained.
+    ///
+    /// [`effort`]: Self::effort
+    /// [`format`]: Self::format
+    pub fn effort(effort: Effort) -> Self {
+        Self {
+            format: None,
+            effort: Some(effort),
+        }
+    }
+
+    /// Set the [`effort`](Self::effort), preserving the [`format`](Self::format).
+    pub fn with_effort(mut self, effort: Effort) -> Self {
+        self.effort = Some(effort);
+        self
+    }
+
+    /// Overlay the set (`Some`) fields of `other` onto `self`, leaving
+    /// `self`'s untouched. Lets the granular [`Prompt`] builders compose
+    /// [`format`](Self::format) and [`effort`](Self::effort) in any order.
+    ///
+    /// [`Prompt`]: crate::Prompt
+    pub(crate) fn overlay(&mut self, other: OutputConfig) {
+        let OutputConfig { format, effort } = other;
+        if format.is_some() {
+            self.format = format;
+        }
+        if effort.is_some() {
+            self.effort = effort;
         }
     }
 
@@ -110,8 +179,15 @@ impl OutputConfig {
 impl From<JsonSchemaFormat> for OutputConfig {
     fn from(format: JsonSchemaFormat) -> Self {
         Self {
-            format: OutputFormat::JsonSchema(format),
+            format: Some(OutputFormat::JsonSchema(format)),
+            effort: None,
         }
+    }
+}
+
+impl From<Effort> for OutputConfig {
+    fn from(effort: Effort) -> Self {
+        Self::effort(effort)
     }
 }
 
@@ -130,7 +206,10 @@ impl From<serde_json::Value> for JsonSchemaFormat {
 
 impl From<OutputFormat> for OutputConfig {
     fn from(format: OutputFormat) -> Self {
-        Self { format }
+        Self {
+            format: Some(format),
+            effort: None,
+        }
     }
 }
 
@@ -254,11 +333,61 @@ mod tests {
     }
 
     #[test]
+    fn effort_only_config_omits_format() {
+        let cfg = OutputConfig::effort(Effort::Medium);
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            json!({ "effort": "medium" }),
+            "effort-only config must not emit a format key"
+        );
+        assert_eq!(
+            serde_json::from_value::<OutputConfig>(json!({"effort": "medium"}))
+                .unwrap(),
+            cfg
+        );
+    }
+
+    #[test]
+    fn effort_levels_serialize_lowercase() {
+        for (effort, wire) in [
+            (Effort::Low, "low"),
+            (Effort::Medium, "medium"),
+            (Effort::High, "high"),
+            (Effort::XHigh, "xhigh"),
+            (Effort::Max, "max"),
+        ] {
+            assert_eq!(
+                serde_json::to_value(effort).unwrap(),
+                json!(wire),
+                "{effort:?} should serialize as {wire:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn overlay_composes_format_and_effort() {
+        // format set first, effort overlaid: both survive.
+        let mut cfg = OutputConfig::json_schema(json!({"type": "object"}));
+        cfg.overlay(OutputConfig::effort(Effort::Low));
+        assert!(cfg.format.is_some());
+        assert_eq!(cfg.effort, Some(Effort::Low));
+
+        // effort set first, format overlaid: both survive.
+        let mut cfg = OutputConfig::effort(Effort::Max);
+        cfg.overlay(OutputConfig::json_schema(json!({"type": "object"})));
+        assert!(cfg.format.is_some());
+        assert_eq!(cfg.effort, Some(Effort::Max));
+    }
+
+    #[test]
     fn from_value_treats_input_as_schema() {
         let schema = json!({"type": "object", "properties": {}});
         let cfg: OutputConfig = schema.clone().into();
-        let OutputFormat::JsonSchema(JsonSchemaFormat { schema: inner }) =
-            &cfg.format;
+        let Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema: inner })) =
+            &cfg.format
+        else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         assert_eq!(inner, &schema);
     }
 
@@ -268,14 +397,16 @@ mod tests {
             schema: json!({"type": "object"}),
         };
         let cfg: OutputConfig = fmt.clone().into();
-        let OutputFormat::JsonSchema(got) = &cfg.format;
+        let Some(OutputFormat::JsonSchema(got)) = &cfg.format else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         assert_eq!(got, &fmt);
     }
 
     #[test]
     fn is_variant_helper() {
         let cfg = OutputConfig::json_schema(json!({}));
-        assert!(cfg.format.is_json_schema());
+        assert!(cfg.format.unwrap().is_json_schema());
     }
 
     #[test]
@@ -288,7 +419,11 @@ mod tests {
         }
 
         let cfg = OutputConfig::for_type::<Sample>();
-        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema })) =
+            &cfg.format
+        else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         // The top-level object must have additionalProperties: false.
         assert_eq!(
             schema.get("additionalProperties"),

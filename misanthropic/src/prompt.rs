@@ -33,7 +33,7 @@ pub mod cached;
 pub use cached::CachedPrompt;
 
 pub mod output;
-pub use output::{JsonSchemaFormat, OutputConfig, OutputFormat};
+pub use output::{Effort, JsonSchemaFormat, OutputConfig, OutputFormat};
 
 pub mod index;
 pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
@@ -905,11 +905,20 @@ impl<'a> Prompt<'a> {
         self
     }
 
-    /// Set [`output_config`] for structured output. See
-    /// [`OutputConfig`] for construction helpers including
-    /// [`OutputConfig::json_schema`] and [`OutputConfig::for_type`].
+    /// Set [`output_config`] wholesale. See [`OutputConfig`] for construction
+    /// helpers ([`OutputConfig::json_schema`], [`OutputConfig::for_type`],
+    /// [`OutputConfig::effort`]).
+    ///
+    /// Unlike the granular [`json_schema`] / [`structured_output`] / [`effort`]
+    /// builders — which each touch a single knob and preserve the rest — this
+    /// **replaces** any existing config. Reach for it when you want exact
+    /// control; otherwise prefer the granular setters so format and effort
+    /// compose.
     ///
     /// [`output_config`]: Prompt::output_config
+    /// [`json_schema`]: Prompt::json_schema
+    /// [`structured_output`]: Prompt::structured_output
+    /// [`effort`]: Prompt::effort
     pub fn output_config<C>(mut self, config: C) -> Self
     where
         C: Into<OutputConfig>,
@@ -918,18 +927,43 @@ impl<'a> Prompt<'a> {
         self
     }
 
-    /// Sugar: constrain output to a raw [JSON Schema] value. Equivalent to
-    /// `self.output_config(OutputConfig::json_schema(schema))`.
+    /// Merge `config`'s set fields into [`output_config`], preserving any knob
+    /// it leaves unset.
     ///
-    /// [JSON Schema]: <https://json-schema.org/>
-    pub fn json_schema(self, schema: serde_json::Value) -> Self {
-        self.output_config(OutputConfig::json_schema(schema))
+    /// [`output_config`]: Prompt::output_config
+    fn merge_output_config(&mut self, config: OutputConfig) {
+        match &mut self.output_config {
+            Some(existing) => existing.overlay(config),
+            none => *none = Some(config),
+        }
     }
 
-    /// Sugar: constrain output to the schema derived from `T`. Equivalent
-    /// to `self.output_config(OutputConfig::for_type::<T>())`.
-    pub fn structured_output<T: schemars::JsonSchema>(self) -> Self {
-        self.output_config(OutputConfig::for_type::<T>())
+    /// Sugar: constrain output to a raw [JSON Schema] value, preserving any
+    /// [`effort`](Self::effort) already set.
+    ///
+    /// [JSON Schema]: <https://json-schema.org/>
+    pub fn json_schema(mut self, schema: serde_json::Value) -> Self {
+        self.merge_output_config(OutputConfig::json_schema(schema));
+        self
+    }
+
+    /// Sugar: constrain output to the schema derived from `T`, preserving any
+    /// [`effort`](Self::effort) already set.
+    pub fn structured_output<T: schemars::JsonSchema>(mut self) -> Self {
+        self.merge_output_config(OutputConfig::for_type::<T>());
+        self
+    }
+
+    /// Set the [`Effort`] the model spends — text, tool calls, and thinking —
+    /// preserving any output [`format`] already set. The recommended
+    /// thinking-depth control on Claude 4 when paired with
+    /// [`Thinking::adaptive`]; no beta header required.
+    ///
+    /// [`format`]: OutputConfig::format
+    /// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
+    pub fn effort(mut self, effort: Effort) -> Self {
+        self.merge_output_config(OutputConfig::effort(effort));
+        self
     }
 
     /// Append schema-conformant few-shot examples for structured output.
@@ -940,10 +974,14 @@ impl<'a> Prompt<'a> {
     /// or two well-populated exemplars before the real prompt nudge the model
     /// toward the desired depth of field population.
     ///
-    /// The exemplar type `A` is also the *schema* type: this **overwrites**
-    /// [`output_config`] with `A`'s schema (via [`OutputConfig::for_type`]), so
+    /// The exemplar type `A` is also the *schema* type: this sets
+    /// [`output_config`]'s [`format`] from `A`'s schema (via
+    /// [`OutputConfig::for_type`]) — preserving any [`effort`] already set — so
     /// the constraint and the examples can never drift apart. Set any custom
     /// [`output_config`] / [`json_schema`] *after* this call if you need one.
+    ///
+    /// [`format`]: OutputConfig::format
+    /// [`effort`]: Prompt::effort
     ///
     /// `U: Into<UserMessage>` accepts `&str`, `String`, or [`Content`] — so
     /// image exemplars (e.g. classification) work, not just text.
@@ -964,7 +1002,7 @@ impl<'a> Prompt<'a> {
         U: Into<UserMessage<'a>>,
         A: Serialize + schemars::JsonSchema,
     {
-        self.output_config = Some(OutputConfig::for_type::<A>());
+        self.merge_output_config(OutputConfig::for_type::<A>());
 
         // Serialize every exemplar first so a failure leaves `messages`
         // untouched, then push the flattened User/Assistant turns through the
@@ -2022,7 +2060,7 @@ mod tests {
         });
         let prompt = Prompt::default().json_schema(schema.clone());
         let cfg = prompt.output_config.as_ref().unwrap();
-        assert!(cfg.format.is_json_schema());
+        assert!(cfg.format.as_ref().unwrap().is_json_schema());
 
         // Wire shape matches Anthropic's `output_config.format` exactly.
         let value = serde_json::to_value(&prompt).unwrap();
@@ -2073,7 +2111,11 @@ mod tests {
 
         let prompt = Prompt::default().structured_output::<VoteIntent>();
         let cfg = prompt.output_config.as_ref().unwrap();
-        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema })) =
+            &cfg.format
+        else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         assert_eq!(
             schema.get("additionalProperties"),
             Some(&serde_json::Value::Bool(false))
@@ -2082,6 +2124,36 @@ mod tests {
         for name in ["post_id", "support", "rationale"] {
             assert!(props.contains_key(name), "missing property: {name}");
         }
+    }
+
+    #[test]
+    fn test_effort_composes_with_format_either_order() {
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Out {
+            answer: String,
+        }
+
+        // effort then format.
+        let a = Prompt::default()
+            .effort(Effort::Low)
+            .structured_output::<Out>();
+        let cfg = a.output_config.as_ref().unwrap();
+        assert_eq!(cfg.effort, Some(Effort::Low));
+        assert!(cfg.format.is_some(), "format clobbered by effort-first");
+
+        // format then effort.
+        let b = Prompt::default()
+            .structured_output::<Out>()
+            .effort(Effort::Max);
+        let cfg = b.output_config.as_ref().unwrap();
+        assert_eq!(cfg.effort, Some(Effort::Max));
+        assert!(cfg.format.is_some(), "format clobbered by effort-last");
+
+        // effort-only: no format, serializes without a format key.
+        let c = Prompt::default().effort(Effort::Medium);
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json["output_config"], json!({ "effort": "medium" }));
     }
 
     #[derive(serde::Serialize, schemars::JsonSchema)]
@@ -2105,7 +2177,11 @@ mod tests {
 
         // output_config is seeded from the exemplar type `A`.
         let cfg = prompt.output_config.as_ref().unwrap();
-        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema })) =
+            &cfg.format
+        else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("component"));
 
@@ -2149,7 +2225,11 @@ mod tests {
             .unwrap();
 
         let cfg = prompt.output_config.as_ref().unwrap();
-        let OutputFormat::JsonSchema(JsonSchemaFormat { schema }) = &cfg.format;
+        let Some(OutputFormat::JsonSchema(JsonSchemaFormat { schema })) =
+            &cfg.format
+        else {
+            panic!("expected json_schema format, got {:?}", cfg.format);
+        };
         let props = schema.get("properties").unwrap().as_object().unwrap();
         assert!(props.contains_key("is_regression"));
         assert!(prompt.messages.is_empty());
