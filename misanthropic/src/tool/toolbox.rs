@@ -495,6 +495,7 @@ mod tests {
                 }),
                 cache_control: None,
                 strict: None,
+                defer_loading: None,
             }]
         }
 
@@ -603,6 +604,7 @@ mod tests {
                 schema: serde_json::json!({ "type": "object" }),
                 cache_control: None,
                 strict: None,
+                defer_loading: None,
             }]
         }
 

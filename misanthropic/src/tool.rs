@@ -504,6 +504,11 @@ pub struct MethodDef<'a> {
     /// [`Prompt::output_config`]: crate::Prompt::output_config
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
+    /// When `Some(true)`, the API may defer loading this tool's full definition
+    /// until the model selects it (an optimization for large tool sets used
+    /// with the tool-search tool). Defaults to `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub defer_loading: Option<bool>,
 }
 
 #[cfg(feature = "markdown")]
@@ -519,6 +524,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for MethodDef<'a> {
         // Can't panic because we know it's an object
         payload.as_object_mut().unwrap().remove("cache_control");
         payload.as_object_mut().unwrap().remove("strict");
+        payload.as_object_mut().unwrap().remove("defer_loading");
 
         if options.tool_use {
             Box::new(
@@ -577,6 +583,8 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             cache_control: Option<crate::prompt::message::CacheControl>,
             #[serde(default)]
             strict: Option<bool>,
+            #[serde(default)]
+            defer_loading: Option<bool>,
         }
 
         let foreign = Foreign::deserialize(deserializer)?;
@@ -587,6 +595,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
             input_schema,
             cache_control,
             strict,
+            defer_loading,
         } = foreign;
 
         Ok(MethodBuilder {
@@ -596,6 +605,7 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
                 schema: input_schema,
                 cache_control,
                 strict,
+                defer_loading,
             },
         })
     }
@@ -615,6 +625,15 @@ impl<'a> MethodBuilder<'a> {
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn strict(mut self, strict: bool) -> Self {
         self.tool.strict = Some(strict);
+        self
+    }
+
+    /// Set the [`defer_loading`] flag on the [`MethodDef`], allowing the API to
+    /// defer loading this tool's definition until the model selects it.
+    ///
+    /// [`defer_loading`]: MethodDef::defer_loading
+    pub fn defer_loading(mut self, defer_loading: bool) -> Self {
+        self.tool.defer_loading = Some(defer_loading);
         self
     }
 
@@ -843,6 +862,7 @@ impl<'a> MethodBuilder<'a> {
             schema: self.tool.schema,
             cache_control: self.tool.cache_control,
             strict: self.tool.strict,
+            defer_loading: self.tool.defer_loading,
         }
     }
 }
@@ -874,6 +894,7 @@ impl<'a> MethodDef<'a> {
                 schema: serde_json::Value::Null,
                 cache_control: None,
                 strict: None,
+                defer_loading: None,
             },
         }
     }
@@ -894,6 +915,7 @@ impl<'a> MethodDef<'a> {
             }),
             cache_control: None,
             strict: None,
+            defer_loading: None,
         }
     }
 
@@ -922,6 +944,7 @@ impl<'a> MethodDef<'a> {
             }),
             cache_control: None,
             strict: None,
+            defer_loading: None,
         }
     }
 
@@ -1001,6 +1024,7 @@ impl<'a> MethodDef<'a> {
             schema: self.schema,
             cache_control: self.cache_control,
             strict: self.strict,
+            defer_loading: self.defer_loading,
         }
     }
 }
@@ -1713,6 +1737,26 @@ mod tests {
                 "disable_parallel_tool_use": true,
             })
         );
+    }
+
+    #[test]
+    fn test_defer_loading_serde() {
+        let mut method = MethodDef::simple("ping", "Ping a server.");
+        // Omitted when unset.
+        assert!(
+            serde_json::to_value(&method)
+                .unwrap()
+                .get("defer_loading")
+                .is_none()
+        );
+
+        method.defer_loading = Some(true);
+        let json = serde_json::to_value(&method).unwrap();
+        assert_eq!(json["defer_loading"], true);
+
+        // Round-trips through the builder-based `Deserialize`.
+        let back: MethodDef = serde_json::from_value(json).unwrap();
+        assert_eq!(back.defer_loading, Some(true));
     }
 
     #[test]

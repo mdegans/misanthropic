@@ -271,6 +271,7 @@ mod test {
                 schema: serde_json::json!({}),
                 cache_control: None,
                 strict: None,
+                defer_loading: None,
             })
             .set_system(Content(vec!["sys0".into(), "sys1".into()]))
             .add_message((Role::User, "hi"))
