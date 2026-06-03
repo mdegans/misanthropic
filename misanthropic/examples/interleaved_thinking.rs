@@ -13,6 +13,10 @@
 //! carry signatures and must round-trip back unmodified, which is exactly what
 //! pushing the whole assistant message back into the [`Prompt`] does.
 //!
+//! Pass `--effort low|medium|high|xhigh|max` to control how hard the model
+//! works (text, tool calls, *and* thinking depth) — the recommended
+//! thinking-depth knob when paired with adaptive thinking.
+//!
 //! Adaptive + interleaved thinking requires Sonnet 4.6 or an Opus 4.6+ model;
 //! this example uses Sonnet 4.6 as the cheapest option.
 //!
@@ -25,11 +29,11 @@
 // replaced with async alternatives.
 use std::io::BufRead;
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use misanthropic::{
     AnthropicModel, Client, Prompt,
     prompt::{
-        Thinking,
+        Effort, Thinking,
         message::{Block, Content, Role},
     },
     tool::{Tool, tool},
@@ -54,9 +58,37 @@ struct Args {
     /// Show each tool call and its result, not just the thinking.
     #[arg(long)]
     verbose: bool,
+    /// How hard the model works — text, tool calls, and thinking depth. The
+    /// recommended thinking-depth control when paired with adaptive thinking.
+    /// Omit to use the API default (`high`).
+    #[arg(long)]
+    effort: Option<EffortArg>,
     /// Stop after this many assistant turns, in case the loop never settles.
     #[arg(long, default_value_t = 10)]
     max_turns: usize,
+}
+
+/// CLI mirror of [`Effort`] — the library type isn't a `clap::ValueEnum`, so
+/// we map across at the boundary.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum EffortArg {
+    Low,
+    Medium,
+    High,
+    XHigh,
+    Max,
+}
+
+impl From<EffortArg> for Effort {
+    fn from(arg: EffortArg) -> Self {
+        match arg {
+            EffortArg::Low => Effort::Low,
+            EffortArg::Medium => Effort::Medium,
+            EffortArg::High => Effort::High,
+            EffortArg::XHigh => Effort::XHigh,
+            EffortArg::Max => Effort::Max,
+        }
+    }
 }
 
 /// Arguments for the `compute` method. The field docs become the schema
@@ -127,6 +159,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the tool's name, e.g. `Calculator__compute`.
     for definition in calc.definitions() {
         chat = chat.add_tool(definition);
+    }
+
+    // Effort composes with structured output and thinking — set it here and
+    // any output_config the prompt already carries is preserved.
+    if let Some(effort) = args.effort {
+        chat = chat.effort(effort.into());
     }
 
     // Agentic loop: think -> tool_use -> (tool result) -> think -> ... -> text.
