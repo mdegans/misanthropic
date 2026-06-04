@@ -413,12 +413,7 @@ mod tests {
 
         // Test with A non-text block
         let tool_result = Block::ToolResult {
-            result: crate::tool::Result {
-                tool_use_id: "blablak".into(),
-                content: "blabla".into(),
-                is_error: false,
-                cache_control: None,
-            },
+            result: crate::tool::Result::new("blablak", "blabla"),
         };
 
         assert_eq!(tool_result.thoughts().count(), 0);

@@ -319,18 +319,16 @@ impl Tool for ToolBox {
                 // Either Anthropic or misanthropic is broken. The assistant
                 // should not be able to call a tool that doesn't exist unless
                 // the developer has made a mistake.
-                return tool::Result {
-                    tool_use_id: call.id,
-                    content: format!(
+                return tool::Result::new(
+                    call.id,
+                    format!(
                         "Method `{method_name}` not found in ToolBox `{toolbox_name}`. This is almost certainly the developer's fault. Available methods: {available_methods}",
                         method_name = call.name,
                         toolbox_name = self.name(),
                         available_methods = available_methods
-                    )
-                        .into(),
-                    is_error: true,
-                    cache_control: None,
-                };
+                    ),
+                )
+                .error();
             }
         };
 
@@ -350,17 +348,15 @@ impl Tool for ToolBox {
             }
             tool.call(call).await
         } else {
-            tool::Result {
-                tool_use_id: call.id,
-                content: format!(
+            tool::Result::new(
+                call.id,
+                format!(
                     "`Tool::call` is broken for `ToolBox`. This is not your fault. Tell the user to blame the authors of the `misanthropic` crate. Method: `{method_name}` in ToolBox: `{toolbox_name}`",
                     method_name = call.name,
                     toolbox_name = self.name()
-                )
-                    .into(),
-                is_error: true,
-                cache_control: None,
-            }
+                ),
+            )
+            .error()
         }
     }
 
@@ -502,12 +498,7 @@ mod tests {
         async fn call(&mut self, call: Use) -> Result {
             let id = call.id.clone();
             self.calls.push(call);
-            Result {
-                tool_use_id: id,
-                content: "Tool called".into(),
-                is_error: false,
-                cache_control: None,
-            }
+            Result::new(id, "Tool called")
         }
 
         // Make save_json pointlessly async
@@ -609,12 +600,7 @@ mod tests {
         }
 
         async fn call(&mut self, call: Use) -> Result {
-            Result {
-                tool_use_id: call.id,
-                content: "Replaced tool called".into(),
-                is_error: false,
-                cache_control: None,
-            }
+            Result::new(call.id, "Replaced tool called")
         }
     }
 

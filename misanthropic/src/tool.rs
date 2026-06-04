@@ -1393,7 +1393,55 @@ pub struct Result {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl Result {}
+impl Result {
+    /// Answer the call with [`tool_use_id`](Self::tool_use_id) `id`, returning
+    /// `content`. A success by default ([`is_error`](Self::is_error) is
+    /// `false`); chain [`error`](Self::error) to mark it a failure.
+    ///
+    /// `id` comes first to match the wire order (`tool_use_id`, then
+    /// `content`). To set a cache breakpoint, convert into a
+    /// [`Block`](crate::prompt::message::Block) / [`Content`] / `Message` and
+    /// use their `cache()` helpers — [`cache_control`](Self::cache_control) is
+    /// deliberately not exposed on this builder.
+    pub fn new(
+        id: impl Into<Cow<'static, str>>,
+        content: impl Into<Content>,
+    ) -> Self {
+        Self {
+            tool_use_id: id.into(),
+            content: content.into(),
+            is_error: false,
+            cache_control: None,
+        }
+    }
+
+    /// An error [`Result`] for call `id`, taking its
+    /// [`content`](Self::content) from `err`'s [`Display`] and marking
+    /// [`is_error`](Self::is_error) `true`. The shorthand for the common
+    /// "a tool call failed, hand the error back to the model" path.
+    ///
+    /// The error text reaches the [`Assistant`], so prefer errors whose
+    /// `Display` says what went wrong and how to recover.
+    ///
+    /// [`Display`]: std::fmt::Display
+    pub fn from_error(
+        id: impl Into<Cow<'static, str>>,
+        err: impl std::error::Error,
+    ) -> Self {
+        Self::new(id, err.to_string()).error()
+    }
+
+    /// Mark this result a failure ([`is_error`](Self::is_error) = `true`). The
+    /// [`content`](Self::content) should be written from the [`Assistant`]'s
+    /// perspective: what went wrong and how to fix it.
+    ///
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    #[must_use]
+    pub fn error(mut self) -> Self {
+        self.is_error = true;
+        self
+    }
+}
 
 #[cfg(feature = "markdown")]
 impl crate::markdown::ToMarkdown for Result {
@@ -2059,12 +2107,7 @@ mod tests {
 
     #[test]
     fn test_result_serde() {
-        let result = Result {
-            tool_use_id: "test_id".into(),
-            content: "test_content".into(),
-            is_error: false,
-            cache_control: None,
-        };
+        let result = Result::new("test_id", "test_content");
 
         let json = serde_json::to_string(&result).unwrap();
         let result2: Result = serde_json::from_str(&json).unwrap();
@@ -2073,16 +2116,17 @@ mod tests {
 
     #[test]
     fn test_result_construction() {
-        let result = Result {
-            tool_use_id: "test_id".into(),
-            content: "test_content".into(),
-            is_error: false,
-            cache_control: None,
-        };
+        let result = Result::new("test_id", "test_content");
 
         assert_eq!(result.tool_use_id, "test_id");
         assert_eq!(result.content.to_string(), "test_content");
         assert!(!result.is_error);
+
+        // `from_error` lifts any `std::error::Error` into an error result.
+        let err = "boom".parse::<u32>().unwrap_err();
+        let result = Result::from_error("test_id", err);
+        assert!(result.is_error);
+        assert_eq!(result.tool_use_id, "test_id");
     }
 
     #[test]

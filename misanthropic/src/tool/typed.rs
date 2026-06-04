@@ -215,24 +215,14 @@ pub async fn dispatch_methods<M: Methods + Send>(
     match handlers.iter().find(|m| m.name() == target) {
         Some(method) => {
             let (content, is_error) = method.dispatch(tool, call.input).await;
-            tool::Result {
-                tool_use_id: call.id,
-                content,
-                is_error,
-                cache_control: None,
-            }
+            let result = tool::Result::new(call.id, content);
+            if is_error { result.error() } else { result }
         }
-        None => tool::Result {
-            tool_use_id: call.id,
-            content: format!(
-                "Method `{}` not found on `{}`.",
-                call.name,
-                M::NAME
-            )
-            .into(),
-            is_error: true,
-            cache_control: None,
-        },
+        None => tool::Result::new(
+            call.id,
+            format!("Method `{}` not found on `{}`.", call.name, M::NAME),
+        )
+        .error(),
     }
 }
 

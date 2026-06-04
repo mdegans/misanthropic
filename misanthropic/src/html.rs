@@ -238,16 +238,13 @@ mod tests {
                 )
                 .with_id("id")
                 .into(),
-                tool::Result {
-                    tool_use_id: "id".into(),
-                    content: json!({
+                tool::Result::new(
+                    "id",
+                    json!({
                         "stdout": "Hello, world!\n",
                     })
-                    .to_string()
-                    .into(),
-                    is_error: false,
-                    cache_control: None,
-                }
+                    .to_string(),
+                )
                 .into(),
                 Message {
                     role: Role::Assistant,

@@ -2794,13 +2794,9 @@ mod tests {
         );
 
         // Test tool result (success)
-        let message: Message = tool::Result {
-            tool_use_id: "tool_123".into(),
-            content: Content::text("Hello, world!"),
-            is_error: false,
-            cache_control: None,
-        }
-        .into();
+        let message: Message =
+            tool::Result::new("tool_123", Content::text("Hello, world!"))
+                .into();
 
         assert_eq!(
             message.markdown_custom(opts).to_string(),
@@ -2808,13 +2804,10 @@ mod tests {
         );
 
         // Test tool result (error)
-        let message: Message = tool::Result {
-            tool_use_id: "tool_123".into(),
-            content: Content::text("Hello, world!"),
-            is_error: true,
-            cache_control: None,
-        }
-        .into();
+        let message: Message =
+            tool::Result::new("tool_123", Content::text("Hello, world!"))
+                .error()
+                .into();
 
         assert_eq!(
             message.markdown_custom(opts).to_string(),
@@ -2971,18 +2964,8 @@ mod tests {
 
         // From an iterator of tool::Result.
         let results = vec![
-            tool::Result {
-                tool_use_id: "tool_1".into(),
-                content: "ok".into(),
-                is_error: false,
-                cache_control: None,
-            },
-            tool::Result {
-                tool_use_id: "tool_2".into(),
-                content: "parse error: ...".into(),
-                is_error: true,
-                cache_control: None,
-            },
+            tool::Result::new("tool_1", "ok"),
+            tool::Result::new("tool_2", "parse error: ...").error(),
         ];
         let msg: UserMessage = results.into_iter().collect();
         let blocks = msg.content();

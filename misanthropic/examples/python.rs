@@ -61,25 +61,20 @@ fn prompt_user(script: &str) -> bool {
 pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
     if call.name != "python" {
         let content = format!("Unknown tool: {}", call.name);
-        return Err(tool::Result {
-            tool_use_id: call.id.to_string().into(),
-            content: content.into(),
-            is_error: true,
-            cache_control: None,
-        }
-        .into());
+        return Err(tool::Result::new(call.id.to_string(), content)
+            .error()
+            .into());
     }
 
     if let Some(script) = call.input["script"].as_str() {
         if !prompt_user(script) {
             // User declined to run the Python script. Inform the Assistant.
 
-            return Err(tool::Result {
-                tool_use_id: call.id.to_string().into(),
-                content: "User declined to run the Python script. Do you really need Python for this?".into(),
-                is_error: true,
-                cache_control: None,
-            }
+            return Err(tool::Result::new(
+                call.id.to_string(),
+                "User declined to run the Python script. Do you really need Python for this?",
+            )
+            .error()
             .into());
         }
 
@@ -111,13 +106,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                     .read_to_string(&mut output)
                     .unwrap();
 
-                Ok(tool::Result {
-                    tool_use_id: call.id.to_string().into(),
-                    content: output.into(),
-                    is_error: false,
-                    cache_control: None,
-                }
-                .into())
+                Ok(tool::Result::new(call.id.to_string(), output).into())
             } else {
                 // Send stderr to the Assistant (the exception).
                 p.stderr
@@ -126,33 +115,24 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                     .read_to_string(&mut output)
                     .unwrap();
 
-                Err(tool::Result {
-                    tool_use_id: call.id.to_string().into(),
-                    content: output.into(),
-                    is_error: true,
-                    cache_control: None,
-                }
-                .into())
+                Err(tool::Result::new(call.id.to_string(), output)
+                    .error()
+                    .into())
             }
         } else {
             // The Python script timed out.
-            Ok(tool::Result {
-                tool_use_id: call.id.to_string().into(),
-                content: "Python script timed out.".into(),
-                is_error: true,
-                cache_control: None,
-            }
+            Ok(tool::Result::new(
+                call.id.to_string(),
+                "Python script timed out.",
+            )
+            .error()
             .into())
         }
     } else {
         // The Assistant did not use the `script` key. This should never happen.
-        Err(tool::Result {
-            tool_use_id: call.id.to_string().into(),
-            content: "Invalid input.".into(),
-            is_error: true,
-            cache_control: None,
-        }
-        .into())
+        Err(tool::Result::new(call.id.to_string(), "Invalid input.")
+            .error()
+            .into())
     }
 }
 
@@ -237,12 +217,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into()
                 ]),
             },
-            tool::Result {
-                tool_use_id: "calibration_000".into(),
-                content: "3".into(),
-                is_error: false,
-                cache_control: None,
-            }.into(),
+            tool::Result::new("calibration_000", "3").into(),
             (Role::Assistant, r#"The number of r's in "strawberry" is 3.""#).into(),
             (Role::User, "List the permutations of the first four letters of the alphabet.").into(),
             Message {
@@ -259,12 +234,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into()
                 ]),
             },
-            tool::Result {
-                tool_use_id: "calibration_001".into(),
-                content: "abcd,abdc,acbd,acdb,adbc,adcb,bacd,badc,bcad,bcda,bdac,bdca,cabd,cadb,cbad,cbda,cdab,cdba,dabc,dacb,dbac,dbca,dcab,dcba".into(),
-                is_error: false,
-                cache_control: None
-            }.into(),
+            tool::Result::new(
+                "calibration_001",
+                "abcd,abdc,acbd,acdb,adbc,adcb,bacd,badc,bcad,bcda,bdac,bdca,cabd,cadb,cbad,cbda,cdab,cdba,dabc,dacb,dbac,dbca,dcab,dcba",
+            ).into(),
             (Role::Assistant, "The permutations of the first four letters of the alphabet are:\n\nabcd, abdc, acbd, acdb, adbc, adcb, bacd, badc, bcad, bcda, bdac, bdca, cabd, cadb, cbad, cbda, cdab, cdba, dabc, dacb, dbac, dbca, dcab, dcba.").into(),
             (Role::User, "What is the capital of France?").into(),
             (Role::Assistant, "Paris.").into(),

@@ -175,12 +175,7 @@ fn make_prompt() -> Prompt {
                     .into()
                 ]),
             },
-            tool::Result {
-                tool_use_id: "calibration_000".into(),
-                content: "3".into(),
-                is_error: false,
-                cache_control: None,
-            }.into(),
+            tool::Result::new("calibration_000", "3").into(),
             (Role::Assistant, r#"The number of r's in "strawberry" is 3.""#).into(),
             (Role::User, "List the permutations of the first four letters of the alphabet.").into(),
             Message {
@@ -207,12 +202,10 @@ fn make_prompt() -> Prompt {
                     .into()
                 ]),
             },
-            tool::Result {
-                tool_use_id: "calibration_001".into(),
-                content: "abcd,abdc,acbd,acdb,adbc,adcb,bacd,badc,bcad,bcda,bdac,bdca,cabd,cadb,cbad,cbda,cdab,cdba,dabc,dacb,dbac,dbca,dcab,dcba".into(),
-                is_error: false,
-                cache_control: None
-            }.into(),
+            tool::Result::new(
+                "calibration_001",
+                "abcd,abdc,acbd,acdb,adbc,adcb,bacd,badc,bcad,bcda,bdac,bdca,cabd,cadb,cbad,cbda,cdab,cdba,dabc,dacb,dbac,dbca,dcab,dcba",
+            ).into(),
             (Role::Assistant, "The permutations of the first four letters of the alphabet are:\n\nabcd, abdc, acbd, acdb, adbc, adcb, bacd, badc, bcad, bcda, bdac, bdca, cabd, cadb, cbad, cbda, cdab, cdba, dabc, dacb, dbac, dbca, dcab, dcba.").into(),
             (Role::User, "What is the capital of France?").into(),
             (Role::Assistant, "Paris.").into(),

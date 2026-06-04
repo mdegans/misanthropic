@@ -820,12 +820,8 @@ mod tests {
 
     #[test]
     fn tool_result_to_chat_message() {
-        let result = tool::Result {
-            tool_use_id: std::borrow::Cow::Borrowed("call_456"),
-            content: Content::text("Sunny, 22°C"),
-            is_error: false,
-            cache_control: None,
-        };
+        let result =
+            tool::Result::new("call_456", Content::text("Sunny, 22°C"));
 
         let msg = ChatMessage::from(&result);
         assert_eq!(msg.role, ChatRole::Tool);

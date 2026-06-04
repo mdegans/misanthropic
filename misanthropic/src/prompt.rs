@@ -1633,12 +1633,7 @@ mod tests {
                 ]
             }
             async fn call(&mut self, call: Use) -> crate::tool::Result {
-                crate::tool::Result {
-                    tool_use_id: call.id,
-                    content: "ok".into(),
-                    is_error: false,
-                    cache_control: None,
-                }
+                crate::tool::Result::new(call.id, "ok")
             }
         }
 
@@ -2534,13 +2529,7 @@ mod tests {
                 )
                 .with_id("abc123")
                 .into(),
-                tool::Result {
-                    tool_use_id: "abc123".into(),
-                    content: "Pinging example.com.".into(),
-                    is_error: false,
-                    cache_control: None,
-                }
-                .into(),
+                tool::Result::new("abc123", "Pinging example.com.").into(),
                 Message {
                     role: Role::Assistant,
                     content: Content::text("Done."),
