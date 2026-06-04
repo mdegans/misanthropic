@@ -1,5 +1,6 @@
 //! [`Model`] to use for inference.
 use std::borrow::Cow;
+use std::collections::BTreeMap;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,16 +13,131 @@ pub struct Models<'a> {
     data: Vec<Model<'a>>,
 }
 
-/// Model information.
+/// Model information, as returned by [`Client::models`](crate::Client::models).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct Model<'a> {
     /// Model ID.
     pub id: Id<'a>,
-    /// Display name.
+    /// Human-readable display name, e.g. `"Claude Opus 4.6"`.
     pub display_name: Cow<'a, str>,
+    /// What the model supports — see [`Capabilities`].
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// Maximum number of input tokens the model accepts.
+    #[serde(default)]
+    pub max_input_tokens: u32,
+    /// Maximum number of tokens the model can generate in a response.
+    #[serde(default)]
+    pub max_tokens: u32,
+    /// Object-type discriminator. Always [`Kind::Model`] here.
+    #[serde(default, rename = "type")]
+    pub kind: Kind,
     /// Created at.
     pub created_at: DateTime<Utc>,
+}
+
+/// Object-type discriminator on a [`Model`]. Always [`Kind::Model`] for the
+/// `/v1/models` endpoint.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Kind {
+    /// A model.
+    #[default]
+    Model,
+}
+
+/// Whether a single model [`Capability`] is supported — the leaf node of the
+/// [`Capabilities`] tree, a bare `{ "supported": bool }`.
+#[derive(
+    Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+pub struct Capability {
+    /// Whether the capability is supported.
+    pub supported: bool,
+}
+
+/// What a [`Model`] supports, from the `capabilities` field of the
+/// `/v1/models` response.
+///
+/// Every field defaults to unsupported when absent, and unknown future
+/// capabilities are ignored on deserialization — mirroring the forward-compat
+/// stance of [`Id::Custom`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Capabilities {
+    /// [Message Batches](crate::Client::batch) support.
+    #[serde(default)]
+    pub batch: Capability,
+    /// Citations support.
+    #[serde(default)]
+    pub citations: Capability,
+    /// Server-side code-execution tool support.
+    #[serde(default)]
+    pub code_execution: Capability,
+    /// Context-management (context editing) support and its strategies.
+    #[serde(default)]
+    pub context_management: ContextManagement,
+    /// Reasoning-[`effort`](crate::prompt::Effort) support, per level.
+    #[serde(default)]
+    pub effort: EffortSupport,
+    /// Image input support.
+    #[serde(default)]
+    pub image_input: Capability,
+    /// PDF input support.
+    #[serde(default)]
+    pub pdf_input: Capability,
+    /// Structured-output support.
+    #[serde(default)]
+    pub structured_outputs: Capability,
+    /// Extended-[`thinking`](crate::prompt::Thinking) support and its types.
+    #[serde(default)]
+    pub thinking: ThinkingSupport,
+}
+
+/// Context-management support — the `context_management` capability.
+///
+/// Beyond the top-level [`supported`](Self::supported) flag, the API reports a
+/// flag per strategy (e.g. `clear_tool_uses_20250919`, `compact_20260112`).
+/// These are date-versioned and open-ended, so they are kept as an untyped map
+/// rather than an enum.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextManagement {
+    /// Whether context management is supported at all.
+    #[serde(default)]
+    pub supported: bool,
+    /// Supported strategies, keyed by their API name.
+    #[serde(flatten)]
+    pub strategies: BTreeMap<String, Capability>,
+}
+
+/// Reasoning-[`effort`](crate::prompt::Effort) support — the `effort`
+/// capability.
+///
+/// The API reports a flag per level (`low`, `medium`, `high`, `xhigh`,
+/// `max`), kept as an untyped map so new levels don't break parsing.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct EffortSupport {
+    /// Whether configurable effort is supported at all.
+    #[serde(default)]
+    pub supported: bool,
+    /// Supported effort levels, keyed by name.
+    #[serde(flatten)]
+    pub levels: BTreeMap<String, Capability>,
+}
+
+/// Extended-[`thinking`](crate::prompt::Thinking) support — the `thinking`
+/// capability.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThinkingSupport {
+    /// Whether extended thinking is supported.
+    #[serde(default)]
+    pub supported: bool,
+    /// Supported thinking types (e.g. `adaptive`, `enabled`), keyed by name.
+    #[serde(default)]
+    pub types: BTreeMap<String, Capability>,
 }
 
 /// Model ID.
@@ -329,6 +445,103 @@ mod tests {
         const JSON:&[u8] = b"{\"data\":[{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20241022\",\"display_name\":\"Claude 3.5 Sonnet (New)\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-haiku-20241022\",\"display_name\":\"Claude 3.5 Haiku\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20240620\",\"display_name\":\"Claude 3.5 Sonnet (Old)\",\"created_at\":\"2024-06-20T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-haiku-20240307\",\"display_name\":\"Claude 3 Haiku\",\"created_at\":\"2024-03-07T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-opus-20240229\",\"display_name\":\"Claude 3 Opus\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-sonnet-20240229\",\"display_name\":\"Claude 3 Sonnet\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.1\",\"display_name\":\"Claude 2.1\",\"created_at\":\"2023-11-21T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.0\",\"display_name\":\"Claude 2.0\",\"created_at\":\"2023-07-11T00:00:00Z\"}],\"has_more\":false,\"first_id\":\"claude-3-5-sonnet-20241022\",\"last_id\":\"claude-2.0\"}";
         let models = serde_json::from_slice::<Models>(JSON).unwrap();
         assert_eq!(models.len(), 8);
+    }
+
+    #[test]
+    fn test_model_capabilities_deserialize() {
+        // A current-shape `/v1/models` entry, with the full `capabilities`
+        // tree, token limits, and the `type` discriminator.
+        const JSON: &str = r#"{
+          "id": "claude-opus-4-6",
+          "capabilities": {
+            "batch": { "supported": true },
+            "citations": { "supported": true },
+            "code_execution": { "supported": true },
+            "context_management": {
+              "clear_thinking_20251015": { "supported": true },
+              "clear_tool_uses_20250919": { "supported": true },
+              "compact_20260112": { "supported": true },
+              "supported": true
+            },
+            "effort": {
+              "high": { "supported": true },
+              "low": { "supported": true },
+              "max": { "supported": true },
+              "medium": { "supported": true },
+              "supported": true,
+              "xhigh": { "supported": true }
+            },
+            "image_input": { "supported": true },
+            "pdf_input": { "supported": true },
+            "structured_outputs": { "supported": true },
+            "thinking": {
+              "supported": true,
+              "types": {
+                "adaptive": { "supported": true },
+                "enabled": { "supported": true }
+              }
+            }
+          },
+          "created_at": "2026-02-04T00:00:00Z",
+          "display_name": "Claude Opus 4.6",
+          "max_input_tokens": 200000,
+          "max_tokens": 64000,
+          "type": "model"
+        }"#;
+
+        let model: Model = serde_json::from_str(JSON).unwrap();
+        assert_eq!(model.id, AnthropicModel::Opus46);
+        assert_eq!(model.display_name, "Claude Opus 4.6");
+        assert_eq!(model.max_input_tokens, 200000);
+        assert_eq!(model.max_tokens, 64000);
+        assert_eq!(model.kind, Kind::Model);
+
+        let caps = &model.capabilities;
+        assert!(caps.batch.supported);
+        assert!(caps.citations.supported);
+        assert!(caps.code_execution.supported);
+        assert!(caps.image_input.supported);
+        assert!(caps.pdf_input.supported);
+        assert!(caps.structured_outputs.supported);
+
+        // Open-ended strategy / level maps land in the untyped sub-maps,
+        // `supported` is pulled out of the flattened object.
+        assert!(caps.context_management.supported);
+        assert!(
+            caps.context_management.strategies["compact_20260112"].supported
+        );
+        assert!(!caps.context_management.strategies.contains_key("supported"));
+
+        assert!(caps.effort.supported);
+        assert!(caps.effort.levels["xhigh"].supported);
+        assert!(!caps.effort.levels.contains_key("supported"));
+
+        assert!(caps.thinking.supported);
+        assert!(caps.thinking.types["adaptive"].supported);
+
+        // Round-trips: re-serializing and parsing yields the same value.
+        let json = serde_json::to_string(&model).unwrap();
+        let round: Model = serde_json::from_str(&json).unwrap();
+        assert_eq!(round.capabilities, model.capabilities);
+        assert_eq!(round.kind, Kind::Model);
+    }
+
+    #[test]
+    fn test_model_capabilities_default_when_absent() {
+        // An older-shape entry with no `capabilities` / token limits still
+        // parses, defaulting to "unsupported" / zero.
+        const JSON: &str = r#"{
+          "type": "model",
+          "id": "claude-3-5-haiku-20241022",
+          "display_name": "Claude 3.5 Haiku",
+          "created_at": "2024-10-22T00:00:00Z"
+        }"#;
+
+        let model: Model = serde_json::from_str(JSON).unwrap();
+        assert_eq!(model.capabilities, Capabilities::default());
+        assert_eq!(model.max_tokens, 0);
+        assert!(!model.capabilities.thinking.supported);
+        assert!(model.capabilities.thinking.types.is_empty());
     }
 
     #[test]
