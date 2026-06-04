@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add the web_search server tool. The model decides whether and how often
     // to search (capped by `max_uses`); we never run anything ourselves.
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Opus48)
+        .model(AnthropicModel::Haiku45)
         .add_message((Role::User, question))?
         .add_server_tool(ServerTool::web_search(WebSearch {
             max_uses: Some(5),

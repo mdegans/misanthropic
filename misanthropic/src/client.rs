@@ -1512,7 +1512,7 @@ mod tests {
         // domain of whatever comes back is a deterministic invariant even
         // though search content is not.
         let mut prompt = Prompt::default()
-            .model(crate::AnthropicModel::Opus48)
+            .model(crate::AnthropicModel::Haiku45)
             .add_message((
                 Role::User,
                 "Search anthropic.com and name one product Anthropic makes. \
