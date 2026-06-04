@@ -1,19 +1,21 @@
 {
   "type": "web_fetch_tool_result",
-  "tool_use_id": "srvtoolu_01A2B3",
+  "tool_use_id": "srvtoolu_018ABFMzLzbdKgAKd3MFBtiN",
   "content": {
     "type": "web_fetch_result",
-    "url": "https://example.com/article",
+    "url": "https://www.rust-lang.org",
+    "retrieved_at": "2026-06-04T15:49:37.688665",
     "content": {
       "type": "document",
       "source": {
         "type": "text",
         "media_type": "text/plain",
-        "data": "Full text content of the article..."
+        "data": "---\nmeta-description: A language empowering everyone to build reliable and efficient software.\nmeta-msapplication-TileCo"
       },
-      "title": "Article Title",
-      "citations": { "enabled": true }
-    },
-    "retrieved_at": "2025-08-25T10:30:00Z"
+      "title": "Rust Programming Language"
+    }
+  },
+  "caller": {
+    "type": "direct"
   }
 }

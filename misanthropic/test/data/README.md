@@ -53,7 +53,7 @@ the win; fix the types, then commit the real bytes.
 | `redacted_thought.sse.stream.jsonl` | live | captured |
 | `thinking.sse.stream.txt` | live | captured |
 | `sse.stream.txt` | live | captured |
-| `server_tools/web_fetch_result.json` | docs | **pending live capture** |
+| `server_tools/web_fetch_result.json` | live (`web_fetch`, Haiku 4.5) | captured (`caller` verified; no-citations doc shape; text data truncated) |
 | `server_tools/web_fetch_pdf.json` | docs | **pending live capture** |
 | `server_tools/web_fetch_error.json` | live (`web_fetch`, curl) | captured (tag verified vs #72) |
 | `server_tools/web_search_result.json` | live (`web_search`, Haiku 4.5) | captured (`caller`, `page_age: null` verified; trimmed to 2 results) |

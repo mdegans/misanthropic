@@ -2317,12 +2317,12 @@ mod tests {
         let Block::WebFetchToolResult {
             tool_use_id,
             content,
-            ..
+            caller,
         } = &block
         else {
             panic!("expected WebFetchToolResult");
         };
-        assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+        assert_eq!(tool_use_id, "srvtoolu_018ABFMzLzbdKgAKd3MFBtiN");
         let WebFetchToolResultContent::Result {
             url,
             content,
@@ -2331,10 +2331,18 @@ mod tests {
         else {
             panic!("expected a successful fetch");
         };
-        assert_eq!(url, "https://example.com/article");
-        assert_eq!(retrieved_at, "2025-08-25T10:30:00Z");
-        assert_eq!(content.title.as_deref(), Some("Article Title"));
+        assert_eq!(url, "https://www.rust-lang.org");
+        assert_eq!(retrieved_at, "2026-06-04T15:49:37.688665");
+        assert_eq!(content.title.as_deref(), Some("Rust Programming Language"));
         assert!(matches!(content.source, DocumentSource::PlainText { .. }));
+        // A plain fetch (no citations requested) omits the citations config.
+        assert!(content.citations.is_none());
+        assert_eq!(
+            caller.as_ref(),
+            Some(&crate::tool::Caller::Known(
+                crate::tool::KnownCaller::Direct
+            ))
+        );
     }
 
     #[test]
