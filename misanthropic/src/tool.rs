@@ -169,6 +169,19 @@ pub enum ServerTool<'a> {
     /// [`Citation::WebSearchResultLocation`]: crate::prompt::Citation::WebSearchResultLocation
     #[serde(rename = "web_search_20250305")]
     WebSearch(WebSearch<'a>),
+    /// Anthropic's web fetch tool (`web_fetch_20250910`). The model retrieves
+    /// the full text (or, for PDFs, the base64 bytes) of a URL that already
+    /// appeared in the conversation and, when [`citations`] is enabled, cites
+    /// passages on its response [`Text`] blocks via the document
+    /// [`Citation`] locations. The result arrives as a
+    /// [`Block::WebFetchToolResult`].
+    ///
+    /// [`citations`]: WebFetch::citations
+    /// [`Citation`]: crate::prompt::Citation
+    /// [`Text`]: crate::prompt::message::Block::Text
+    /// [`Block::WebFetchToolResult`]: crate::prompt::message::Block::WebFetchToolResult
+    #[serde(rename = "web_fetch_20250910")]
+    WebFetch(WebFetch<'a>),
     /// The [tool-search tool], regex variant (`tool_search_tool_regex_20251119`).
     /// The model writes Python-`re`-style patterns to discover tools marked
     /// [`defer_loading`](MethodDef::defer_loading); the matching definitions are
@@ -197,6 +210,13 @@ impl<'a> ServerTool<'a> {
         Self::WebSearch(config)
     }
 
+    /// A [`WebFetch`] server tool with default configuration. Configure it
+    /// with struct-update syntax, e.g.
+    /// `ServerTool::web_fetch(WebFetch { max_uses: Some(5), ..Default::default() })`.
+    pub fn web_fetch(config: WebFetch<'a>) -> Self {
+        Self::WebFetch(config)
+    }
+
     /// The regex [tool-search tool](Self::ToolSearchRegex). Add it alongside a
     /// catalog of [`defer_loading`](MethodDef::defer_loading) tools (see
     /// [`Prompt::defer_tools`]) so the model can find them on demand without
@@ -222,6 +242,7 @@ impl<'a> ServerTool<'a> {
     fn cache_control(&self) -> Option<&crate::prompt::message::CacheControl> {
         match self {
             Self::WebSearch(c) => c.cache_control.as_ref(),
+            Self::WebFetch(c) => c.cache_control.as_ref(),
             Self::ToolSearchRegex(c) => c.cache_control.as_ref(),
             Self::ToolSearchBm25(c) => c.cache_control.as_ref(),
         }
@@ -234,6 +255,7 @@ impl<'a> ServerTool<'a> {
     ) {
         match self {
             Self::WebSearch(c) => c.cache_control = Some(cache_control),
+            Self::WebFetch(c) => c.cache_control = Some(cache_control),
             Self::ToolSearchRegex(c) => c.cache_control = Some(cache_control),
             Self::ToolSearchBm25(c) => c.cache_control = Some(cache_control),
         }
@@ -243,6 +265,7 @@ impl<'a> ServerTool<'a> {
     pub fn into_static(self) -> ServerTool<'static> {
         match self {
             Self::WebSearch(c) => ServerTool::WebSearch(c.into_static()),
+            Self::WebFetch(c) => ServerTool::WebFetch(c.into_static()),
             // Tool-search configs borrow nothing, so they are already `'static`.
             Self::ToolSearchRegex(c) => ServerTool::ToolSearchRegex(c),
             Self::ToolSearchBm25(c) => ServerTool::ToolSearchBm25(c),
@@ -325,6 +348,72 @@ impl<'a> WebSearch<'a> {
     }
 }
 
+/// Configuration for the [`ServerTool::WebFetch`] tool.
+///
+/// All fields are optional; the wire `name` (`"web_fetch"`) is fixed and
+/// supplied automatically. Use either [`allowed_domains`] or [`blocked_domains`],
+/// not both. Unlike [`WebSearch`], citations are *off* by default — set
+/// [`citations`] to have the model cite passages from the fetched document.
+///
+/// The model may only fetch a URL that already appeared in the conversation
+/// (a user message, a client tool result, or a prior search/fetch result); it
+/// cannot fetch URLs it invents.
+///
+/// [`allowed_domains`]: WebFetch::allowed_domains
+/// [`blocked_domains`]: WebFetch::blocked_domains
+/// [`citations`]: WebFetch::citations
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct WebFetch<'a> {
+    /// The fixed tool `name` (`"web_fetch"`), supplied automatically by
+    /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: WebFetchName,
+    /// Maximum number of fetches the model may run per request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_uses: Option<u32>,
+    /// Only fetch from these domains (bare host, no scheme). Mutually exclusive
+    /// with [`blocked_domains`](WebFetch::blocked_domains).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_domains: Option<Vec<Cow<'a, str>>>,
+    /// Never fetch from these domains (bare host, no scheme). Mutually
+    /// exclusive with [`allowed_domains`](WebFetch::allowed_domains).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub blocked_domains: Option<Vec<Cow<'a, str>>>,
+    /// Enable citations on the fetched document, so the model cites passages on
+    /// its response [`Text`](crate::prompt::message::Block::Text) blocks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub citations: Option<crate::prompt::message::CitationsConfig>,
+    /// Truncate fetched content to roughly this many tokens, to cap the token
+    /// cost of large pages and PDFs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_content_tokens: Option<u32>,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
+impl<'a> WebFetch<'a> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebFetch<'static> {
+        let owned = |v: Vec<Cow<'a, str>>| -> Vec<Cow<'static, str>> {
+            v.into_iter().map(|d| Cow::Owned(d.into_owned())).collect()
+        };
+        WebFetch {
+            name: WebFetchName,
+            max_uses: self.max_uses,
+            allowed_domains: self.allowed_domains.map(owned),
+            blocked_domains: self.blocked_domains.map(owned),
+            citations: self.citations,
+            max_content_tokens: self.max_content_tokens,
+            cache_control: self.cache_control,
+        }
+    }
+}
+
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
 /// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
@@ -369,6 +458,10 @@ macro_rules! tool_name_marker {
 tool_name_marker!(
     /// The fixed `"web_search"` name for [`WebSearch`].
     WebSearchName => "web_search"
+);
+tool_name_marker!(
+    /// The fixed `"web_fetch"` name for [`WebFetch`].
+    WebFetchName => "web_fetch"
 );
 tool_name_marker!(
     /// The fixed `"tool_search_tool_regex"` name for
@@ -488,6 +581,12 @@ impl<'a> ToolDef<'a> {
 impl<'a> From<WebSearch<'a>> for ServerTool<'a> {
     fn from(config: WebSearch<'a>) -> Self {
         ServerTool::WebSearch(config)
+    }
+}
+
+impl<'a> From<WebFetch<'a>> for ServerTool<'a> {
+    fn from(config: WebFetch<'a>) -> Self {
+        ServerTool::WebFetch(config)
     }
 }
 
@@ -1328,6 +1427,35 @@ mod tests {
             panic!("expected WebSearch");
         };
         assert_eq!(config.max_uses, Some(5));
+    }
+
+    #[test]
+    fn web_fetch_server_tool_wire_shape() {
+        use crate::prompt::message::CitationsConfig;
+
+        let tool = ServerTool::web_fetch(WebFetch {
+            max_uses: Some(5),
+            allowed_domains: Some(vec!["docs.rs".into()]),
+            citations: Some(CitationsConfig { enabled: true }),
+            max_content_tokens: Some(50_000),
+            ..Default::default()
+        });
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "web_fetch_20250910");
+        assert_eq!(json["name"], "web_fetch");
+        assert_eq!(json["max_uses"], 5);
+        assert_eq!(json["allowed_domains"][0], "docs.rs");
+        assert_eq!(json["citations"]["enabled"], true);
+        assert_eq!(json["max_content_tokens"], 50_000);
+        // blocked_domains/cache_control are skipped when None.
+        assert!(json.get("blocked_domains").is_none());
+
+        let back: ServerTool = serde_json::from_value(json).unwrap();
+        let ServerTool::WebFetch(config) = back else {
+            panic!("expected WebFetch");
+        };
+        assert_eq!(config.max_uses, Some(5));
+        assert_eq!(config.max_content_tokens, Some(50_000));
     }
 
     #[test]

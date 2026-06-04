@@ -620,6 +620,7 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
             | Block::Document { .. }
             | Block::ServerToolUse { .. }
             | Block::WebSearchToolResult { .. }
+            | Block::WebFetchToolResult { .. }
             | Block::ToolSearchToolResult { .. }
             | Block::ToolReference { .. } => {}
         }

@@ -456,6 +456,37 @@ impl IntoElement for &Block<'_> {
                     }
                 }
             }
+            Block::WebFetchToolResult { content, .. } => {
+                let is_error = matches!(
+                    content,
+                    message::WebFetchToolResultContent::Error { .. }
+                );
+                match &opts.tool_result {
+                    opts::ToolResult::Hidden => rsx!(),
+                    opts::ToolResult::Placeholder { error, ok } => {
+                        rsx!(div {
+                            title: if is_error { "Error" } else { "Ok" },
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                        })
+                    }
+                    opts::ToolResult::Show { error, ok } => {
+                        rsx!(code {
+                            title: if is_error { "Error" } else { "Ok" },
+                            lang: "json",
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                            {serde_json::to_string_pretty(content).unwrap()}
+                        })
+                    }
+                }
+            }
             Block::ToolSearchToolResult { content, .. } => {
                 let is_error = matches!(
                     content,

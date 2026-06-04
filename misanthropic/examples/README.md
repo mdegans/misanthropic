@@ -27,6 +27,7 @@ Pass `-- --help` to see an example's own arguments, e.g.
 | `interleaved_thinking` | Adaptive extended thinking with interleaved thinking. | `client, derive` |
 | `tool_search` | The tool-search server tool over a large, `defer_loading` tool set. | `client, derive` |
 | `web_search` | The `web_search` server tool. | `client` |
+| `web_fetch` | The `web_fetch` server tool, paired with `web_search`. | `client` |
 | `neologism` | A non-streaming `Client::message` call with a custom system prompt. | `client` |
 | `website_wizard` | **Streaming** with `Client::stream` — collects a generated HTML page. | `client` |
 

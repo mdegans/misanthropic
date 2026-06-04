@@ -1586,6 +1586,98 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "This test requires a real API key."]
+    async fn test_web_fetch_server_tool() {
+        use crate::prompt::message::{Block, WebFetchToolResultContent};
+        use crate::response::StopReason;
+        use crate::tool::{ServerTool, WebFetch};
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        // Hand the model a concrete URL and constrain fetches to that host, so
+        // the fetched URL is a deterministic invariant even though page
+        // content is not. A real content page (not the RFC 2606
+        // `example.com` placeholder, which Haiku refuses to fetch) that does
+        // not redirect cross-domain (which would trip `url_not_allowed`).
+        const URL: &str = "https://www.rust-lang.org";
+        let mut prompt = Prompt::default()
+            .model(crate::AnthropicModel::Haiku45)
+            .add_message((
+                Role::User,
+                format!(
+                    "Use the web_fetch tool to fetch {URL} and quote one \
+                     sentence from the page verbatim, with a citation."
+                ),
+            ))
+            .unwrap()
+            .add_server_tool(ServerTool::web_fetch(WebFetch {
+                max_uses: Some(2),
+                allowed_domains: Some(vec![
+                    "rust-lang.org".into(),
+                    "www.rust-lang.org".into(),
+                ]),
+                citations: Some(crate::prompt::message::CitationsConfig {
+                    enabled: true,
+                }),
+                ..Default::default()
+            }));
+
+        // Collect the URL of every successful fetch across all assistant turns.
+        let collect =
+            |content: &crate::prompt::message::Content| -> Vec<String> {
+                content
+                    .iter()
+                    .filter_map(|b| match b {
+                        Block::WebFetchToolResult {
+                            content:
+                                WebFetchToolResultContent::Result { url, .. },
+                            ..
+                        } => Some(url.to_string()),
+                        _ => None,
+                    })
+                    .collect()
+            };
+
+        let mut total_fetches = 0u64;
+        let mut urls: Vec<String> = Vec::new();
+        let mut pauses = 0u32;
+        loop {
+            let response = client.message(&prompt).await.unwrap();
+            if let Some(usage) = response.usage.server_tool_use {
+                total_fetches += usage.web_fetch_requests;
+            }
+            urls.extend(collect(&response.inner.content));
+
+            if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
+                pauses += 1;
+                assert!(
+                    pauses <= 5,
+                    "runaway pause_turn loop: {pauses} pauses"
+                );
+                prompt.push_message(response).unwrap();
+                continue;
+            }
+            break;
+        }
+
+        assert!(total_fetches >= 1, "the model should have fetched once");
+        assert!(
+            total_fetches <= 2,
+            "fetches exceeded max_uses: {total_fetches}"
+        );
+        assert!(!urls.is_empty(), "expected at least one fetch result");
+        assert!(
+            urls.iter().all(|u| u.contains("rust-lang.org")),
+            "fetches must stay within the allowed domain: {urls:?}"
+        );
+    }
+
     #[test]
     #[cfg(feature = "client")]
     fn test_with_base_url() {

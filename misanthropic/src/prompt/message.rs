@@ -1041,6 +1041,20 @@ pub enum Block<'a> {
         /// The search results, or an error.
         content: WebSearchToolResultContent<'a>,
     },
+    /// Result of a [`web_fetch`] server tool call (`web_fetch_tool_result`),
+    /// appearing in the assistant turn right after its
+    /// [`ServerToolUse`](Block::ServerToolUse) block. Carries the fetched
+    /// document (text or base64 PDF) and its source URL, or an error.
+    ///
+    /// [`web_fetch`]: crate::tool::ServerTool::web_fetch
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    WebFetchToolResult {
+        /// The [`id`](tool::Use::id) of the
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'a, str>,
+        /// The fetched document, or an error.
+        content: WebFetchToolResultContent<'a>,
+    },
     /// Result of a [tool-search] server tool call (`tool_search_tool_result`),
     /// appearing in the assistant turn right after its
     /// [`ServerToolUse`](Block::ServerToolUse) block. Carries the
@@ -1151,6 +1165,92 @@ impl WebSearchToolError<'_> {
     pub fn into_static(self) -> WebSearchToolError<'static> {
         WebSearchToolError {
             error_code: Cow::Owned(self.error_code.into_owned()),
+        }
+    }
+}
+
+/// The `content` of a [`Block::WebFetchToolResult`]: either the fetched
+/// document or an error. Tagged on `type` (both arms carry one).
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum WebFetchToolResultContent<'a> {
+    /// The fetch succeeded.
+    #[serde(rename = "web_fetch_result")]
+    Result {
+        /// The URL that was fetched.
+        url: Cow<'a, str>,
+        /// The fetched content as a document block.
+        content: FetchedDocument<'a>,
+        /// ISO-8601 timestamp of when the content was retrieved, e.g.
+        /// `"2025-08-25T10:30:00Z"`.
+        retrieved_at: Cow<'a, str>,
+    },
+    /// The fetch failed.
+    #[serde(rename = "web_fetch_tool_result_error")]
+    Error {
+        /// The error code, e.g. `"url_not_accessible"`, `"url_not_allowed"`,
+        /// `"url_too_long"`, `"too_many_requests"`,
+        /// `"unsupported_content_type"`, `"max_uses_exceeded"`,
+        /// `"invalid_input"`, or `"unavailable"`.
+        error_code: Cow<'a, str>,
+    },
+}
+
+/// The `document` block nested in a successful [`Block::WebFetchToolResult`].
+/// Mirrors a [`Block::Document`] but only carries the fields the API returns
+/// for a fetch: the [`source`](FetchedDocument::source) (plain text or a
+/// base64 PDF), an optional [`title`](FetchedDocument::title), and whether
+/// [`citations`](FetchedDocument::citations) are enabled.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "document")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct FetchedDocument<'a> {
+    /// The fetched content: [`text/plain`] for web pages, base64
+    /// [`application/pdf`] for PDFs.
+    ///
+    /// [`text/plain`]: DocumentSource::PlainText
+    /// [`application/pdf`]: DocumentSource::Base64
+    pub source: DocumentSource<'a>,
+    /// The document title, when the page provided one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<Cow<'a, str>>,
+    /// Whether citations were enabled (mirrors the [`WebFetch`] tool's
+    /// [`citations`] config).
+    ///
+    /// [`WebFetch`]: crate::tool::WebFetch
+    /// [`citations`]: crate::tool::WebFetch::citations
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citations: Option<CitationsConfig>,
+}
+
+impl WebFetchToolResultContent<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> WebFetchToolResultContent<'static> {
+        match self {
+            Self::Result {
+                url,
+                content,
+                retrieved_at,
+            } => WebFetchToolResultContent::Result {
+                url: Cow::Owned(url.into_owned()),
+                content: content.into_static(),
+                retrieved_at: Cow::Owned(retrieved_at.into_owned()),
+            },
+            Self::Error { error_code } => WebFetchToolResultContent::Error {
+                error_code: Cow::Owned(error_code.into_owned()),
+            },
+        }
+    }
+}
+
+impl FetchedDocument<'_> {
+    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
+    pub fn into_static(self) -> FetchedDocument<'static> {
+        FetchedDocument {
+            source: self.source.into_static(),
+            title: self.title.map(|t| Cow::Owned(t.into_owned())),
+            citations: self.citations,
         }
     }
 }
@@ -1448,6 +1548,9 @@ impl<'a> Block<'a> {
                     Block::WebSearchToolResult { .. } => {
                         stringify!(Block::WebSearchToolResult)
                     }
+                    Block::WebFetchToolResult { .. } => {
+                        stringify!(Block::WebFetchToolResult)
+                    }
                     Block::ToolSearchToolResult { .. } => {
                         stringify!(Block::ToolSearchToolResult)
                     }
@@ -1519,6 +1622,7 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
@@ -1549,6 +1653,7 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
@@ -1574,6 +1679,7 @@ impl<'a> Block<'a> {
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
@@ -1651,6 +1757,13 @@ impl<'a> Block<'a> {
                 tool_use_id: Cow::Owned(tool_use_id.into_owned()),
                 content: content.into_static(),
             },
+            Self::WebFetchToolResult {
+                tool_use_id,
+                content,
+            } => Block::WebFetchToolResult {
+                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
+                content: content.into_static(),
+            },
             Self::ToolSearchToolResult {
                 tool_use_id,
                 content,
@@ -1680,6 +1793,7 @@ impl<'a> Block<'a> {
             | Self::ToolResult { .. }
             | Self::ServerToolUse { .. }
             | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::ToolReference { .. } => 0,
         }
@@ -1741,6 +1855,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
             }
             Block::ToolResult { .. }
             | Block::WebSearchToolResult { .. }
+            | Block::WebFetchToolResult { .. }
             | Block::ToolSearchToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
@@ -2430,6 +2545,122 @@ mod tests {
                 ));
             }
             _ => panic!("expected WebSearchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn web_fetch_tool_result_block_roundtrip() {
+        // The success shape from the docs: a text document with citations on.
+        let json = serde_json::json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_01A2B3",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://example.com/article",
+                "content": {
+                    "type": "document",
+                    "source": {
+                        "type": "text",
+                        "media_type": "text/plain",
+                        "data": "Full text content of the article..."
+                    },
+                    "title": "Article Title",
+                    "citations": { "enabled": true }
+                },
+                "retrieved_at": "2025-08-25T10:30:00Z"
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::WebFetchToolResult {
+                tool_use_id,
+                content,
+            } => {
+                assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+                let WebFetchToolResultContent::Result {
+                    url,
+                    content,
+                    retrieved_at,
+                } = content
+                else {
+                    panic!("expected a successful fetch");
+                };
+                assert_eq!(url, "https://example.com/article");
+                assert_eq!(retrieved_at, "2025-08-25T10:30:00Z");
+                assert_eq!(content.title.as_deref(), Some("Article Title"));
+                assert!(matches!(
+                    content.source,
+                    DocumentSource::PlainText { .. }
+                ));
+            }
+            _ => panic!("expected WebFetchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn web_fetch_tool_result_pdf_roundtrip() {
+        // PDFs come back as base64 application/pdf with no title.
+        let json = serde_json::json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_02",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://example.com/paper.pdf",
+                "content": {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": "JVBERi0xLjQK"
+                    },
+                    "citations": { "enabled": true }
+                },
+                "retrieved_at": "2025-08-25T10:30:02Z"
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::WebFetchToolResult { content, .. } => {
+                let WebFetchToolResultContent::Result { content, .. } = content
+                else {
+                    panic!("expected a successful fetch");
+                };
+                assert!(content.title.is_none());
+                assert!(matches!(
+                    content.source,
+                    DocumentSource::Base64 {
+                        media_type: DocumentMediaType::Pdf,
+                        ..
+                    }
+                ));
+            }
+            _ => panic!("expected WebFetchToolResult"),
+        }
+        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+    }
+
+    #[test]
+    fn web_fetch_tool_result_error_roundtrip() {
+        let json = serde_json::json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_a93jad",
+            "content": {
+                "type": "web_fetch_tool_result_error",
+                "error_code": "url_not_accessible"
+            }
+        });
+        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        match &block {
+            Block::WebFetchToolResult { content, .. } => {
+                assert!(matches!(
+                    content,
+                    WebFetchToolResultContent::Error { error_code }
+                        if error_code == "url_not_accessible"
+                ));
+            }
+            _ => panic!("expected WebFetchToolResult"),
         }
         assert_eq!(serde_json::to_value(&block).unwrap(), json);
     }

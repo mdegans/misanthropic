@@ -212,8 +212,22 @@ pub struct Usage {
 pub struct ServerToolUsage {
     /// Number of web searches performed.
     pub web_search_requests: u64,
+    /// Number of [web fetches](crate::tool::ServerTool::web_fetch) performed.
+    #[serde(default)]
+    pub web_fetch_requests: u64,
     /// Number of [tool-search](crate::tool::ServerTool::tool_search_regex)
     /// queries performed.
+    ///
+    /// **As of 2026-06-04 the API does not populate this.** The documented
+    /// `tool_search_requests` key is absent from the wire entirely (verified by
+    /// `curl`), so `#[serde(default)]` leaves this `0` even on a turn where a
+    /// tool search demonstrably ran. Count
+    /// [`ToolSearchToolResult`](crate::prompt::message::Block::ToolSearchToolResult)
+    /// blocks for a reliable signal. See [#72]. (Filed upstream as a docs/wire
+    /// discrepancy; the field stays so it Just Works if the API starts sending
+    /// it.)
+    ///
+    /// [#72]: <https://github.com/mdegans/misanthropic/issues/72>
     #[serde(default)]
     pub tool_search_requests: u64,
 }
@@ -225,6 +239,8 @@ impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
         Self {
             web_search_requests: self.web_search_requests
                 + rhs.web_search_requests,
+            web_fetch_requests: self.web_fetch_requests
+                + rhs.web_fetch_requests,
             tool_search_requests: self.tool_search_requests
                 + rhs.tool_search_requests,
         }
