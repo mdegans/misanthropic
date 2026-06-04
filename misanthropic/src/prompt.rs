@@ -850,6 +850,57 @@ impl<'a> Prompt<'a> {
         Ok(self)
     }
 
+    /// Add several custom tools at once — the plural of [`add_tool`]. Each item
+    /// is anything [`Into`] a [`MethodDef`], so this composes with a tool's
+    /// [`definitions`] just as well as with hand-built [`MethodDef`]s:
+    ///
+    /// ```
+    /// # use misanthropic::{Prompt, tool::MethodDef};
+    /// let prompt = Prompt::default().add_tools([
+    ///     MethodDef::simple("get_weather", "Get the weather."),
+    ///     MethodDef::simple("get_time", "Get the time."),
+    /// ]);
+    /// ```
+    ///
+    /// [`add_tool`]: Self::add_tool
+    /// [`definitions`]: crate::Tool::definitions
+    pub fn add_tools<T, Ts>(mut self, tools: Ts) -> Self
+    where
+        T: Into<MethodDef<'a>>,
+        Ts: IntoIterator<Item = T>,
+    {
+        self.methods
+            .get_or_insert_with(Default::default)
+            .extend(tools.into_iter().map(|t| tool::ToolDef::Custom(t.into())));
+        self
+    }
+
+    /// Register every [`MethodDef`] a [`Tool`] exposes through its
+    /// [`definitions`] — the one-liner for the common case of handing the
+    /// model a typed tool:
+    ///
+    /// ```no_run
+    /// # use misanthropic::{Prompt, Tool};
+    /// # fn demo(weather: &impl Tool) {
+    /// let prompt = Prompt::default().register_tool(weather);
+    /// # }
+    /// ```
+    ///
+    /// Equivalent to [`add_tools(tool.definitions())`](Self::add_tools) but
+    /// borrows the tool and needs no lifetime juggling, since a
+    /// [`MethodDef<'static>`] fits any [`Prompt<'a>`].
+    ///
+    /// [`Tool`]: crate::Tool
+    /// [`definitions`]: crate::Tool::definitions
+    pub fn register_tool<T>(self, tool: &T) -> Self
+    where
+        T: tool::Tool + ?Sized,
+    {
+        // A `MethodDef<'static>` is also a `MethodDef<'a>`, so the definitions
+        // drop straight into `add_tools`.
+        self.add_tools(tool.definitions())
+    }
+
     /// Add a [`ServerTool`] (Anthropic-executed, e.g.
     /// [`web_search`](tool::ServerTool::web_search)) to the request. Unlike a
     /// custom tool, the API runs it internally and returns its
@@ -1545,6 +1596,71 @@ mod tests {
             .find(|t| t["type"] == "tool_search_tool_regex_20251119")
             .unwrap();
         assert!(search.get("defer_loading").is_none());
+    }
+
+    #[test]
+    fn add_tools_appends_each_method() {
+        use crate::tool::MethodDef;
+        // Appends to any tools already present rather than replacing them.
+        let prompt = Prompt::default()
+            .add_tool(MethodDef::simple("a", "Tool A."))
+            .add_tools([
+                MethodDef::simple("b", "Tool B."),
+                MethodDef::simple("c", "Tool C."),
+            ]);
+
+        let names: Vec<_> = prompt
+            .methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d.as_method())
+            .map(|m| m.name.as_ref())
+            .collect();
+        assert_eq!(names, ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn register_tool_pulls_definitions() {
+        use crate::tool::{MethodDef, Tool, Use};
+
+        struct PairTool;
+
+        #[async_trait::async_trait]
+        impl Tool for PairTool {
+            fn name(&self) -> &str {
+                "PairTool"
+            }
+            fn definitions(&self) -> Vec<MethodDef<'static>> {
+                vec![
+                    MethodDef::simple("PairTool__a", "A."),
+                    MethodDef::simple("PairTool__b", "B."),
+                ]
+            }
+            async fn call<'a>(
+                &mut self,
+                call: Use<'a>,
+            ) -> crate::tool::Result<'a> {
+                crate::tool::Result {
+                    tool_use_id: call.id,
+                    content: "ok".into(),
+                    is_error: false,
+                    cache_control: None,
+                }
+            }
+        }
+
+        // A short-lived `Prompt<'a>` accepts the tool's `MethodDef<'static>`s.
+        let prompt = Prompt::default().register_tool(&PairTool);
+        let names: Vec<_> = prompt
+            .methods
+            .as_ref()
+            .unwrap()
+            .iter()
+            .filter_map(|d| d.as_method())
+            .map(|m| m.name.as_ref())
+            .collect();
+        assert_eq!(names, ["PairTool__a", "PairTool__b"]);
     }
 
     #[test]
