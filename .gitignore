@@ -1,5 +1,7 @@
 .vscode
-.claude/
+.claude/*
+# Share project skills with the repo; keep local settings ignored.
+!.claude/skills/
 *.env
 target/
 api.key

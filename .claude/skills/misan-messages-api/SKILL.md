@@ -1,0 +1,503 @@
+---
+name: misan-messages-api
+description: >-
+  Write Rust code against the `misanthropic` crate's non-streaming
+  (`Client::message`) path — single messages, multi-turn chats, system
+  prompts, and tool use (the `#[tool]` macro and manual `MethodDef`s). Use
+  when writing or editing Rust that calls the Anthropic Messages API through
+  the `misanthropic` crate, or when the user mentions `misanthropic`,
+  `Client::message`, or `Prompt`. For token-by-token streaming, see the
+  misan-streaming-api skill instead.
+---
+
+# `misanthropic` — Non-Streaming (Message) API
+
+`misanthropic` is an unofficial, ergonomic, async Rust client for the
+Anthropic Messages API. This skill covers the non-streaming `Client::message`
+path. For streaming, see the **misan-streaming-api** skill.
+
+- Crate: [`misanthropic`](https://crates.io/crates/misanthropic)
+- Repository: <https://github.com/mdegans/misanthropic>
+- Docs: <https://docs.rs/misanthropic>
+- License: MIT
+
+## Cargo.toml
+
+```toml
+[dependencies]
+misanthropic = "1.0.0-alpha.1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+# For the `#[tool]` macro (below). Already pulled in by the default `derive`
+# feature, but tool *argument* structs need these directly:
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
+```
+
+### Feature flags (selected)
+
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `client` | yes | Enables `Client` (HTTP). Disable for wasm data-only. |
+| `rustls-tls` | yes | Use rustls instead of system OpenSSL. |
+| `langsan` | yes | Output sanitization (allow-list of benign Unicode). |
+| `derive` | yes | The `#[tool]` / `#[derive(ToolArgs)]` macros. |
+| `batch` | yes | Message Batches API. Does not build on wasm32. |
+| `prompt-caching` | no | Anthropic prompt-caching beta headers. |
+| `markdown` | no | `ToMarkdown` trait, markdown rendering. |
+| `image` / `png` / `jpeg` / `gif` / `webp` | no | Image support via the `image` crate. |
+| `memsecurity` | no | Encrypt the API key in memory. |
+
+## Quick start — single message
+
+```no_run
+use misanthropic::{Client, Prompt, prompt::message::Role};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // The key String is consumed, zeroized, and stored encrypted (with
+    // `memsecurity`) or zeroed on drop. `Client::new` takes anything that is
+    // `TryInto<Key>` (e.g. `String`). The `x-api-key` header is marked
+    // sensitive on requests.
+    let key = std::env::var("ANTHROPIC_API_KEY")?;
+    let client = Client::new(key)?;
+
+    // Build a Prompt (the request type) and send it. `Client::message`
+    // forces `stream = false` and returns a `response::Message` directly.
+    let message = client
+        .message(
+            Prompt::default()
+                .set_messages([(Role::User, "What is 2+2?")]),
+        )
+        .await?;
+
+    // `response::Message` implements `Display` (prints content).
+    println!("{message}");
+
+    // Access fields:
+    //   message.inner          — the prompt::AssistantMessage
+    //   message.inner.content  — Content (Display, iterable over Blocks)
+    //   message.model          — model::Id
+    //   message.stop_reason    — Option<StopReason>
+    //   message.usage          — Usage { input_tokens, output_tokens, .. }
+
+    Ok(())
+}
+```
+
+## The `Prompt` builder
+
+`Prompt` is the request type. It defaults to model **`Haiku45`** (Claude
+Haiku 4.5) with `max_tokens = 4096`. All fields are public; the builder
+methods are convenience helpers that return `Self`.
+
+```rust
+use std::num::NonZeroU32;
+use misanthropic::{AnthropicModel, Prompt, prompt::message::Role};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let prompt = Prompt::default()
+    // Set model — accepts AnthropicModel, model::Id, or any string.
+    .model(AnthropicModel::Sonnet46)
+    // System prompt — accepts &str, String, or Content.
+    .set_system("You are a helpful assistant.")
+    // Append to the system prompt.
+    .add_system("Respond concisely.")
+    // Set max tokens.
+    .max_tokens(NonZeroU32::new(1024).unwrap())
+    // Set temperature (0.0–1.0).
+    .temperature(Some(0.7))
+    // Add a user message — returns Result because turn order is validated
+    // (must alternate User/Assistant; first message must be User).
+    .add_message((Role::User, "Hello!"))?;
+# let _ = prompt;
+# Ok(())
+# }
+```
+
+### Available models (`AnthropicModel` enum)
+
+The enum tracks current and historical models. Each variant serializes to its
+wire ID. Selected current variants:
+
+| Variant | Serialized ID |
+|---------|---------------|
+| `Haiku45` (**default**) | `claude-haiku-4-5` |
+| `Sonnet46` | `claude-sonnet-4-6` |
+| `Opus46` | `claude-opus-4-6` |
+| `Opus48` | `claude-opus-4-8` |
+| `Opus45` | `claude-opus-4-5` |
+| `Sonnet45` | `claude-sonnet-4-5` |
+| `Haiku35` | `claude-3-5-haiku-latest` |
+
+Pinned/dated variants exist too (e.g. `Opus45_20251101`,
+`Sonnet45_20250929`, `Haiku45_20251001`). For a model not yet in the enum,
+use `model::Id::Custom("your-model-id".into())` — `.model(...)` also accepts a
+plain string.
+
+### Messages — generic conversions
+
+The crate leans **heavily on generics and `From`/`Into`** so call sites stay
+clean. Every message method (`add_message`, `push_message`, `set_messages`,
+`add_messages`, …) is bounded on `M: Into<Message<'a>>`, and the tuple
+conversion is `(Role, T) where T: Into<Content<'a>>` — not just `&str`. A
+`Message`/`Content`/`Block` can be built from a `&str`, a `String`, a
+`tool::Use`, a `tool::Result`, an `Image`, a `DocumentSource`, a slice of
+`&str`, a `response::Message`, and more. So a tuple's second element is
+whatever converts into `Content` — a string is just the common case.
+
+```rust
+use misanthropic::{Prompt, prompt::message::Role};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// set_messages replaces all messages; add_message appends one.
+let prompt = Prompt::default().set_messages([
+    (Role::User, "What is Rust?"),
+    (Role::Assistant, "Rust is a systems programming language."),
+    (Role::User, "What are its key features?"),
+])?;
+# let _ = prompt;
+# Ok(())
+# }
+```
+
+> **The crate is meant to be extended.** If something *logically* should
+> convert and doesn't — e.g. `prompt.push_message(some_pushable_thing)` won't
+> compile — that's usually a missing `From`/`Into` impl, not a design wall.
+> Adding the conversion in the crate (it's a small, local change) is the
+> idiomatic fix and a stated goal of the project; reach for that before
+> contorting the call site.
+
+### Multi-turn conversation
+
+```no_run
+use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+
+let mut chat = Prompt::default()
+    .model(AnthropicModel::Sonnet46)
+    .set_system("You are a helpful assistant.")
+    .add_message((Role::User, "What is Rust?"))?;
+
+let reply = client.message(&chat).await?;
+println!("Assistant: {reply}");
+
+// Append the assistant reply, then a user follow-up. `push_message` is the
+// in-place version of `add_message` (both validate turn order).
+chat.push_message(reply)?;
+chat.push_message((Role::User, "What about memory safety?"))?;
+
+let reply = client.message(&chat).await?;
+println!("Assistant: {reply}");
+# Ok(())
+# }
+```
+
+## Tool use — the `#[tool]` macro (preferred)
+
+The `#[tool]` macro (default `derive` feature) turns an `impl` block into a
+typed tool: it generates the wire definitions from your argument struct's
+`JsonSchema`, and gives the type a concrete `impl Tool` so dispatch is typed
+and validated — no hand-parsing of `serde_json::Value`.
+
+```no_run
+use misanthropic::{
+    Client, Prompt,
+    prompt::message::{Content, Role},
+    tool::{Tool, tool},
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+// Argument struct. Field docs become the schema property descriptions the
+// model sees (via `schemars`). Must be `Deserialize + JsonSchema`.
+#[derive(Debug, Deserialize, JsonSchema)]
+struct GetWeather {
+    /// City name.
+    city: String,
+}
+
+// A (possibly stateful) tool. Methods tagged `#[method]` must be
+// `async fn(&mut self, args: ArgsTy) -> Result<Content<'static>, Content<'static>>`.
+// `Ok` is the tool result; `Err` is a model-facing error.
+struct Weather;
+
+#[tool]
+impl Weather {
+    /// Get the weather for a city.
+    #[method]
+    async fn get_weather(
+        &mut self,
+        args: GetWeather,
+    ) -> Result<Content<'static>, Content<'static>> {
+        let report = format!("Sunny, 22C in {}", args.city); // your logic
+        Ok(report.into())
+    }
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+let mut weather = Weather;
+
+let mut chat = Prompt::default()
+    .model(misanthropic::AnthropicModel::Sonnet46)
+    .set_system("Use tools when appropriate.")
+    .add_message((Role::User, "What's the weather in Paris?"))?;
+
+// Register the generated definition(s). Methods are namespaced by the tool
+// type, e.g. `Weather__get_weather` (the `__` separator).
+for definition in weather.definitions() {
+    chat = chat.add_tool(definition);
+}
+
+let message = client.message(&chat).await?;
+
+// `tool_use()` is `Some` when stop_reason is ToolUse and the last block is a
+// tool call.
+if let Some(call) = message.tool_use() {
+    let call = call.clone().into_static();
+    chat.push_message(message)?;
+
+    // Typed dispatch: `call.input` is deserialized into `GetWeather` and
+    // validated. Bad arguments become a helpful, model-facing error
+    // automatically. Returns a `tool::Result` ready to push.
+    let result = weather.call(call).await;
+    chat.push_message(result)?;
+
+    let final_reply = client.message(&chat).await?;
+    println!("{final_reply}");
+}
+# Ok(())
+# }
+```
+
+Notes on the macro:
+
+- Each `#[method]` becomes a real inherent method you can still call directly.
+- One `#[tool]` block can hold several `#[method]`s; each is namespaced
+  `TypeName__method_name`.
+- `#[method(defer_loading)]` marks a method's schema as deferrable for use
+  with the tool-search server tool (large tool sets).
+- The `Tool` trait also has `definitions()`, `call()`, plus optional
+  `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
+  state persistence.
+
+See the runnable example: `misanthropic/examples/strawberry.rs`.
+
+## Tool use — manual `MethodDef` (no macro)
+
+When you want a hand-written schema, build a `tool::MethodDef` and hand it to
+`add_tool`. (This struct was previously named `Method`.)
+
+```no_run
+use misanthropic::{
+    Client, Prompt, json,
+    prompt::{Message, message::Role},
+    tool::MethodDef,
+};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+
+let mut chat = Prompt::default()
+    .model(misanthropic::AnthropicModel::Sonnet46)
+    .add_tool(MethodDef {
+        name: "get_weather".into(),
+        description: "Get the weather for a city.".into(),
+        schema: json!({
+            "type": "object",
+            "properties": {
+                "city": { "type": "string", "description": "City name" }
+            },
+            "required": ["city"],
+        }),
+        // These three are plain `Option`s — NOT feature-gated. Leave `None`
+        // unless you need them:
+        cache_control: None,   // prompt-caching breakpoint
+        strict: None,          // Some(true) = grammar-constrained decoding
+        defer_loading: None,   // Some(true) = defer schema (tool-search)
+    })
+    .set_system("Use tools when appropriate.")
+    .add_message((Role::User, "What's the weather in Paris?"))?;
+
+let message = client.message(&chat).await?;
+
+if let Some(call) = message.tool_use() {
+    // call.name  — tool name ("get_weather")
+    // call.id    — unique ID for this call
+    // call.input — serde_json::Value with arguments
+    let city = call.input["city"].as_str().unwrap();
+    let weather = format!("Sunny, 22C in {city}"); // your logic
+
+    // Build a tool result message (always Role::User under the hood).
+    let result: Message = misanthropic::tool::Result {
+        tool_use_id: call.id.to_string().into(),
+        content: weather.into(),
+        is_error: false,
+        cache_control: None,
+    }
+    .into();
+
+    chat.push_message(message)?;
+    chat.push_message(result)?;
+
+    let final_reply = client.message(&chat).await?;
+    println!("{final_reply}");
+}
+# Ok(())
+# }
+```
+
+`add_tool` accepts anything `Into<MethodDef>`; `try_add_tool` accepts
+`TryInto<MethodDef>` (e.g. a `MethodBuilder` with validation).
+
+## Using `json!` instead of `Prompt`
+
+> **For quick experiments and tests only.** In production, prefer `Prompt`:
+> you get turn-order validation, the typed builder, model/feature helpers, and
+> compile-time checking that raw JSON skips. Reach for `json!` to reproduce a
+> payload quickly or in a throwaway test, not in real code.
+
+`Client::message` accepts anything `Serialize`. You can use raw JSON:
+
+```no_run
+use misanthropic::{Client, json, prompt::message::Role};
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+
+let message = client
+    .message(json!({
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 1024,
+        "system": "You are a pirate.",
+        "messages": [{
+            "role": Role::User,
+            "content": "Ahoy!",
+        }],
+    }))
+    .await?;
+
+println!("{message}");
+# Ok(())
+# }
+```
+
+## Error handling
+
+`Client` methods return `client::Result<T>` which wraps `client::Error`:
+
+```no_run
+use misanthropic::client::{Error, AnthropicError};
+
+# async fn run(client: &misanthropic::Client, prompt: &misanthropic::Prompt<'_>) {
+match client.message(prompt).await {
+    Ok(msg) => println!("{msg}"),
+    Err(Error::Anthropic(AnthropicError::RateLimit { message, .. })) => {
+        eprintln!("Rate limited: {message}");
+    }
+    Err(Error::Anthropic(AnthropicError::Authentication { message })) => {
+        eprintln!("Auth error: {message}");
+    }
+    Err(e) => eprintln!("Error: {e}"),
+}
+# }
+```
+
+### Error variants
+
+| Variant | Description |
+|---------|-------------|
+| `Error::HTTP` | Network / reqwest error |
+| `Error::Parse` | JSON deserialization failed |
+| `Error::Anthropic(AnthropicError::*)` | API error (see below) |
+| `Error::UnexpectedResponse` | Wrong response type (should not happen) |
+
+**`AnthropicError` variants:** `InvalidRequest` (400), `Authentication`
+(401), `Permission` (403), `NotFound` (404), `RequestTooLarge` (413),
+`RateLimit` (429), `API` (500), `Overloaded` (529), `Timeout`, `Billing`,
+`Unknown`.
+
+`RateLimit` and `Overloaded` carry a `retry_after: Option<u64>` field
+populated from the `retry-after` response header. Prefer the
+`AnthropicError::retry_after()` accessor, which returns it as an
+`Option<std::time::Duration>`:
+
+```rust
+use misanthropic::client::{Error, AnthropicError};
+
+# fn handle(e: &Error) {
+if let Error::Anthropic(api_err) = e {
+    if let Some(wait) = api_err.retry_after() {
+        eprintln!("retry after {wait:?}");
+    }
+}
+# }
+```
+
+## Response structure
+
+```text
+response::Message
+├── id: Cow<str>              — unique message ID
+├── inner: AssistantMessage
+│   └── inner: prompt::Message
+│       ├── role: Role::Assistant
+│       └── content: Content  — Display, iterable over Blocks
+├── model: model::Id
+├── stop_reason: Option<StopReason>
+│   └── EndTurn | MaxTokens | StopSequence | ToolUse
+├── stop_sequence: Option<Cow<str>>
+└── usage: Usage
+    ├── input_tokens: u64
+    └── output_tokens: u64
+```
+
+## Examples
+
+Runnable examples live in `misanthropic/examples/` (run with
+`cargo run --example <name> --all-features`). Read the one whose shape matches
+your task — they're the most current, compiler-checked usage.
+
+| Example | Covers |
+|---------|--------|
+| `strawberry.rs` | **Typed tool use** via the `#[tool]` macro (`count_letters`) — the canonical tool example. |
+| `python.rs` | Tool use where the assistant calls a `python` tool to compute an answer. |
+| `few_shot_triage.rs` | **Few-shot prompting** + structured output — triage a free-text bug report into a structured form. |
+| `structured_commit_classifier.rs` | Structured output — classify a unified diff into a commit message. |
+| `vote_intent.rs` | Structured output — analyze a social-network post into a typed result. |
+| `mid_conversation_system.rs` | Mid-conversation `Role::System` message (Opus 4.8+). |
+| `interleaved_thinking.rs` | Adaptive extended thinking with interleaved thinking. |
+| `tool_search.rs` | The tool-search server tool over a large, `defer_loading` tool set. |
+| `web_search.rs` | The `web_search` server tool. |
+| `neologism.rs` | `Client::message` with a custom system prompt. |
+| `website_wizard.rs` | **Streaming** (`Client::stream`) — see the misan-streaming-api skill. |
+
+## Key design notes
+
+- **API keys** are zeroized on drop. With `memsecurity`, they are encrypted in
+  memory. The `x-api-key` header is marked sensitive.
+- **No `unsafe` code** — the crate uses `#[forbid(unsafe_code)]`.
+- **Rate limiting** is built in (default: 50 req/min, tier 1). Adjust with
+  `client.set_rate_limit(quota)`.
+- **`Client` is cheap to clone** — it wraps `Arc`s internally.
+- **Turn order is enforced (client-side)** — messages must alternate
+  User/Assistant and the first must be User. Methods return `TurnOrderError`
+  on violation. Two exceptions: Opus 4.8+ supports an authoritative
+  mid-conversation `Role::System` turn (must follow a user turn and either end
+  the array or precede an assistant turn); and **two adjacent assistant turns
+  are allowed when the first contains a `ServerToolUse` block** — the API
+  pauses a long-running server tool with `StopReason::PauseTurn`, and you
+  resume by appending the paused turn back. Note Anthropic itself **no longer
+  enforces** strict alternation server-side, but many Anthropic-compatible
+  backends still do, so the crate keeps the check (in `prompt.rs`,
+  `check_turn_order` / `Message::may_precede`).
+- **Borrowed by default, but usually already owned** — most public types carry
+  a lifetime `'a`. In practice your data is typically owned already, just not
+  `'static`; call `.into_static()` when you need the `'static` bound (e.g. to
+  store a `Use`/`Message` past the borrow). The pervasive `'a` has a real
+  ergonomic cost and removing it has been discussed — but it's what lets some
+  `'static` values be `const`-constructed via `Cow::Borrowed`.
