@@ -188,6 +188,9 @@ serde_path_to_error = { version = "0.1" }
 # Derive macros for the typed-tool layer (`#[derive(ToolArgs)]`, `#[tool]`).
 # Gated behind the default-on `derive` feature; emits `::misanthropic::…` paths.
 misanthropic-derive = { workspace = true, optional = true }
+# Async filesystem for the `memory-fs` backend. The crate core is runtime-
+# agnostic; only `FsMemoryBackend` needs a runtime, so tokio stays optional.
+tokio = { version = "1", optional = true, features = ["fs"] }
 
 [dev-dependencies]
 # for all examples
@@ -202,6 +205,8 @@ itertools = "0.13"
 # for the python example
 subprocess = "0.2"
 tempfile = "3.12"
+# for the memory example REPL
+rustyline = "14"
 # Compile-fail (UI) tests for the `derive` proc-macros.
 trybuild = "1"
 
@@ -251,6 +256,15 @@ dioxus = ["dep:dioxus"]
 # Notepad tool for the assistant to take notes. Implemented with the typed-tool
 # derive macros, so it requires `derive`.
 notepad = ["derive"]
+# Optional tokio dependency, pulled in by `memory-fs`. A bare feature so other
+# tokio-backed pieces can share it later.
+tokio = ["dep:tokio"]
+# Typed client-side `memory` tool support: the `Command` vocabulary and the
+# `Memory` definition. Runtime-agnostic — bring your own executor, or enable
+# `memory-fs` for the filesystem one.
+memory = []
+# The `FsMemoryBackend` reference executor for the memory tool — async on tokio.
+memory-fs = ["memory", "tokio"]
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
@@ -259,8 +273,9 @@ openai = []
 derive = ["dep:misanthropic-derive"]
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md`) so their code
 # blocks can't drift from the public API. Implies the features the skills
-# document: `client` (Client / streaming) and `derive` (the `#[tool]` macro).
-__skills = ["client", "derive"]
+# document: `client` (Client / streaming), `derive` (the `#[tool]` macro), and
+# `memory-fs` (the client-executed memory tool + its filesystem backend).
+__skills = ["client", "derive", "memory-fs"]
 
 [[example]]
 name = "strawberry"
@@ -304,6 +319,21 @@ doc-scrape-examples = true
 
 [[example]]
 name = "web_search"
+required-features = ["client"]
+doc-scrape-examples = true
+
+[[example]]
+name = "memory"
+required-features = ["client", "memory-fs"]
+doc-scrape-examples = true
+
+[[example]]
+name = "web_fetch"
+required-features = ["client"]
+doc-scrape-examples = true
+
+[[example]]
+name = "programmatic_tool_calling"
 required-features = ["client"]
 doc-scrape-examples = true
 

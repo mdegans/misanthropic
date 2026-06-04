@@ -346,8 +346,56 @@ if let Some(call) = message.tool_use() {
 # }
 ```
 
-`add_tool` accepts anything `Into<MethodDef>`; `try_add_tool` accepts
-`TryInto<MethodDef>` (e.g. a `MethodBuilder` with validation).
+`add_tool` accepts anything `Into<ToolDef>` — a custom `MethodDef`, a
+`ServerTool` (Anthropic-executed, e.g. `web_search`), or a `Memory` (the
+client-executed memory tool). `try_add_tool` accepts `TryInto<MethodDef>`
+(e.g. a `MethodBuilder` with validation).
+
+## Predefined tools — server tools & `memory`
+
+Predefined tools are added by versioned name with no schema of your own. Most
+are **server-executed**: Anthropic runs them and the result blocks arrive in
+the response (you never call anything). The `memory` tool (feature `memory` for
+the typed `Command` + definition) is the exception — **client-executed**: the
+model emits an ordinary `tool_use` that *you* run against storage you control,
+just like a custom tool. `tool::memory::FsMemoryBackend` (feature `memory-fs`,
+which adds an async tokio executor) is a ready-made filesystem backend, jailed
+to one directory and (by default) to markdown files:
+
+```no_run
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+use misanthropic::{
+    Client, Prompt,
+    prompt::message::Role,
+    tool::{Memory, Tool, memory::FsMemoryBackend},
+};
+
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+let mut memory = FsMemoryBackend::new("./memories").await?; // markdown-jailed
+
+let mut chat = Prompt::default()
+    .add_tool(Memory::latest())                       // predefined, no schema
+    .add_message((Role::User, "Check your notes, then help me."))?;
+
+// Drive the tool loop: execute each memory `tool_use` locally and feed the
+// result back, until a turn arrives with no tool call — that one is the answer.
+let answer = loop {
+    let message = client.message(&chat).await?;
+    let Some(call) = message.tool_use() else { break message };
+    let call = call.clone();
+    chat.push_message(message)?;
+    let result = memory.call(call).await;             // typed dispatch
+    chat.push_message(result)?;
+};
+println!("{}", answer.inner.content);
+# Ok(())
+# }
+```
+
+The model's `tool_use` input deserializes into a typed `memory::Command`
+(`view`/`create`/`str_replace`/`insert`/`delete`/`rename`, plus an `Unknown`
+catch-all so a newer memory version still round-trips). `FsMemoryBackend`
+handles all of that for you; implement `Tool` yourself for a different store.
 
 ## Using `json!` instead of `Prompt`
 

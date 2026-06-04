@@ -233,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prompt = prompt.add_tool(definition);
     }
     prompt = prompt
-        .add_server_tool(ServerTool::tool_search_regex())
+        .add_tool(ServerTool::tool_search_regex())
         .defer_tools();
 
     // Drive the conversation: resume on `pause_turn` (a server-side search in

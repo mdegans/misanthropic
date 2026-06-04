@@ -42,6 +42,14 @@ mod notepad;
 #[cfg(feature = "notepad")]
 pub use notepad::Notepad;
 
+/// Client-side execution of the [`memory`](ServerTool::Memory) tool: the typed
+/// [`Command`](memory::Command) vocabulary and the [`FsMemoryBackend`]
+/// reference implementation.
+///
+/// [`FsMemoryBackend`]: memory::FsMemoryBackend
+#[cfg(feature = "memory")]
+pub mod memory;
+
 /// Constrain the [`Assistant`]'s choice of [`MethodDef`]s.
 ///
 /// # Note:
@@ -142,22 +150,27 @@ impl Choice {
     }
 }
 
-/// A server-side (Anthropic-executed) tool, as opposed to a custom
-/// [`MethodDef`] you run yourself via [`Tool::call`].
+/// A **predefined** tool, identified on the wire by a versioned `type` rather
+/// than a schema you supply — as opposed to a custom [`MethodDef`]. Add one
+/// with [`Prompt::add_tool`] (it takes anything [`Into<ToolDef>`], so these
+/// drop in next to custom tools).
 ///
-/// The API runs these internally: you add one to the prompt's tools array (see
-/// [`Prompt::add_server_tool`]) and receive a [`Block::ServerToolUse`] plus the
-/// tool's result block *in the response* — you never handle execution and never
-/// return a [`tool::Result`]. Long-running server tools may pause the turn; see
-/// [`StopReason::PauseTurn`].
+/// Most are **server-executed**: the API runs them internally and returns a
+/// [`Block::ServerToolUse`] plus the tool's result block *in the response* —
+/// you never handle execution and never return a [`tool::Result`]. Long-running
+/// ones may pause the turn; see [`StopReason::PauseTurn`]. The exception is the
+/// memory tool (the `Memory` variant, behind the `memory` feature), which is
+/// **client-executed**: the API defines it but the model emits an ordinary
+/// [`Use`] you run yourself, exactly like a custom tool.
 ///
 /// Each variant's wire `type` is **versioned** (e.g. `web_search_20250305`);
 /// new versions become new variants.
 ///
+/// [`Prompt::add_tool`]: crate::Prompt::add_tool
+/// [`Into<ToolDef>`]: ToolDef
 /// [`Block::ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
 /// [`tool::Result`]: Result
 /// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
-/// [`Prompt::add_server_tool`]: crate::Prompt::add_server_tool
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -214,6 +227,21 @@ pub enum ServerTool {
     /// [`code_execution_20260120`]: AllowedCaller::code_execution_20260120
     #[serde(rename = "code_execution_20260120")]
     CodeExecution(CodeExecution),
+    /// Anthropic's [memory tool] (`memory_20250818`) — a *client-side*
+    /// predefined tool. The API defines it but does **not** run it: the model
+    /// emits an ordinary [`Use`] (`name: "memory"`) whose input is a
+    /// [`memory::Command`], and *you* execute it (e.g. with
+    /// [`memory::FsMemoryBackend`]) and answer with a [`tool::Result`] — just
+    /// like a custom tool. So it *defines* like a server tool and *executes*
+    /// like a custom one. See [`Memory`].
+    ///
+    /// [memory tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool>
+    /// [`memory::Command`]: crate::tool::memory::Command
+    /// [`memory::FsMemoryBackend`]: crate::tool::memory::FsMemoryBackend
+    /// [`tool::Result`]: Result
+    #[cfg(feature = "memory")]
+    #[serde(rename = "memory_20250818")]
+    Memory(Memory),
 }
 
 impl ServerTool {
@@ -255,6 +283,14 @@ impl ServerTool {
         Self::CodeExecution(CodeExecution::default())
     }
 
+    /// The [memory](Self::Memory) tool with default configuration. A
+    /// *client-side* tool: you execute its [`Command`](memory::Command)s
+    /// yourself (the API does not run it). See [`Memory`].
+    #[cfg(feature = "memory")]
+    pub fn memory() -> Self {
+        Self::Memory(Memory::default())
+    }
+
     /// Whether this server tool carries a cache breakpoint.
     pub fn is_cached(&self) -> bool {
         self.cache_control().is_some()
@@ -268,6 +304,8 @@ impl ServerTool {
             Self::ToolSearchRegex(c) => c.cache_control.as_ref(),
             Self::ToolSearchBm25(c) => c.cache_control.as_ref(),
             Self::CodeExecution(c) => c.cache_control.as_ref(),
+            #[cfg(feature = "memory")]
+            Self::Memory(c) => c.cache_control.as_ref(),
         }
     }
 
@@ -282,6 +320,8 @@ impl ServerTool {
             Self::ToolSearchRegex(c) => c.cache_control = Some(cache_control),
             Self::ToolSearchBm25(c) => c.cache_control = Some(cache_control),
             Self::CodeExecution(c) => c.cache_control = Some(cache_control),
+            #[cfg(feature = "memory")]
+            Self::Memory(c) => c.cache_control = Some(cache_control),
         }
     }
 }
@@ -417,6 +457,57 @@ pub struct CodeExecution {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
+/// Configuration for Anthropic's [memory tool] ([`ServerTool::Memory`]) — a
+/// *client-side* predefined tool. Added by versioned name with no schema of
+/// your own (construct via [`Memory::latest`]); the model then emits ordinary
+/// [`Use`] blocks (`name: "memory"`) carrying a [`memory::Command`] that you
+/// execute and answer with a [`tool::Result`]. See [`memory::FsMemoryBackend`]
+/// for a ready-made executor.
+///
+/// The only knob is an optional cache breakpoint. The wire `name` (`"memory"`)
+/// is fixed and supplied automatically.
+///
+/// [memory tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool>
+/// [`memory::Command`]: crate::tool::memory::Command
+/// [`memory::FsMemoryBackend`]: crate::tool::memory::FsMemoryBackend
+/// [`tool::Result`]: Result
+#[cfg(feature = "memory")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct Memory {
+    /// The fixed tool `name` (`"memory"`), supplied automatically by
+    /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: MemoryName,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
+#[cfg(feature = "memory")]
+impl Memory {
+    /// The newest memory-tool version this crate supports (`memory_20250818`),
+    /// with default configuration. Named `latest` because Anthropic versions
+    /// the tool: when a newer one ships it becomes a new [`ServerTool`] variant
+    /// and this points at it.
+    pub fn latest() -> Self {
+        Self::default()
+    }
+}
+
+/// Bridges the [`Memory`] front-door type straight into a [`ToolDef`] so
+/// [`Prompt::add_tool`] accepts it (`Into` is not transitive, so
+/// `Memory: Into<ServerTool>` alone would not give `Memory: Into<ToolDef>`).
+#[cfg(feature = "memory")]
+impl From<Memory> for ToolDef {
+    fn from(memory: Memory) -> Self {
+        ToolDef::Server(ServerTool::Memory(memory))
+    }
+}
+
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
 /// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
@@ -480,6 +571,11 @@ tool_name_marker!(
     /// The fixed `"code_execution"` name for [`CodeExecution`].
     CodeExecutionName => "code_execution"
 );
+#[cfg(feature = "memory")]
+tool_name_marker!(
+    /// The fixed `"memory"` name for [`Memory`].
+    MemoryName => "memory"
+);
 
 /// Approximate user location used to bias [`WebSearch`] results. Serializes
 /// with `type: "approximate"`.
@@ -507,12 +603,13 @@ impl UserLocation {}
 /// execute yourself via [`Tool::call`], or a [`ServerTool`] the API runs
 /// internally.
 ///
-/// Distinguished on the wire by the presence of a `type` field — server tools
-/// carry a versioned one, custom tools do not. Most users never name this type:
-/// [`Prompt::add_tool`] and [`Prompt::add_server_tool`] wrap the right variant.
+/// Distinguished on the wire by the presence of a `type` field — predefined
+/// (server) tools carry a versioned one, custom tools do not. Most users never
+/// name this type: [`Prompt::add_tool`] takes anything [`Into`] a `ToolDef`
+/// (a [`MethodDef`], a [`ServerTool`], or — with the `memory` feature — a
+/// `Memory`) and wraps the right variant.
 ///
 /// [`Prompt::add_tool`]: crate::Prompt::add_tool
-/// [`Prompt::add_server_tool`]: crate::Prompt::add_server_tool
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -1784,7 +1881,7 @@ mod tests {
     fn prompt_mixes_custom_and_server_tools_in_tools_array() {
         let prompt = crate::Prompt::default()
             .add_tool(MethodDef::simple("ping", "Ping a server."))
-            .add_server_tool(ServerTool::web_search(WebSearch::default()));
+            .add_tool(ServerTool::web_search(WebSearch::default()));
 
         let json = serde_json::to_value(&prompt).unwrap();
         let tools = json["tools"].as_array().unwrap();

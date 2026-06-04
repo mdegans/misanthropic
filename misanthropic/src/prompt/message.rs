@@ -1283,7 +1283,7 @@ impl Block {
     // TODO: rename this to `text` which is more consistent with the other
     // constructors? Or the other way around?
     #[cfg(not(feature = "langsan"))]
-    pub const fn const_text(text: &str) -> Self {
+    pub const fn const_text(text: &'static str) -> Self {
         Self::Text {
             text: std::borrow::Cow::Borrowed(text),
             citations: None,
@@ -2341,6 +2341,25 @@ mod tests {
                 "srvtoolu_01EnSeFfRxcsNTUgLjYHD5XG"
             ))
         );
+    }
+
+    #[test]
+    fn memory_tool_use_block_roundtrip() {
+        // The `memory` tool is *client-executed*: it comes back as an ordinary
+        // `tool_use` (not `server_tool_use`) carrying a `direct` caller — both
+        // verified here against bytes captured live on Haiku 4.5. See
+        // `test/data/README.md`.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/memory_tool_use.json"
+        ));
+        let Block::ToolUse { call } = &block else {
+            panic!(
+                "expected ToolUse (memory is client-executed, not a server tool)"
+            );
+        };
+        assert_eq!(call.name, "memory");
+        assert_eq!(call.caller, Some(crate::tool::Caller::direct()));
+        assert_eq!(call.input["command"], "view");
     }
 
     #[test]

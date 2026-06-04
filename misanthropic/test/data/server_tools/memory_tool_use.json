@@ -1,0 +1,12 @@
+{
+  "type": "tool_use",
+  "id": "toolu_01G3feD55WfWCeRxGAk5EuvC",
+  "name": "memory",
+  "input": {
+    "command": "view",
+    "path": "/memories"
+  },
+  "caller": {
+    "type": "direct"
+  }
+}

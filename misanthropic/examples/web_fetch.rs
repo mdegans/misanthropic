@@ -69,11 +69,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prompt = Prompt::default()
         .model(AnthropicModel::Haiku45)
         .add_message((Role::User, question))?
-        .add_server_tool(ServerTool::web_search(WebSearch {
+        .add_tool(ServerTool::web_search(WebSearch {
             max_uses: Some(3),
             ..Default::default()
         }))
-        .add_server_tool(ServerTool::web_fetch(WebFetch {
+        .add_tool(ServerTool::web_fetch(WebFetch {
             max_uses: Some(5),
             citations: Some(CitationsConfig { enabled: true }),
             ..Default::default()

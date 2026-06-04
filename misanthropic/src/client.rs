@@ -1519,7 +1519,7 @@ mod tests {
                  Cite the page you used.",
             ))
             .unwrap()
-            .add_server_tool(ServerTool::web_search(WebSearch {
+            .add_tool(ServerTool::web_search(WebSearch {
                 max_uses: Some(1),
                 allowed_domains: Some(vec!["anthropic.com".into()]),
                 ..Default::default()
@@ -1630,7 +1630,7 @@ mod tests {
 
         let mut prompt = Prompt::default()
             .model(crate::AnthropicModel::Sonnet46)
-            .add_server_tool(ServerTool::code_execution())
+            .add_tool(ServerTool::code_execution())
             .add_tool(query_sales)
             .add_message((
                 Role::User,
@@ -1742,7 +1742,7 @@ mod tests {
                 ),
             ))
             .unwrap()
-            .add_server_tool(ServerTool::web_fetch(WebFetch {
+            .add_tool(ServerTool::web_fetch(WebFetch {
                 max_uses: Some(2),
                 allowed_domains: Some(vec![
                     "rust-lang.org".into(),

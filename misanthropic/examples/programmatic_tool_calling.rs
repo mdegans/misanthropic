@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut prompt = Prompt::default()
         .model(AnthropicModel::Sonnet46)
-        .add_server_tool(ServerTool::code_execution())
+        .add_tool(ServerTool::code_execution())
         .add_tool(query_sales_tool)
         .add_message((
             Role::User,

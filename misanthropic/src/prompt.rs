@@ -827,14 +827,25 @@ impl Prompt {
         Ok(self)
     }
 
-    /// Add a custom tool to the request.
+    /// Add a tool to the request — anything [`Into`] a [`ToolDef`]: a custom
+    /// [`MethodDef`], a [`ServerTool`], or (with the `memory` feature) a memory
+    /// tool. The right [`ToolDef`] variant is chosen for you.
+    ///
+    /// ```
+    /// # use misanthropic::{Prompt, tool::{MethodDef, ServerTool}};
+    /// let prompt = Prompt::default()
+    ///     .add_tool(MethodDef::simple("get_weather", "Get the weather."))
+    ///     .add_tool(ServerTool::web_search(Default::default()));
+    /// ```
+    ///
+    /// [`ServerTool`]: crate::tool::ServerTool
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<MethodDef>,
+        T: Into<tool::ToolDef>,
     {
         self.methods
             .get_or_insert_with(Default::default)
-            .push(tool::ToolDef::Custom(tool.into()));
+            .push(tool.into());
         self
     }
 
@@ -901,23 +912,6 @@ impl Prompt {
         self.add_tools(tool.definitions())
     }
 
-    /// Add a [`ServerTool`] (Anthropic-executed, e.g.
-    /// [`web_search`](tool::ServerTool::web_search)) to the request. Unlike a
-    /// custom tool, the API runs it internally and returns its
-    /// [`Block::ServerToolUse`] and result blocks in the response.
-    ///
-    /// [`ServerTool`]: crate::tool::ServerTool
-    /// [`Block::ServerToolUse`]: message::Block::ServerToolUse
-    pub fn add_server_tool<S>(mut self, server_tool: S) -> Self
-    where
-        S: Into<tool::ServerTool>,
-    {
-        self.methods
-            .get_or_insert_with(Default::default)
-            .push(tool::ToolDef::Server(server_tool.into()));
-        self
-    }
-
     /// Mark every custom tool's [`MethodDef`] as
     /// [`defer_loading`](MethodDef::defer_loading), so the API loads their
     /// schemas only when the model discovers them through the [tool-search
@@ -932,7 +926,7 @@ impl Prompt {
     /// # use misanthropic::{Prompt, tool::{MethodDef, ServerTool}};
     /// let prompt = Prompt::default()
     ///     .add_tool(MethodDef::simple("get_weather", "Get the weather."))
-    ///     .add_server_tool(ServerTool::tool_search_regex())
+    ///     .add_tool(ServerTool::tool_search_regex())
     ///     .defer_tools();
     /// ```
     pub fn defer_tools(mut self) -> Self {
@@ -1574,7 +1568,7 @@ mod tests {
         let prompt = Prompt::default()
             .add_tool(crate::tool::MethodDef::simple("a", "Tool A."))
             .add_tool(crate::tool::MethodDef::simple("b", "Tool B."))
-            .add_server_tool(crate::tool::ServerTool::tool_search_regex())
+            .add_tool(crate::tool::ServerTool::tool_search_regex())
             .defer_tools();
 
         let methods = prompt.methods.as_ref().unwrap();
