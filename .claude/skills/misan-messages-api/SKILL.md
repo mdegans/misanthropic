@@ -419,7 +419,28 @@ match client.message(prompt).await {
 **`AnthropicError` variants:** `InvalidRequest` (400), `Authentication`
 (401), `Permission` (403), `NotFound` (404), `RequestTooLarge` (413),
 `RateLimit` (429), `API` (500), `Overloaded` (529), `Timeout`, `Billing`,
-`Unknown`.
+`Unknown`. Exhaustive `match` (doc-tested drift guard for the prose above):
+
+```rust
+use misanthropic::client::AnthropicError;
+
+# #[allow(unused_variables)]
+# fn document(err: AnthropicError) {
+match err {
+    AnthropicError::InvalidRequest { .. } => {}    // 400
+    AnthropicError::Authentication { .. } => {}    // 401
+    AnthropicError::Permission { .. } => {}        // 403
+    AnthropicError::NotFound { .. } => {}          // 404
+    AnthropicError::RequestTooLarge { .. } => {}   // 413
+    AnthropicError::RateLimit { .. } => {}         // 429 (has retry_after)
+    AnthropicError::API { .. } => {}               // 500
+    AnthropicError::Overloaded { .. } => {}        // 529 (has retry_after)
+    AnthropicError::Timeout { .. } => {}
+    AnthropicError::Billing { .. } => {}
+    AnthropicError::Unknown { .. } => {}
+}
+# }
+```
 
 `RateLimit` and `Overloaded` carry a `retry_after: Option<u64>` field
 populated from the `retry-after` response header. Prefer the
@@ -449,11 +470,30 @@ response::Message
 │       └── content: Content  — Display, iterable over Blocks
 ├── model: model::Id
 ├── stop_reason: Option<StopReason>
-│   └── EndTurn | MaxTokens | StopSequence | ToolUse
+│   └── EndTurn | MaxTokens | StopSequence | ToolUse | PauseTurn | Refusal
 ├── stop_sequence: Option<Cow<str>>
 └── usage: Usage
     ├── input_tokens: u64
     └── output_tokens: u64
+```
+
+`StopReason` in full, as an exhaustive `match` (doc-tested drift guard — a new
+variant breaks the build, since the tree above is prose and can't be):
+
+```rust
+use misanthropic::response::StopReason;
+
+# #[allow(unused_variables)]
+# fn document(reason: StopReason) {
+match reason {
+    StopReason::EndTurn => {}       // natural stopping point
+    StopReason::MaxTokens => {}     // hit max_tokens
+    StopReason::StopSequence => {}  // a stop sequence was generated
+    StopReason::ToolUse => {}       // wants a tool call — see `tool_use()`
+    StopReason::PauseTurn => {}     // server tool paused; resend to continue
+    StopReason::Refusal => {}       // model declined (safety)
+}
+# }
 ```
 
 ## Examples
