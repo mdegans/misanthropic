@@ -141,6 +141,15 @@ impl Message<'_> {
         self.content.last()?.tool_use()
     }
 
+    /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
+    /// [`Block::ServerToolUse`] (a server tool the API ran itself).
+    pub fn server_tool_use(&self) -> Option<&crate::tool::Use<'_>> {
+        match self.content.last()? {
+            Block::ServerToolUse { call } => Some(call),
+            _ => None,
+        }
+    }
+
     /// Returns Some([`tool::Result`]) if the first [`Content`] [`Block`] is a
     /// [`Block::ToolResult`].
     pub fn tool_result(&self) -> Option<&crate::tool::Result<'_>> {
@@ -1443,6 +1452,9 @@ impl<'a> Block<'a> {
             }
             (
                 Block::ToolUse {
+                    call: tool::Use { input, .. },
+                }
+                | Block::ServerToolUse {
                     call: tool::Use { input, .. },
                 },
                 Delta::Json { partial_json },

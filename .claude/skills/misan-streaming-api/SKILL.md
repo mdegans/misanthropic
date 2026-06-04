@@ -190,6 +190,7 @@ match event {
     // Synthetic — assembled by FilterExt, never sent by the API:
     Event::Message { message } => {}                   // via with_message()
     Event::ToolUse { tool_use } => {}                  // via with_tool_use(); tool::Use
+    Event::ServerToolUse { tool_use } => {}            // via with_tool_use(); server tool (e.g. web_search)
 }
 # }
 ```

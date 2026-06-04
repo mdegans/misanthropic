@@ -1302,6 +1302,32 @@ impl<'a> Prompt<'a> {
                     });
                 }
             }
+            #[cfg_attr(not(feature = "partial-eq"), allow(unused_variables))]
+            stream::Event::ServerToolUse { tool_use } => {
+                // Like `ToolUse`, but the final block is a `ServerToolUse`. The
+                // API ran it; we just record the assembled call.
+                if let Some(last) = self.messages.last_mut() {
+                    // Idempotent when `with_tool_use` + `with_message` both run.
+                    if let Some(existing) = last.server_tool_use() {
+                        if existing.id == tool_use.id {
+                            return Ok(());
+                        } else {
+                            return Err(ApplyEventError::UnexpectedMessage {
+                                event: Event::ServerToolUse { tool_use },
+                                last: last.clone().into_static(),
+                            });
+                        }
+                    } else {
+                        last.content.push(message::Block::ServerToolUse {
+                            call: tool_use,
+                        });
+                    }
+                } else {
+                    return Err(ApplyEventError::EmptyPrompt {
+                        event: Event::ServerToolUse { tool_use },
+                    });
+                }
+            }
             stream::Event::Ping
             | stream::Event::MessageStop
             | stream::Event::MessageDelta { .. } => {

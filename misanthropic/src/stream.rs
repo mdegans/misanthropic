@@ -72,6 +72,19 @@ pub enum Event {
         /// The tool use.
         tool_use: tool::Use<'static>,
     },
+    /// Complete *server* [`tool::Use`] — a [`ServerToolUse`] block (e.g.
+    /// [`web_search`]) the API ran itself. Assembled by
+    /// [`FilterExt::with_tool_use`], not the API. Distinct from
+    /// [`ToolUse`](Event::ToolUse) so callers can tell that this call was
+    /// executed server-side and needs no [`tool::Result`].
+    ///
+    /// [`ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
+    /// [`web_search`]: crate::tool::ServerTool::web_search
+    /// [`tool::Result`]: crate::tool::Result
+    ServerToolUse {
+        /// The server tool use.
+        tool_use: tool::Use<'static>,
+    },
 }
 
 /// Internal enum for the API result so we don't have to add an error variant to
@@ -617,6 +630,23 @@ pub trait FilterExt:
                             });
                         }
                     }
+                    Ok(Event::ServerToolUse { tool_use }) => {
+                        if let Some(message) = message.as_mut() {
+                            // No `From<tool::Use>` shortcut here: that builds a
+                            // `Block::ToolUse`. A server tool use is its own
+                            // block.
+                            message.inner.inner.content.push(
+                                crate::prompt::message::Block::ServerToolUse {
+                                    call: tool_use.clone(),
+                                },
+                            );
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Server tool use received before message start.".into(),
+                                delta: None,
+                            });
+                        }
+                    }
                     Ok(Event::MessageDelta { delta, usage }) => {
                         if let Some(message) = message.as_mut() {
                             message.apply_delta(delta.clone());
@@ -686,6 +716,9 @@ pub trait FilterExt:
         async_stream::stream! {
             let stream = self;
             let mut call: Option<tool::Use> = None;
+            // Whether the block being assembled is a server tool use, so we
+            // emit the matching `Event` variant at the block's end.
+            let mut is_server = false;
             let mut input = String::new();
 
             pin_mut!(stream);
@@ -696,6 +729,13 @@ pub trait FilterExt:
                         content_block: Block::ToolUse { call: empty }, .. }) => {
                         input.clear();
                         call = Some(empty);
+                        is_server = false;
+                    }
+                    Ok(Event::ContentBlockStart {
+                        content_block: Block::ServerToolUse { call: empty }, .. }) => {
+                        input.clear();
+                        call = Some(empty);
+                        is_server = true;
                     }
                     Ok(Event::ContentBlockDelta { delta: Delta::Json { partial_json }, .. }) => {
                         input.push_str(&partial_json);
@@ -713,7 +753,11 @@ pub trait FilterExt:
                                 }
                             };
 
-                            yield Ok(Event::ToolUse { tool_use: call });
+                            if is_server {
+                                yield Ok(Event::ServerToolUse { tool_use: call });
+                            } else {
+                                yield Ok(Event::ToolUse { tool_use: call });
+                            }
                         }
                     }
                     event => yield event,
@@ -1313,5 +1357,101 @@ pub(crate) mod tests {
         } else {
             panic!("No tool use assembled.");
         }
+    }
+
+    // A real `web_fetch` server tool use, streamed (captured from the live API
+    // via `curl`): an empty `server_tool_use` start, then `input_json_delta`s
+    // spelling out `{"url": "https://www.rust-lang.org"}`, then a stop.
+    const SERVER_TOOL_USE_STREAM: &str = concat!(
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"server_tool_use\",\"id\":\"srvtoolu_012jyo3ThP6CEiKLRKJUrBXA\",\"name\":\"web_fetch\",\"input\":{}}}\n",
+        "\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"url\"}}\n",
+        "\n",
+        "event: content_block_delta\n",
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"\\\": \\\"https://www.rust-lang.org\\\"}\"}}\n",
+        "\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":0}\n",
+        "\n",
+    );
+
+    #[tokio::test]
+    async fn test_stream_with_server_tool_use() {
+        let stream = mock_stream(SERVER_TOOL_USE_STREAM).with_tool_use();
+        let mut server_tool_use = None;
+
+        pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            dbg!(&event);
+            match event {
+                // A server tool use must NOT come back as a plain `ToolUse`.
+                Ok(Event::ToolUse { .. }) => {
+                    panic!("server tool use mis-assembled as a client ToolUse")
+                }
+                Ok(Event::ServerToolUse { tool_use: new }) => {
+                    server_tool_use = Some(new);
+                    break;
+                }
+                _ => {}
+            }
+        }
+
+        let server_tool_use =
+            server_tool_use.expect("no server tool use assembled");
+        assert_eq!(
+            serde_json::to_value(server_tool_use).unwrap(),
+            serde_json::json!({
+                "id": "srvtoolu_012jyo3ThP6CEiKLRKJUrBXA",
+                "name": "web_fetch",
+                "input": { "url": "https://www.rust-lang.org" }
+            })
+        );
+    }
+
+    // The server-tool *result* arrives mid-stream as a `content_block_start`
+    // carrying the whole block inline (no deltas) — shape captured verbatim
+    // from the live API via `curl`. `with_tool_use` must pass it through
+    // untouched (it only intercepts tool-use *calls*), so it reaches
+    // `with_message` assembly as a `Block::WebFetchToolResult`.
+    const WEB_FETCH_RESULT_STREAM: &str = concat!(
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":2,\"content_block\":{\"type\":\"web_fetch_tool_result\",\"tool_use_id\":\"srvtoolu_012jyo3ThP6CEiKLRKJUrBXA\",\"content\":{\"type\":\"web_fetch_result\",\"url\":\"https://www.rust-lang.org\",\"retrieved_at\":\"2026-06-04T11:50:09.370326\",\"content\":{\"type\":\"document\",\"source\":{\"type\":\"text\",\"media_type\":\"text/plain\",\"data\":\"Rust is a language...\"}}}}}\n",
+        "\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":2}\n",
+        "\n",
+    );
+
+    #[tokio::test]
+    async fn test_stream_web_fetch_result_passes_through() {
+        use crate::prompt::message::{Block, WebFetchToolResultContent};
+
+        let stream = mock_stream(WEB_FETCH_RESULT_STREAM).with_tool_use();
+        let mut seen = false;
+
+        pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::ContentBlockStart {
+                content_block:
+                    Block::WebFetchToolResult {
+                        tool_use_id,
+                        content,
+                    },
+                ..
+            }) = event
+            {
+                assert_eq!(tool_use_id, "srvtoolu_012jyo3ThP6CEiKLRKJUrBXA");
+                let WebFetchToolResultContent::Result { url, .. } = content
+                else {
+                    panic!("expected a successful fetch result");
+                };
+                assert_eq!(url, "https://www.rust-lang.org");
+                seen = true;
+            }
+        }
+
+        assert!(seen, "web_fetch_tool_result did not survive with_tool_use");
     }
 }
