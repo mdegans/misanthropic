@@ -1,0 +1,18 @@
+{
+  "type": "web_fetch_tool_result",
+  "tool_use_id": "srvtoolu_02",
+  "content": {
+    "type": "web_fetch_result",
+    "url": "https://example.com/paper.pdf",
+    "content": {
+      "type": "document",
+      "source": {
+        "type": "base64",
+        "media_type": "application/pdf",
+        "data": "JVBERi0xLjQK"
+      },
+      "citations": { "enabled": true }
+    },
+    "retrieved_at": "2025-08-25T10:30:02Z"
+  }
+}

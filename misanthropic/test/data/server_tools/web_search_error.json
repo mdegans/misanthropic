@@ -1,0 +1,8 @@
+{
+  "type": "web_search_tool_result",
+  "tool_use_id": "srvtoolu_01A2B3",
+  "content": {
+    "type": "web_search_tool_result_error",
+    "error_code": "max_uses_exceeded"
+  }
+}

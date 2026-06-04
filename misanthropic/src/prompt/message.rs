@@ -2235,266 +2235,166 @@ mod tests {
 
     use super::*;
 
+    // The server-tool block round-trips replay captured wire fixtures from
+    // `test/data/server_tools/` through `utils::roundtrip`, which asserts an
+    // exact serialize-back. See `test/data/README.md` for the capture
+    // discipline and per-fixture provenance.
+
     #[test]
     fn server_tool_use_block_roundtrip() {
-        let json = serde_json::json!({
-            "type": "server_tool_use",
-            "id": "srvtoolu_01A2B3",
-            "name": "web_search",
-            "input": { "query": "latest anthropic news" }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/server_tool_use.json"
+        ));
         assert!(block.is_server_tool_use());
-        match &block {
-            Block::ServerToolUse { call } => {
-                assert_eq!(call.id, "srvtoolu_01A2B3");
-                assert_eq!(call.name, "web_search");
-            }
-            _ => panic!("expected ServerToolUse"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let Block::ServerToolUse { call } = &block else {
+            panic!("expected ServerToolUse");
+        };
+        assert_eq!(call.id, "srvtoolu_01A2B3");
+        assert_eq!(call.name, "web_search");
     }
 
     #[test]
     fn web_search_tool_result_block_roundtrip() {
-        let json = serde_json::json!({
-            "type": "web_search_tool_result",
-            "tool_use_id": "srvtoolu_01A2B3",
-            "content": [{
-                "type": "web_search_result",
-                "url": "https://anthropic.com/news",
-                "title": "News",
-                "encrypted_content": "abc123"
-            }]
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::WebSearchToolResult {
-                tool_use_id,
-                content,
-            } => {
-                assert_eq!(tool_use_id, "srvtoolu_01A2B3");
-                assert!(matches!(
-                    content,
-                    WebSearchToolResultContent::Results(r) if r.len() == 1
-                ));
-            }
-            _ => panic!("expected WebSearchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/web_search_result.json"
+        ));
+        let Block::WebSearchToolResult {
+            tool_use_id,
+            content,
+        } = &block
+        else {
+            panic!("expected WebSearchToolResult");
+        };
+        assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+        assert!(matches!(
+            content,
+            WebSearchToolResultContent::Results(r) if r.len() == 1
+        ));
     }
 
     #[test]
     fn web_search_tool_result_error_roundtrip() {
-        let json = serde_json::json!({
-            "type": "web_search_tool_result",
-            "tool_use_id": "srvtoolu_01A2B3",
-            "content": {
-                "type": "web_search_tool_result_error",
-                "error_code": "max_uses_exceeded"
-            }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::WebSearchToolResult { content, .. } => {
-                assert!(matches!(
-                    content,
-                    WebSearchToolResultContent::Error(e)
-                        if e.error_code == "max_uses_exceeded"
-                ));
-            }
-            _ => panic!("expected WebSearchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/web_search_error.json"
+        ));
+        let Block::WebSearchToolResult { content, .. } = &block else {
+            panic!("expected WebSearchToolResult");
+        };
+        assert!(matches!(
+            content,
+            WebSearchToolResultContent::Error(e)
+                if e.error_code == "max_uses_exceeded"
+        ));
     }
 
     #[test]
     fn web_fetch_tool_result_block_roundtrip() {
-        // The success shape from the docs: a text document with citations on.
-        let json = serde_json::json!({
-            "type": "web_fetch_tool_result",
-            "tool_use_id": "srvtoolu_01A2B3",
-            "content": {
-                "type": "web_fetch_result",
-                "url": "https://example.com/article",
-                "content": {
-                    "type": "document",
-                    "source": {
-                        "type": "text",
-                        "media_type": "text/plain",
-                        "data": "Full text content of the article..."
-                    },
-                    "title": "Article Title",
-                    "citations": { "enabled": true }
-                },
-                "retrieved_at": "2025-08-25T10:30:00Z"
-            }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::WebFetchToolResult {
-                tool_use_id,
-                content,
-            } => {
-                assert_eq!(tool_use_id, "srvtoolu_01A2B3");
-                let WebFetchToolResultContent::Result {
-                    url,
-                    content,
-                    retrieved_at,
-                } = content
-                else {
-                    panic!("expected a successful fetch");
-                };
-                assert_eq!(url, "https://example.com/article");
-                assert_eq!(retrieved_at, "2025-08-25T10:30:00Z");
-                assert_eq!(content.title.as_deref(), Some("Article Title"));
-                assert!(matches!(
-                    content.source,
-                    DocumentSource::PlainText { .. }
-                ));
-            }
-            _ => panic!("expected WebFetchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/web_fetch_result.json"
+        ));
+        let Block::WebFetchToolResult {
+            tool_use_id,
+            content,
+        } = &block
+        else {
+            panic!("expected WebFetchToolResult");
+        };
+        assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+        let WebFetchToolResultContent::Result {
+            url,
+            content,
+            retrieved_at,
+        } = content
+        else {
+            panic!("expected a successful fetch");
+        };
+        assert_eq!(url, "https://example.com/article");
+        assert_eq!(retrieved_at, "2025-08-25T10:30:00Z");
+        assert_eq!(content.title.as_deref(), Some("Article Title"));
+        assert!(matches!(content.source, DocumentSource::PlainText { .. }));
     }
 
     #[test]
     fn web_fetch_tool_result_pdf_roundtrip() {
         // PDFs come back as base64 application/pdf with no title.
-        let json = serde_json::json!({
-            "type": "web_fetch_tool_result",
-            "tool_use_id": "srvtoolu_02",
-            "content": {
-                "type": "web_fetch_result",
-                "url": "https://example.com/paper.pdf",
-                "content": {
-                    "type": "document",
-                    "source": {
-                        "type": "base64",
-                        "media_type": "application/pdf",
-                        "data": "JVBERi0xLjQK"
-                    },
-                    "citations": { "enabled": true }
-                },
-                "retrieved_at": "2025-08-25T10:30:02Z"
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/web_fetch_pdf.json"
+        ));
+        let Block::WebFetchToolResult { content, .. } = &block else {
+            panic!("expected WebFetchToolResult");
+        };
+        let WebFetchToolResultContent::Result { content, .. } = content else {
+            panic!("expected a successful fetch");
+        };
+        assert!(content.title.is_none());
+        assert!(matches!(
+            content.source,
+            DocumentSource::Base64 {
+                media_type: DocumentMediaType::Pdf,
+                ..
             }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::WebFetchToolResult { content, .. } => {
-                let WebFetchToolResultContent::Result { content, .. } = content
-                else {
-                    panic!("expected a successful fetch");
-                };
-                assert!(content.title.is_none());
-                assert!(matches!(
-                    content.source,
-                    DocumentSource::Base64 {
-                        media_type: DocumentMediaType::Pdf,
-                        ..
-                    }
-                ));
-            }
-            _ => panic!("expected WebFetchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        ));
     }
 
     #[test]
     fn web_fetch_tool_result_error_roundtrip() {
-        let json = serde_json::json!({
-            "type": "web_fetch_tool_result",
-            "tool_use_id": "srvtoolu_a93jad",
-            "content": {
-                "type": "web_fetch_tool_result_error",
-                "error_code": "url_not_accessible"
-            }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::WebFetchToolResult { content, .. } => {
-                assert!(matches!(
-                    content,
-                    WebFetchToolResultContent::Error { error_code }
-                        if error_code == "url_not_accessible"
-                ));
-            }
-            _ => panic!("expected WebFetchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/web_fetch_error.json"
+        ));
+        let Block::WebFetchToolResult { content, .. } = &block else {
+            panic!("expected WebFetchToolResult");
+        };
+        assert!(matches!(
+            content,
+            WebFetchToolResultContent::Error { error_code }
+                if error_code == "url_not_accessible"
+        ));
     }
 
     #[test]
     fn tool_search_tool_result_block_roundtrip() {
-        // The success shape from the docs: a `server_tool_use` answered by a
-        // `tool_search_tool_result` carrying `tool_reference`s.
-        let json = serde_json::json!({
-            "type": "tool_search_tool_result",
-            "tool_use_id": "srvtoolu_01ABC123",
-            "content": {
-                "type": "tool_search_tool_search_result",
-                "tool_references": [
-                    { "type": "tool_reference", "tool_name": "get_weather" }
-                ]
-            }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::ToolSearchToolResult {
-                tool_use_id,
-                content,
-            } => {
-                assert_eq!(tool_use_id, "srvtoolu_01ABC123");
-                let ToolSearchToolResultContent::Results { tool_references } =
-                    content
-                else {
-                    panic!("expected Results");
-                };
-                assert_eq!(tool_references[0].tool_name, "get_weather");
-            }
-            _ => panic!("expected ToolSearchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/tool_search_result.json"
+        ));
+        let Block::ToolSearchToolResult {
+            tool_use_id,
+            content,
+        } = &block
+        else {
+            panic!("expected ToolSearchToolResult");
+        };
+        assert_eq!(tool_use_id, "srvtoolu_01ABC123");
+        let ToolSearchToolResultContent::Results { tool_references } = content
+        else {
+            panic!("expected Results");
+        };
+        assert_eq!(tool_references[0].tool_name, "get_weather");
     }
 
     #[test]
     fn tool_search_tool_result_error_roundtrip() {
-        let json = serde_json::json!({
-            "type": "tool_search_tool_result",
-            "tool_use_id": "srvtoolu_01ABC123",
-            "content": {
-                "type": "tool_search_tool_result_error",
-                "error_code": "invalid_pattern"
-            }
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::ToolSearchToolResult { content, .. } => {
-                assert!(matches!(
-                    content,
-                    ToolSearchToolResultContent::Error { error_code }
-                        if error_code == "invalid_pattern"
-                ));
-            }
-            _ => panic!("expected ToolSearchToolResult"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/tool_search_error.json"
+        ));
+        let Block::ToolSearchToolResult { content, .. } = &block else {
+            panic!("expected ToolSearchToolResult");
+        };
+        assert!(matches!(
+            content,
+            ToolSearchToolResultContent::Error { error_code }
+                if error_code == "invalid_pattern"
+        ));
     }
 
     #[test]
     fn tool_reference_block_roundtrip() {
-        let json = serde_json::json!({
-            "type": "tool_reference",
-            "tool_name": "get_weather",
-        });
-        let block: Block = serde_json::from_value(json.clone()).unwrap();
-        match &block {
-            Block::ToolReference { tool_name } => {
-                assert_eq!(tool_name, "get_weather");
-            }
-            _ => panic!("expected ToolReference"),
-        }
-        assert_eq!(serde_json::to_value(&block).unwrap(), json);
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/tool_reference.json"
+        ));
+        let Block::ToolReference { tool_name } = &block else {
+            panic!("expected ToolReference");
+        };
+        assert_eq!(tool_name, "get_weather");
         // The constructor produces the same block.
         assert_eq!(Block::tool_reference("get_weather"), block);
     }

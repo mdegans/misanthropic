@@ -1,0 +1,8 @@
+{
+  "type": "tool_search_tool_result",
+  "tool_use_id": "srvtoolu_01ABC123",
+  "content": {
+    "type": "tool_search_tool_result_error",
+    "error_code": "invalid_pattern"
+  }
+}

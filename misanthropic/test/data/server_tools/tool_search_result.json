@@ -1,0 +1,10 @@
+{
+  "type": "tool_search_tool_result",
+  "tool_use_id": "srvtoolu_01ABC123",
+  "content": {
+    "type": "tool_search_tool_search_result",
+    "tool_references": [
+      { "type": "tool_reference", "tool_name": "get_weather" }
+    ]
+  }
+}

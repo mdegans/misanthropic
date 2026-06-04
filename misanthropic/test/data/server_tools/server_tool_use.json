@@ -1,0 +1,6 @@
+{
+  "type": "server_tool_use",
+  "id": "srvtoolu_01A2B3",
+  "name": "web_search",
+  "input": { "query": "latest anthropic news" }
+}
