@@ -123,6 +123,34 @@ The `batch` and `client` features don't build on wasm32.
   this via secrets on push to main). Run them with e.g. `cargo test -p
   misanthropic --features client <name> -- --ignored`.
 
+### Wire fixtures — capture, don't trust the docs
+
+**Anthropic's API docs are guidelines, not rules.** They drift from the wire
+repeatedly, and trusting them has cost real debugging time: the undocumented
+`caller` field on result blocks, `web_fetch_tool_result_error` vs the documented
+`web_fetch_tool_error`, `page_age` sent as explicit `null`, a no-citations fetch
+that omits `citations`, `tool_search_requests` absent from the wire entirely
+(#72). So:
+
+- **When adding any feature, capture the real wire shape first — for *both* the
+  non-streaming (`messages`) and streaming (SSE) paths — before writing types.**
+  Capture on Haiku 4.5 (cheapest; server-tool shapes are model-independent) by
+  `curl`ing the API directly (raw bytes — deserializing through our own types
+  hides dropped fields). Then build types to match, not the docs.
+- Save captures under `misanthropic/test/data/` (see its `README.md` for the
+  discipline + per-fixture provenance) and replay them offline:
+  - non-streaming: `crate::utils::roundtrip::<T>(include_str!(…))` — deserialize,
+    re-serialize, assert value-equal to the captured bytes.
+  - streaming: `stream::tests::mock_stream` (raw SSE) / `mock_stream_jsonl`
+    (one `Event` per line).
+- The round-trip assertion is load-bearing: **no response type uses
+  `#[serde(deny_unknown_fields)]`**, so an undocumented/renamed/mis-tagged field
+  is silently dropped on deserialize. Re-serializing and comparing to the
+  captured bytes is the only offline guard that fails loudly when the wire
+  drifts. Prefer a known/unknown `untagged` enum (à la `model::Id`,
+  `tool::Caller`) for API-sourced unions so a future variant round-trips instead
+  of failing to deserialize a live response.
+
 ## GitHub conventions
 
 - When Claude files an issue or opens a PR on Michael's behalf (via `gh`),
