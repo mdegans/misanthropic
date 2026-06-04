@@ -5,6 +5,14 @@
 default:
     @just --list
 
+# Format the whole workspace in place.
+fmt:
+    cargo fmt --all
+
+# Check formatting without writing (mirrors the first step of `test`).
+fmt-check:
+    cargo fmt --all -- --check
+
 # Offline gate run by the pre-commit hook: fmt, clippy, all-features + no-default tests.
 test:
     cargo fmt --all -- --check

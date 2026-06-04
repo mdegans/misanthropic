@@ -15,4 +15,11 @@ if ! command -v just >/dev/null 2>&1; then
     exit 1
 fi
 
+# Fast-fail on formatting before the slower clippy/test steps, with a hint.
+# (`just test` re-checks this, but failing here gives a clearer message.)
+if ! just fmt-check; then
+    echo "pre-commit: formatting check failed. Run 'just fmt' and re-stage." >&2
+    exit 1
+fi
+
 just test
