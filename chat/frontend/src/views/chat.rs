@@ -53,7 +53,7 @@ static DEFAULT_DRAG_CLOSURE: GlobalSignal<
 #[serde(untagged)]
 enum Dropped {
     /// A saved conversation. Tried first as the common case.
-    Prompt(Box<Prompt<'static>>),
+    Prompt(Box<Prompt>),
     /// Saved toolbox state, mirroring [`ToolBox::save_json`]'s `{name, tools}`.
     ToolState(ToolStateFile),
 }
@@ -108,7 +108,7 @@ async fn persist_tool_state(mut toolbox: Signal<misanthropic::tool::ToolBox>) {
 
 /// A test prompt for testing the chat view.
 #[cfg(debug_assertions)]
-fn make_prompt() -> Prompt<'static> {
+fn make_prompt() -> Prompt {
     use misanthropic::{
         json,
         prompt::{
@@ -226,7 +226,7 @@ fn make_prompt() -> Prompt<'static> {
 }
 
 #[cfg(not(debug_assertions))]
-fn make_prompt() -> Prompt<'static> {
+fn make_prompt() -> Prompt {
     // The server will send us the prompt. This is just a placeholder.
     Prompt::default()
 }

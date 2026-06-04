@@ -10,22 +10,22 @@ use crate::prompt::Effort;
 /// All available models.
 #[derive(Debug, Serialize, Deserialize, derive_more::Deref)]
 #[serde(rename_all = "snake_case")]
-pub struct Models<'a> {
+pub struct Models {
     /// List of available models.
-    data: Vec<Model<'a>>,
+    data: Vec<Model>,
 }
 
 /// Model information, as returned by [`Client::models`](crate::Client::models).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Model<'a> {
+pub struct Model {
     /// Model ID.
-    pub id: Id<'a>,
+    pub id: Id,
     /// Human-readable display name, e.g. `"Claude Opus 4.6"`.
-    pub display_name: Cow<'a, str>,
+    pub display_name: Cow<'static, str>,
     /// What the model supports — see [`Capabilities`].
     #[serde(default)]
-    pub capabilities: Capabilities<'a>,
+    pub capabilities: Capabilities,
     /// Maximum number of input tokens the model accepts.
     #[serde(default)]
     pub max_input_tokens: u32,
@@ -96,7 +96,7 @@ impl PartialEq<Capability> for bool {
 /// capabilities are ignored on deserialization — mirroring the forward-compat
 /// stance of [`Id::Custom`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Capabilities<'a> {
+pub struct Capabilities {
     /// [Message Batches](crate::Client::batch) support.
     #[serde(default)]
     pub batch: Capability,
@@ -111,7 +111,7 @@ pub struct Capabilities<'a> {
     pub context_management: ContextManagement,
     /// Reasoning-[`effort`](crate::prompt::Effort) support, per level.
     #[serde(default)]
-    pub effort: EffortSupport<'a>,
+    pub effort: EffortSupport,
     /// Image input support.
     #[serde(default)]
     pub image_input: Capability,
@@ -148,14 +148,14 @@ pub struct ContextManagement {
 /// The API reports a flag per level (`low`, `medium`, `high`, `xhigh`,
 /// `max`), kept as an untyped map so new levels don't break parsing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EffortSupport<'a> {
+pub struct EffortSupport {
     /// Whether configurable effort is supported at all.
     #[serde(default)]
     pub supported: bool,
     /// Supported levels, keyed by [`Effort`]. Levels this crate doesn't know
     /// land in [`Effort::Custom`] rather than breaking the parse.
     #[serde(flatten)]
-    pub levels: BTreeMap<Effort<'a>, Capability>,
+    pub levels: BTreeMap<Effort, Capability>,
 }
 
 /// Extended-[`thinking`](crate::prompt::Thinking) support — the `thinking`
@@ -175,16 +175,16 @@ pub struct ThinkingSupport {
     Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(rename_all = "snake_case", untagged)]
-pub enum Id<'a> {
+pub enum Id {
     /// Anthropic model.
     Anthropic(AnthropicModel),
     /// Custom model id.
-    Custom(Cow<'a, str>),
+    Custom(Cow<'static, str>),
 }
 
-impl<'a> Id<'a> {
+impl Id {
     /// Get the name of the model.
-    pub fn name(&'a self) -> &'a str {
+    pub fn name(&self) -> &str {
         match self {
             Id::Anthropic(model) => match model {
                 AnthropicModel::Sonnet37 => "claude-3-7-sonnet-latest",
@@ -224,25 +224,17 @@ impl<'a> Id<'a> {
             Id::Custom(name) => name,
         }
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    pub fn into_static(self) -> Id<'static> {
-        match self {
-            Id::Anthropic(model) => Id::Anthropic(model),
-            Id::Custom(name) => Id::Custom(Cow::Owned(name.into_owned())),
-        }
-    }
 }
 
-impl std::fmt::Display for Id<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Id {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
 
-impl<'a, T> From<T> for Id<'a>
+impl<T> From<T> for Id
 where
-    T: Into<Cow<'a, str>>,
+    T: Into<Cow<'static, str>>,
 {
     fn from(s: T) -> Self {
         // Unwrap can't panic because we have a catch-all variant.
@@ -250,13 +242,13 @@ where
     }
 }
 
-impl From<AnthropicModel> for Id<'_> {
+impl From<AnthropicModel> for Id {
     fn from(value: AnthropicModel) -> Self {
         Id::Anthropic(value)
     }
 }
 
-impl PartialEq<AnthropicModel> for Id<'_> {
+impl PartialEq<AnthropicModel> for Id {
     fn eq(&self, other: &AnthropicModel) -> bool {
         match self {
             Id::Anthropic(model) => model == other,
@@ -265,7 +257,7 @@ impl PartialEq<AnthropicModel> for Id<'_> {
     }
 }
 
-impl<S> PartialEq<S> for Id<'_>
+impl<S> PartialEq<S> for Id
 where
     S: AsRef<str>,
 {
@@ -277,7 +269,7 @@ where
     }
 }
 
-impl Default for Id<'_> {
+impl Default for Id {
     fn default() -> Self {
         Id::Anthropic(AnthropicModel::default())
     }
@@ -635,9 +627,8 @@ mod tests {
     // Some of these overlap, but it's fine.
 
     #[test]
-    fn test_id_into_static() {
+    fn test_id_from_str() {
         let model: Id = "custom_model".into();
-        let model = model.into_static();
         assert_eq!(model, "custom_model");
     }
 

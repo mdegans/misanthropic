@@ -19,14 +19,14 @@ const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `not
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[derive(Default, Debug, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct Notepad<'a> {
+pub struct Notepad {
     /// Notes taken by the [`Assistant`].
     ///
     /// [`Assistant`]: crate::prompt::message::Role::Assistant
-    notes: Vec<crate::CowStr<'a>>,
+    notes: Vec<crate::CowStr>,
 }
 
-impl<'a> Notepad<'a> {
+impl Notepad {
     /// Creates a new `Notepad` tool.
     pub fn new() -> Self {
         Self { notes: Vec::new() }
@@ -46,13 +46,13 @@ pub struct Push {
 pub struct Clear {}
 
 #[tool]
-impl<'a> Notepad<'a> {
+impl Notepad {
     /// Take a note for the next chat.
     #[method]
     async fn push(
         &mut self,
         args: Push,
-    ) -> std::result::Result<Content<'static>, Content<'static>> {
+    ) -> std::result::Result<Content, Content> {
         let note = args.note;
 
         if note.contains("<notepad>") || note.contains("</notepad>") {
@@ -84,7 +84,7 @@ impl<'a> Notepad<'a> {
     async fn clear(
         &mut self,
         _args: Clear,
-    ) -> std::result::Result<Content<'static>, Content<'static>> {
+    ) -> std::result::Result<Content, Content> {
         self.notes.clear();
         Ok("Notes cleared.".into())
     }
@@ -127,7 +127,7 @@ impl<'a> Notepad<'a> {
     #[on_init]
     async fn apply(
         &mut self,
-        prompt: &mut Prompt<'_>,
+        prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.sync_apply_to_prompt(prompt).map_err(|e| {
             let error_string = e.to_string();
@@ -137,7 +137,7 @@ impl<'a> Notepad<'a> {
     }
 }
 
-impl<'a> Notepad<'a> {
+impl Notepad {
     /// Synchronous version of apply_to_prompt for internal use
     fn sync_apply_to_prompt(
         &self,

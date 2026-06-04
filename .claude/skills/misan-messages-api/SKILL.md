@@ -134,8 +134,8 @@ yet, pass `model::Id::Custom("your-model-id".into())` or just the string.
 
 The crate leans **heavily on generics and `From`/`Into`** so call sites stay
 clean. Every message method (`add_message`, `push_message`, `set_messages`,
-`add_messages`, …) is bounded on `M: Into<Message<'a>>`, and the tuple
-conversion is `(Role, T) where T: Into<Content<'a>>` — not just `&str`. A
+`add_messages`, …) is bounded on `M: Into<Message>`, and the tuple
+conversion is `(Role, T) where T: Into<Content>` — not just `&str`. A
 `Message`/`Content`/`Block` can be built from a `&str`, a `String`, a
 `tool::Use`, a `tool::Result`, an `Image`, a `DocumentSource`, a slice of
 `&str`, a `response::Message`, and more. So a tuple's second element is
@@ -215,7 +215,7 @@ struct GetWeather {
 }
 
 // A (possibly stateful) tool. Methods tagged `#[method]` must be
-// `async fn(&mut self, args: ArgsTy) -> Result<Content<'static>, Content<'static>>`.
+// `async fn(&mut self, args: ArgsTy) -> Result<Content, Content>`.
 // `Ok` is the tool result; `Err` is a model-facing error.
 struct Weather;
 
@@ -226,7 +226,7 @@ impl Weather {
     async fn get_weather(
         &mut self,
         args: GetWeather,
-    ) -> Result<Content<'static>, Content<'static>> {
+    ) -> Result<Content, Content> {
         let report = format!("Sunny, 22C in {}", args.city); // your logic
         Ok(report.into())
     }
@@ -252,7 +252,7 @@ let message = client.message(&chat).await?;
 // `tool_use()` is `Some` when stop_reason is ToolUse and the last block is a
 // tool call.
 if let Some(call) = message.tool_use() {
-    let call = call.clone().into_static();
+    let call = call.clone();
     chat.push_message(message)?;
 
     // Typed dispatch: `call.input` is deserialized into `GetWeather` and
@@ -387,7 +387,7 @@ println!("{message}");
 ```no_run
 use misanthropic::client::{Error, AnthropicError};
 
-# async fn run(client: &misanthropic::Client, prompt: &misanthropic::Prompt<'_>) {
+# async fn run(client: &misanthropic::Client, prompt: &misanthropic::Prompt) {
 match client.message(prompt).await {
     Ok(msg) => println!("{msg}"),
     Err(Error::Anthropic(AnthropicError::RateLimit { message, .. })) => {
@@ -529,9 +529,10 @@ your task — they're the most current, compiler-checked usage.
   enforces** strict alternation server-side, but many Anthropic-compatible
   backends still do, so the crate keeps the check (in `prompt.rs`,
   `check_turn_order` / `Message::may_precede`).
-- **Borrowed by default, but usually already owned** — most public types carry
-  a lifetime `'a`. In practice your data is typically owned already, just not
-  `'static`; call `.into_static()` when you need the `'static` bound (e.g. to
-  store a `Use`/`Message` past the borrow). The pervasive `'a` has a real
-  ergonomic cost and removing it has been discussed — but it's what lets some
-  `'static` values be `const`-constructed via `Cow::Borrowed`.
+- **Owned data, no lifetimes** — public types own their string data
+  (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
+  carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.
+  with no `.into_static()` dance — they are already `'static`. (The crate used
+  to thread a pervasive `'a`; it was removed because it bought no real
+  zero-copy — without `#[serde(borrow)]` every deserialized string allocates
+  anyway — at a large ergonomic cost.)

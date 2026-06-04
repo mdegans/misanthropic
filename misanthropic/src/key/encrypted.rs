@@ -85,7 +85,7 @@ impl std::fmt::Display for Key {
     ///
     /// Prefer [`Self::read`] if you want a return value that will automatically
     /// zeroize the key on drop.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // Zeroized on drop
         let key = self.read();
         // Unwrap can never panic because a Key can only be created from a

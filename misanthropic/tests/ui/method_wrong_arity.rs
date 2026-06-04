@@ -13,7 +13,7 @@ impl Bad {
         &mut self,
         a: String,
         b: String,
-    ) -> Result<Content<'static>, Content<'static>> {
+    ) -> Result<Content, Content> {
         let _ = (a, b);
         Ok("".into())
     }

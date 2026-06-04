@@ -58,9 +58,7 @@ fn prompt_user(script: &str) -> bool {
 /// Handle the tool call. Returns a [`User`] [`Message`] with the result.
 ///
 /// [`User`]: Role::User
-pub fn handle_tool_call(
-    call: &tool::Use,
-) -> Result<Message<'static>, Message<'static>> {
+pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
     if call.name != "python" {
         let content = format!("Unknown tool: {}", call.name);
         return Err(tool::Result {

@@ -116,12 +116,12 @@ const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
 /// [`into_inner`]: CachedPrompt::into_inner
 #[derive(Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct CachedPrompt<'a> {
-    inner: Prompt<'a>,
+pub struct CachedPrompt {
+    inner: Prompt,
 }
 
-impl std::fmt::Debug for CachedPrompt<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Debug for CachedPrompt {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("CachedPrompt")
             .field("inner", &self.inner)
             .finish()
@@ -130,7 +130,7 @@ impl std::fmt::Debug for CachedPrompt<'_> {
 
 // --- Construction -----------------------------------------------------------
 
-impl<'a> From<Prompt<'a>> for CachedPrompt<'a> {
+impl From<Prompt> for CachedPrompt {
     /// Freeze the prompt into a [`CachedPrompt`] without touching its
     /// `cache_control` markers. Use this when the prompt already carries
     /// the breakpoints you want — either set inline at construction time
@@ -141,12 +141,12 @@ impl<'a> From<Prompt<'a>> for CachedPrompt<'a> {
     /// For the common "wrap and also add a breakpoint" case, use
     /// [`CachedPrompt::cached`] (5-minute TTL) or
     /// [`CachedPrompt::cached_1h`] (1-hour TTL).
-    fn from(prompt: Prompt<'a>) -> Self {
+    fn from(prompt: Prompt) -> Self {
         Self { inner: prompt }
     }
 }
 
-impl<'a> CachedPrompt<'a> {
+impl CachedPrompt {
     /// Freeze the prompt into a [`CachedPrompt`] **and** add a 5-minute
     /// cache breakpoint on the last cacheable block (via [`Prompt::cache`]).
     ///
@@ -160,7 +160,7 @@ impl<'a> CachedPrompt<'a> {
     /// For 1-hour TTL, use [`CachedPrompt::cached_1h`].
     /// For wrapping without adding any new breakpoint, use
     /// [`From::from`] / `.into()`.
-    pub fn cached(prompt: Prompt<'a>) -> Self {
+    pub fn cached(prompt: Prompt) -> Self {
         Self {
             inner: prompt.cache(),
         }
@@ -179,7 +179,7 @@ impl<'a> CachedPrompt<'a> {
     /// For 5-minute TTL, use [`CachedPrompt::cached`].
     /// For wrapping without adding any new breakpoint, use
     /// [`From::from`] / `.into()`.
-    pub fn cached_1h(prompt: Prompt<'a>) -> Self {
+    pub fn cached_1h(prompt: Prompt) -> Self {
         Self {
             inner: prompt.cache_1h(),
         }
@@ -188,7 +188,7 @@ impl<'a> CachedPrompt<'a> {
 
 // --- Cache-safe mutations ---------------------------------------------------
 
-impl<'a> CachedPrompt<'a> {
+impl CachedPrompt {
     /// Append a [`Message`] to the conversation.
     ///
     /// This is always cache-safe: new messages are appended after the prefix,
@@ -200,7 +200,7 @@ impl<'a> CachedPrompt<'a> {
     /// (consecutive same-role turns, or a misplaced system turn).
     pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
     {
         self.inner.push_message(message)
     }
@@ -382,7 +382,7 @@ impl<'a> CachedPrompt<'a> {
     /// Set `stop_sequences`.  Not part of the cache key.
     pub fn set_stop_sequences(
         &mut self,
-        stop_sequences: Option<Vec<Cow<'a, str>>>,
+        stop_sequences: Option<Vec<Cow<'static, str>>>,
     ) {
         self.inner.stop_sequences = stop_sequences;
     }
@@ -398,22 +398,15 @@ impl<'a> CachedPrompt<'a> {
 
 // --- Conversions ------------------------------------------------------------
 
-impl<'a> CachedPrompt<'a> {
+impl CachedPrompt {
     /// Consume the wrapper and return the inner [`Prompt`].
     ///
     /// **This is an explicit escape hatch.**  After calling this, the prompt
     /// can be freely mutated — including cache-breaking fields.  Use this
     /// when you deliberately need to change the prefix (e.g. removing tools
     /// for a reflect phase).
-    pub fn into_inner(self) -> Prompt<'a> {
+    pub fn into_inner(self) -> Prompt {
         self.inner
-    }
-
-    /// Convert to `'static` lifetime, mirroring [`Prompt::into_static`].
-    pub fn into_static(self) -> CachedPrompt<'static> {
-        CachedPrompt {
-            inner: self.inner.into_static(),
-        }
     }
 }
 
@@ -423,16 +416,16 @@ impl<'a> CachedPrompt<'a> {
 ///
 /// There is intentionally **no** `DerefMut` — preventing direct mutation of
 /// cache-prefix fields like `tool_choice` and `methods`.
-impl<'a> Deref for CachedPrompt<'a> {
-    type Target = Prompt<'a>;
+impl Deref for CachedPrompt {
+    type Target = Prompt;
 
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
-impl<'a> AsRef<Prompt<'a>> for CachedPrompt<'a> {
-    fn as_ref(&self) -> &Prompt<'a> {
+impl AsRef<Prompt> for CachedPrompt {
+    fn as_ref(&self) -> &Prompt {
         &self.inner
     }
 }
@@ -441,7 +434,7 @@ impl<'a> AsRef<Prompt<'a>> for CachedPrompt<'a> {
 
 /// Serializes identically to the inner [`Prompt`], so this works with
 /// [`Client::message`](crate::Client::message) which takes `P: Serialize`.
-impl Serialize for CachedPrompt<'_> {
+impl Serialize for CachedPrompt {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -452,7 +445,7 @@ impl Serialize for CachedPrompt<'_> {
 
 /// Deserializes as a [`Prompt`] and wraps it via [`From`] (which preserves
 /// any `cache_control` markers present in the serialized form exactly).
-impl<'de, 'a: 'de> Deserialize<'de> for CachedPrompt<'a> {
+impl<'de> Deserialize<'de> for CachedPrompt {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -665,20 +658,20 @@ mod tests {
 
         let cached = CachedPrompt::from(prompt);
         let json = serde_json::to_string(&cached).expect("serialize");
-        let deserialized: CachedPrompt<'_> =
+        let deserialized: CachedPrompt =
             serde_json::from_str(&json).expect("deserialize");
 
         assert_eq!(cached.messages.len(), deserialized.messages.len());
     }
 
     #[test]
-    fn into_static_works() {
+    fn cached_prompt_from_prompt() {
         let prompt = Prompt {
             system: Some(crate::prompt::message::Content::text("test")),
             ..Default::default()
         };
         let cached = CachedPrompt::from(prompt);
-        let _static_cached: CachedPrompt<'static> = cached.into_static();
+        let _: CachedPrompt = cached;
     }
 
     #[test]

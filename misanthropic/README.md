@@ -71,7 +71,6 @@ println!("{}", message);
 - [x] Dioxus support
 - [x] Prompt caching support
 - [x] Custom request and endpoint support
-- [x] Zero-copy where possible
 - [x] [Sanitization](https://crates.io/crates/langsan) of input and output to mitigate [injection attacks](https://arstechnica.com/security/2024/10/ai-chatbots-can-read-and-write-invisible-text-creating-an-ideal-covert-channel/)
 - [x] Wasm support (without the Client itself, just the data structures and stream types, extensions, tools, and so on)
 - [x] Batch API support

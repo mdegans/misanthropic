@@ -28,21 +28,21 @@ pub enum Event {
     /// [`Content`] [`Delta`]s must be applied to this message.
     MessageStart {
         /// The message.
-        message: response::Message<'static>,
+        message: response::Message,
     },
     /// [`Content`] [`Block`] with empty content.
     ContentBlockStart {
         /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
         /// Empty content block.
-        content_block: Block<'static>,
+        content_block: Block,
     },
     /// Content block delta.
     ContentBlockDelta {
         /// Index of the [`Content`] [`Block`] in [`prompt::message::Content`].
         index: usize,
         /// Delta to apply to the content block.
-        delta: Delta<'static>,
+        delta: Delta,
     },
     /// Content block end.
     ContentBlockStop {
@@ -64,13 +64,13 @@ pub enum Event {
     /// not the API.
     Message {
         /// The message.
-        message: response::Message<'static>,
+        message: response::Message,
     },
     /// Complete [`tool::Use`]. Assembled by [`FilterExt::with_tool_use`] not
     /// the API.
     ToolUse {
         /// The tool use.
-        tool_use: tool::Use<'static>,
+        tool_use: tool::Use,
     },
     /// Complete *server* [`tool::Use`] — a [`ServerToolUse`] block (e.g.
     /// [`web_search`]) the API ran itself. Assembled by
@@ -83,7 +83,7 @@ pub enum Event {
     /// [`tool::Result`]: crate::tool::Result
     ServerToolUse {
         /// The server tool use.
-        tool_use: tool::Use<'static>,
+        tool_use: tool::Use,
     },
 }
 
@@ -108,14 +108,14 @@ enum ApiResult {
 /// [`Json`]: Delta::Json
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Delta<'a> {
+pub enum Delta {
     /// Text delta for a [`Text`] [`Content`] [`Block`].
     ///
     /// [`Text`]: Block::Text
     #[serde(alias = "text_delta")]
     Text {
         /// The text content.
-        text: Cow<'a, str>,
+        text: Cow<'static, str>,
     },
     /// JSON delta for the input field of a [`ToolUse`] [`Content`] [`Block`].
     ///
@@ -123,7 +123,7 @@ pub enum Delta<'a> {
     #[serde(rename = "input_json_delta")]
     Json {
         /// The JSON delta.
-        partial_json: Cow<'a, str>,
+        partial_json: Cow<'static, str>,
     },
     /// Thinking delta. Availalble with Sonnet 3.7 and newer when
     /// [`Prompt::thinking`] is set.
@@ -132,10 +132,10 @@ pub enum Delta<'a> {
     #[serde(rename = "thinking_delta")]
     Thought {
         /// The thinking delta.
-        thinking: Cow<'a, str>,
+        thinking: Cow<'static, str>,
         /// Signature, when the thinking is complete.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        signature: Option<Cow<'a, str>>,
+        signature: Option<Cow<'static, str>>,
     },
     /// Redacted thinking delta. Availalble with Sonnet 3.7 and newer when
     /// [`Prompt::thinking`] is set.
@@ -144,7 +144,7 @@ pub enum Delta<'a> {
     #[serde(rename = "redacted_thinking_delta")]
     RedactedThought {
         /// Complete signature of a redacted thought.
-        signature: Cow<'a, str>,
+        signature: Cow<'static, str>,
     },
     /// Signature delta. Availalble with Sonnet 3.7 and newer when
     /// [`Prompt::thinking`] is set.
@@ -154,7 +154,7 @@ pub enum Delta<'a> {
     Signature {
         /// Signature of a complete thought. This should be merged with a
         /// [`Delta::Thought`]` to complete the thought.
-        signature: Cow<'a, str>,
+        signature: Cow<'static, str>,
     },
     /// A single [`Citation`] to append to the current [`Text`] block's
     /// citations. Available when a [`Document`] had citations enabled.
@@ -165,62 +165,24 @@ pub enum Delta<'a> {
     #[serde(rename = "citations_delta")]
     CitationsDelta {
         /// The citation to append.
-        citation: crate::prompt::Citation<'a>,
+        citation: crate::prompt::Citation,
     },
 }
 
-impl Delta<'_> {
-    /// Convert to a static lifetime. This is useful for when the delta is
-    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
-    pub fn into_static(self) -> Delta<'static> {
-        match self {
-            Delta::Text { text } => Delta::Text {
-                text: text.into_owned().into(),
-            },
-            Delta::Json { partial_json } => Delta::Json {
-                partial_json: partial_json.into_owned().into(),
-            },
-            Delta::Thought {
-                thinking,
-                signature,
-            } => Delta::Thought {
-                thinking: thinking.into_owned().into(),
-                signature: signature.map(|s| s.into_owned().into()),
-            },
-            Delta::Signature { signature } => Delta::Signature {
-                signature: signature.into_owned().into(),
-            },
-            Delta::RedactedThought { signature } => Delta::RedactedThought {
-                signature: signature.into_owned().into(),
-            },
-            Delta::CitationsDelta { citation } => Delta::CitationsDelta {
-                citation: citation.into_static(),
-            },
-        }
-    }
-}
+impl Delta {}
 
 /// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the types do
 /// not match. Also from [`Delta::merge`].
 #[derive(Serialize, thiserror::Error, Debug)]
 #[error("`Delta::{from:?}` canot be applied to `{to}`.")]
-pub struct ContentMismatch<'a> {
+pub struct ContentMismatch {
     /// The content block that failed to apply.
-    pub from: Delta<'a>,
+    pub from: Delta,
     /// The target [`Content`].
     pub to: &'static str,
 }
 
-impl ContentMismatch<'_> {
-    /// Convert to a static lifetime. This is useful for when the error is
-    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
-    pub fn into_static(self) -> ContentMismatch<'static> {
-        ContentMismatch {
-            from: self.from.into_static(),
-            to: self.to,
-        }
-    }
-}
+impl ContentMismatch {}
 
 /// Error when applying a [`Delta`] to a [`Content`] [`Block`] and the index is
 /// out of bounds.
@@ -236,9 +198,9 @@ pub struct OutOfBounds {
 /// Error when applying a [`Delta`].
 #[derive(Serialize, thiserror::Error, Debug, derive_more::From)]
 #[allow(missing_docs)]
-pub enum DeltaError<'a> {
+pub enum DeltaError {
     #[error("Cannot apply delta because: {error}")]
-    ContentMismatch { error: ContentMismatch<'a> },
+    ContentMismatch { error: ContentMismatch },
     #[error("Cannot apply delta because: {error}")]
     OutOfBounds { error: OutOfBounds },
     #[error(
@@ -247,25 +209,9 @@ pub enum DeltaError<'a> {
     Parse { error: String },
 }
 
-impl DeltaError<'_> {
-    /// Convert to a static lifetime. This is useful for when the error is
-    /// stored in a `Pin<Box<dyn Stream<Item = Result<Event, Error>>>`.
-    pub fn into_static(self) -> DeltaError<'static> {
-        match self {
-            DeltaError::ContentMismatch { error } => {
-                DeltaError::ContentMismatch {
-                    error: error.into_static(),
-                }
-            }
-            DeltaError::OutOfBounds { error } => {
-                DeltaError::OutOfBounds { error }
-            }
-            DeltaError::Parse { error } => DeltaError::Parse { error },
-        }
-    }
-}
+impl DeltaError {}
 
-impl<'a> Delta<'a> {
+impl Delta {
     /// Return true if `self` is a [`Thought`] delta and `signature` is `Some`.
     ///
     /// [`Thought`]: Delta::Thinking
@@ -280,10 +226,7 @@ impl<'a> Delta<'a> {
     }
 
     /// Merge another [`Delta`] onto the end of `self`.
-    pub fn merge(
-        mut self,
-        delta: Delta<'a>,
-    ) -> Result<Self, ContentMismatch<'a>> {
+    pub fn merge(mut self, delta: Delta) -> Result<Self, ContentMismatch> {
         match (&mut self, delta) {
             // Text incoming, text already here. Simply append.
             (Delta::Text { text }, Delta::Text { text: delta }) => {
@@ -399,14 +342,14 @@ pub enum Error {
         /// Error message.
         message: Cow<'static, str>,
         /// Any delta that failed to apply.
-        delta: Option<Delta<'static>>,
+        delta: Option<Delta>,
     },
     /// DeltaError from applying a delta.
     #[error("Delta error: {error}")]
     Delta {
         /// Error from applying a delta.
         #[from]
-        error: DeltaError<'static>,
+        error: DeltaError,
     },
 }
 
@@ -546,7 +489,7 @@ pub trait FilterExt:
     /// text, JSON, and tool use.
     fn deltas(
         self,
-    ) -> impl futures::Stream<Item = Result<Delta<'static>, Error>> + Send {
+    ) -> impl futures::Stream<Item = Result<Delta, Error>> + Send {
         self.filter_map(|result| async move {
             match result {
                 Ok(Event::ContentBlockDelta { delta, .. }) => Some(Ok(delta)),
@@ -578,7 +521,7 @@ pub trait FilterExt:
     /// [`with_message`]: FilterExt::with_message
     fn with_message_ip(
         self,
-        message: &mut Option<response::Message<'static>>,
+        message: &mut Option<response::Message>,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         async_stream::stream! {
             let stream = self.with_tool_use();
@@ -594,7 +537,7 @@ pub trait FilterExt:
                     Ok(Event::ContentBlockDelta { delta, ..}) => {
                         if let Some(message) = message.as_mut() {
                             if let Err(e) = message.inner.inner.content.push_delta(delta.clone()) {
-                                yield Err(e.into_static().into());
+                                yield Err(e.into());
                             }
                         } else {
                             yield Err(Error::MessageAssembly {

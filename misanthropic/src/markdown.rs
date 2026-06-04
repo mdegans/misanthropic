@@ -187,26 +187,26 @@ impl PartialEq<str> for Markdown {
 ///   can be used to render to html using [`pulldown_cmark::html::push_html`]
 ///   and other similar functions.
 /// - Implementers should guarantee tags are properly closed and nested.
-pub trait ToMarkdown<'a> {
+pub trait ToMarkdown {
     /// Render the type to a [`Markdown`] string with [`DEFAULT_OPTIONS`].
-    fn markdown(&'a self) -> Markdown {
+    fn markdown(&self) -> Markdown {
         self.markdown_events().into()
     }
 
     /// Render the type to a [`Markdown`] string with custom [`Options`].
-    fn markdown_custom(&'a self, options: Options) -> Markdown {
+    fn markdown_custom(&self, options: Options) -> Markdown {
         self.markdown_events_custom(options).into()
     }
 
     /// Render the type to a [`Markdown`] string with maximum verbosity.
-    fn markdown_verbose(&'a self) -> Markdown {
+    fn markdown_verbose(&self) -> Markdown {
         self.markdown_custom(VERBOSE_OPTIONS)
     }
 
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
     /// [`DEFAULT_OPTIONS`].
     fn write_markdown(
-        &'a self,
+        &self,
         writer: &mut dyn std::fmt::Write,
     ) -> std::fmt::Result {
         self.write_markdown_custom(writer, DEFAULT_OPTIONS)
@@ -215,7 +215,7 @@ pub trait ToMarkdown<'a> {
     /// Render the markdown to a type implementing [`std::fmt::Write`] with
     /// custom [`Options`].
     fn write_markdown_custom(
-        &'a self,
+        &self,
         writer: &mut dyn std::fmt::Write,
         options: Options,
     ) -> std::fmt::Result {
@@ -229,17 +229,17 @@ pub trait ToMarkdown<'a> {
     /// Return an iterator of [`pulldown_cmark::Event`]s with
     /// [`DEFAULT_OPTIONS`].
     fn markdown_events(
-        &'a self,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+        &self,
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         self.markdown_events_custom(DEFAULT_OPTIONS)
     }
 
     /// Return an iterator of [`pulldown_cmark::Event`]s with custom
     /// [`Options`].
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a>;
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_>;
 }
 
 static_assertions::assert_obj_safe!(ToMarkdown);

@@ -8,7 +8,7 @@ pub enum Request {
     /// Get the prompt.
     GetPrompt,
     /// Set the prompt.
-    SetPrompt(prompt::Prompt<'static>),
+    SetPrompt(prompt::Prompt),
     /// User message.
-    UserMessage(prompt::UserMessage<'static>),
+    UserMessage(prompt::UserMessage),
 }

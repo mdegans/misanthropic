@@ -34,27 +34,27 @@ pub enum JsonError {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{}", inner)]
-pub struct Message<'a> {
+pub struct Message {
     /// Unique `id` for the message.
-    pub id: Cow<'a, str>,
+    pub id: Cow<'static, str>,
     /// Inner [`prompt::message`].
     #[serde(flatten)]
-    pub inner: prompt::AssistantMessage<'a>,
+    pub inner: prompt::AssistantMessage,
     /// [`Model`] that generated the message.
-    pub model: model::Id<'a>,
+    pub model: model::Id,
     /// The reason the model stopped generating tokens.
     pub stop_reason: Option<StopReason>,
     /// If the [`StopReason`] was [`StopSequence`], this is the sequence that
     /// triggered it.
     ///
     /// [`StopSequence`]: StopReason::StopSequence
-    pub stop_sequence: Option<Cow<'a, str>>,
+    pub stop_sequence: Option<Cow<'static, str>>,
     /// Usage statistics for the message.
     #[serde(default)]
     pub usage: Usage,
 }
 
-impl Message<'_> {
+impl Message {
     /// Apply a [`MessageDelta`] with metadata to the message.
     pub fn apply_delta(&mut self, delta: MessageDelta) {
         if let Some(stop_reason) = delta.stop_reason {
@@ -73,7 +73,7 @@ impl Message<'_> {
     /// [`Block`]: crate::prompt::message::Block
     /// [`tool::Use`]: crate::tool::Use
     /// [`ToolUse`]: crate::prompt::message::Block::ToolUse
-    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
         if !matches!(self.stop_reason, Some(StopReason::ToolUse)) {
             return None;
         }
@@ -123,21 +123,6 @@ impl Message<'_> {
             .ok_or(JsonError::NoTextBlock)?;
 
         Ok(serde_json::from_str(text)?)
-    }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> Message<'static> {
-        Message {
-            id: Cow::Owned(self.id.into_owned()),
-            inner: self.inner.into_static(),
-            model: self.model.into_static(),
-            stop_reason: self.stop_reason,
-            stop_sequence: self
-                .stop_sequence
-                .map(|s| Cow::Owned(s.into_owned())),
-            usage: self.usage,
-        }
     }
 
     /// Remove an incomplete thought from the message. If after removal, the
@@ -277,11 +262,11 @@ impl std::ops::AddAssign<Usage> for Usage {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
+impl crate::markdown::ToMarkdown for Message {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         self.inner.markdown_events_custom(options)
     }
 }
@@ -354,11 +339,9 @@ mod tests {
     }
 
     #[test]
-    fn test_into_static() {
-        // Refers to json:
-        let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        // Owns the `Cow` fields:
-        let static_message = message.into_static();
+    fn test_deserialize_response_message() {
+        let static_message: Message =
+            serde_json::from_str(RESPONSE_JSON).unwrap();
 
         assert_eq!(static_message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
         assert_eq!(
@@ -390,8 +373,8 @@ mod tests {
 
     fn message_with(
         stop_reason: Option<StopReason>,
-        content: prompt::message::Content<'static>,
-    ) -> Message<'static> {
+        content: prompt::message::Content,
+    ) -> Message {
         Message {
             id: "id".into(),
             inner: prompt::AssistantMessage {

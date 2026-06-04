@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 /// A citation referencing a location in a source document.
 #[derive(Clone, Debug, Serialize, Deserialize, Hash, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum Citation<'a> {
+pub enum Citation {
     /// Citation from a plain text document (character offsets, 0-indexed,
     /// exclusive end).
     CharLocation {
         /// The exact text being cited.
-        cited_text: Cow<'a, str>,
+        cited_text: Cow<'static, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
         /// Title of the cited document. `None` serializes as `null` rather
@@ -23,7 +23,7 @@ pub enum Citation<'a> {
         /// (`string | null`) on citations sent in a request, so dropping it
         /// breaks multi-turn conversations that echo a prior cited response.
         #[serde(default)]
-        document_title: Option<Cow<'a, str>>,
+        document_title: Option<Cow<'static, str>>,
         /// Start character index (0-indexed, inclusive).
         start_char_index: u64,
         /// End character index (0-indexed, exclusive).
@@ -33,7 +33,7 @@ pub enum Citation<'a> {
     /// exclusive end).
     PageLocation {
         /// The exact text being cited.
-        cited_text: Cow<'a, str>,
+        cited_text: Cow<'static, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
         /// Title of the cited document. `None` serializes as `null` rather
@@ -41,7 +41,7 @@ pub enum Citation<'a> {
         /// (`string | null`) on citations sent in a request, so dropping it
         /// breaks multi-turn conversations that echo a prior cited response.
         #[serde(default)]
-        document_title: Option<Cow<'a, str>>,
+        document_title: Option<Cow<'static, str>>,
         /// Start page number (1-indexed, inclusive).
         start_page_number: u64,
         /// End page number (1-indexed, exclusive).
@@ -51,7 +51,7 @@ pub enum Citation<'a> {
     /// 0-indexed, exclusive end).
     ContentBlockLocation {
         /// The exact text being cited.
-        cited_text: Cow<'a, str>,
+        cited_text: Cow<'static, str>,
         /// 0-indexed document position in the request.
         document_index: u64,
         /// Title of the cited document. `None` serializes as `null` rather
@@ -59,7 +59,7 @@ pub enum Citation<'a> {
         /// (`string | null`) on citations sent in a request, so dropping it
         /// breaks multi-turn conversations that echo a prior cited response.
         #[serde(default)]
-        document_title: Option<Cow<'a, str>>,
+        document_title: Option<Cow<'static, str>>,
         /// Start block index (0-indexed, inclusive).
         start_block_index: u64,
         /// End block index (0-indexed, exclusive).
@@ -68,77 +68,17 @@ pub enum Citation<'a> {
     /// Citation from a web search result.
     WebSearchResultLocation {
         /// The exact text being cited.
-        cited_text: Cow<'a, str>,
+        cited_text: Cow<'static, str>,
         /// Title of the search result.
-        title: Cow<'a, str>,
+        title: Cow<'static, str>,
         /// URL of the search result.
-        url: Cow<'a, str>,
+        url: Cow<'static, str>,
         /// Encrypted index for the search result.
-        encrypted_index: Cow<'a, str>,
+        encrypted_index: Cow<'static, str>,
     },
 }
 
-impl Citation<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of all
-    /// [`Cow`] fields.
-    pub fn into_static(self) -> Citation<'static> {
-        match self {
-            Citation::CharLocation {
-                cited_text,
-                document_index,
-                document_title,
-                start_char_index,
-                end_char_index,
-            } => Citation::CharLocation {
-                cited_text: Cow::Owned(cited_text.into_owned()),
-                document_index,
-                document_title: document_title
-                    .map(|s| Cow::Owned(s.into_owned())),
-                start_char_index,
-                end_char_index,
-            },
-            Citation::PageLocation {
-                cited_text,
-                document_index,
-                document_title,
-                start_page_number,
-                end_page_number,
-            } => Citation::PageLocation {
-                cited_text: Cow::Owned(cited_text.into_owned()),
-                document_index,
-                document_title: document_title
-                    .map(|s| Cow::Owned(s.into_owned())),
-                start_page_number,
-                end_page_number,
-            },
-            Citation::ContentBlockLocation {
-                cited_text,
-                document_index,
-                document_title,
-                start_block_index,
-                end_block_index,
-            } => Citation::ContentBlockLocation {
-                cited_text: Cow::Owned(cited_text.into_owned()),
-                document_index,
-                document_title: document_title
-                    .map(|s| Cow::Owned(s.into_owned())),
-                start_block_index,
-                end_block_index,
-            },
-            Citation::WebSearchResultLocation {
-                cited_text,
-                title,
-                url,
-                encrypted_index,
-            } => Citation::WebSearchResultLocation {
-                cited_text: Cow::Owned(cited_text.into_owned()),
-                title: Cow::Owned(title.into_owned()),
-                url: Cow::Owned(url.into_owned()),
-                encrypted_index: Cow::Owned(encrypted_index.into_owned()),
-            },
-        }
-    }
-}
+impl Citation {}
 
 #[cfg(test)]
 mod tests {
@@ -242,7 +182,7 @@ mod tests {
     }
 
     #[test]
-    fn into_static() {
+    fn construct_char_location() {
         let citation = Citation::CharLocation {
             cited_text: "hello".into(),
             document_index: 0,
@@ -250,7 +190,7 @@ mod tests {
             start_char_index: 0,
             end_char_index: 5,
         };
-        let _: Citation<'static> = citation.into_static();
+        let _: Citation = citation;
     }
 
     #[test]
@@ -446,11 +386,10 @@ mod tests {
         // the returned citation's `document_title` is `None` — the exact shape
         // that broke the round-trip.
         let first = client.message(&prompt).await.unwrap();
-        let assistant: Message = Message::from(first).into_static();
+        let assistant: Message = Message::from(first);
 
         // Second turn: echo the cited assistant turn back, then follow up.
         let prompt = prompt
-            .into_static()
             .add_message(assistant)
             .unwrap()
             .add_message((Role::User, "And what are its two moons named?"))

@@ -110,8 +110,8 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
                     state: &mut #self_ty,
                     args: #args_ty,
                 ) -> ::core::result::Result<
-                    ::misanthropic::prompt::message::Content<'static>,
-                    ::misanthropic::prompt::message::Content<'static>,
+                    ::misanthropic::prompt::message::Content,
+                    ::misanthropic::prompt::message::Content,
                 > {
                     state.#fn_ident(args).await
                 }
@@ -173,14 +173,14 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 
             fn definitions(
                 &self,
-            ) -> ::std::vec::Vec<::misanthropic::tool::MethodDef<'static>> {
+            ) -> ::std::vec::Vec<::misanthropic::tool::MethodDef> {
                 ::misanthropic::tool::methods_definitions(self)
             }
 
-            async fn call<'tool_call>(
+            async fn call(
                 &mut self,
-                call: ::misanthropic::tool::Use<'tool_call>,
-            ) -> ::misanthropic::tool::Result<'tool_call> {
+                call: ::misanthropic::tool::Use,
+            ) -> ::misanthropic::tool::Result {
                 ::misanthropic::tool::dispatch_methods(self, call).await
             }
 

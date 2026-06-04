@@ -74,28 +74,28 @@ pub enum BlockIndex {
 
 /// A shared reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get`].
-pub enum IndexRef<'a, 'p> {
+pub enum IndexRef<'a> {
     /// Reference to a [`MethodDef`] in [`Prompt::tools`].
-    Method(&'a MethodDef<'p>),
+    Method(&'a MethodDef),
     /// Reference to a [`Content`] [`Block`] in a [`Prompt`].
-    Block(&'a Block<'p>),
+    Block(&'a Block),
 }
 
 /// A mutable reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get_mut`].
-pub enum IndexMut<'a, 'p> {
+pub enum IndexMut<'a> {
     /// Mutable reference to a [`MethodDef`] in [`Prompt::tools`].
-    Method(&'a mut MethodDef<'p>),
+    Method(&'a mut MethodDef),
     /// Mutable reference to a [`Content`] [`Block`] in a [`Prompt`].
-    Block(&'a mut Block<'p>),
+    Block(&'a mut Block),
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for IndexRef<'_, 'a> {
+impl crate::markdown::ToMarkdown for IndexRef<'_> {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         match self {
             IndexRef::Method(method) => method.markdown_events_custom(options),
             IndexRef::Block(block) => block.markdown_events_custom(options),
@@ -103,10 +103,10 @@ impl<'a> crate::markdown::ToMarkdown<'a> for IndexRef<'_, 'a> {
     }
 }
 
-impl<'p> Prompt<'p> {
+impl Prompt {
     /// Resolve an [`Index`] to a shared reference, or [`None`] if it is out of
     /// bounds (or addresses [`Prompt::system`] / [`Prompt::tools`] when absent).
-    pub fn get(&self, index: Index) -> Option<IndexRef<'_, 'p>> {
+    pub fn get(&self, index: Index) -> Option<IndexRef<'_>> {
         match index {
             Index::Method(MethodIndex(i)) => self
                 .methods
@@ -125,7 +125,7 @@ impl<'p> Prompt<'p> {
 
     /// Resolve an [`Index`] to a mutable reference, or [`None`] if it is out of
     /// bounds (or addresses [`Prompt::system`] / [`Prompt::tools`] when absent).
-    pub fn get_mut(&mut self, index: Index) -> Option<IndexMut<'_, 'p>> {
+    pub fn get_mut(&mut self, index: Index) -> Option<IndexMut<'_>> {
         match index {
             Index::Method(MethodIndex(i)) => self
                 .methods
@@ -170,8 +170,8 @@ impl<'p> Prompt<'p> {
     }
 }
 
-impl<'p> std::ops::Index<MethodIndex> for Prompt<'p> {
-    type Output = MethodDef<'p>;
+impl std::ops::Index<MethodIndex> for Prompt {
+    type Output = MethodDef;
 
     /// # Panics
     /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
@@ -184,7 +184,7 @@ impl<'p> std::ops::Index<MethodIndex> for Prompt<'p> {
     }
 }
 
-impl std::ops::IndexMut<MethodIndex> for Prompt<'_> {
+impl std::ops::IndexMut<MethodIndex> for Prompt {
     /// # Panics
     /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
     ///   addressed tool is a [`ServerTool`](crate::tool::ServerTool) rather
@@ -196,8 +196,8 @@ impl std::ops::IndexMut<MethodIndex> for Prompt<'_> {
     }
 }
 
-impl<'p> std::ops::Index<BlockIndex> for Prompt<'p> {
-    type Output = Block<'p>;
+impl std::ops::Index<BlockIndex> for Prompt {
+    type Output = Block;
 
     /// # Panics
     /// - If the addressed [`Block`] (or [`Prompt::system`]) does not exist.
@@ -211,7 +211,7 @@ impl<'p> std::ops::Index<BlockIndex> for Prompt<'p> {
     }
 }
 
-impl std::ops::IndexMut<BlockIndex> for Prompt<'_> {
+impl std::ops::IndexMut<BlockIndex> for Prompt {
     /// # Panics
     /// - If the addressed [`Block`] (or [`Prompt::system`]) does not exist.
     fn index_mut(&mut self, index: BlockIndex) -> &mut Self::Output {

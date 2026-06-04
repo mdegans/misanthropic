@@ -88,7 +88,7 @@ impl Role {
 }
 
 impl std::fmt::Display for Role {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
@@ -111,14 +111,14 @@ impl std::fmt::Display for Role {
     display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Message<'a> {
+pub struct Message {
     /// Who is the message from.
     pub role: Role,
     /// The [`Content`] of the message as a sequence of [`Block`]s.
-    pub content: Content<'a>,
+    pub content: Content,
 }
 
-impl Message<'_> {
+impl Message {
     /// Heading for the message when rendered as markdown using [`Display`].
     ///
     /// [`Display`]: std::fmt::Display
@@ -137,13 +137,13 @@ impl Message<'_> {
 
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ToolUse`].
-    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
         self.content.last()?.tool_use()
     }
 
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ServerToolUse`] (a server tool the API ran itself).
-    pub fn server_tool_use(&self) -> Option<&crate::tool::Use<'_>> {
+    pub fn server_tool_use(&self) -> Option<&crate::tool::Use> {
         match self.content.last()? {
             Block::ServerToolUse { call } => Some(call),
             _ => None,
@@ -152,7 +152,7 @@ impl Message<'_> {
 
     /// Returns Some([`tool::Result`]) if the first [`Content`] [`Block`] is a
     /// [`Block::ToolResult`].
-    pub fn tool_result(&self) -> Option<&crate::tool::Result<'_>> {
+    pub fn tool_result(&self) -> Option<&crate::tool::Result> {
         if let Some(Block::ToolResult { result }) = self.content.first() {
             Some(result)
         } else {
@@ -193,17 +193,6 @@ impl Message<'_> {
             .any(|b| matches!(b, Block::ServerToolUse { .. }))
     }
 
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    pub fn into_static(self) -> Message<'static> {
-        Message {
-            role: self.role,
-            content: self.content.into_static(),
-        }
-    }
-
     /// A convenience method to fix an incomplete [`Block::Thought`] in the case
     /// of interruption in a streaming context.
     ///
@@ -228,21 +217,21 @@ impl Message<'_> {
     }
 }
 
-impl<'a> From<response::Message<'a>> for Message<'a> {
-    fn from(message: response::Message<'a>) -> Self {
+impl From<response::Message> for Message {
+    fn from(message: response::Message) -> Self {
         message.inner.inner
     }
 }
 
-impl<'a> From<response::Message<'a>> for AssistantMessage<'a> {
-    fn from(message: response::Message<'a>) -> Self {
+impl From<response::Message> for AssistantMessage {
+    fn from(message: response::Message) -> Self {
         message.inner
     }
 }
 
-impl<'a, T> From<(Role, T)> for Message<'a>
+impl<T> From<(Role, T)> for Message
 where
-    T: Into<Content<'a>>,
+    T: Into<Content>,
 {
     fn from((role, content): (Role, T)) -> Self {
         Self {
@@ -252,8 +241,8 @@ where
     }
 }
 
-impl<'a> From<tool::Use<'a>> for Message<'a> {
-    fn from(call: tool::Use<'a>) -> Self {
+impl From<tool::Use> for Message {
+    fn from(call: tool::Use) -> Self {
         Message {
             role: Role::Assistant,
             content: call.into(),
@@ -261,8 +250,8 @@ impl<'a> From<tool::Use<'a>> for Message<'a> {
     }
 }
 
-impl<'a> From<tool::Result<'a>> for Message<'a> {
-    fn from(result: tool::Result<'a>) -> Self {
+impl From<tool::Result> for Message {
+    fn from(result: tool::Result) -> Self {
         Message {
             role: Role::User,
             content: result.into(),
@@ -270,9 +259,9 @@ impl<'a> From<tool::Result<'a>> for Message<'a> {
     }
 }
 
-impl<'a> IntoIterator for Message<'a> {
-    type Item = Block<'a>;
-    type IntoIter = std::vec::IntoIter<Block<'a>>;
+impl IntoIterator for Message {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.content.into_iter()
@@ -280,16 +269,16 @@ impl<'a> IntoIterator for Message<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
+impl crate::markdown::ToMarkdown for Message {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
     ///
     /// [`Options`]: crate::markdown::Options
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{Event, HeadingLevel::H3, Tag};
 
         let content = self.content.markdown_events_custom(options);
@@ -334,8 +323,8 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Message<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Message<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Message {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
         self.write_markdown(f)
@@ -352,38 +341,30 @@ impl std::fmt::Display for Message<'_> {
     derive_more::Display,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[serde(try_from = "Message<'_>", into = "Message<'_>")]
+#[serde(try_from = "Message", into = "Message")]
 #[display("{}", inner)]
-pub struct AssistantMessage<'a> {
-    pub(crate) inner: Message<'a>, // Invariant: role == Role::Assistant
+pub struct AssistantMessage {
+    pub(crate) inner: Message, // Invariant: role == Role::Assistant
 }
 
-impl<'a> AssistantMessage<'a> {
+impl AssistantMessage {
     /// An assistant turn whose [`Content`] is a single [`Block::Text`]. Handy
     /// for prefill and for hand-authored examples (see
     /// [`Prompt::with_examples`](crate::Prompt::with_examples)).
     pub fn text<T>(text: T) -> Self
     where
-        T: Into<crate::CowStr<'a>>,
+        T: Into<crate::CowStr>,
     {
         Content::text(text).into()
     }
 
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> AssistantMessage<'static> {
-        AssistantMessage::<'static> {
-            inner: self.inner.into_static(),
-        }
-    }
-
     /// Get the inner [`Content`].
-    pub fn content(&self) -> &Content<'a> {
+    pub fn content(&self) -> &Content {
         &self.inner.content
     }
 
     /// Get the inner [`Content`] mutably.
-    pub fn content_mut(&mut self) -> &mut Content<'a> {
+    pub fn content_mut(&mut self) -> &mut Content {
         &mut self.inner.content
     }
 
@@ -396,8 +377,8 @@ impl<'a> AssistantMessage<'a> {
     }
 }
 
-impl<'a> From<Content<'a>> for AssistantMessage<'a> {
-    fn from(content: Content<'a>) -> Self {
+impl From<Content> for AssistantMessage {
+    fn from(content: Content) -> Self {
         Self {
             inner: Message {
                 role: Role::Assistant,
@@ -407,43 +388,43 @@ impl<'a> From<Content<'a>> for AssistantMessage<'a> {
     }
 }
 
-impl From<String> for AssistantMessage<'_> {
+impl From<String> for AssistantMessage {
     fn from(string: String) -> Self {
         Content::text(string).into()
     }
 }
 
-impl<'a> From<&'a str> for AssistantMessage<'a> {
-    fn from(string: &'a str) -> Self {
-        Content::text(string).into()
+impl From<&str> for AssistantMessage {
+    fn from(string: &str) -> Self {
+        Content::text(string.to_owned()).into()
     }
 }
 
-impl<'a> From<AssistantMessage<'a>> for Message<'a> {
-    fn from(val: AssistantMessage<'a>) -> Self {
+impl From<AssistantMessage> for Message {
+    fn from(val: AssistantMessage) -> Self {
         val.inner
     }
 }
 
-impl<'a> From<AssistantMessage<'a>> for Content<'a> {
-    fn from(val: AssistantMessage<'a>) -> Self {
+impl From<AssistantMessage> for Content {
+    fn from(val: AssistantMessage) -> Self {
         val.inner.content
     }
 }
 
-impl<'a, T> FromIterator<T> for AssistantMessage<'a>
+impl<T> FromIterator<T> for AssistantMessage
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self::from(Content::from_iter(iter))
     }
 }
 
-impl<'a> TryFrom<Message<'a>> for AssistantMessage<'a> {
+impl TryFrom<Message> for AssistantMessage {
     type Error = NotTheAssistant;
 
-    fn try_from(message: Message<'a>) -> Result<Self, Self::Error> {
+    fn try_from(message: Message) -> Result<Self, Self::Error> {
         if message.role == Role::Assistant {
             Ok(Self { inner: message })
         } else {
@@ -453,16 +434,16 @@ impl<'a> TryFrom<Message<'a>> for AssistantMessage<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for AssistantMessage<'a> {
+impl crate::markdown::ToMarkdown for AssistantMessage {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
     ///
     /// [`Options`]: crate::markdown::Options
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         self.inner.markdown_events_custom(options)
     }
 }
@@ -481,34 +462,26 @@ pub struct NotTheAssistant;
     Deserialize,
     Serialize,
 )]
-#[serde(try_from = "Message<'_>", into = "Message<'_>")]
+#[serde(try_from = "Message", into = "Message")]
 #[display("{}", inner)]
-pub struct UserMessage<'a> {
-    inner: Message<'a>, // Invariant: role == Role::User
+pub struct UserMessage {
+    inner: Message, // Invariant: role == Role::User
 }
 
-impl<'a> UserMessage<'a> {
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> UserMessage<'static> {
-        UserMessage::<'static> {
-            inner: self.inner.into_static(),
-        }
-    }
-
+impl UserMessage {
     /// Get the inner [`Content`].
-    pub fn content(&self) -> &Content<'a> {
+    pub fn content(&self) -> &Content {
         &self.inner.content
     }
 
     /// Get the inner [`Content`] mutably.
-    pub fn content_mut(&mut self) -> &mut Content<'a> {
+    pub fn content_mut(&mut self) -> &mut Content {
         &mut self.inner.content
     }
 }
 
-impl<'a> From<Content<'a>> for UserMessage<'a> {
-    fn from(content: Content<'a>) -> Self {
+impl From<Content> for UserMessage {
+    fn from(content: Content) -> Self {
         Self {
             inner: Message {
                 role: Role::User,
@@ -518,13 +491,13 @@ impl<'a> From<Content<'a>> for UserMessage<'a> {
     }
 }
 
-impl<'a> From<UserMessage<'a>> for Content<'a> {
-    fn from(message: UserMessage<'a>) -> Self {
+impl From<UserMessage> for Content {
+    fn from(message: UserMessage) -> Self {
         message.inner.content
     }
 }
 
-impl From<String> for UserMessage<'_> {
+impl From<String> for UserMessage {
     fn from(string: String) -> Self {
         UserMessage {
             inner: Message {
@@ -535,37 +508,37 @@ impl From<String> for UserMessage<'_> {
     }
 }
 
-impl<'a> From<&'a str> for UserMessage<'a> {
-    fn from(string: &'a str) -> Self {
+impl From<&str> for UserMessage {
+    fn from(string: &str) -> Self {
         UserMessage {
             inner: Message {
                 role: Role::User,
-                content: Content::text(string),
+                content: Content::text(string.to_owned()),
             },
         }
     }
 }
 
-impl<'a> From<tool::Result<'a>> for UserMessage<'a> {
-    fn from(result: tool::Result<'a>) -> Self {
+impl From<tool::Result> for UserMessage {
+    fn from(result: tool::Result) -> Self {
         UserMessage {
             inner: result.into(),
         }
     }
 }
 
-impl<'a, T> FromIterator<T> for UserMessage<'a>
+impl<T> FromIterator<T> for UserMessage
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self::from(Content::from_iter(iter))
     }
 }
 
-impl<'a> IntoIterator for UserMessage<'a> {
-    type Item = Block<'a>;
-    type IntoIter = std::vec::IntoIter<Block<'a>>;
+impl IntoIterator for UserMessage {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.inner.content.into_iter()
@@ -573,7 +546,7 @@ impl<'a> IntoIterator for UserMessage<'a> {
 }
 
 #[cfg(feature = "dioxus")]
-impl From<dioxus::events::FormEvent> for UserMessage<'_> {
+impl From<dioxus::events::FormEvent> for UserMessage {
     fn from(event: dioxus::events::FormEvent) -> Self {
         UserMessage {
             inner: Message {
@@ -585,7 +558,7 @@ impl From<dioxus::events::FormEvent> for UserMessage<'_> {
 }
 
 #[cfg(feature = "dioxus")]
-impl From<dioxus::html::FormData> for UserMessage<'_> {
+impl From<dioxus::html::FormData> for UserMessage {
     fn from(data: dioxus::html::FormData) -> Self {
         let content = data.into();
         UserMessage {
@@ -597,10 +570,10 @@ impl From<dioxus::html::FormData> for UserMessage<'_> {
     }
 }
 
-impl<'a> TryFrom<Message<'a>> for UserMessage<'a> {
+impl TryFrom<Message> for UserMessage {
     type Error = NotTheUser;
 
-    fn try_from(message: Message<'a>) -> Result<Self, Self::Error> {
+    fn try_from(message: Message) -> Result<Self, Self::Error> {
         if message.role == Role::User {
             Ok(Self { inner: message })
         } else {
@@ -609,23 +582,23 @@ impl<'a> TryFrom<Message<'a>> for UserMessage<'a> {
     }
 }
 
-impl<'a> From<UserMessage<'a>> for Message<'a> {
-    fn from(message: UserMessage<'a>) -> Self {
+impl From<UserMessage> for Message {
+    fn from(message: UserMessage) -> Self {
         message.inner
     }
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for UserMessage<'a> {
+impl crate::markdown::ToMarkdown for UserMessage {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
     ///
     /// [`Options`]: crate::markdown::Options
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         self.inner.markdown_events_custom(options)
     }
 }
@@ -653,9 +626,9 @@ impl From<NotTheUser> for Cow<'static, str> {
 )]
 #[serde(transparent)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Content<'a>(pub Vec<Block<'a>>);
+pub struct Content(pub Vec<Block>);
 
-impl<'de, 'a> Deserialize<'de> for Content<'a> {
+impl<'de> Deserialize<'de> for Content {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -665,9 +638,9 @@ impl<'de, 'a> Deserialize<'de> for Content<'a> {
         // hand-written visitor would be more code and harder to reason about.
         #[derive(Deserialize)]
         #[serde(untagged)]
-        enum Wire<'a> {
-            Text(crate::CowStr<'a>),
-            Blocks(Vec<Block<'a>>),
+        enum Wire {
+            Text(crate::CowStr),
+            Blocks(Vec<Block>),
         }
 
         Ok(Content(match Wire::deserialize(deserializer)? {
@@ -681,11 +654,11 @@ impl<'de, 'a> Deserialize<'de> for Content<'a> {
     }
 }
 
-impl<'a> Content<'a> {
+impl Content {
     /// Text content as a single [`Block::Text`].
     pub fn text<T>(text: T) -> Self
     where
-        T: Into<crate::CowStr<'a>>,
+        T: Into<crate::CowStr>,
     {
         Self(vec![Block::text(text)])
     }
@@ -694,7 +667,7 @@ impl<'a> Content<'a> {
     /// block.
     pub fn push<P>(&mut self, part: P) -> usize
     where
-        P: Into<Block<'a>>,
+        P: Into<Block>,
     {
         let index = self.0.len();
         self.0.push(part.into());
@@ -737,22 +710,11 @@ impl<'a> Content<'a> {
         self.0.iter().any(|b| b.is_cached())
     }
 
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    pub fn into_static(self) -> Content<'static> {
-        Content(self.0.into_iter().map(Block::into_static).collect())
-    }
-
     /// Push a [`Delta`] into the final [`Block`]. The types must be compatible
     /// or this will return a [`ContentMismatch`] error.
     ///
     /// It is an error to try to merge a single json delta into a content block.
-    pub fn push_delta(
-        &mut self,
-        delta: Delta<'a>,
-    ) -> Result<(), DeltaError<'_>> {
+    pub fn push_delta(&mut self, delta: Delta) -> Result<(), DeltaError> {
         if let Delta::Json { .. } = &delta {
             // It isn't possible to merge a single json delta into a content
             // block because ToolUse::input is a serde_json::Value and not a
@@ -775,14 +737,14 @@ impl<'a> Content<'a> {
     }
 
     /// Drains the blocks from the content.
-    pub fn drain(&'a mut self) -> impl Iterator<Item = Block<'a>> + 'a {
+    pub fn drain(&mut self) -> impl Iterator<Item = Block> + '_ {
         self.0.drain(..)
     }
 }
 
-impl<'a> IntoIterator for Content<'a> {
-    type Item = Block<'a>;
-    type IntoIter = std::vec::IntoIter<Block<'a>>;
+impl IntoIterator for Content {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.0.into_iter()
@@ -790,19 +752,19 @@ impl<'a> IntoIterator for Content<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
+impl crate::markdown::ToMarkdown for Content {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
     /// [`Options`]: crate::markdown::Options
     #[cfg(feature = "markdown")]
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::Event;
 
-        let it: Box<dyn Iterator<Item = Event<'a>> + 'a> = Box::new(
+        let it: Box<dyn Iterator<Item = Event<'_>> + '_> = Box::new(
             self.0
                 .iter()
                 .flat_map(move |part| part.markdown_events_custom(options)),
@@ -813,8 +775,8 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Content<'a> {
 }
 
 #[cfg(not(feature = "markdown"))]
-impl std::fmt::Display for Content<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Content {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // This could be derived but the `Join` trait is not stable. Neither is
         // `Iterator::intersperse`. This also has fewer allocations.
         let mut iter = self.0.iter();
@@ -829,48 +791,48 @@ impl std::fmt::Display for Content<'_> {
 }
 
 #[cfg(feature = "dioxus")]
-impl From<dioxus::html::FormData> for Content<'_> {
+impl From<dioxus::html::FormData> for Content {
     fn from(data: dioxus::html::FormData) -> Self {
         data.value().into()
     }
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Content<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Content {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
         self.write_markdown(f)
     }
 }
 
-impl Content<'_> {
+impl Content {
     /// Separator for multi-part content.
     #[cfg(not(feature = "markdown"))]
     pub const SEP: &'static str = "\n\n";
 }
 
-impl<'a, T> From<T> for Content<'a>
+impl<T> From<T> for Content
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from(block: T) -> Self {
         Self(vec![block.into()])
     }
 }
 
-impl<'a, T> FromIterator<T> for Content<'a>
+impl<T> FromIterator<T> for Content
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
         Self(iter.into_iter().map(Into::into).collect())
     }
 }
 
-impl<'a, T> Extend<T> for Content<'a>
+impl<T> Extend<T> for Content
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) {
         self.0.extend(iter.into_iter().map(Into::into));
@@ -884,24 +846,24 @@ where
 // I don't really like this because the generics mean a new function for every
 // array size. But in most cases the array size is between 1 and 3 so it's not
 // a big deal.
-impl<'a, T, const N: usize> From<[T; N]> for Content<'a>
+impl<T, const N: usize> From<[T; N]> for Content
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from(blocks: [T; N]) -> Self {
         Self(blocks.into_iter().map(|t| t.into()).collect())
     }
 }
 
-impl<'a> From<&'a [&'a str]> for Content<'a> {
-    fn from(text: &'a [&'a str]) -> Self {
+impl From<&[&str]> for Content {
+    fn from(text: &[&str]) -> Self {
         Self(text.iter().map(|t| (*t).into()).collect())
     }
 }
 
-impl<'a, T> From<Vec<T>> for Content<'a>
+impl<T> From<Vec<T>> for Content
 where
-    T: Into<Block<'a>>,
+    T: Into<Block>,
 {
     fn from(blocks: Vec<T>) -> Self {
         Self(blocks.into_iter().map(Into::into).collect())
@@ -916,20 +878,20 @@ where
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum Block<'a> {
+pub enum Block {
     /// Text content.
     #[serde(alias = "text_delta")]
     #[cfg_attr(not(feature = "markdown"), display("{text}"))]
     Text {
         /// The actual text content.
-        text: crate::CowStr<'a>,
+        text: crate::CowStr,
         /// Citations referencing source [`Document`]s, populated by the API on
         /// response [`Text`] blocks when a document had citations enabled.
         ///
         /// [`Document`]: Block::Document
         /// [`Text`]: Block::Text
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        citations: Option<Vec<Citation<'a>>>,
+        citations: Option<Vec<Citation>>,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
@@ -950,15 +912,15 @@ pub enum Block<'a> {
         /// is up to the caller to handle user facing thought sanitization, the
         /// easiest solution to which is just not to show the thought to the
         /// user. This is only for the developer and the Assistant. If there is
-        /// a need to show the thought, a Cow<'a, str> is convertable to a
+        /// a need to show the thought, a Cow<'static, str> is convertable to a
         /// `langsan::CowStr`.
         #[serde(rename = "thinking")]
-        thought: Cow<'a, str>,
+        thought: Cow<'static, str>,
         /// Signature. Guarantees thought was not tampered with. It's up to the
         /// caller to not mix up the thought signatures. Anthropic will reject
         /// the request if the signature is invalid.
         #[serde(default)]
-        signature: Cow<'a, str>,
+        signature: Cow<'static, str>,
     },
     /// Redacted thinking. Sometimes the system will redact the thinking content
     /// for safety reasons. The Assistant can still see the redacted content.
@@ -967,14 +929,14 @@ pub enum Block<'a> {
     RedactedThought {
         /// Allows the Assistant to see the redacted thought if it is provided.
         #[serde(rename = "data")]
-        signature: Cow<'a, str>,
+        signature: Cow<'static, str>,
     },
     /// Image content.
     #[cfg_attr(not(feature = "markdown"), display("{}", image))]
     Image {
         #[serde(rename = "source")]
         /// An base64 encoded image.
-        image: Image<'a>,
+        image: Image,
         /// Use prompt caching. See [`Block::cache`] for more information.
         #[serde(skip_serializing_if = "Option::is_none")]
         cache_control: Option<CacheControl>,
@@ -989,13 +951,13 @@ pub enum Block<'a> {
     Document {
         /// The document source.
         #[serde(rename = "source")]
-        source: DocumentSource<'a>,
+        source: DocumentSource,
         /// Optional title (passed to the model, not citable).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        title: Option<Cow<'a, str>>,
+        title: Option<Cow<'static, str>>,
         /// Optional context (passed to the model, not citable).
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        context: Option<Cow<'a, str>>,
+        context: Option<Cow<'static, str>>,
         /// Enable citations for this document.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         citations: Option<CitationsConfig>,
@@ -1012,7 +974,7 @@ pub enum Block<'a> {
     ToolUse {
         /// Tool use input.
         #[serde(flatten)]
-        call: tool::Use<'a>,
+        call: tool::Use,
     },
     /// Result of a [`Tool`] call. This should only be used with the [`User`]
     /// role.
@@ -1023,7 +985,7 @@ pub enum Block<'a> {
     ToolResult {
         /// Tool result
         #[serde(flatten)]
-        result: tool::Result<'a>,
+        result: tool::Result,
     },
     /// A server tool invocation the API executed itself (`server_tool_use`),
     /// e.g. a [`web_search`]. Like [`Block::ToolUse`], but Anthropic ran it: its
@@ -1035,7 +997,7 @@ pub enum Block<'a> {
     ServerToolUse {
         /// The server tool call.
         #[serde(flatten)]
-        call: tool::Use<'a>,
+        call: tool::Use,
     },
     /// Result of a [`web_search`] server tool call (`web_search_tool_result`),
     /// appearing in the assistant turn right after its
@@ -1046,9 +1008,9 @@ pub enum Block<'a> {
     WebSearchToolResult {
         /// The [`id`](tool::Use::id) of the
         /// [`ServerToolUse`](Block::ServerToolUse) this answers.
-        tool_use_id: Cow<'a, str>,
+        tool_use_id: Cow<'static, str>,
         /// The search results, or an error.
-        content: WebSearchToolResultContent<'a>,
+        content: WebSearchToolResultContent,
     },
     /// Result of a [`web_fetch`] server tool call (`web_fetch_tool_result`),
     /// appearing in the assistant turn right after its
@@ -1060,9 +1022,9 @@ pub enum Block<'a> {
     WebFetchToolResult {
         /// The [`id`](tool::Use::id) of the
         /// [`ServerToolUse`](Block::ServerToolUse) this answers.
-        tool_use_id: Cow<'a, str>,
+        tool_use_id: Cow<'static, str>,
         /// The fetched document, or an error.
-        content: WebFetchToolResultContent<'a>,
+        content: WebFetchToolResultContent,
     },
     /// Result of a [tool-search] server tool call (`tool_search_tool_result`),
     /// appearing in the assistant turn right after its
@@ -1075,9 +1037,9 @@ pub enum Block<'a> {
     ToolSearchToolResult {
         /// The [`id`](tool::Use::id) of the
         /// [`ServerToolUse`](Block::ServerToolUse) this answers.
-        tool_use_id: Cow<'a, str>,
+        tool_use_id: Cow<'static, str>,
         /// The discovered tool references, or an error.
-        content: ToolSearchToolResultContent<'a>,
+        content: ToolSearchToolResultContent,
     },
     /// A `tool_reference` block naming a [`defer_loading`] tool to expand. Used
     /// to implement [custom client-side tool search]: a custom tool returns
@@ -1093,7 +1055,7 @@ pub enum Block<'a> {
     #[cfg_attr(not(feature = "markdown"), display(""))]
     ToolReference {
         /// The [`name`](crate::tool::MethodDef::name) of the tool to expand.
-        tool_name: Cow<'a, str>,
+        tool_name: Cow<'static, str>,
     },
 }
 
@@ -1102,11 +1064,11 @@ pub enum Block<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum WebSearchToolResultContent<'a> {
+pub enum WebSearchToolResultContent {
     /// Successful search results.
-    Results(Vec<WebSearchResult<'a>>),
+    Results(Vec<WebSearchResult>),
     /// The search failed.
-    Error(WebSearchToolError<'a>),
+    Error(WebSearchToolError),
 }
 
 /// A single result in a [`Block::WebSearchToolResult`], cited on the model's
@@ -1115,85 +1077,53 @@ pub enum WebSearchToolResultContent<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "web_search_result")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct WebSearchResult<'a> {
+pub struct WebSearchResult {
     /// The result URL.
-    pub url: Cow<'a, str>,
+    pub url: Cow<'static, str>,
     /// The result title.
-    pub title: Cow<'a, str>,
+    pub title: Cow<'static, str>,
     /// Opaque content the model uses to cite this result. Pass it back verbatim
     /// when echoing the turn (e.g. to continue a [`pause_turn`]).
     ///
     /// [`pause_turn`]: crate::response::StopReason::PauseTurn
-    pub encrypted_content: Cow<'a, str>,
+    pub encrypted_content: Cow<'static, str>,
     /// Approximate age of the page, e.g. `"3 days ago"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub page_age: Option<Cow<'a, str>>,
+    pub page_age: Option<Cow<'static, str>>,
 }
 
 /// An error reported in a [`Block::WebSearchToolResult`].
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "web_search_tool_result_error")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct WebSearchToolError<'a> {
+pub struct WebSearchToolError {
     /// The error code, e.g. `"max_uses_exceeded"`, `"too_many_requests"`,
     /// `"query_too_long"`, `"invalid_input"`, or `"unavailable"`.
-    pub error_code: Cow<'a, str>,
+    pub error_code: Cow<'static, str>,
 }
 
-impl WebSearchToolResultContent<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebSearchToolResultContent<'static> {
-        match self {
-            Self::Results(results) => WebSearchToolResultContent::Results(
-                results
-                    .into_iter()
-                    .map(WebSearchResult::into_static)
-                    .collect(),
-            ),
-            Self::Error(error) => {
-                WebSearchToolResultContent::Error(error.into_static())
-            }
-        }
-    }
-}
+impl WebSearchToolResultContent {}
 
-impl WebSearchResult<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebSearchResult<'static> {
-        WebSearchResult {
-            url: Cow::Owned(self.url.into_owned()),
-            title: Cow::Owned(self.title.into_owned()),
-            encrypted_content: Cow::Owned(self.encrypted_content.into_owned()),
-            page_age: self.page_age.map(|a| Cow::Owned(a.into_owned())),
-        }
-    }
-}
+impl WebSearchResult {}
 
-impl WebSearchToolError<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebSearchToolError<'static> {
-        WebSearchToolError {
-            error_code: Cow::Owned(self.error_code.into_owned()),
-        }
-    }
-}
+impl WebSearchToolError {}
 
 /// The `content` of a [`Block::WebFetchToolResult`]: either the fetched
 /// document or an error. Tagged on `type` (both arms carry one).
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum WebFetchToolResultContent<'a> {
+pub enum WebFetchToolResultContent {
     /// The fetch succeeded.
     #[serde(rename = "web_fetch_result")]
     Result {
         /// The URL that was fetched.
-        url: Cow<'a, str>,
+        url: Cow<'static, str>,
         /// The fetched content as a document block.
-        content: FetchedDocument<'a>,
+        content: FetchedDocument,
         /// ISO-8601 timestamp of when the content was retrieved, e.g.
         /// `"2025-08-25T10:30:00Z"`.
-        retrieved_at: Cow<'a, str>,
+        retrieved_at: Cow<'static, str>,
     },
     /// The fetch failed.
     #[serde(rename = "web_fetch_tool_result_error")]
@@ -1202,7 +1132,7 @@ pub enum WebFetchToolResultContent<'a> {
         /// `"url_too_long"`, `"too_many_requests"`,
         /// `"unsupported_content_type"`, `"max_uses_exceeded"`,
         /// `"invalid_input"`, or `"unavailable"`.
-        error_code: Cow<'a, str>,
+        error_code: Cow<'static, str>,
     },
 }
 
@@ -1214,16 +1144,16 @@ pub enum WebFetchToolResultContent<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "document")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct FetchedDocument<'a> {
+pub struct FetchedDocument {
     /// The fetched content: [`text/plain`] for web pages, base64
     /// [`application/pdf`] for PDFs.
     ///
     /// [`text/plain`]: DocumentSource::PlainText
     /// [`application/pdf`]: DocumentSource::Base64
-    pub source: DocumentSource<'a>,
+    pub source: DocumentSource,
     /// The document title, when the page provided one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub title: Option<Cow<'a, str>>,
+    pub title: Option<Cow<'static, str>>,
     /// Whether citations were enabled (mirrors the [`WebFetch`] tool's
     /// [`citations`] config).
     ///
@@ -1233,36 +1163,9 @@ pub struct FetchedDocument<'a> {
     pub citations: Option<CitationsConfig>,
 }
 
-impl WebFetchToolResultContent<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebFetchToolResultContent<'static> {
-        match self {
-            Self::Result {
-                url,
-                content,
-                retrieved_at,
-            } => WebFetchToolResultContent::Result {
-                url: Cow::Owned(url.into_owned()),
-                content: content.into_static(),
-                retrieved_at: Cow::Owned(retrieved_at.into_owned()),
-            },
-            Self::Error { error_code } => WebFetchToolResultContent::Error {
-                error_code: Cow::Owned(error_code.into_owned()),
-            },
-        }
-    }
-}
+impl WebFetchToolResultContent {}
 
-impl FetchedDocument<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> FetchedDocument<'static> {
-        FetchedDocument {
-            source: self.source.into_static(),
-            title: self.title.map(|t| Cow::Owned(t.into_owned())),
-            citations: self.citations,
-        }
-    }
-}
+impl FetchedDocument {}
 
 /// The `content` of a [`Block::ToolSearchToolResult`]: either the discovered
 /// tool references or an error. Tagged on `type` (unlike the untagged
@@ -1271,21 +1174,21 @@ impl FetchedDocument<'_> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum ToolSearchToolResultContent<'a> {
+pub enum ToolSearchToolResultContent {
     /// The tools the search discovered. The API expands each
     /// [`ToolReference`] into the matching deferred tool's full definition
     /// before the model sees it.
     #[serde(rename = "tool_search_tool_search_result")]
     Results {
         /// The discovered references, in relevance order (3–5 per search).
-        tool_references: Vec<ToolReference<'a>>,
+        tool_references: Vec<ToolReference>,
     },
     /// The search failed.
     #[serde(rename = "tool_search_tool_result_error")]
     Error {
         /// The error code, e.g. `"too_many_requests"`, `"invalid_pattern"`,
         /// `"pattern_too_long"`, or `"unavailable"`.
-        error_code: Cow<'a, str>,
+        error_code: Cow<'static, str>,
     },
 }
 
@@ -1297,55 +1200,31 @@ pub enum ToolSearchToolResultContent<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "tool_reference")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct ToolReference<'a> {
+pub struct ToolReference {
     /// The [`name`](crate::tool::MethodDef::name) of the discovered tool.
-    pub tool_name: Cow<'a, str>,
+    pub tool_name: Cow<'static, str>,
 }
 
-impl ToolSearchToolResultContent<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> ToolSearchToolResultContent<'static> {
-        match self {
-            Self::Results { tool_references } => {
-                ToolSearchToolResultContent::Results {
-                    tool_references: tool_references
-                        .into_iter()
-                        .map(ToolReference::into_static)
-                        .collect(),
-                }
-            }
-            Self::Error { error_code } => ToolSearchToolResultContent::Error {
-                error_code: Cow::Owned(error_code.into_owned()),
-            },
-        }
-    }
-}
+impl ToolSearchToolResultContent {}
 
-impl ToolReference<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> ToolReference<'static> {
-        ToolReference {
-            tool_name: Cow::Owned(self.tool_name.into_owned()),
-        }
-    }
-}
+impl ToolReference {}
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Block<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Block {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
         self.write_markdown(f)
     }
 }
 
-impl<'a> Block<'a> {
+impl Block {
     /// Const constructor for text content. Only available without the `langsan`
     /// feature.
     // TODO: rename this to `text` which is more consistent with the other
     // constructors? Or the other way around?
     #[cfg(not(feature = "langsan"))]
-    pub const fn const_text(text: &'a str) -> Self {
+    pub const fn const_text(text: &str) -> Self {
         Self::Text {
             text: std::borrow::Cow::Borrowed(text),
             citations: None,
@@ -1356,7 +1235,7 @@ impl<'a> Block<'a> {
     /// Text content.
     pub fn text<T>(text: T) -> Self
     where
-        T: Into<crate::CowStr<'a>>,
+        T: Into<crate::CowStr>,
     {
         Self::Text {
             text: text.into(),
@@ -1374,7 +1253,7 @@ impl<'a> Block<'a> {
     /// [custom client-side tool search]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation>
     pub fn tool_reference<T>(tool_name: T) -> Self
     where
-        T: Into<Cow<'a, str>>,
+        T: Into<Cow<'static, str>>,
     {
         Self::ToolReference {
             tool_name: tool_name.into(),
@@ -1386,7 +1265,7 @@ impl<'a> Block<'a> {
     ///
     /// [`Document`]: Block::Document
     /// [`document_with_citations`]: Block::document_with_citations
-    pub fn document(source: DocumentSource<'a>) -> Self {
+    pub fn document(source: DocumentSource) -> Self {
         Self::Document {
             source,
             title: None,
@@ -1401,7 +1280,7 @@ impl<'a> Block<'a> {
     ///
     /// [`Document`]: Block::Document
     /// [`Text`]: Block::Text
-    pub fn document_with_citations(source: DocumentSource<'a>) -> Self {
+    pub fn document_with_citations(source: DocumentSource) -> Self {
         Self::Document {
             source,
             title: None,
@@ -1421,9 +1300,9 @@ impl<'a> Block<'a> {
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
     /// will return a [`ContentMismatch`] error. In the case of a [`ToolUse`]
     /// block, the deltas, together, must form a complete json object.
-    pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError<'_>>
+    pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
     where
-        Ds: IntoIterator<Item = Delta<'a>>,
+        Ds: IntoIterator<Item = Delta>,
     {
         let mut it = deltas.into_iter();
 
@@ -1699,93 +1578,10 @@ impl<'a> Block<'a> {
 
     /// Returns the [`tool::Use`] if this is a [`Block::ToolUse`]. See also
     /// [`response::Message::tool_use`].
-    pub fn tool_use(&self) -> Option<&crate::tool::Use<'_>> {
+    pub fn tool_use(&self) -> Option<&crate::tool::Use> {
         match self {
             Self::ToolUse { call, .. } => Some(call),
             _ => None,
-        }
-    }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    pub fn into_static(self) -> Block<'static> {
-        match self {
-            Self::Text {
-                text,
-                citations,
-                cache_control,
-            } => Block::Text {
-                #[cfg(not(feature = "langsan"))]
-                text: std::borrow::Cow::Owned(text.into_owned()),
-                #[cfg(feature = "langsan")]
-                text: text.into_static(),
-                citations: citations.map(|cs| {
-                    cs.into_iter().map(Citation::into_static).collect()
-                }),
-                cache_control,
-            },
-            Self::Thought { thought, signature } => Block::Thought {
-                thought: thought.into_owned().into(),
-                signature: signature.into_owned().into(),
-            },
-            Self::RedactedThought { signature } => Block::RedactedThought {
-                signature: signature.into_owned().into(),
-            },
-            Self::Image {
-                image,
-                cache_control,
-            } => Block::Image {
-                image: image.into_static(),
-                cache_control,
-            },
-            Self::Document {
-                source,
-                title,
-                context,
-                citations,
-                cache_control,
-            } => Block::Document {
-                source: source.into_static(),
-                title: title.map(|t| Cow::Owned(t.into_owned())),
-                context: context.map(|c| Cow::Owned(c.into_owned())),
-                citations,
-                cache_control,
-            },
-            Self::ToolUse { call } => Block::ToolUse {
-                call: call.into_static(),
-            },
-            Self::ToolResult { result } => Block::ToolResult {
-                result: result.into_static(),
-            },
-            Self::ServerToolUse { call } => Block::ServerToolUse {
-                call: call.into_static(),
-            },
-            Self::WebSearchToolResult {
-                tool_use_id,
-                content,
-            } => Block::WebSearchToolResult {
-                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
-                content: content.into_static(),
-            },
-            Self::WebFetchToolResult {
-                tool_use_id,
-                content,
-            } => Block::WebFetchToolResult {
-                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
-                content: content.into_static(),
-            },
-            Self::ToolSearchToolResult {
-                tool_use_id,
-                content,
-            } => Block::ToolSearchToolResult {
-                tool_use_id: Cow::Owned(tool_use_id.into_owned()),
-                content: content.into_static(),
-            },
-            Self::ToolReference { tool_name } => Block::ToolReference {
-                tool_name: Cow::Owned(tool_name.into_owned()),
-            },
         }
     }
 
@@ -1813,19 +1609,19 @@ impl<'a> Block<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
+impl crate::markdown::ToMarkdown for Block {
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`].
     ///
     /// [`Options`]: crate::markdown::Options
     #[cfg(feature = "markdown")]
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
-        let it: Box<dyn Iterator<Item = Event<'a>> + 'a> = match self {
+        let it: Box<dyn Iterator<Item = Event<'_>> + '_> = match self {
             Self::Text { text, .. } => {
                 // We'll parse the inner text as markdown.
                 Box::new(pulldown_cmark::Parser::new_ext(text, options.inner))
@@ -1895,13 +1691,13 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Block<'a> {
     }
 }
 
-impl<'a> From<&'a str> for Block<'a> {
-    fn from(text: &'a str) -> Self {
-        Self::text(text)
+impl From<&str> for Block {
+    fn from(text: &str) -> Self {
+        Self::text(text.to_owned())
     }
 }
 
-impl From<String> for Block<'_> {
+impl From<String> for Block {
     fn from(text: String) -> Self {
         Self::Text {
             text: text.into(),
@@ -1911,8 +1707,8 @@ impl From<String> for Block<'_> {
     }
 }
 
-impl<'a> From<crate::CowStr<'a>> for Block<'a> {
-    fn from(text: crate::CowStr<'a>) -> Self {
+impl From<crate::CowStr> for Block {
+    fn from(text: crate::CowStr) -> Self {
         Self::Text {
             text,
             citations: None,
@@ -1921,8 +1717,8 @@ impl<'a> From<crate::CowStr<'a>> for Block<'a> {
     }
 }
 
-impl<'a> From<Image<'a>> for Block<'a> {
-    fn from(image: Image<'a>) -> Self {
+impl From<Image> for Block {
+    fn from(image: Image) -> Self {
         Self::Image {
             image,
             cache_control: None,
@@ -1930,26 +1726,26 @@ impl<'a> From<Image<'a>> for Block<'a> {
     }
 }
 
-impl<'a> From<DocumentSource<'a>> for Block<'a> {
-    fn from(source: DocumentSource<'a>) -> Self {
+impl From<DocumentSource> for Block {
+    fn from(source: DocumentSource) -> Self {
         Self::document(source)
     }
 }
 
-impl<'a> From<tool::Use<'a>> for Block<'a> {
-    fn from(call: tool::Use<'a>) -> Self {
+impl From<tool::Use> for Block {
+    fn from(call: tool::Use) -> Self {
         Self::ToolUse { call }
     }
 }
 
-impl<'a> From<tool::Result<'a>> for Block<'a> {
-    fn from(result: tool::Result<'a>) -> Self {
+impl From<tool::Result> for Block {
+    fn from(result: tool::Result) -> Self {
         Self::ToolResult { result }
     }
 }
 
 #[cfg(feature = "png")]
-impl From<image::RgbaImage> for Block<'_> {
+impl From<image::RgbaImage> for Block {
     fn from(image: image::RgbaImage) -> Self {
         #[allow(unused_variables)] // for the `e` variable
         Image::encode(MediaType::Png, image)
@@ -1965,7 +1761,7 @@ impl From<image::RgbaImage> for Block<'_> {
 }
 
 #[cfg(feature = "png")]
-impl From<image::DynamicImage> for Block<'_> {
+impl From<image::DynamicImage> for Block {
     fn from(image: image::DynamicImage) -> Self {
         image.to_rgba8().into()
     }
@@ -1985,7 +1781,7 @@ pub enum CacheTtl {
 }
 
 impl std::fmt::Display for CacheTtl {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             CacheTtl::FiveMinutes => write!(f, "5m"),
             CacheTtl::OneHour => write!(f, "1h"),
@@ -2055,7 +1851,7 @@ pub enum DocumentMediaType {
 }
 
 impl std::fmt::Display for DocumentMediaType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Pdf => write!(f, "application/pdf"),
         }
@@ -2074,7 +1870,7 @@ pub enum PlainTextMediaType {
 }
 
 impl std::fmt::Display for PlainTextMediaType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Plain => write!(f, "text/plain"),
         }
@@ -2085,19 +1881,12 @@ impl std::fmt::Display for PlainTextMediaType {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type", rename = "text")]
-pub struct ContentText<'a> {
+pub struct ContentText {
     /// The text content of this chunk.
-    pub text: Cow<'a, str>,
+    pub text: Cow<'static, str>,
 }
 
-impl<'a> ContentText<'a> {
-    /// Convert to a `'static` lifetime.
-    pub fn into_static(self) -> ContentText<'static> {
-        ContentText {
-            text: Cow::Owned(self.text.into_owned()),
-        }
-    }
-}
+impl ContentText {}
 
 /// Source of a [`Document`] content block. Analogous to [`Image`] for image
 /// content.
@@ -2106,18 +1895,18 @@ impl<'a> ContentText<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case", tag = "type")]
-pub enum DocumentSource<'a> {
+pub enum DocumentSource {
     /// Base64-encoded document (PDF).
     Base64 {
         /// Document encoding format.
         media_type: DocumentMediaType,
         /// Base64-encoded document data.
-        data: Cow<'a, str>,
+        data: Cow<'static, str>,
     },
     /// URL to a hosted document.
     Url {
         /// The URL.
-        url: Cow<'a, str>,
+        url: Cow<'static, str>,
     },
     /// Plain text document (auto-chunked into sentences for citations).
     #[serde(rename = "text")]
@@ -2125,23 +1914,23 @@ pub enum DocumentSource<'a> {
         /// Always `text/plain`.
         media_type: PlainTextMediaType,
         /// The plain text content.
-        data: Cow<'a, str>,
+        data: Cow<'static, str>,
     },
     /// Custom content blocks (the caller controls citation granularity).
     Content {
         /// The content blocks.
-        content: Vec<ContentText<'a>>,
+        content: Vec<ContentText>,
     },
     /// Reference to a file uploaded via the Files API.
     File {
         /// The file ID.
-        file_id: Cow<'a, str>,
+        file_id: Cow<'static, str>,
     },
 }
 
-impl<'a> DocumentSource<'a> {
+impl DocumentSource {
     /// Create a base64-encoded PDF document source.
-    pub fn from_base64(data: impl Into<Cow<'a, str>>) -> Self {
+    pub fn from_base64(data: impl Into<Cow<'static, str>>) -> Self {
         Self::Base64 {
             media_type: DocumentMediaType::Pdf,
             data: data.into(),
@@ -2149,12 +1938,12 @@ impl<'a> DocumentSource<'a> {
     }
 
     /// Create a URL document source.
-    pub fn from_url(url: impl Into<Cow<'a, str>>) -> Self {
+    pub fn from_url(url: impl Into<Cow<'static, str>>) -> Self {
         Self::Url { url: url.into() }
     }
 
     /// Create a plain text document source.
-    pub fn from_text(data: impl Into<Cow<'a, str>>) -> Self {
+    pub fn from_text(data: impl Into<Cow<'static, str>>) -> Self {
         Self::PlainText {
             media_type: PlainTextMediaType::Plain,
             data: data.into(),
@@ -2162,12 +1951,12 @@ impl<'a> DocumentSource<'a> {
     }
 
     /// Create a custom content document source from text chunks.
-    pub fn from_content(blocks: Vec<ContentText<'a>>) -> Self {
+    pub fn from_content(blocks: Vec<ContentText>) -> Self {
         Self::Content { content: blocks }
     }
 
     /// Create a Files API reference document source.
-    pub fn from_file_id(id: impl Into<Cow<'a, str>>) -> Self {
+    pub fn from_file_id(id: impl Into<Cow<'static, str>>) -> Self {
         Self::File { file_id: id.into() }
     }
 
@@ -2181,32 +1970,6 @@ impl<'a> DocumentSource<'a> {
             media_type: DocumentMediaType::Pdf,
             data: Cow::Owned(encoded),
         })
-    }
-
-    /// Convert to a `'static` lifetime.
-    pub fn into_static(self) -> DocumentSource<'static> {
-        match self {
-            Self::Base64 { media_type, data } => DocumentSource::Base64 {
-                media_type,
-                data: Cow::Owned(data.into_owned()),
-            },
-            Self::Url { url } => DocumentSource::Url {
-                url: Cow::Owned(url.into_owned()),
-            },
-            Self::PlainText { media_type, data } => DocumentSource::PlainText {
-                media_type,
-                data: Cow::Owned(data.into_owned()),
-            },
-            Self::Content { content } => DocumentSource::Content {
-                content: content
-                    .into_iter()
-                    .map(ContentText::into_static)
-                    .collect(),
-            },
-            Self::File { file_id } => DocumentSource::File {
-                file_id: Cow::Owned(file_id.into_owned()),
-            },
-        }
     }
 
     /// Returns the byte length of the source data.
@@ -2225,8 +1988,8 @@ impl<'a> DocumentSource<'a> {
     }
 }
 
-impl std::fmt::Display for DocumentSource<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for DocumentSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         match self {
             Self::Base64 { media_type, .. } => {
                 write!(f, "[Document ({media_type})]")
@@ -2252,7 +2015,7 @@ impl std::fmt::Display for DocumentSource<'_> {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
-pub enum Image<'a> {
+pub enum Image {
     /// Base64 encoded image data. When displayed, it will be rendered as a
     /// markdown image with embedded data.
     #[display("![Image](data:{media_type};base64,{data})")]
@@ -2260,27 +2023,27 @@ pub enum Image<'a> {
         /// Image encoding format.
         media_type: MediaType,
         /// Base64 encoded compressed image data.
-        data: Cow<'a, str>,
+        data: Cow<'static, str>,
     },
     /// URL to a hosted image. Anthropic fetches it server-side; the crate never
     /// downloads it. When displayed, rendered as a markdown image to the URL.
     #[display("![Image]({url})")]
     Url {
         /// The image URL.
-        url: Cow<'a, str>,
+        url: Cow<'static, str>,
     },
 }
 
-impl<'a> Image<'a> {
+impl Image {
     /// From raw parts. The data is expected to be base64 encoded compressed
     /// image data or the API will reject it.
-    pub fn from_parts(media_type: MediaType, data: Cow<'a, str>) -> Self {
+    pub fn from_parts(media_type: MediaType, data: Cow<'static, str>) -> Self {
         Self::Base64 { media_type, data }
     }
 
     /// From a URL to a hosted image. Anthropic fetches it server-side; the
     /// crate never downloads it.
-    pub fn from_url(url: impl Into<Cow<'a, str>>) -> Self {
+    pub fn from_url(url: impl Into<Cow<'static, str>>) -> Self {
         Self::Url { url: url.into() }
     }
 
@@ -2330,22 +2093,6 @@ impl<'a> Image<'a> {
         }
     }
 
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    ///
-    /// [`Cow`]: std::borrow::Cow
-    pub fn into_static(self) -> Image<'static> {
-        match self {
-            Self::Base64 { media_type, data } => Image::Base64 {
-                media_type,
-                data: std::borrow::Cow::Owned(data.into_owned()),
-            },
-            Self::Url { url } => Image::Url {
-                url: std::borrow::Cow::Owned(url.into_owned()),
-            },
-        }
-    }
-
     /// Returns the number of bytes in the image data (base64 encoded). Call
     /// [`decode`] to get the actual image size.
     #[allow(clippy::len_without_is_empty)]
@@ -2373,7 +2120,7 @@ pub enum ImageDecodeError {
 }
 
 #[cfg(feature = "image")]
-impl TryInto<image::RgbaImage> for Image<'_> {
+impl TryInto<image::RgbaImage> for Image {
     type Error = ImageDecodeError;
 
     /// An [`Image`] can be decoded into an [`image::RgbaImage`] if it is valid
@@ -2432,7 +2179,7 @@ impl MediaType {
 }
 
 impl std::fmt::Display for MediaType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         // Use serde to get the string representation.
         write!(
             f,
@@ -2857,22 +2604,18 @@ mod tests {
 
     #[test]
     #[cfg(feature = "markdown")]
-    // mostly for coverage
-    fn test_into_static() {
+    // Exercises the `From`/`Into` conversions into Content/Block/Message.
+    fn test_block_and_content_conversions() {
         let content: Content = "Hello, world!".into();
-        let content: Content<'static> = content.into_static();
         assert_eq!(content.to_string(), "Hello, world!");
 
         let content = Content::text("Hello, world!");
-        let content: Content<'static> = content.into_static();
         assert_eq!(content.to_string(), "Hello, world!");
 
         let block: Block = "Hello, world!".into();
-        let block: Block<'static> = block.into_static();
         assert_eq!(block.to_string(), "Hello, world!");
 
         let image: Image = Image::from_parts(MediaType::Png, "data".into());
-        let image: Image<'static> = image.into_static();
         assert_eq!(image.to_string(), "![Image](data:image/png;base64,data)");
 
         let tool_use: Block = tool::Use {
@@ -2882,14 +2625,12 @@ mod tests {
             cache_control: None,
         }
         .into();
-        let tool_use: Block<'static> = tool_use.into_static();
         assert_eq!(
             tool_use.markdown_verbose().as_ref(),
             "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{}}\n````"
         );
 
-        let message: Message = (Role::User, "Hello, world!").into();
-        let _: Message<'static> = message.into_static();
+        let _message: Message = (Role::User, "Hello, world!").into();
     }
 
     #[test]
@@ -3006,7 +2747,7 @@ mod tests {
 
     #[test]
     fn test_from_role_cow() {
-        let text: crate::CowStr<'static> = "Hello, world!".into();
+        let text: crate::CowStr = "Hello, world!".into();
         let message: Message = (Role::User, text).into();
 
         assert_eq!(message.to_string(), "### User\n\nHello, world!");
@@ -3234,7 +2975,7 @@ mod tests {
         );
 
         let back: Image = serde_json::from_value(json).unwrap();
-        assert_eq!(back.into_static().to_string(), image.to_string());
+        assert_eq!(back.to_string(), image.to_string());
     }
 
     #[test]

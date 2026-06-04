@@ -185,7 +185,7 @@ impl ToolBox {
     /// [`init_tools`]: Self::init_tools
     pub async fn prepare(
         &mut self,
-        prompt: &mut Prompt<'_>,
+        prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         prompt.methods = Some(
             self.definitions()
@@ -199,7 +199,7 @@ impl ToolBox {
     /// Initialize all tools in the toolbox. Call this once when setting up a conversation.
     pub async fn init_tools(
         &mut self,
-        prompt: &mut Prompt<'_>,
+        prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut errors = Vec::new();
         let backup = prompt.clone();
@@ -231,7 +231,7 @@ impl ToolBox {
     /// Update tool context for the current turn. Call this before each message exchange.
     pub async fn update_turn_context(
         &mut self,
-        prompt: &mut Prompt<'_>,
+        prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut errors = Vec::new();
         let backup = prompt.clone();
@@ -278,7 +278,7 @@ impl Tool for ToolBox {
     }
 
     /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
-    fn definitions(&self) -> Vec<MethodDef<'static>> {
+    fn definitions(&self) -> Vec<MethodDef> {
         self.tool_name_to_tool
             .values()
             .flat_map(|tool| {
@@ -298,7 +298,7 @@ impl Tool for ToolBox {
     }
 
     /// Route the [`Use`] to the appropriate [`Tool`] in the [`ToolBox`].
-    async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {
+    async fn call(&mut self, call: Use) -> tool::Result {
         #[cfg(feature = "log")]
         log::debug!("ToolBox call: {:?}", call);
         let tool_name = match self.method_to_tool_name.get(call.name.as_ref()) {
@@ -471,7 +471,7 @@ mod tests {
     use crate::tool::Result;
 
     struct TestTool {
-        calls: Vec<Use<'static>>,
+        calls: Vec<Use>,
     }
 
     #[async_trait::async_trait]
@@ -480,7 +480,7 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<MethodDef<'static>> {
+        fn definitions(&self) -> Vec<MethodDef> {
             vec![MethodDef {
                 name: "TestTool__test".into(),
                 description: "Test Tool".into(),
@@ -499,9 +499,9 @@ mod tests {
             }]
         }
 
-        async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
+        async fn call(&mut self, call: Use) -> Result {
             let id = call.id.clone();
-            self.calls.push(call.into_static());
+            self.calls.push(call);
             Result {
                 tool_use_id: id,
                 content: "Tool called".into(),
@@ -597,7 +597,7 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<MethodDef<'static>> {
+        fn definitions(&self) -> Vec<MethodDef> {
             vec![MethodDef {
                 name: "TestTool__replaced".into(),
                 description: "Replacement Tool".into(),
@@ -608,7 +608,7 @@ mod tests {
             }]
         }
 
-        async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a> {
+        async fn call(&mut self, call: Use) -> Result {
             Result {
                 tool_use_id: call.id,
                 content: "Replaced tool called".into(),

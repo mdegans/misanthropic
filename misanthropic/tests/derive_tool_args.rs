@@ -88,7 +88,7 @@ mod hand_written_method {
             &self,
             _state: &mut Greeter,
             args: Greet,
-        ) -> Result<Content<'static>, Content<'static>> {
+        ) -> Result<Content, Content> {
             Ok(format!("Hello, {}!", args.name).into())
         }
     }

@@ -51,7 +51,7 @@ impl Client {
         }))
     }
 
-    pub async fn send<'a, T>(&self, request: T) -> Result<(), reqwest::Error>
+    pub async fn send<T>(&self, request: T) -> Result<(), reqwest::Error>
     where
         T: Into<Request>,
     {

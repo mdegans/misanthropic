@@ -60,7 +60,7 @@ pub trait ToolArgs:
 
     /// The wire [`MethodDef`] assembled from [`NAME`](Self::NAME),
     /// [`DESCRIPTION`](Self::DESCRIPTION), and [`schema`](Self::schema).
-    fn definition() -> MethodDef<'static> {
+    fn definition() -> MethodDef {
         let mut def = MethodDef::builder(Self::NAME)
             .description(Self::DESCRIPTION)
             .schema(Self::schema())
@@ -87,7 +87,7 @@ pub trait Method<S: Send>: Send + Sync {
         &self,
         state: &mut S,
         args: Self::Args,
-    ) -> std::result::Result<Content<'static>, Content<'static>>;
+    ) -> std::result::Result<Content, Content>;
 }
 
 /// Object-safe erasure of a [`Method`] so methods with different
@@ -98,14 +98,14 @@ pub trait ErasedMethod<S>: Send + Sync {
     /// Method name (cheap; for routing). See [`ToolArgs::NAME`].
     fn name(&self) -> &'static str;
     /// The wire [`MethodDef`] (builds the schema). See [`ToolArgs::definition`].
-    fn definition(&self) -> MethodDef<'static>;
+    fn definition(&self) -> MethodDef;
     /// Deserialize `input` into the method's `Args` and run it, returning the
     /// result content and whether it is an error.
     async fn dispatch(
         &self,
         state: &mut S,
         input: serde_json::Value,
-    ) -> (Content<'static>, bool);
+    ) -> (Content, bool);
 }
 
 #[async_trait::async_trait]
@@ -114,7 +114,7 @@ impl<S: Send, M: Method<S>> ErasedMethod<S> for M {
         <M::Args as ToolArgs>::NAME
     }
 
-    fn definition(&self) -> MethodDef<'static> {
+    fn definition(&self) -> MethodDef {
         <M::Args as ToolArgs>::definition()
     }
 
@@ -122,7 +122,7 @@ impl<S: Send, M: Method<S>> ErasedMethod<S> for M {
         &self,
         state: &mut S,
         input: serde_json::Value,
-    ) -> (Content<'static>, bool) {
+    ) -> (Content, bool) {
         // `serde_path_to_error` augments the message with the path to the
         // offending field so the model can correct itself.
         let args: M::Args = match serde_path_to_error::deserialize(input) {
@@ -189,7 +189,7 @@ pub trait Methods: Send + Sized {
 /// (`box__tool__method`). Shared by [`Typed`] and the `#[tool]`-generated
 /// `impl Tool`.
 #[doc(hidden)]
-pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<MethodDef<'static>> {
+pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<MethodDef> {
     tool.methods()
         .iter()
         .map(|m| {
@@ -204,10 +204,10 @@ pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<MethodDef<'static>> {
 /// Route a [`Use`] to the matching [`Method`] of `tool` and dispatch it. The
 /// shared body of [`Tool::call`] for [`Typed`] and `#[tool]`-generated tools.
 #[doc(hidden)]
-pub async fn dispatch_methods<'a, M: Methods + Send>(
+pub async fn dispatch_methods<M: Methods + Send>(
     tool: &mut M,
-    call: Use<'a>,
-) -> tool::Result<'a> {
+    call: Use,
+) -> tool::Result {
     let handlers = tool.methods();
     // `call.name` is the fully-qualified (`box__tool__method`) name; the bare
     // method name is its last `SEP`-delimited segment.
@@ -250,11 +250,11 @@ impl<T: Methods + Send> Tool for Typed<T> {
         T::NAME
     }
 
-    fn definitions(&self) -> Vec<MethodDef<'static>> {
+    fn definitions(&self) -> Vec<MethodDef> {
         methods_definitions(&self.0)
     }
 
-    async fn call<'a>(&mut self, call: Use<'a>) -> tool::Result<'a> {
+    async fn call(&mut self, call: Use) -> tool::Result {
         dispatch_methods(&mut self.0, call).await
     }
 
@@ -320,7 +320,7 @@ mod tests {
             &self,
             state: &mut Notes,
             args: Push,
-        ) -> std::result::Result<Content<'static>, Content<'static>> {
+        ) -> std::result::Result<Content, Content> {
             state.notes.push(args.note);
             Ok("noted".into())
         }
@@ -334,7 +334,7 @@ mod tests {
             &self,
             state: &mut Notes,
             _args: Clear,
-        ) -> std::result::Result<Content<'static>, Content<'static>> {
+        ) -> std::result::Result<Content, Content> {
             state.notes.clear();
             Ok("cleared".into())
         }
@@ -350,7 +350,7 @@ mod tests {
         }
     }
 
-    fn call_with(name: &str, input: serde_json::Value) -> Use<'static> {
+    fn call_with(name: &str, input: serde_json::Value) -> Use {
         Use {
             id: "id".into(),
             name: name.to_string().into(),

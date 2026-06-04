@@ -57,7 +57,7 @@ use serde::Deserialize;
 
 /// Method handlers return `Ok(content)` on success or `Err(content)` for a
 /// model-facing error; [`Content`] is `Into`-constructed from a `&str`/`String`.
-type MethodResult = Result<Content<'static>, Content<'static>>;
+type MethodResult = Result<Content, Content>;
 
 /// A grab-bag of small, deterministic utilities. The [`tool`] macro turns each
 /// `#[method]` into a deferred-able [`MethodDef`](misanthropic::tool::MethodDef)
@@ -277,7 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .content
                     .iter()
                     .filter_map(Block::tool_use)
-                    .map(|call| call.clone().into_static())
+                    .map(|call| call.clone())
                     .collect();
 
                 for call in &calls {

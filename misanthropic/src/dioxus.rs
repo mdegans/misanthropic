@@ -14,28 +14,28 @@ use crate::{
 
 /// Options for converting to a [`dioxus`] [`Element`].
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Options<'a> {
+pub struct Options {
     /// [`System`] prompt options.
     ///
     /// [`System`]: opts::System
-    pub system: opts::System<'a>,
+    pub system: opts::System,
     /// Chain of [`Thought`] options.
     ///
     /// [`Thought`]: opts::Thought
-    pub thought: opts::Thought<'a>,
+    pub thought: opts::Thought,
     /// [`tool::Use`] options.
-    pub tool_use: opts::ToolUse<'a>,
+    pub tool_use: opts::ToolUse,
     /// [`tool::Result`] options.
-    pub tool_result: opts::ToolResult<'a>,
+    pub tool_result: opts::ToolResult,
     /// [`Image`] view options.
     ///
     /// [`Image`]: crate::prompt::message::Image
-    pub image: opts::Image<'a>,
+    pub image: opts::Image,
     /// Speech (visible text) options.
-    pub speech: opts::Speech<'a>,
+    pub speech: opts::Speech,
 }
 
-impl Default for Options<'static> {
+impl Default for Options {
     fn default() -> Self {
         Self {
             system: opts::System::Hidden,
@@ -78,7 +78,7 @@ pub mod opts {
 
     impl HeadingLevel {
         /// Convert to a [`HeadingLevel::element`] with the given text `content`.
-        pub fn element<'a>(self, content: Cow<'a, str>) -> Element {
+        pub fn element(self, content: Cow<'static, str>) -> Element {
             match self {
                 HeadingLevel::H1 => rsx!(h1 { "{content}" }),
                 HeadingLevel::H2 => rsx!(h2 { "{content}" }),
@@ -108,35 +108,35 @@ pub mod opts {
 
     /// System prompt mode.
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum System<'a> {
+    pub enum System {
         /// No element at all.
         Hidden,
         /// Placeholder.
         Placeholder {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
         /// Show full system prompt.
         Show {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
     }
 
     /// Thought mode.
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum Thought<'a> {
+    pub enum Thought {
         /// Hide thoughts.
         Hidden,
         /// No content.
         Placeholder {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
         /// Show thoughts with `thought` class.
         Show {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
     }
 
@@ -144,7 +144,7 @@ pub mod opts {
     ///
     /// [`tool::Use`]: crate::tool::Use
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum ToolUse<'a> {
+    pub enum ToolUse {
         /// Hide tool use.
         Hidden,
         /// No content.
@@ -152,20 +152,20 @@ pub mod opts {
             /// Show name of tool being used as a heading.
             show_name: Option<HeadingLevel>,
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
         /// Show tool use with JSON in a `<code>` block.
         Show {
             /// Show name of tool being used as a heading.
             show_name: Option<HeadingLevel>,
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
     }
 
     /// [`tool::Result`] options.
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum ToolResult<'a> {
+    pub enum ToolResult {
         /// Hide tool result.
         Hidden,
         /// No content.
@@ -173,16 +173,16 @@ pub mod opts {
         // however it's always paired with a tool use so we can show that name.
         Placeholder {
             /// Classes to add on error.
-            error: Cow<'a, str>,
+            error: Cow<'static, str>,
             /// Classes to add on success.
-            ok: Cow<'a, str>,
+            ok: Cow<'static, str>,
         },
         /// Show tool result with JSON in a `<code>` block.
         Show {
             /// Classes to add on error.
-            error: Cow<'a, str>,
+            error: Cow<'static, str>,
             /// Classes to add on success.
-            ok: Cow<'a, str>,
+            ok: Cow<'static, str>,
         },
     }
 
@@ -190,35 +190,35 @@ pub mod opts {
     ///
     /// [`Image`]: crate::prompt::message::Image
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum Image<'a> {
+    pub enum Image {
         /// Hide images.
         Hidden,
         /// No content.
         Placeholder {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
         /// Show images.
         Show {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
     }
 
     /// Speech options.
     #[derive(Clone, Serialize, Deserialize)]
-    pub enum Speech<'a> {
+    pub enum Speech {
         /// Hide speech (Why would you do this?).
         Hidden,
         /// No content. (Why would you do this?)
         Placeholder {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
         /// Show speech.
         Show {
             /// Classes to add.
-            class: Cow<'a, str>,
+            class: Cow<'static, str>,
         },
     }
 }
@@ -245,7 +245,7 @@ pub trait IntoElement {
 
 // Start with the smallest possible example.
 #[cfg(feature = "cot")]
-impl IntoElement for ThoughtOrSpeech<'_> {
+impl IntoElement for ThoughtOrSpeech {
     #[allow(unused_variables)] // because macros break this lint
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         match self {
@@ -282,7 +282,7 @@ impl IntoElement for ThoughtOrSpeech<'_> {
     }
 }
 
-impl IntoElement for &Block<'_> {
+impl IntoElement for &Block {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         #[allow(unused_variables)] // because macros break this lint
         match self {
@@ -381,8 +381,8 @@ impl IntoElement for &Block<'_> {
                         rsx!(div {
                             class: class.as_ref(),
                             {show_name.map(
-                                |level| level.element(call.name.as_ref().into()
-                            ))}
+                                |level| level.element(call.name.clone())
+                            )}
                         })
                     }
                     opts::ToolUse::Show { show_name, class } => {
@@ -524,7 +524,7 @@ impl IntoElement for &Block<'_> {
     }
 }
 
-impl IntoElement for &message::Content<'_> {
+impl IntoElement for &message::Content {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         rsx!(div {
             class: "multi-part",
@@ -536,7 +536,7 @@ impl IntoElement for &message::Content<'_> {
     }
 }
 
-impl IntoElement for &message::Message<'_> {
+impl IntoElement for &message::Message {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         // The message is the one keyed sibling (see [`IntoElement`]); its inner
         // content stays unkeyed.
@@ -589,7 +589,7 @@ impl IntoElement for &message::Message<'_> {
     }
 }
 
-impl IntoElement for &prompt::Prompt<'_> {
+impl IntoElement for &prompt::Prompt {
     fn into_element_custom(self, key: u64, opts: &Options) -> Element {
         rsx!(
             div {

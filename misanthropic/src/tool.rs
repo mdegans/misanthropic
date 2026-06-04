@@ -161,14 +161,14 @@ impl Choice {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum ServerTool<'a> {
+pub enum ServerTool {
     /// Anthropic's web search tool (`web_search_20250305`). The model issues
     /// queries and receives results it can cite via
     /// [`Citation::WebSearchResultLocation`].
     ///
     /// [`Citation::WebSearchResultLocation`]: crate::prompt::Citation::WebSearchResultLocation
     #[serde(rename = "web_search_20250305")]
-    WebSearch(WebSearch<'a>),
+    WebSearch(WebSearch),
     /// Anthropic's web fetch tool (`web_fetch_20250910`). The model retrieves
     /// the full text (or, for PDFs, the base64 bytes) of a URL that already
     /// appeared in the conversation and, when [`citations`] is enabled, cites
@@ -181,7 +181,7 @@ pub enum ServerTool<'a> {
     /// [`Text`]: crate::prompt::message::Block::Text
     /// [`Block::WebFetchToolResult`]: crate::prompt::message::Block::WebFetchToolResult
     #[serde(rename = "web_fetch_20250910")]
-    WebFetch(WebFetch<'a>),
+    WebFetch(WebFetch),
     /// The [tool-search tool], regex variant (`tool_search_tool_regex_20251119`).
     /// The model writes Python-`re`-style patterns to discover tools marked
     /// [`defer_loading`](MethodDef::defer_loading); the matching definitions are
@@ -202,18 +202,18 @@ pub enum ServerTool<'a> {
     ToolSearchBm25(ToolSearch<ToolSearchBm25Name>),
 }
 
-impl<'a> ServerTool<'a> {
+impl ServerTool {
     /// A [`WebSearch`] server tool with default configuration. Configure it
     /// with struct-update syntax, e.g.
     /// `ServerTool::web_search(WebSearch { max_uses: Some(5), ..Default::default() })`.
-    pub fn web_search(config: WebSearch<'a>) -> Self {
+    pub fn web_search(config: WebSearch) -> Self {
         Self::WebSearch(config)
     }
 
     /// A [`WebFetch`] server tool with default configuration. Configure it
     /// with struct-update syntax, e.g.
     /// `ServerTool::web_fetch(WebFetch { max_uses: Some(5), ..Default::default() })`.
-    pub fn web_fetch(config: WebFetch<'a>) -> Self {
+    pub fn web_fetch(config: WebFetch) -> Self {
         Self::WebFetch(config)
     }
 
@@ -260,17 +260,6 @@ impl<'a> ServerTool<'a> {
             Self::ToolSearchBm25(c) => c.cache_control = Some(cache_control),
         }
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> ServerTool<'static> {
-        match self {
-            Self::WebSearch(c) => ServerTool::WebSearch(c.into_static()),
-            Self::WebFetch(c) => ServerTool::WebFetch(c.into_static()),
-            // Tool-search configs borrow nothing, so they are already `'static`.
-            Self::ToolSearchRegex(c) => ServerTool::ToolSearchRegex(c),
-            Self::ToolSearchBm25(c) => ServerTool::ToolSearchBm25(c),
-        }
-    }
 }
 
 /// Configuration for the tool-search server tools
@@ -304,7 +293,7 @@ pub struct ToolSearch<N> {
 /// [`blocked_domains`]: WebSearch::blocked_domains
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct WebSearch<'a> {
+pub struct WebSearch {
     /// The fixed tool `name` (`"web_search"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
     #[doc(hidden)]
@@ -316,14 +305,14 @@ pub struct WebSearch<'a> {
     /// Only return results from these domains (bare host, no scheme). Mutually
     /// exclusive with [`blocked_domains`](WebSearch::blocked_domains).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domains: Option<Vec<Cow<'a, str>>>,
+    pub allowed_domains: Option<Vec<Cow<'static, str>>>,
     /// Never return results from these domains (bare host, no scheme). Mutually
     /// exclusive with [`allowed_domains`](WebSearch::allowed_domains).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocked_domains: Option<Vec<Cow<'a, str>>>,
+    pub blocked_domains: Option<Vec<Cow<'static, str>>>,
     /// Approximate user location used to bias results.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub user_location: Option<UserLocation<'a>>,
+    pub user_location: Option<UserLocation>,
     /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
     ///
     /// [`Prompt::cache`]: crate::Prompt::cache
@@ -331,22 +320,7 @@ pub struct WebSearch<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl<'a> WebSearch<'a> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebSearch<'static> {
-        let owned = |v: Vec<Cow<'a, str>>| -> Vec<Cow<'static, str>> {
-            v.into_iter().map(|d| Cow::Owned(d.into_owned())).collect()
-        };
-        WebSearch {
-            name: WebSearchName,
-            max_uses: self.max_uses,
-            allowed_domains: self.allowed_domains.map(owned),
-            blocked_domains: self.blocked_domains.map(owned),
-            user_location: self.user_location.map(UserLocation::into_static),
-            cache_control: self.cache_control,
-        }
-    }
-}
+impl WebSearch {}
 
 /// Configuration for the [`ServerTool::WebFetch`] tool.
 ///
@@ -364,7 +338,7 @@ impl<'a> WebSearch<'a> {
 /// [`citations`]: WebFetch::citations
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct WebFetch<'a> {
+pub struct WebFetch {
     /// The fixed tool `name` (`"web_fetch"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
     #[doc(hidden)]
@@ -376,11 +350,11 @@ pub struct WebFetch<'a> {
     /// Only fetch from these domains (bare host, no scheme). Mutually exclusive
     /// with [`blocked_domains`](WebFetch::blocked_domains).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub allowed_domains: Option<Vec<Cow<'a, str>>>,
+    pub allowed_domains: Option<Vec<Cow<'static, str>>>,
     /// Never fetch from these domains (bare host, no scheme). Mutually
     /// exclusive with [`allowed_domains`](WebFetch::allowed_domains).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocked_domains: Option<Vec<Cow<'a, str>>>,
+    pub blocked_domains: Option<Vec<Cow<'static, str>>>,
     /// Enable citations on the fetched document, so the model cites passages on
     /// its response [`Text`](crate::prompt::message::Block::Text) blocks.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -396,23 +370,7 @@ pub struct WebFetch<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl<'a> WebFetch<'a> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> WebFetch<'static> {
-        let owned = |v: Vec<Cow<'a, str>>| -> Vec<Cow<'static, str>> {
-            v.into_iter().map(|d| Cow::Owned(d.into_owned())).collect()
-        };
-        WebFetch {
-            name: WebFetchName,
-            max_uses: self.max_uses,
-            allowed_domains: self.allowed_domains.map(owned),
-            blocked_domains: self.blocked_domains.map(owned),
-            citations: self.citations,
-            max_content_tokens: self.max_content_tokens,
-            cache_control: self.cache_control,
-        }
-    }
-}
+impl WebFetch {}
 
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
@@ -479,35 +437,22 @@ tool_name_marker!(
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename = "approximate")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct UserLocation<'a> {
+pub struct UserLocation {
     /// City name, e.g. `"San Francisco"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub city: Option<Cow<'a, str>>,
+    pub city: Option<Cow<'static, str>>,
     /// Region or state, e.g. `"California"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub region: Option<Cow<'a, str>>,
+    pub region: Option<Cow<'static, str>>,
     /// ISO 3166-1 alpha-2 country code, e.g. `"US"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub country: Option<Cow<'a, str>>,
+    pub country: Option<Cow<'static, str>>,
     /// IANA timezone, e.g. `"America/Los_Angeles"`.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<Cow<'a, str>>,
+    pub timezone: Option<Cow<'static, str>>,
 }
 
-impl<'a> UserLocation<'a> {
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> UserLocation<'static> {
-        let owned = |c: Cow<'a, str>| -> Cow<'static, str> {
-            Cow::Owned(c.into_owned())
-        };
-        UserLocation {
-            city: self.city.map(owned),
-            region: self.region.map(owned),
-            country: self.country.map(owned),
-            timezone: self.timezone.map(owned),
-        }
-    }
-}
+impl UserLocation {}
 
 /// An entry in a [`Prompt`]'s tools array: either a custom [`MethodDef`] you
 /// execute yourself via [`Tool::call`], or a [`ServerTool`] the API runs
@@ -522,16 +467,16 @@ impl<'a> UserLocation<'a> {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum ToolDef<'a> {
+pub enum ToolDef {
     /// A server-side tool the API executes (carries a `type`).
-    Server(ServerTool<'a>),
+    Server(ServerTool),
     /// A custom tool you execute via [`Tool::call`].
-    Custom(MethodDef<'a>),
+    Custom(MethodDef),
 }
 
-impl<'a> ToolDef<'a> {
+impl ToolDef {
     /// The custom [`MethodDef`], if this is a [`ToolDef::Custom`].
-    pub fn as_method(&self) -> Option<&MethodDef<'a>> {
+    pub fn as_method(&self) -> Option<&MethodDef> {
         match self {
             Self::Custom(method) => Some(method),
             Self::Server(_) => None,
@@ -539,18 +484,10 @@ impl<'a> ToolDef<'a> {
     }
 
     /// The custom [`MethodDef`] mutably, if this is a [`ToolDef::Custom`].
-    pub fn as_method_mut(&mut self) -> Option<&mut MethodDef<'a>> {
+    pub fn as_method_mut(&mut self) -> Option<&mut MethodDef> {
         match self {
             Self::Custom(method) => Some(method),
             Self::Server(_) => None,
-        }
-    }
-
-    /// Convert to a `'static` lifetime by taking ownership of borrowed fields.
-    pub fn into_static(self) -> ToolDef<'static> {
-        match self {
-            Self::Custom(method) => ToolDef::Custom(method.into_static()),
-            Self::Server(tool) => ToolDef::Server(tool.into_static()),
         }
     }
 
@@ -578,14 +515,14 @@ impl<'a> ToolDef<'a> {
     }
 }
 
-impl<'a> From<WebSearch<'a>> for ServerTool<'a> {
-    fn from(config: WebSearch<'a>) -> Self {
+impl From<WebSearch> for ServerTool {
+    fn from(config: WebSearch) -> Self {
         ServerTool::WebSearch(config)
     }
 }
 
-impl<'a> From<WebFetch<'a>> for ServerTool<'a> {
-    fn from(config: WebFetch<'a>) -> Self {
+impl From<WebFetch> for ServerTool {
+    fn from(config: WebFetch) -> Self {
         ServerTool::WebFetch(config)
     }
 }
@@ -599,11 +536,11 @@ pub trait Tool: Send {
     /// [`Tool`] name.
     fn name(&self) -> &str;
     /// Get the [`MethodDef`](s) provided by the [`Tool`].
-    fn definitions(&self) -> Vec<MethodDef<'static>>;
+    fn definitions(&self) -> Vec<MethodDef>;
     /// [`Use`] the [`Tool`], returning a [`tool::Result`].
     ///
     /// [`tool::Result`]: Result
-    async fn call<'a>(&mut self, call: Use<'a>) -> Result<'a>;
+    async fn call(&mut self, call: Use) -> Result;
     /// Serialize tool state to json [`Value`]. [`Null`] if not possible.
     ///
     /// # Note:
@@ -671,13 +608,13 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 /// [`Model`]: crate::model::Model
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
-#[serde(try_from = "MethodBuilder<'a>")]
+#[serde(try_from = "MethodBuilder")]
 #[serde(rename = "tool")]
-pub struct MethodDef<'a> {
+pub struct MethodDef {
     /// Name of the function. This should be in a `Tool::function` format.
-    pub name: Cow<'a, str>,
+    pub name: Cow<'static, str>,
     /// Description of the tool. The model will use this as documentation.
-    pub description: Cow<'a, str>,
+    pub description: Cow<'static, str>,
     /// Input schema for the tool. See [tool use guide] for more information.
     /// The schema is not validated by this crate but should conform to the
     /// [JSON Schema] specification.
@@ -715,11 +652,11 @@ pub struct MethodDef<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for MethodDef<'a> {
+impl crate::markdown::ToMarkdown for MethodDef {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
         // Can't panic because derived Serialize
@@ -748,11 +685,11 @@ impl<'a> crate::markdown::ToMarkdown<'a> for MethodDef<'a> {
     }
 }
 
-impl<'a> TryFrom<MethodBuilder<'a>> for MethodDef<'a> {
+impl TryFrom<MethodBuilder> for MethodDef {
     type Error = ToolBuildError;
 
     fn try_from(
-        builder: MethodBuilder<'a>,
+        builder: MethodBuilder,
     ) -> std::result::Result<Self, Self::Error> {
         builder.build()
     }
@@ -760,11 +697,11 @@ impl<'a> TryFrom<MethodBuilder<'a>> for MethodDef<'a> {
 
 /// A builder for creating a [`MethodDef`] with some basic validation. See
 /// [`MethodDef::builder`] to create one.
-pub struct MethodBuilder<'a> {
-    tool: MethodDef<'a>,
+pub struct MethodBuilder {
+    tool: MethodDef,
 }
 
-// `MethodDef` is annotated with `#[serde(try_from = "MethodBuilder<'a>")]`, so
+// `MethodDef` is annotated with `#[serde(try_from = "MethodBuilder")]`, so
 // deserializing a `MethodDef` routes through `MethodBuilder::deserialize` and
 // then `MethodBuilder::build`. If we derived `Deserialize` on
 // `MethodBuilder`, serde would generate an impl that defers to
@@ -772,7 +709,7 @@ pub struct MethodBuilder<'a> {
 // `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
 // a private `Foreign` helper struct that owns the actual field mapping.
 // Every public field on `MethodDef` must have a matching entry here.
-impl<'de> Deserialize<'de> for MethodBuilder<'_> {
+impl<'de> Deserialize<'de> for MethodBuilder {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -814,9 +751,12 @@ impl<'de> Deserialize<'de> for MethodBuilder<'_> {
     }
 }
 
-impl<'a> MethodBuilder<'a> {
+impl MethodBuilder {
     /// Set the description for the tool.
-    pub fn description(mut self, description: impl Into<Cow<'a, str>>) -> Self {
+    pub fn description(
+        mut self,
+        description: impl Into<Cow<'static, str>>,
+    ) -> Self {
         self.tool.description = description.into();
         self
     }
@@ -966,7 +906,7 @@ impl<'a> MethodBuilder<'a> {
 
     /// This will build the [`MethodDef`] without checking any of the fields. This is
     /// recommended only with static strings.
-    pub fn build_unchecked(self) -> MethodDef<'a> {
+    pub fn build_unchecked(self) -> MethodDef {
         self.tool
     }
 
@@ -1033,7 +973,7 @@ impl<'a> MethodBuilder<'a> {
 
     /// This will build the [`MethodDef`] and do some basic validation on the fields.
     /// This does not guarantee that the tool will be accepted by the API.
-    pub fn build(self) -> std::result::Result<MethodDef<'a>, ToolBuildError> {
+    pub fn build(self) -> std::result::Result<MethodDef, ToolBuildError> {
         if self.tool.name.is_empty() {
             return Err(ToolBuildError::EmptyName);
         }
@@ -1055,19 +995,6 @@ impl<'a> MethodBuilder<'a> {
 
         Ok(self.tool)
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields. If they are already owned, this is a no-op.
-    pub fn into_static(self) -> MethodDef<'static> {
-        MethodDef {
-            name: Cow::Owned(self.tool.name.into_owned()),
-            description: Cow::Owned(self.tool.description.into_owned()),
-            schema: self.tool.schema,
-            cache_control: self.tool.cache_control,
-            strict: self.tool.strict,
-            defer_loading: self.tool.defer_loading,
-        }
-    }
 }
 
 /// Errors that can occur when building a [`MethodDef`] with a [`MethodBuilder`].
@@ -1087,9 +1014,9 @@ pub enum ToolBuildError {
     },
 }
 
-impl<'a> MethodDef<'a> {
+impl MethodDef {
     /// Use a builder to create a new tool with some very basic validation.
-    pub fn builder(name: impl Into<Cow<'a, str>>) -> MethodBuilder<'a> {
+    pub fn builder(name: impl Into<Cow<'static, str>>) -> MethodBuilder {
         MethodBuilder {
             tool: MethodDef {
                 name: name.into(),
@@ -1105,8 +1032,8 @@ impl<'a> MethodDef<'a> {
     /// Create a simple method with just a name and description.
     /// Uses an empty object schema with no required fields.
     pub fn simple(
-        name: impl Into<Cow<'a, str>>,
-        description: impl Into<Cow<'a, str>>,
+        name: impl Into<Cow<'static, str>>,
+        description: impl Into<Cow<'static, str>>,
     ) -> Self {
         MethodDef {
             name: name.into(),
@@ -1124,8 +1051,8 @@ impl<'a> MethodDef<'a> {
 
     /// Create a method that takes a single string parameter.
     pub fn with_string_param(
-        name: impl Into<Cow<'a, str>>,
-        description: impl Into<Cow<'a, str>>,
+        name: impl Into<Cow<'static, str>>,
+        description: impl Into<Cow<'static, str>>,
         param_name: &str,
         param_description: &str,
         required: bool,
@@ -1210,35 +1137,22 @@ impl<'a> MethodDef<'a> {
     // Serialize. This is a bit of a hack but it works.
     pub fn from_serializable<T>(
         value: T,
-    ) -> std::result::Result<MethodDef<'a>, serde_json::Error>
+    ) -> std::result::Result<MethodDef, serde_json::Error>
     where
         T: Serialize,
     {
         let value = serde_json::to_value(value)?;
         value.try_into()
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> MethodDef<'static> {
-        MethodDef {
-            name: Cow::Owned(self.name.into_owned()),
-            description: Cow::Owned(self.description.into_owned()),
-            schema: self.schema,
-            cache_control: self.cache_control,
-            strict: self.strict,
-            defer_loading: self.defer_loading,
-        }
-    }
 }
 
-impl TryFrom<serde_json::Value> for MethodDef<'static> {
+impl TryFrom<serde_json::Value> for MethodDef {
     type Error = serde_json::Error;
 
     fn try_from(
         value: serde_json::Value,
     ) -> std::result::Result<Self, Self::Error> {
-        let builder: MethodBuilder<'static> = serde_json::from_value(value)?;
+        let builder: MethodBuilder = serde_json::from_value(value)?;
         builder
             .build()
             .map_err(|e| serde::de::Error::custom(e.to_string()))
@@ -1256,7 +1170,7 @@ impl TryFrom<serde_json::Value> for MethodDef<'static> {
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
-pub struct Use<'a> {
+pub struct Use {
     /// Unique Id for this tool call.
     ///
     /// ## Notes
@@ -1264,9 +1178,9 @@ pub struct Use<'a> {
     ///   string so long as it matches a [`tool::Result::tool_use_id`].
     ///
     /// [`tool::Result::tool_use_id`]: crate::tool::Result::tool_use_id
-    pub id: Cow<'a, str>,
+    pub id: Cow<'static, str>,
     /// Name of the tool.
-    pub name: Cow<'a, str>,
+    pub name: Cow<'static, str>,
     /// Input for the tool.
     pub input: serde_json::Value,
     /// Use prompt caching. See [`Prompt::cache`] for more information.
@@ -1276,20 +1190,9 @@ pub struct Use<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl Use<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> Use<'static> {
-        Use {
-            id: Cow::Owned(self.id.into_owned()),
-            name: Cow::Owned(self.name.into_owned()),
-            input: self.input,
-            cache_control: self.cache_control,
-        }
-    }
-}
+impl Use {}
 
-impl TryFrom<serde_json::Value> for Use<'_> {
+impl TryFrom<serde_json::Value> for Use {
     type Error = serde_json::Error;
 
     fn try_from(
@@ -1300,11 +1203,11 @@ impl TryFrom<serde_json::Value> for Use<'_> {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Use<'a> {
+impl crate::markdown::ToMarkdown for Use {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
         if options.tool_use {
@@ -1327,8 +1230,8 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Use<'a> {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Use<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Use {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
         self.write_markdown(f)
@@ -1347,13 +1250,13 @@ impl std::fmt::Display for Use<'_> {
 // standard library, but on the other hand it's what the API uses. We should
 // probably rename this to avoid confusion, since it is confusing.
 #[display("{}", self.content)]
-pub struct Result<'a> {
+pub struct Result {
     /// Unique Id for this tool call.
-    pub tool_use_id: Cow<'a, str>,
+    pub tool_use_id: Cow<'static, str>,
     /// Output of the tool. If this is an error message it should be written
     /// with the [`Assistant`]'s perspective in mind. It should tell the
     /// [`Assistant`] what went wrong and how they can try to fix it.
-    pub content: Content<'a>,
+    pub content: Content,
     /// Is the result an error message?
     pub is_error: bool,
     /// Use prompt caching. See [`Prompt::cache`] for more information.
@@ -1363,25 +1266,14 @@ pub struct Result<'a> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-impl Result<'_> {
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`]
-    /// fields.
-    pub fn into_static(self) -> Result<'static> {
-        Result {
-            tool_use_id: Cow::Owned(self.tool_use_id.into_owned()),
-            content: self.content.into_static(),
-            is_error: self.is_error,
-            cache_control: self.cache_control,
-        }
-    }
-}
+impl Result {}
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Result<'a> {
+impl crate::markdown::ToMarkdown for Result {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
         if options.tool_results {
@@ -2054,15 +1946,13 @@ mod tests {
     }
 
     #[test]
-    fn test_result_into_static() {
+    fn test_result_construction() {
         let result = Result {
             tool_use_id: "test_id".into(),
             content: "test_content".into(),
             is_error: false,
             cache_control: None,
         };
-
-        let result = result.into_static();
 
         assert_eq!(result.tool_use_id, "test_id");
         assert_eq!(result.content.to_string(), "test_content");
@@ -2196,7 +2086,7 @@ mod tests {
     }
 
     #[test]
-    fn test_method_into_static_preserves_strict() {
+    fn test_method_builder_preserves_strict() {
         let tool = MethodDef::builder("ping")
             .description("Ping a server.")
             .schema(serde_json::json!({
@@ -2209,7 +2099,6 @@ mod tests {
             .strict(true)
             .build()
             .unwrap();
-        let owned: MethodDef<'static> = tool.into_static();
-        assert_eq!(owned.strict, Some(true));
+        assert_eq!(tool.strict, Some(true));
     }
 }

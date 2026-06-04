@@ -144,7 +144,7 @@ the methods compose by chaining.
 
 | Method | Returns | Description |
 |--------|---------|-------------|
-| `.deltas()` | `Stream<Result<Delta<'static>, Error>>` | Only `ContentBlockDelta` events, as `Delta` values. |
+| `.deltas()` | `Stream<Result<Delta, Error>>` | Only `ContentBlockDelta` events, as `Delta` values. |
 | `.text()` | `Stream<Result<String, Error>>` | Only text deltas, as owned `String`s (built on `.deltas()`). |
 | `.with_message()` | `Stream<Result<Event, Error>>` | Assembles a complete `response::Message` and yields it as `Event::Message` at stream end (implies `with_tool_use`). |
 | `.with_message_ip(&mut Option<Message>)` | `Stream<Result<Event, Error>>` | Same, but assembles *in place* so you can break early and keep the partial message. |
@@ -205,7 +205,7 @@ documented here.
 use misanthropic::stream::Delta;
 
 # #[allow(unused_variables)]
-# fn document(delta: Delta<'_>) {
+# fn document(delta: Delta) {
 match delta {
     Delta::Text { text } => {}                    // text content
     Delta::Json { partial_json } => {}            // tool input JSON fragment
@@ -270,7 +270,7 @@ impl Calculator {
     async fn calculate(
         &mut self,
         args: Calculate,
-    ) -> Result<Content<'static>, Content<'static>> {
+    ) -> Result<Content, Content> {
         let answer = "56088"; // your evaluation logic
         let _ = args.expression;
         Ok(answer.into())
@@ -370,5 +370,6 @@ deserialization, and error extraction automatically.
 - **Error items in the stream** are Anthropic API errors delivered via SSE,
   carrying the raw `eventsource_stream::Event`. HTTP-level errors are returned
   from `client.stream()` itself, before the stream begins.
-- **Borrowed by default** — assembled `Message`/`tool::Use` values are
-  `'static`; on borrowed deltas call `.into_static()` when you need ownership.
+- **Owned data, no lifetimes** — `Delta`, assembled `Message`/`tool::Use`, and
+  the other public types own their data and carry no lifetime parameter, so
+  they are already `'static`. There is no `.into_static()` to call.

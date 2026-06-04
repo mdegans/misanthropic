@@ -11,11 +11,11 @@ pub type Response = Result<Success, Error>;
 pub enum Success {
     /// The server-side copy of the prompt, considered the source of truth.
     /// Except for tools. The toolbox lives in the frontend.
-    Prompt(prompt::Prompt<'static>),
+    Prompt(prompt::Prompt),
     /// [`mianthropic::stream::Event`] forwarded from Anthropic
     Stream(misanthropic::stream::Event),
     /// The user message was successfully processed.
-    UserMessage(prompt::UserMessage<'static>),
+    UserMessage(prompt::UserMessage),
 }
 
 /// Error from the backend.

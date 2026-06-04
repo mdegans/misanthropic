@@ -7,10 +7,9 @@ mod state;
 
 pub(crate) use state::AppState;
 
-type UserMessage = misanthropic::prompt::message::UserMessage<'static>;
-type AssistantMessage =
-    misanthropic::prompt::message::AssistantMessage<'static>;
-type Prompt = misanthropic::Prompt<'static>;
+type UserMessage = misanthropic::prompt::message::UserMessage;
+type AssistantMessage = misanthropic::prompt::message::AssistantMessage;
+type Prompt = misanthropic::Prompt;
 
 #[shuttle_runtime::main]
 async fn main(

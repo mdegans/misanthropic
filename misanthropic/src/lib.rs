@@ -68,9 +68,9 @@ pub mod cot;
 pub mod openai;
 
 #[cfg(not(feature = "langsan"))]
-pub(crate) type CowStr<'a> = std::borrow::Cow<'a, str>;
+pub(crate) type CowStr = std::borrow::Cow<'static, str>;
 #[cfg(feature = "langsan")]
-pub(crate) type CowStr<'a> = langsan::CowStr<'a>;
+pub(crate) type CowStr = langsan::CowStr<'static>;
 
 /// Small utility functions and types.
 pub(crate) mod utils;

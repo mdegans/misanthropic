@@ -32,20 +32,14 @@ struct Calc {
 impl Calc {
     /// Add x and y to the accumulator.
     #[method]
-    async fn add(
-        &mut self,
-        args: Add,
-    ) -> Result<Content<'static>, Content<'static>> {
+    async fn add(&mut self, args: Add) -> Result<Content, Content> {
         self.acc += args.x + args.y;
         Ok(self.acc.to_string().into())
     }
 
     /// Reset the accumulator.
     #[method(defer_loading)]
-    async fn reset(
-        &mut self,
-        _args: Reset,
-    ) -> Result<Content<'static>, Content<'static>> {
+    async fn reset(&mut self, _args: Reset) -> Result<Content, Content> {
         self.acc = 0;
         Ok("reset".into())
     }
@@ -53,7 +47,7 @@ impl Calc {
     #[on_init]
     async fn init(
         &mut self,
-        _prompt: &mut Prompt<'_>,
+        _prompt: &mut Prompt,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.inited = true;
         Ok(())
@@ -72,32 +66,29 @@ impl Calc {
 }
 
 // A lifetime-parameterized tool with a bare `#[tool]` (no `name`) — proves
-// generics threading (`impl<'a> Holder<'a>`) and the ident-derived name
-// default, the two things the `Notepad<'a>` port relies on.
+// generics threading (`impl Holder`) and the ident-derived name
+// default, the two things the `Notepad` port relies on.
 #[derive(Deserialize, JsonSchema)]
 struct Put {
     v: String,
 }
 
 #[derive(Default)]
-struct Holder<'a> {
-    items: Vec<std::borrow::Cow<'a, str>>,
+struct Holder {
+    items: Vec<std::borrow::Cow<'static, str>>,
 }
 
 #[tool]
-impl<'a> Holder<'a> {
+impl Holder {
     /// Put a value.
     #[method]
-    async fn put(
-        &mut self,
-        args: Put,
-    ) -> Result<Content<'static>, Content<'static>> {
+    async fn put(&mut self, args: Put) -> Result<Content, Content> {
         self.items.push(args.v.into());
         Ok("ok".into())
     }
 }
 
-fn use_call(name: &str, input: serde_json::Value) -> Use<'static> {
+fn use_call(name: &str, input: serde_json::Value) -> Use {
     Use {
         id: "id".into(),
         name: name.to_string().into(),

@@ -20,17 +20,17 @@ pub const DEFAULT_END_TAGS: &[&str] =
 /// Contents of a `<thinking>` element.
 #[derive(Debug, Clone, Deref, derive_more::Display)]
 #[display("{text}")]
-pub struct Thought<'a> {
+pub struct Thought {
     /// The text inside a thinking element.
-    pub text: Cow<'a, str>,
+    pub text: Cow<'static, str>,
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Thought<'a> {
+impl crate::markdown::ToMarkdown for Thought {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::html::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         Box::new(pulldown_cmark::Parser::new_ext(
             self.text.as_ref(),
             options.inner,
@@ -41,17 +41,17 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Thought<'a> {
 /// Content outside thinking elements.
 #[derive(Debug, Clone, Deref, derive_more::Display)]
 #[display("{text}")]
-pub struct Speech<'a> {
+pub struct Speech {
     /// The text outside thinking elements.
-    pub text: Cow<'a, str>,
+    pub text: Cow<'static, str>,
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Speech<'a> {
+impl crate::markdown::ToMarkdown for Speech {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::html::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         Box::new(pulldown_cmark::Parser::new_ext(
             self.text.as_ref(),
             options.inner,
@@ -61,17 +61,17 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Speech<'a> {
 
 /// Either a [`Thought`] or [`Speech`].
 #[derive(Debug, Clone, derive_more::IsVariant)]
-pub enum ThoughtOrSpeech<'a> {
+pub enum ThoughtOrSpeech {
     /// An Assistant [`Thought`].
-    Thought(Thought<'a>),
+    Thought(Thought),
     /// [`Speech`] intended for the user.
-    Speech(Speech<'a>),
+    Speech(Speech),
 }
 
-impl<'a> ThoughtOrSpeech<'a> {
+impl ThoughtOrSpeech {
     /// Consumes the [`ThoughtOrSpeech`] and returns the [`Thought`] if it is a
     /// [`Thought`].
-    pub fn into_thought(self) -> Option<Thought<'a>> {
+    pub fn into_thought(self) -> Option<Thought> {
         match self {
             ThoughtOrSpeech::Thought(thought) => Some(thought),
             _ => None,
@@ -80,7 +80,7 @@ impl<'a> ThoughtOrSpeech<'a> {
 
     /// Consumes the [`ThoughtOrSpeech`] and returns the [`Speech`] if it is a
     /// [`Speech`].
-    pub fn into_speech(self) -> Option<Speech<'a>> {
+    pub fn into_speech(self) -> Option<Speech> {
         match self {
             ThoughtOrSpeech::Speech(speech) => Some(speech),
             _ => None,
@@ -127,7 +127,7 @@ impl<'a> ThoughtsAndSpeech<'a> {
 }
 
 impl<'a> Iterator for ThoughtsAndSpeech<'a> {
-    type Item = ThoughtOrSpeech<'a>;
+    type Item = ThoughtOrSpeech;
 
     #[allow(clippy::needless_return)] // becuase it's harder to read without it
     fn next(&mut self) -> Option<Self::Item> {
@@ -150,7 +150,9 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
         {
             // There is speech before the start tag. Return it.
             let speech = Some(ThoughtOrSpeech::Speech(Speech {
-                text: self.text[self.index..self.index + *start].into(),
+                text: self.text[self.index..self.index + *start]
+                    .to_owned()
+                    .into(),
             }));
             self.index += start;
             return speech;
@@ -163,7 +165,9 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 let thought_start = self.index + start + start_tag.len();
                 let thought_end = self.index + end;
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: self.text[thought_start..thought_end].into(),
+                    text: self.text[thought_start..thought_end]
+                        .to_owned()
+                        .into(),
                 }));
 
                 // And then set the index to the end of the end tag.
@@ -177,7 +181,9 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 let thought_start = self.index + start + start_tag.len();
                 let thought_end = self.text.len();
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: self.text[thought_start..thought_end].into(),
+                    text: self.text[thought_start..thought_end]
+                        .to_owned()
+                        .into(),
                 }));
 
                 self.index = thought_end;
@@ -187,7 +193,9 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
                 // We have an end tag, but no start tag. Everything up to the
                 // end tag is a thought (same rationale as above).
                 let thought = Some(ThoughtOrSpeech::Thought(Thought {
-                    text: self.text[self.index..self.index + end].into(),
+                    text: self.text[self.index..self.index + end]
+                        .to_owned()
+                        .into(),
                 }));
                 self.index += end + end_tag.len();
                 return thought;
@@ -195,7 +203,7 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
             (None, None) => {
                 // There are no tags. The entire text is speech.
                 let speech = Some(ThoughtOrSpeech::Speech(Speech {
-                    text: self.text[self.index..].into(),
+                    text: self.text[self.index..].to_owned().into(),
                 }));
                 self.index = self.text.len();
                 return speech;
@@ -205,67 +213,67 @@ impl<'a> Iterator for ThoughtsAndSpeech<'a> {
 }
 
 /// A trait for types containing [`Thought`]s and [`Speech`].
-pub trait Thinkable<'a> {
+pub trait Thinkable {
     /// Return an iterator of [`ThoughtOrSpeech`] with custom start and end
     /// tags.
     fn thoughts_and_speech_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a>;
+    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech> + '_>;
 
     /// Return an iterator of [`ThoughtOrSpeech`] with default start and end
     /// tags.
     fn thoughts_and_speech(
-        &'a self,
-    ) -> impl Iterator<Item = ThoughtOrSpeech<'a>> + 'a {
+        &self,
+    ) -> impl Iterator<Item = ThoughtOrSpeech> + '_ {
         self.thoughts_and_speech_custom(DEFAULT_START_TAGS, DEFAULT_END_TAGS)
     }
 
     /// Return an iterator of [`Thought`]s with default start and end tags.
-    fn thoughts(&'a self) -> impl Iterator<Item = Thought<'a>> + 'a {
+    fn thoughts(&self) -> impl Iterator<Item = Thought> + '_ {
         self.thoughts_and_speech()
             .filter_map(ThoughtOrSpeech::into_thought)
     }
 
     /// Return an iterator of [`Thought`]s with custom start and end tags.
     fn thoughts_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> impl Iterator<Item = Thought<'a>> + 'a {
+    ) -> impl Iterator<Item = Thought> + '_ {
         self.thoughts_and_speech_custom(start_tags, end_tags)
             .filter_map(ThoughtOrSpeech::into_thought)
     }
 
     /// Return an iterator of [`Speech`]es with default start and end tags.
-    fn speech(&'a self) -> impl Iterator<Item = Speech<'a>> + 'a {
+    fn speech(&self) -> impl Iterator<Item = Speech> + '_ {
         self.thoughts_and_speech()
             .filter_map(ThoughtOrSpeech::into_speech)
     }
 
     /// Return an iterator of [`Speech`]es with custom start and end tags.
     fn speech_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> impl Iterator<Item = Speech<'a>> + 'a {
+    ) -> impl Iterator<Item = Speech> + '_ {
         self.thoughts_and_speech_custom(start_tags, end_tags)
             .filter_map(ThoughtOrSpeech::into_speech)
     }
 }
 
-impl<'a> Thinkable<'a> for Block<'a> {
+impl Thinkable for Block {
     /// Get an iterator over the thoughts and speech in the block with custom
     /// start and end tags.
     ///
     /// # Panics
     /// - If the length of `start_tags` and `end_tags` are not equal.
     fn thoughts_and_speech_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech> + '_> {
         match self {
             Block::Text { text, .. } => Box::new(Box::new(
                 ThoughtsAndSpeech::new_custom(text, start_tags, end_tags),
@@ -275,45 +283,45 @@ impl<'a> Thinkable<'a> for Block<'a> {
     }
 }
 
-impl<'a> Thinkable<'a> for Content<'a> {
+impl Thinkable for Content {
     /// Get an iterator over the thoughts and speech in the content with custom
     /// start and end tags.
     ///
     /// # Panics
     /// - If the length of `start_tags` and `end_tags` are not equal.
     fn thoughts_and_speech_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech> + '_> {
         Box::new(self.iter().flat_map(move |block| {
             block.thoughts_and_speech_custom(start_tags, end_tags)
         }))
     }
 }
 
-impl<'a> Thinkable<'a> for Message<'a> {
+impl Thinkable for Message {
     /// Get an iterator over the thoughts and speech in the message with custom
     /// start and end tags.
     ///
     /// # Panics
     /// - If the length of `start_tags` and `end_tags` are not equal.
     fn thoughts_and_speech_custom(
-        &'a self,
+        &self,
         start_tags: &'static [&'static str],
         end_tags: &'static [&'static str],
-    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = ThoughtOrSpeech> + '_> {
         self.content
             .thoughts_and_speech_custom(start_tags, end_tags)
     }
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for ThoughtOrSpeech<'a> {
+impl crate::markdown::ToMarkdown for ThoughtOrSpeech {
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::html::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{Event, HeadingLevel::H5, Tag, TagEnd};
 
         let h = options.heading_level.unwrap_or(H5);
@@ -325,7 +333,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for ThoughtOrSpeech<'a> {
             ThoughtOrSpeech::Thought(_) => stringify!(Thought),
             ThoughtOrSpeech::Speech(_) => stringify!(Speech),
         };
-        let markdown_parsed_text: Box<dyn Iterator<Item = Event> + 'a> =
+        let markdown_parsed_text: Box<dyn Iterator<Item = Event> + '_> =
             match self {
                 ThoughtOrSpeech::Speech(speech) => {
                     speech.markdown_events_custom(options)
@@ -334,7 +342,7 @@ impl<'a> crate::markdown::ToMarkdown<'a> for ThoughtOrSpeech<'a> {
                     thought.markdown_events_custom(options)
                 }
             };
-        let header: Box<dyn Iterator<Item = Event> + 'a> = Box::new(
+        let header: Box<dyn Iterator<Item = Event> + '_> = Box::new(
             [
                 Event::Start(Tag::Heading {
                     level: h,

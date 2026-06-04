@@ -79,7 +79,7 @@ enum EffortArg {
     Max,
 }
 
-impl From<EffortArg> for Effort<'_> {
+impl From<EffortArg> for Effort {
     fn from(arg: EffortArg) -> Self {
         match arg {
             EffortArg::Low => Effort::Low,
@@ -111,10 +111,7 @@ struct Calculator;
 impl Calculator {
     /// Perform a single binary arithmetic operation and return the result.
     #[method]
-    async fn compute(
-        &mut self,
-        args: Compute,
-    ) -> Result<Content<'static>, Content<'static>> {
+    async fn compute(&mut self, args: Compute) -> Result<Content, Content> {
         let result = match args.op.as_str() {
             "+" => args.a + args.b,
             "-" => args.a - args.b,
@@ -193,7 +190,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // turn (thoughts included, so signatures round-trip), then push the
             // typed-dispatched result back as the next user message.
             Some(call) => {
-                let call = call.clone().into_static();
+                let call = call.clone();
                 chat.push_message(message)?;
                 let result = calc.call(call).await;
                 if args.verbose {

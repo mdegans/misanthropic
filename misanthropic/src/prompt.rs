@@ -44,9 +44,9 @@ pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
-pub struct Prompt<'a> {
+pub struct Prompt {
     /// [`Model`] to use for inference.
-    pub model: model::Id<'a>,
+    pub model: model::Id,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
@@ -56,7 +56,7 @@ pub struct Prompt<'a> {
     /// [`Assistant`]: crate::prompt::message::Role::Assistant
     /// [`prompt::message`]: crate::prompt::message
     /// [Anthropic docs]: <https://docs.anthropic.com/en/api/messages>
-    pub messages: Vec<Message<'a>>,
+    pub messages: Vec<Message>,
     /// Max tokens to generate. See Anthropic [docs] for the maximum number of
     /// tokens for each model.
     ///
@@ -71,7 +71,7 @@ pub struct Prompt<'a> {
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stop_sequences: Option<Vec<Cow<'a, str>>>,
+    pub stop_sequences: Option<Vec<Cow<'static, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the
     /// response will be a single [`response::Message`].
     ///
@@ -83,7 +83,7 @@ pub struct Prompt<'a> {
     ///
     /// [`Content`]: message::Content
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub system: Option<message::Content<'a>>,
+    pub system: Option<message::Content>,
     /// Temperature for sampling. Must be between 0 and 1. Higher values mean
     /// more randomness. Note that 0.0 is not fully deterministic.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,7 +98,7 @@ pub struct Prompt<'a> {
     /// [`ToolDef`]: crate::tool::ToolDef
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "tools")]
-    pub methods: Option<Vec<tool::ToolDef<'a>>>,
+    pub methods: Option<Vec<tool::ToolDef>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -137,7 +137,7 @@ pub struct Prompt<'a> {
     /// [batching]: <https://docs.anthropic.com/en/docs/build-with-claude/batch-processing>
     /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_config: Option<OutputConfig<'a>>,
+    pub output_config: Option<OutputConfig>,
     /// Capacity tier for the request. See [`ServiceTier`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
@@ -146,10 +146,10 @@ pub struct Prompt<'a> {
     pub inference_geo: Option<InferenceGeo>,
     /// Container ID to reuse across requests (used with code execution).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub container: Option<Cow<'a, str>>,
+    pub container: Option<Cow<'static, str>>,
 }
 
-impl std::fmt::Debug for Prompt<'_> {
+impl std::fmt::Debug for Prompt {
     /// The debug repr of a [`Prompt`] hides the `messages` (the chat history)
     /// — only their count is shown. Two reasons: it's the field most likely to
     /// carry user data into logs, and dumping a full conversation is *huge*.
@@ -160,7 +160,7 @@ impl std::fmt::Debug for Prompt<'_> {
     ///
     /// Fields are listed in declaration order so this stays easy to reconcile
     /// against the struct when new ones are added.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.debug_struct("Prompt")
             .field("model", &self.model)
             .field(
@@ -186,7 +186,7 @@ impl std::fmt::Debug for Prompt<'_> {
     }
 }
 
-impl Default for Prompt<'_> {
+impl Default for Prompt {
     fn default() -> Self {
         Self {
             max_tokens: NonZeroU32::new(4096).unwrap(),
@@ -266,7 +266,7 @@ pub enum TurnOrderError {
     #[error("the first message must be from the user, but it is a {} turn", .message.role)]
     BadFirst {
         /// The offending first message.
-        message: Message<'static>,
+        message: Message,
     },
     /// `second` is not a legal turn after `first`. Either two same-role turns
     /// are adjacent, or a [`System`] turn is misplaced (not preceded by a user
@@ -276,9 +276,9 @@ pub enum TurnOrderError {
     #[error("a {} turn may not immediately follow a {} turn", .second.role, .first.role)]
     BadTransition {
         /// The earlier message.
-        first: Message<'static>,
+        first: Message,
         /// The message that may not follow it.
-        second: Message<'static>,
+        second: Message,
     },
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
@@ -302,7 +302,7 @@ pub enum ExamplesError {
 }
 static_assertions::assert_impl_all!(ExamplesError: Send, Sync);
 
-impl<'a> Prompt<'a> {
+impl Prompt {
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -332,7 +332,7 @@ impl<'a> Prompt<'a> {
     /// [`model`]: Prompt::model
     pub fn model<M>(mut self, model: M) -> Self
     where
-        M: Into<model::Id<'a>>,
+        M: Into<model::Id>,
     {
         self.model = model.into();
         self
@@ -349,7 +349,7 @@ impl<'a> Prompt<'a> {
         messages: Ms,
     ) -> Result<Self, TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
         Ms: IntoIterator<Item = M>,
     {
         self.messages = messages.into_iter().map(Into::into).collect();
@@ -365,14 +365,14 @@ impl<'a> Prompt<'a> {
         if let Some(first) = self.messages.first().filter(|m| !m.role.is_user())
         {
             return Err(TurnOrderError::BadFirst {
-                message: first.clone().into_static(),
+                message: first.clone(),
             });
         }
         for pair in self.messages.windows(2) {
             if !pair[0].may_precede(&pair[1]) {
                 return Err(TurnOrderError::BadTransition {
-                    first: pair[0].clone().into_static(),
-                    second: pair[1].clone().into_static(),
+                    first: pair[0].clone(),
+                    second: pair[1].clone(),
                 });
             }
         }
@@ -395,7 +395,7 @@ impl<'a> Prompt<'a> {
     )]
     pub fn message<M>(self, message: M) -> Self
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
     {
         self.add_message(message).unwrap()
     }
@@ -411,9 +411,9 @@ impl<'a> Prompt<'a> {
     /// [`push_messages`]: Prompt::push_messages
     pub fn add_message<M>(mut self, message: M) -> Result<Self, TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
     {
-        let message: Message<'a> = message.into();
+        let message: Message = message.into();
         self.push_message(message)?;
         Ok(self)
     }
@@ -428,15 +428,15 @@ impl<'a> Prompt<'a> {
     /// [`add_message`]: Prompt::add_message
     pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
     {
-        let message: Message<'a> = message.into();
+        let message: Message = message.into();
         match self.messages.last() {
             Some(last) => {
                 if !last.may_precede(&message) {
                     return Err(TurnOrderError::BadTransition {
-                        first: last.clone().into_static(),
-                        second: message.clone().into_static(),
+                        first: last.clone(),
+                        second: message.clone(),
                     });
                 }
             }
@@ -444,7 +444,7 @@ impl<'a> Prompt<'a> {
                 // The first message must be a user message.
                 if !message.role.is_user() {
                     return Err(TurnOrderError::BadFirst {
-                        message: message.clone().into_static(),
+                        message: message.clone(),
                     });
                 }
             }
@@ -468,7 +468,7 @@ impl<'a> Prompt<'a> {
     )]
     pub fn messages<M, Ms>(self, messages: Ms) -> Self
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
         Ms: IntoIterator<Item = M>,
     {
         self.add_messages(messages).unwrap()
@@ -487,7 +487,7 @@ impl<'a> Prompt<'a> {
         messages: Ms,
     ) -> Result<Self, TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
         Ms: IntoIterator<Item = M>,
     {
         self.push_messages(messages)?;
@@ -507,7 +507,7 @@ impl<'a> Prompt<'a> {
         messages: Ms,
     ) -> Result<(), TurnOrderError>
     where
-        M: Into<Message<'a>>,
+        M: Into<Message>,
         Ms: IntoIterator<Item = M>,
     {
         let mut count = 0;
@@ -643,7 +643,7 @@ impl<'a> Prompt<'a> {
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     pub fn extend_stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
     where
-        S: Into<Cow<'a, str>>,
+        S: Into<Cow<'static, str>>,
         Ss: IntoIterator<Item = S>,
     {
         self.stop_sequences
@@ -663,7 +663,7 @@ impl<'a> Prompt<'a> {
     )]
     pub fn system<S>(mut self, system: S) -> Self
     where
-        S: Into<message::Content<'a>>,
+        S: Into<message::Content>,
     {
         self.system = Some(system.into());
         self
@@ -675,7 +675,7 @@ impl<'a> Prompt<'a> {
     /// [`system`]: Prompt::system
     pub fn set_system<S>(mut self, system: S) -> Self
     where
-        S: Into<message::Content<'a>>,
+        S: Into<message::Content>,
     {
         self.system = Some(system.into());
         self
@@ -702,7 +702,7 @@ impl<'a> Prompt<'a> {
     /// [`MediaType`]: message::MediaType
     pub fn add_system<B>(mut self, block: B) -> Self
     where
-        B: Into<message::Block<'a>>,
+        B: Into<message::Block>,
     {
         match self.system {
             Some(mut content) => {
@@ -743,7 +743,7 @@ impl<'a> Prompt<'a> {
     /// Set the [`container`] ID to reuse across requests (code execution).
     ///
     /// [`container`]: Prompt::container
-    pub fn container(mut self, id: impl Into<Cow<'a, str>>) -> Self {
+    pub fn container(mut self, id: impl Into<Cow<'static, str>>) -> Self {
         self.container = Some(id.into());
         self
     }
@@ -780,7 +780,7 @@ impl<'a> Prompt<'a> {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<MethodDef<'a>>,
+        T: Into<MethodDef>,
         Ts: IntoIterator<Item = T>,
     {
         self.methods = Some(
@@ -815,7 +815,7 @@ impl<'a> Prompt<'a> {
     /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<MethodDef<'a>, Error = E>,
+        T: TryInto<MethodDef, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
         self.methods = Some(
@@ -830,7 +830,7 @@ impl<'a> Prompt<'a> {
     /// Add a custom tool to the request.
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<MethodDef<'a>>,
+        T: Into<MethodDef>,
     {
         self.methods
             .get_or_insert_with(Default::default)
@@ -842,7 +842,7 @@ impl<'a> Prompt<'a> {
     /// cannot be converted into a [`MethodDef`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<MethodDef<'a>, Error = E>,
+        T: TryInto<MethodDef, Error = E>,
     {
         self.methods
             .get_or_insert_with(Default::default)
@@ -866,7 +866,7 @@ impl<'a> Prompt<'a> {
     /// [`definitions`]: crate::Tool::definitions
     pub fn add_tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<MethodDef<'a>>,
+        T: Into<MethodDef>,
         Ts: IntoIterator<Item = T>,
     {
         self.methods
@@ -888,7 +888,7 @@ impl<'a> Prompt<'a> {
     ///
     /// Equivalent to [`add_tools(tool.definitions())`](Self::add_tools) but
     /// borrows the tool and needs no lifetime juggling, since a
-    /// [`MethodDef<'static>`] fits any [`Prompt<'a>`].
+    /// [`MethodDef`] fits any [`Prompt`].
     ///
     /// [`Tool`]: crate::Tool
     /// [`definitions`]: crate::Tool::definitions
@@ -896,7 +896,7 @@ impl<'a> Prompt<'a> {
     where
         T: tool::Tool + ?Sized,
     {
-        // A `MethodDef<'static>` is also a `MethodDef<'a>`, so the definitions
+        // A `MethodDef` is also a `MethodDef`, so the definitions
         // drop straight into `add_tools`.
         self.add_tools(tool.definitions())
     }
@@ -910,7 +910,7 @@ impl<'a> Prompt<'a> {
     /// [`Block::ServerToolUse`]: message::Block::ServerToolUse
     pub fn add_server_tool<S>(mut self, server_tool: S) -> Self
     where
-        S: Into<tool::ServerTool<'a>>,
+        S: Into<tool::ServerTool>,
     {
         self.methods
             .get_or_insert_with(Default::default)
@@ -985,7 +985,7 @@ impl<'a> Prompt<'a> {
     /// [`effort`]: Prompt::effort
     pub fn output_config<C>(mut self, config: C) -> Self
     where
-        C: Into<OutputConfig<'a>>,
+        C: Into<OutputConfig>,
     {
         self.output_config = Some(config.into());
         self
@@ -995,7 +995,7 @@ impl<'a> Prompt<'a> {
     /// it leaves unset.
     ///
     /// [`output_config`]: Prompt::output_config
-    fn merge_output_config(&mut self, config: OutputConfig<'a>) {
+    fn merge_output_config(&mut self, config: OutputConfig) {
         match &mut self.output_config {
             Some(existing) => existing.overlay(config),
             none => *none = Some(config),
@@ -1025,7 +1025,7 @@ impl<'a> Prompt<'a> {
     ///
     /// [`format`]: OutputConfig::format
     /// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
-    pub fn effort(mut self, effort: Effort<'a>) -> Self {
+    pub fn effort(mut self, effort: Effort) -> Self {
         self.merge_output_config(OutputConfig::effort(effort));
         self
     }
@@ -1063,7 +1063,7 @@ impl<'a> Prompt<'a> {
     ) -> Result<Self, ExamplesError>
     where
         I: IntoIterator<Item = (U, A)>,
-        U: Into<UserMessage<'a>>,
+        U: Into<UserMessage>,
         A: Serialize + schemars::JsonSchema,
     {
         self.merge_output_config(OutputConfig::for_type::<A>());
@@ -1074,11 +1074,11 @@ impl<'a> Prompt<'a> {
         let pairs = examples
             .into_iter()
             .map(|(input, output)| {
-                let user: UserMessage<'a> = input.into();
+                let user: UserMessage = input.into();
                 let json = serde_json::to_string(&output)?;
                 Ok([user.into(), AssistantMessage::text(json).into()])
             })
-            .collect::<Result<Vec<[Message<'a>; 2]>, serde_json::Error>>()?;
+            .collect::<Result<Vec<[Message; 2]>, serde_json::Error>>()?;
 
         self.push_messages(pairs.into_iter().flatten())?;
 
@@ -1151,37 +1151,6 @@ impl<'a> Prompt<'a> {
         self
     }
 
-    /// Convert to static lifetime by taking ownership of the [`Cow`] fields.
-    pub fn into_static(self) -> Prompt<'static> {
-        Prompt {
-            model: self.model.into_static(),
-            messages: self
-                .messages
-                .into_iter()
-                .map(Message::into_static)
-                .collect(),
-            max_tokens: self.max_tokens,
-            metadata: self.metadata,
-            stop_sequences: self.stop_sequences.map(|s| {
-                s.into_iter().map(Cow::into_owned).map(Cow::Owned).collect()
-            }),
-            stream: self.stream,
-            system: self.system.map(Content::into_static),
-            temperature: self.temperature,
-            tool_choice: self.tool_choice,
-            methods: self.methods.map(|t| {
-                t.into_iter().map(tool::ToolDef::into_static).collect()
-            }),
-            top_k: self.top_k,
-            top_p: self.top_p,
-            thinking: self.thinking,
-            output_config: self.output_config.map(OutputConfig::into_static),
-            service_tier: self.service_tier,
-            inference_geo: self.inference_geo,
-            container: self.container.map(Cow::into_owned).map(Cow::Owned),
-        }
-    }
-
     /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for
     /// appending to a [`Prompt`] in a streaming context.
     ///
@@ -1208,7 +1177,7 @@ impl<'a> Prompt<'a> {
                     if index == last.content.len() - 1 {
                         // The last content block has the correct index.
                         if let Err(e) = last.content.push_delta(delta) {
-                            return Err(e.into_static().into());
+                            return Err(e.into());
                         }
                     } else {
                         return Err(ApplyEventError::UnexpectedIndex {
@@ -1290,7 +1259,7 @@ impl<'a> Prompt<'a> {
                         } else {
                             return Err(ApplyEventError::UnexpectedMessage {
                                 event: Event::ToolUse { tool_use },
-                                last: last.clone().into_static(),
+                                last: last.clone(),
                             });
                         }
                     } else {
@@ -1314,7 +1283,7 @@ impl<'a> Prompt<'a> {
                         } else {
                             return Err(ApplyEventError::UnexpectedMessage {
                                 event: Event::ServerToolUse { tool_use },
-                                last: last.clone().into_static(),
+                                last: last.clone(),
                             });
                         }
                     } else {
@@ -1352,20 +1321,20 @@ impl<'a> Prompt<'a> {
     /// - If the turn order is incorrect.
     /// - If the stream of events cannot be applied to the prompt.
     pub async fn extend<E>(
-        &'a mut self,
+        &mut self,
         extendable: E,
-    ) -> Result<&'a mut Self, ExtendError>
+    ) -> Result<&mut Self, ExtendError>
     where
-        E: ExtendOntoPrompt<'a>,
+        E: ExtendOntoPrompt,
     {
         extendable.extend_onto(self).await
     }
 
     /// Helper for the above.
     pub async fn extend_stream<T>(
-        &'a mut self,
+        &mut self,
         mut stream: std::pin::Pin<Box<T>>,
-    ) -> Result<&'a mut Self, ExtendError>
+    ) -> Result<&mut Self, ExtendError>
     where
         T: futures::stream::Stream<Item = Result<stream::Event, stream::Error>>
             + Sized
@@ -1423,38 +1392,38 @@ pub enum ExtendError {
 
 /// Object that can be appended to a [`Prompt`].
 #[async_trait::async_trait]
-pub trait ExtendOntoPrompt<'a> {
+pub trait ExtendOntoPrompt {
     /// Extend the prompt with the extendable object.
     async fn extend_onto(
         self,
-        prompt: &'a mut Prompt<'a>,
-    ) -> Result<&'a mut Prompt<'a>, ExtendError>;
+        prompt: &mut Prompt,
+    ) -> Result<&mut Prompt, ExtendError>;
 }
 
 #[async_trait::async_trait]
-impl<'a> ExtendOntoPrompt<'a> for Message<'a> {
+impl ExtendOntoPrompt for Message {
     async fn extend_onto(
         self,
-        prompt: &'a mut Prompt<'a>,
-    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt: &mut Prompt,
+    ) -> Result<&mut Prompt, ExtendError> {
         prompt.push_message(self).map_err(ExtendError::TurnOrder)?;
         Ok(prompt)
     }
 }
 
 #[async_trait::async_trait]
-impl<'a> ExtendOntoPrompt<'a> for stream::Event {
+impl ExtendOntoPrompt for stream::Event {
     async fn extend_onto(
         self,
-        prompt: &'a mut Prompt<'a>,
-    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt: &mut Prompt,
+    ) -> Result<&mut Prompt, ExtendError> {
         prompt.handle_stream_event(self)?;
         Ok(prompt)
     }
 }
 
 #[async_trait::async_trait]
-impl<'a, T> ExtendOntoPrompt<'a> for T
+impl<T> ExtendOntoPrompt for T
 where
     T: futures::stream::Stream<Item = Result<stream::Event, stream::Error>>
         + Sized
@@ -1462,8 +1431,8 @@ where
 {
     async fn extend_onto(
         self,
-        prompt: &'a mut Prompt<'a>,
-    ) -> Result<&'a mut Prompt<'a>, ExtendError> {
+        prompt: &mut Prompt,
+    ) -> Result<&mut Prompt, ExtendError> {
         prompt.extend_stream(Box::pin(self)).await
     }
 }
@@ -1502,7 +1471,7 @@ pub enum ApplyEventError {
     },
     /// Delta application error.
     #[error(transparent)]
-    Delta(#[from] DeltaError<'static>),
+    Delta(#[from] DeltaError),
     /// Unexpected index. Not necessarily out of bounds, but applying this event
     /// would be incorrect.
     #[error("Index {actual} is unexpected.")]
@@ -1520,7 +1489,7 @@ pub enum ApplyEventError {
         /// The complete message.
         event: stream::Event,
         /// The last message.
-        last: Message<'static>,
+        last: Message,
     },
     /// Event cannot be applied to an empty prompt.
     #[error("The prompt is empty and cannot accept this `Event`.")]
@@ -1531,7 +1500,7 @@ pub enum ApplyEventError {
 }
 
 #[cfg(feature = "markdown")]
-impl<'a> crate::markdown::ToMarkdown<'a> for Prompt<'a> {
+impl crate::markdown::ToMarkdown for Prompt {
     /// Format the [`Prompt`] as markdown in OpenAI style. H3 headings are used
     /// for "System", "Tool", "User", and "Assistant" messages even though
     /// technically there are only [`User`] and [`Assistant`] [`Role`]s.
@@ -1540,9 +1509,9 @@ impl<'a> crate::markdown::ToMarkdown<'a> for Prompt<'a> {
     /// [`Assistant`]: message::Role::Assistant
     /// [`Role`]: message::Role
     fn markdown_events_custom(
-        &'a self,
+        &self,
         options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'a>> + 'a> {
+    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{Event, HeadingLevel::H3, Tag, TagEnd};
 
         // TODO: Add the title if there is metadata for it. Also add a metadata
@@ -1657,16 +1626,13 @@ mod tests {
             fn name(&self) -> &str {
                 "PairTool"
             }
-            fn definitions(&self) -> Vec<MethodDef<'static>> {
+            fn definitions(&self) -> Vec<MethodDef> {
                 vec![
                     MethodDef::simple("PairTool__a", "A."),
                     MethodDef::simple("PairTool__b", "B."),
                 ]
             }
-            async fn call<'a>(
-                &mut self,
-                call: Use<'a>,
-            ) -> crate::tool::Result<'a> {
+            async fn call(&mut self, call: Use) -> crate::tool::Result {
                 crate::tool::Result {
                     tool_use_id: call.id,
                     content: "ok".into(),
@@ -1676,7 +1642,7 @@ mod tests {
             }
         }
 
-        // A short-lived `Prompt<'a>` accepts the tool's `MethodDef<'static>`s.
+        // A short-lived `Prompt` accepts the tool's `MethodDef`s.
         let prompt = Prompt::default().register_tool(&PairTool);
         let names: Vec<_> = prompt
             .methods
@@ -1759,7 +1725,7 @@ mod tests {
         assert_eq!(request.model, crate::model::Id::default());
     }
 
-    fn create_test_messages() -> [Message<'static>; 2] {
+    fn create_test_messages() -> [Message; 2] {
         let message = Message {
             role: Role::User,
             content: Content::text("Hello"),

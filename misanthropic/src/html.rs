@@ -147,26 +147,26 @@ impl<'a> FromIterator<pulldown_cmark::Event<'a>> for Html {
 ///   set on the [`MarkdownOptions`].
 ///
 /// [`MarkdownOptions`]: struct.MarkdownOptions.html
-pub trait ToHtml<'a>: ToMarkdown<'a> {
+pub trait ToHtml: ToMarkdown {
     /// Render the type to an HTML string.
-    fn html(&'a self) -> Html {
+    fn html(&self) -> Html {
         let mut opts = DEFAULT_OPTIONS;
         opts.attrs = true;
         self.html_custom(opts)
     }
 
     /// Render the type to an HTML string with maximum verbosity.
-    fn html_verbose(&'a self) -> Html {
+    fn html_verbose(&self) -> Html {
         self.html_custom(VERBOSE_OPTIONS)
     }
 
     /// Render the type to an HTML string with custom [`Options`].
-    fn html_custom(&'a self, options: Options) -> Html {
+    fn html_custom(&self, options: Options) -> Html {
         self.markdown_events_custom(options).collect()
     }
 }
 
-impl<'a, T> ToHtml<'a> for T where T: ToMarkdown<'a> {}
+impl<T> ToHtml for T where T: ToMarkdown {}
 
 #[cfg(test)]
 mod tests {

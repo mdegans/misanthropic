@@ -380,7 +380,7 @@ impl Client {
     /// around a `Vec` of [`Model`]s and derefs to it.
     ///
     /// [`Model``]: misanthropic::model::Model
-    pub async fn models(&self) -> Result<Models<'_>> {
+    pub async fn models(&self) -> Result<Models> {
         // `get` now reads the body, logs it, and surfaces non-JSON
         // error bodies as `Error::NonJsonResponse`, so we only have to
         // deal with parse failures on an OK body.
@@ -418,7 +418,7 @@ impl Client {
     /// [`Request`]: crate::prompt
     /// [`Message`]: crate::Message
     /// [`Stream`]: crate::Stream
-    pub async fn request<P>(&self, prompt: P) -> Result<crate::Response<'_>>
+    pub async fn request<P>(&self, prompt: P) -> Result<crate::Response>
     where
         P: Serialize,
     {
@@ -434,7 +434,7 @@ impl Client {
         &self,
         prompt: P,
         url: U,
-    ) -> Result<crate::Response<'_>>
+    ) -> Result<crate::Response>
     where
         P: Serialize,
         U: reqwest::IntoUrl,
@@ -505,7 +505,7 @@ impl Client {
     /// function will always return a single [`response::Message`].
     ///
     /// [`request`]: Self::request
-    pub async fn message<P>(&self, prompt: P) -> Result<response::Message<'_>>
+    pub async fn message<P>(&self, prompt: P) -> Result<response::Message>
     where
         P: Serialize,
     {

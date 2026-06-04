@@ -42,7 +42,7 @@ impl<P: Clone> Clone for Prompts<P> {
 }
 
 impl<P> std::fmt::Debug for Prompts<P> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(concat!(stringify!(Prompts), " { ... }"))
     }
 }
@@ -421,9 +421,7 @@ impl<P> Ready<P> {
     }
 
     /// Iterate over successful prompts and their [`response::Message`]s.
-    pub fn iter_ok(
-        &self,
-    ) -> impl Iterator<Item = (&P, &response::Message<'static>)> {
+    pub fn iter_ok(&self) -> impl Iterator<Item = (&P, &response::Message)> {
         self.results.iter().filter_map(|(id, result)| {
             if let BatchResult::Ok(msg) = result {
                 Some((self.pending.prompts.get(id)?, msg))
@@ -435,7 +433,7 @@ impl<P> Ready<P> {
 
     /// Remove all prompts and [`response::Message`]s from the batch with
     /// successful results. This is a one-way operation.
-    pub fn remove_ok(&mut self) -> Vec<(P, response::Message<'static>)> {
+    pub fn remove_ok(&mut self) -> Vec<(P, response::Message)> {
         let ids: Vec<_> = self
             .results
             .iter()
@@ -748,7 +746,7 @@ pub enum BatchResult {
     Expired,
     /// Sucessful response to a prompt.
     #[serde(rename = "succeeded")]
-    Ok(response::Message<'static>),
+    Ok(response::Message),
     /// Error response to a prompt.
     #[serde(rename = "errored")]
     Error(client::AnthropicError),
@@ -771,7 +769,7 @@ impl<'de> Deserialize<'de> for BatchResult {
                 let message = value.get("message").ok_or_else(|| {
                     serde::de::Error::missing_field("message")
                 })?;
-                let msg: response::Message<'static> =
+                let msg: response::Message =
                     serde_json::from_value(message.clone())
                         .map_err(serde::de::Error::custom)?;
                 Ok(BatchResult::Ok(msg))
@@ -795,9 +793,7 @@ impl<'de> Deserialize<'de> for BatchResult {
     }
 }
 
-impl From<BatchResult>
-    for Result<response::Message<'static>, client::AnthropicError>
-{
+impl From<BatchResult> for Result<response::Message, client::AnthropicError> {
     fn from(result: BatchResult) -> Self {
         match result {
             BatchResult::Ok(msg) => Ok(msg),
@@ -992,10 +988,10 @@ mod tests {
     };
 
     // Generate a Pending instance and an Id guaranteed to be in it.
-    fn gen_pending() -> (Id, Pending<Prompt<'static>>) {
+    fn gen_pending() -> (Id, Pending<Prompt>) {
         let id = Id::default();
 
-        let prompts: Prompts<Prompt<'static>> = Prompts {
+        let prompts: Prompts<Prompt> = Prompts {
             prompts: [
                 (id, Prompt::default()),
                 (ERROR_ID, Prompt::default()),
@@ -1066,7 +1062,7 @@ mod tests {
         assert_eq!(meta.id, PENDING_ID);
     }
 
-    fn gen_ready() -> (Id, Ready<Prompt<'static>>) {
+    fn gen_ready() -> (Id, Ready<Prompt>) {
         let (id, pending) = gen_pending();
         let mut results = HashMap::new();
         results.insert(

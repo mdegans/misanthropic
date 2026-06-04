@@ -367,7 +367,7 @@ impl ChatStreamAccumulator {
     /// Consume the accumulator and produce a misanthropic [`Message`].
     ///
     /// Returns `None` if no content or tool calls were accumulated.
-    pub fn into_message(self) -> Option<Message<'static>> {
+    pub fn into_message(self) -> Option<Message> {
         let has_content = !self.content.is_empty();
         let has_tools = !self.tool_calls.is_empty();
 
@@ -375,7 +375,7 @@ impl ChatStreamAccumulator {
             return None;
         }
 
-        let mut blocks: Vec<Block<'static>> = Vec::new();
+        let mut blocks: Vec<Block> = Vec::new();
 
         if has_content {
             blocks.push(Block::Text {
@@ -410,8 +410,8 @@ impl ChatStreamAccumulator {
 // Conversions: misanthropic → OpenAI
 // ---------------------------------------------------------------------------
 
-impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
-    fn from(prompt: &Prompt<'a>) -> Self {
+impl From<&Prompt> for ChatCompletionRequest {
+    fn from(prompt: &Prompt) -> Self {
         let mut messages = Vec::new();
 
         // System message
@@ -476,8 +476,8 @@ impl<'a> From<&Prompt<'a>> for ChatCompletionRequest {
     }
 }
 
-impl<'a> From<&tool::MethodDef<'a>> for ChatTool {
-    fn from(method: &tool::MethodDef<'a>) -> Self {
+impl From<&tool::MethodDef> for ChatTool {
+    fn from(method: &tool::MethodDef) -> Self {
         ChatTool {
             kind: "function".to_string(),
             function: ChatFunction {
@@ -489,7 +489,7 @@ impl<'a> From<&tool::MethodDef<'a>> for ChatTool {
     }
 }
 
-impl From<ChatToolCall> for tool::Use<'static> {
+impl From<ChatToolCall> for tool::Use {
     fn from(call: ChatToolCall) -> Self {
         let input: serde_json::Value =
             serde_json::from_str(&call.function.arguments)
@@ -503,8 +503,8 @@ impl From<ChatToolCall> for tool::Use<'static> {
     }
 }
 
-impl<'a> From<&tool::Result<'a>> for ChatMessage {
-    fn from(result: &tool::Result<'a>) -> Self {
+impl From<&tool::Result> for ChatMessage {
+    fn from(result: &tool::Result) -> Self {
         ChatMessage {
             role: ChatRole::Tool,
             content: Some(ChatContent::Text(content_to_text(&result.content))),
@@ -523,7 +523,7 @@ impl ChatCompletionResponse {
     /// Extract the first choice's message as a misanthropic [`Message`].
     ///
     /// Returns `None` if no choices are present.
-    pub fn into_message(self) -> Option<Message<'static>> {
+    pub fn into_message(self) -> Option<Message> {
         let choice = self.choices.into_iter().next()?;
         Some(chat_message_to_message(choice.message))
     }
@@ -542,7 +542,7 @@ impl ChatCompletionResponse {
 
 /// Extract the text content from a misanthropic [`Content`], ignoring
 /// non-text blocks.
-fn content_to_text(content: &Content<'_>) -> String {
+fn content_to_text(content: &Content) -> String {
     let mut out = String::new();
     for block in content.iter() {
         if let Block::Text { text, .. } = block {
@@ -560,7 +560,7 @@ fn content_to_text(content: &Content<'_>) -> String {
 /// A single misanthropic message with both text and tool use/results may
 /// produce multiple OpenAI messages, because tool results must be separate
 /// messages with `role: "tool"`.
-fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
+fn message_to_chat_messages(msg: &Message) -> Vec<ChatMessage> {
     let mut text_parts = Vec::new();
     let mut image_parts = Vec::new();
     let mut tool_calls = Vec::new();
@@ -681,8 +681,8 @@ fn message_to_chat_messages<'a>(msg: &Message<'a>) -> Vec<ChatMessage> {
 }
 
 /// Convert a [`ChatMessage`] into a misanthropic [`Message`].
-fn chat_message_to_message(msg: ChatMessage) -> Message<'static> {
-    let mut blocks: Vec<Block<'static>> = Vec::new();
+fn chat_message_to_message(msg: ChatMessage) -> Message {
+    let mut blocks: Vec<Block> = Vec::new();
 
     // Text content
     if let Some(content) = msg.content {
@@ -807,7 +807,7 @@ mod tests {
             },
         };
 
-        let use_block: tool::Use<'static> = chat_call.into();
+        let use_block: tool::Use = chat_call.into();
         assert_eq!(use_block.id, "call_123");
         assert_eq!(use_block.name, "get_weather");
         assert_eq!(use_block.input["location"], "Paris");

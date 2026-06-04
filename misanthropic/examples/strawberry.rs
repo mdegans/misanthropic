@@ -62,7 +62,7 @@ impl Strawberry {
     async fn count_letters(
         &mut self,
         args: CountLetters,
-    ) -> Result<Content<'static>, Content<'static>> {
+    ) -> Result<Content, Content> {
         let letter = args.letter.to_ascii_lowercase();
         let count = args
             .string
@@ -110,7 +110,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `ToolUse` and the last `Content` `Block` must be `ToolUse`.
     if let Some(call) = message.tool_use() {
         // Own the call so we can append the assistant's message first.
-        let call = call.clone().into_static();
+        let call = call.clone();
         chat.push_message(message)?;
 
         // Typed dispatch: `Use.input` is deserialized into `CountLetters` and

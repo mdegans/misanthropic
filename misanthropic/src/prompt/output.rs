@@ -34,7 +34,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
-pub struct OutputConfig<'a> {
+pub struct OutputConfig {
     /// Desired [`OutputFormat`] for the response. `None` leaves the response
     /// unconstrained — useful for an [`effort`](Self::effort)-only config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -43,7 +43,7 @@ pub struct OutputConfig<'a> {
     /// ([`Effort::High`]). Orthogonal to [`format`](Self::format); see
     /// [`Effort`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<Effort<'a>>,
+    pub effort: Option<Effort>,
 }
 
 /// How eagerly the model spends tokens, set on [`OutputConfig::effort`].
@@ -57,7 +57,7 @@ pub struct OutputConfig<'a> {
 /// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
-pub enum Effort<'a> {
+pub enum Effort {
     /// Most efficient — significant token savings with some capability
     /// reduction. Good for simple or latency-sensitive tasks.
     Low,
@@ -75,10 +75,10 @@ pub enum Effort<'a> {
     /// over the wire, so a level read from a model's
     /// [`capabilities`](crate::model::Capabilities) can be sent right back on
     /// a request.
-    Custom(Cow<'a, str>),
+    Custom(Cow<'static, str>),
 }
 
-impl<'a> Effort<'a> {
+impl Effort {
     /// The wire string for this level, e.g. `"xhigh"`.
     pub fn as_str(&self) -> &str {
         match self {
@@ -90,28 +90,16 @@ impl<'a> Effort<'a> {
             Effort::Custom(s) => s,
         }
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`].
-    pub fn into_static(self) -> Effort<'static> {
-        match self {
-            Effort::Low => Effort::Low,
-            Effort::Medium => Effort::Medium,
-            Effort::High => Effort::High,
-            Effort::XHigh => Effort::XHigh,
-            Effort::Max => Effort::Max,
-            Effort::Custom(s) => Effort::Custom(Cow::Owned(s.into_owned())),
-        }
-    }
 }
 
-impl std::fmt::Display for Effort<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl std::fmt::Display for Effort {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.as_str())
     }
 }
 
-impl<'a> From<Cow<'a, str>> for Effort<'a> {
-    fn from(s: Cow<'a, str>) -> Self {
+impl From<Cow<'static, str>> for Effort {
+    fn from(s: Cow<'static, str>) -> Self {
         match s.as_ref() {
             "low" => Effort::Low,
             "medium" => Effort::Medium,
@@ -123,19 +111,19 @@ impl<'a> From<Cow<'a, str>> for Effort<'a> {
     }
 }
 
-impl<'a> From<&'a str> for Effort<'a> {
-    fn from(s: &'a str) -> Self {
-        Effort::from(Cow::Borrowed(s))
+impl From<&str> for Effort {
+    fn from(s: &str) -> Self {
+        Effort::from(Cow::Owned(s.to_owned()))
     }
 }
 
-impl From<String> for Effort<'_> {
+impl From<String> for Effort {
     fn from(s: String) -> Self {
         Effort::from(Cow::Owned(s))
     }
 }
 
-impl Serialize for Effort<'_> {
+impl Serialize for Effort {
     fn serialize<S: Serializer>(
         &self,
         serializer: S,
@@ -144,7 +132,7 @@ impl Serialize for Effort<'_> {
     }
 }
 
-impl<'de, 'a> Deserialize<'de> for Effort<'a> {
+impl<'de> Deserialize<'de> for Effort {
     fn deserialize<D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Self, D::Error> {
@@ -195,7 +183,7 @@ pub struct JsonSchemaFormat {
     pub schema: serde_json::Value,
 }
 
-impl<'a> OutputConfig<'a> {
+impl OutputConfig {
     /// Construct from a raw [JSON Schema] value. The schema is not
     /// validated by this crate — the caller is responsible for conformance
     /// with Anthropic's [supported subset].
@@ -214,7 +202,7 @@ impl<'a> OutputConfig<'a> {
     ///
     /// [`effort`]: Self::effort
     /// [`format`]: Self::format
-    pub fn effort(effort: Effort<'a>) -> Self {
+    pub fn effort(effort: Effort) -> Self {
         Self {
             format: None,
             effort: Some(effort),
@@ -222,7 +210,7 @@ impl<'a> OutputConfig<'a> {
     }
 
     /// Set the [`effort`](Self::effort), preserving the [`format`](Self::format).
-    pub fn with_effort(mut self, effort: Effort<'a>) -> Self {
+    pub fn with_effort(mut self, effort: Effort) -> Self {
         self.effort = Some(effort);
         self
     }
@@ -232,7 +220,7 @@ impl<'a> OutputConfig<'a> {
     /// [`format`](Self::format) and [`effort`](Self::effort) in any order.
     ///
     /// [`Prompt`]: crate::Prompt
-    pub(crate) fn overlay(&mut self, other: OutputConfig<'a>) {
+    pub(crate) fn overlay(&mut self, other: OutputConfig) {
         let OutputConfig { format, effort } = other;
         if format.is_some() {
             self.format = format;
@@ -257,18 +245,9 @@ impl<'a> OutputConfig<'a> {
         sanitize_for_anthropic(&mut schema);
         Self::json_schema(schema)
     }
-
-    /// Convert to a `'static` lifetime by taking ownership of the
-    /// [`effort`](Self::effort)'s [`Cow`].
-    pub fn into_static(self) -> OutputConfig<'static> {
-        OutputConfig {
-            format: self.format,
-            effort: self.effort.map(Effort::into_static),
-        }
-    }
 }
 
-impl From<JsonSchemaFormat> for OutputConfig<'_> {
+impl From<JsonSchemaFormat> for OutputConfig {
     fn from(format: JsonSchemaFormat) -> Self {
         Self {
             format: Some(OutputFormat::JsonSchema(format)),
@@ -277,13 +256,13 @@ impl From<JsonSchemaFormat> for OutputConfig<'_> {
     }
 }
 
-impl<'a> From<Effort<'a>> for OutputConfig<'a> {
-    fn from(effort: Effort<'a>) -> Self {
+impl From<Effort> for OutputConfig {
+    fn from(effort: Effort) -> Self {
         Self::effort(effort)
     }
 }
 
-impl From<serde_json::Value> for OutputConfig<'_> {
+impl From<serde_json::Value> for OutputConfig {
     /// Treats the value as a raw JSON Schema.
     fn from(schema: serde_json::Value) -> Self {
         Self::json_schema(schema)
@@ -296,7 +275,7 @@ impl From<serde_json::Value> for JsonSchemaFormat {
     }
 }
 
-impl From<OutputFormat> for OutputConfig<'_> {
+impl From<OutputFormat> for OutputConfig {
     fn from(format: OutputFormat) -> Self {
         Self {
             format: Some(format),
