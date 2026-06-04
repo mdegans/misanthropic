@@ -37,6 +37,10 @@ pub use model::{AnthropicModel, Model};
 pub mod prompt;
 pub use prompt::{CachedPrompt, Prompt};
 
+/// Purely for doc testing the skill files
+#[cfg(feature = "__skills")]
+pub mod skills;
+
 pub mod stream;
 pub use stream::Stream;
 

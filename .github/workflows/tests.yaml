@@ -71,6 +71,11 @@ jobs:
       - name: Test with Memsecurity feature
         run: cargo test --features memsecurity --verbose
 
+      # Doc-tests the agent skill files so their code blocks can't drift from
+      # the public API. Runs only the doctests (the skills module is doc-only).
+      - name: Test Skill Docs
+        run: cargo test -p misanthropic --features __skills --doc --verbose
+
       # This should only happen on push to main. PRs should not upload coverage.
       - name: Install llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov

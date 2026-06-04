@@ -106,31 +106,31 @@ langsan = { version = "0", features = [
     "french",
     "german",
     "italian",
-    "russian",                              # -> cyrillic
-    "emoji",                                # -> emoticons
+    "russian", # -> cyrillic
+    "emoji",   # -> emoticons
     # Latin/phonetic extensions for the rest of the Latin-script languages.
-    "latin-extended-a",                     # š č ż ğ (Polish, Czech, Turkish…)
+    "latin-extended-a",          # š č ż ğ (Polish, Czech, Turkish…)
     "latin-extended-b",
-    "latin-extended-additional",            # Vietnamese
-    "ipa-extensions",                       # phonetic transcription
+    "latin-extended-additional", # Vietnamese
+    "ipa-extensions",            # phonetic transcription
     # Greek & Cyrillic — math/science variables and Slavic text.
-    "greek-and-coptic",                     # α β γ π Σ Ω
+    "greek-and-coptic",    # α β γ π Σ Ω
     "greek-extended",
     "cyrillic-supplement",
     # CJK — Chinese, Japanese, Korean (precomposed; Jamo excluded, see above).
-    "cjk-symbols-and-punctuation",          # 。、「」
+    "cjk-symbols-and-punctuation",        # 。、「」
     "hiragana",
     "katakana",
-    "cjk-unified-ideographs",               # the main Han block
+    "cjk-unified-ideographs",             # the main Han block
     "cjk-unified-ideographs-extension-a",
-    "hangul-syllables",                     # 한국어
-    "enclosed-cjk-letters-and-months",      # ㊙ ㈱
-    "cjk-compatibility",                    # ㎏ ㎞ squared units
+    "hangul-syllables",                   # 한국어
+    "enclosed-cjk-letters-and-months",    # ㊙ ㈱
+    "cjk-compatibility",                  # ㎏ ㎞ squared units
     # Punctuation & technical.
-    "general-punctuation",                  # — “ ” • … (bidi subset stays denied)
+    "general-punctuation",           # — “ ” • … (bidi subset stays denied)
     "supplemental-punctuation",
-    "miscellaneous-technical",              # ⌘ ⌥ ⏎ ⌫
-    "control-pictures",                     # ␀ ␉
+    "miscellaneous-technical",       # ⌘ ⌥ ⏎ ⌫
+    "control-pictures",              # ␀ ␉
     "optical-character-recognition",
     # Math.
     "mathematical-operators",               # − ≈ ≤ ≥ ≠ √ ∑ ∞ ∫
@@ -148,23 +148,23 @@ langsan = { version = "0", features = [
     "supplemental-arrows-b",
     "supplemental-arrows-c",
     # Shapes, boxes, bars — tables, trees, TUI/ASCII art.
-    "box-drawing",                          # ─ │ ┌ └
-    "block-elements",                       # ░ ▒ █
-    "geometric-shapes",                     # ■ ● ▶ ○
-    "geometric-shapes-extended",            # 🔴 🟢 🟡
+    "box-drawing",                  # ─ │ ┌ └
+    "block-elements",               # ░ ▒ █
+    "geometric-shapes",             # ■ ● ▶ ○
+    "geometric-shapes-extended",    # 🔴 🟢 🟡
     "symbols-for-legacy-computing",
-    "braille-patterns",                     # ⠿ (ASCII art)
+    "braille-patterns",             # ⠿ (ASCII art)
     # Symbols, dingbats, emoji/pictographs.
-    "miscellaneous-symbols",                # ★ ☆ ⚠ ☑ ♔ ♪
+    "miscellaneous-symbols",                 # ★ ☆ ⚠ ☑ ♔ ♪
     "miscellaneous-symbols-and-arrows",
-    "dingbats",                             # ✓ ✗ ✔ ✘ ➜
+    "dingbats",                              # ✓ ✗ ✔ ✘ ➜
     "ornamental-dingbats",
     "miscellaneous-symbols-and-pictographs", # 🔧 📊 🔥 🚀
-    "supplemental-symbols-and-pictographs", # 🧠 🤖 🦀
-    "symbols-and-pictographs-extended-a",   # 🩹 🪐
-    "transport-and-map-symbols",            # 🚗 ✈
-    "enclosed-alphanumerics",               # ① ② ⓐ
-    "enclosed-alphanumeric-supplement",     # 🇺🇳 regional indicators (flags)
+    "supplemental-symbols-and-pictographs",  # 🧠 🤖 🦀
+    "symbols-and-pictographs-extended-a",    # 🩹 🪐
+    "transport-and-map-symbols",             # 🚗 ✈
+    "enclosed-alphanumerics",                # ① ② ⓐ
+    "enclosed-alphanumeric-supplement",      # 🇺🇳 regional indicators (flags)
     "enclosed-ideographic-supplement",
 ], optional = true }
 # For HTML escaping
@@ -257,6 +257,11 @@ openai = []
 # Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
 # default; turn off to drop the proc-macro (syn) compile-time cost.
 derive = ["dep:misanthropic-derive"]
+# Doc-tests the agent skill files (`.claude/skills/*/SKILL.md`) so their code
+# blocks can't drift from the public API. Implies the features the skills
+# document: `client` (Client / streaming) and `derive` (the `#[tool]` macro).
+__skills = ["client", "derive"]
+
 [[example]]
 name = "strawberry"
 required-features = ["client", "markdown", "derive"]
