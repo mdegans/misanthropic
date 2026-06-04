@@ -1159,6 +1159,51 @@ impl TryFrom<serde_json::Value> for MethodDef {
     }
 }
 
+/// Who invoked a tool: the `caller` field surfaced by [programmatic tool
+/// calling] on [`Use`] and the server-tool `*_tool_result`
+/// [`Block`](crate::prompt::message::Block)s. [`Direct`] is the model calling
+/// the tool itself; a code-execution variant means a code-execution container
+/// called it on the model's behalf, carrying the `srvtoolu_` id of that call.
+///
+/// Modeled like [`model::Id`](crate::model::Id): recognized shapes are typed in
+/// [`KnownCaller`], and anything else is preserved verbatim in [`Self::Other`]
+/// so an unrecognized future caller type still round-trips rather than failing
+/// to deserialize a real response.
+///
+/// [`Direct`]: KnownCaller::Direct
+/// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(untagged)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum Caller {
+    /// A caller shape this crate recognizes.
+    Known(KnownCaller),
+    /// A caller type not yet modeled, preserved verbatim so it round-trips.
+    Other(serde_json::Value),
+}
+
+/// The recognized [`Caller`] shapes, distinguished by the wire `type`.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum KnownCaller {
+    /// The model called the tool directly (traditional tool use).
+    #[serde(rename = "direct")]
+    Direct,
+    /// A `code_execution_20250825` container called the tool programmatically.
+    #[serde(rename = "code_execution_20250825")]
+    CodeExecution20250825 {
+        /// The `server_tool_use` id of the code-execution call.
+        tool_id: Cow<'static, str>,
+    },
+    /// A `code_execution_20260120` container called the tool programmatically.
+    #[serde(rename = "code_execution_20260120")]
+    CodeExecution20260120 {
+        /// The `server_tool_use` id of the code-execution call.
+        tool_id: Cow<'static, str>,
+    },
+}
+
 /// `MethodDef` [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///

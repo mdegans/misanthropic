@@ -1011,6 +1011,10 @@ pub enum Block {
         tool_use_id: Cow<'static, str>,
         /// The search results, or an error.
         content: WebSearchToolResultContent,
+        /// Who invoked the search — set by the API on responses (e.g.
+        /// [`Direct`](tool::KnownCaller::Direct)), omitted on the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
     },
     /// Result of a [`web_fetch`] server tool call (`web_fetch_tool_result`),
     /// appearing in the assistant turn right after its
@@ -1025,6 +1029,10 @@ pub enum Block {
         tool_use_id: Cow<'static, str>,
         /// The fetched document, or an error.
         content: WebFetchToolResultContent,
+        /// Who invoked the fetch — set by the API on responses (e.g.
+        /// [`Direct`](tool::KnownCaller::Direct)), omitted on the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
     },
     /// Result of a [tool-search] server tool call (`tool_search_tool_result`),
     /// appearing in the assistant turn right after its
@@ -1040,6 +1048,10 @@ pub enum Block {
         tool_use_id: Cow<'static, str>,
         /// The discovered tool references, or an error.
         content: ToolSearchToolResultContent,
+        /// Who invoked the search — set by the API on responses (e.g.
+        /// [`Direct`](tool::KnownCaller::Direct)), omitted on the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
     },
     /// A `tool_reference` block naming a [`defer_loading`] tool to expand. Used
     /// to implement [custom client-side tool search]: a custom tool returns
@@ -1087,8 +1099,10 @@ pub struct WebSearchResult {
     ///
     /// [`pause_turn`]: crate::response::StopReason::PauseTurn
     pub encrypted_content: Cow<'static, str>,
-    /// Approximate age of the page, e.g. `"3 days ago"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Approximate age of the page, e.g. `"3 days ago"`. The API sends this on
+    /// every result, explicitly `null` when unknown — so it is always
+    /// serialized (not skipped) to round-trip the wire exactly.
+    #[serde(default)]
     pub page_age: Option<Cow<'static, str>>,
 }
 
@@ -2249,7 +2263,7 @@ mod tests {
         let Block::ServerToolUse { call } = &block else {
             panic!("expected ServerToolUse");
         };
-        assert_eq!(call.id, "srvtoolu_01A2B3");
+        assert_eq!(call.id, "srvtoolu_01XAxdGfRL2vypN6SF17MJXT");
         assert_eq!(call.name, "web_search");
     }
 
@@ -2261,15 +2275,23 @@ mod tests {
         let Block::WebSearchToolResult {
             tool_use_id,
             content,
+            caller,
         } = &block
         else {
             panic!("expected WebSearchToolResult");
         };
-        assert_eq!(tool_use_id, "srvtoolu_01A2B3");
+        assert_eq!(tool_use_id, "srvtoolu_01XAxdGfRL2vypN6SF17MJXT");
         assert!(matches!(
             content,
-            WebSearchToolResultContent::Results(r) if r.len() == 1
+            WebSearchToolResultContent::Results(r) if r.len() == 2
         ));
+        // The API reports who called the tool; this one was a direct call.
+        assert_eq!(
+            caller.as_ref(),
+            Some(&crate::tool::Caller::Known(
+                crate::tool::KnownCaller::Direct
+            ))
+        );
     }
 
     #[test]
@@ -2295,6 +2317,7 @@ mod tests {
         let Block::WebFetchToolResult {
             tool_use_id,
             content,
+            ..
         } = &block
         else {
             panic!("expected WebFetchToolResult");
@@ -2359,6 +2382,7 @@ mod tests {
         let Block::ToolSearchToolResult {
             tool_use_id,
             content,
+            ..
         } = &block
         else {
             panic!("expected ToolSearchToolResult");

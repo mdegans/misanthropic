@@ -1,6 +1,8 @@
 {
   "type": "server_tool_use",
-  "id": "srvtoolu_01A2B3",
+  "id": "srvtoolu_01XAxdGfRL2vypN6SF17MJXT",
   "name": "web_search",
-  "input": { "query": "latest anthropic news" }
+  "input": {
+    "query": "Anthropic products"
+  }
 }

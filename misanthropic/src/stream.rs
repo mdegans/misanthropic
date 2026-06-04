@@ -1381,6 +1381,7 @@ pub(crate) mod tests {
                     Block::WebFetchToolResult {
                         tool_use_id,
                         content,
+                        ..
                     },
                 ..
             }) = event

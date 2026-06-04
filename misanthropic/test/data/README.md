@@ -56,12 +56,12 @@ the win; fix the types, then commit the real bytes.
 | `server_tools/web_fetch_result.json` | docs | **pending live capture** |
 | `server_tools/web_fetch_pdf.json` | docs | **pending live capture** |
 | `server_tools/web_fetch_error.json` | live (`web_fetch`, curl) | captured (tag verified vs #72) |
-| `server_tools/web_search_result.json` | docs | **pending live capture** |
+| `server_tools/web_search_result.json` | live (`web_search`, Haiku 4.5) | captured (`caller`, `page_age: null` verified; trimmed to 2 results) |
 | `server_tools/web_search_error.json` | docs | **pending live capture** |
 | `server_tools/tool_search_result.json` | docs | **pending live capture** |
 | `server_tools/tool_search_error.json` | docs | **pending live capture** |
 | `server_tools/tool_reference.json` | docs | **pending live capture** |
-| `server_tools/server_tool_use.json` | docs | **pending live capture** |
+| `server_tools/server_tool_use.json` | live (`web_search`, Haiku 4.5) | captured |
 
 "pending live capture" fixtures are our best current guess from the docs and
 round-trip cleanly against today's types; they should be replaced with real
