@@ -13,6 +13,23 @@ Cargo workspace with 4 members:
 
 ## Build & test
 
+Prefer the `just` recipes — they mirror CI and are the source of truth for the
+local gate. Run `just install-hooks` once per clone to enable the pre-commit
+gate (`hooks/pre-commit` runs `just test` via `core.hooksPath`).
+
+```sh
+just                # list recipes
+just test           # offline gate: fmt, clippy, all-features + no-default tests
+just test-ignored   # live-API #[ignore]d tests (needs misanthropic/api.key)
+just install-hooks  # enable the pre-commit gate (once per clone)
+```
+
+`just test` includes the `__skills` doc-tests, which compile the code blocks
+in `.claude/skills/*/SKILL.md` so the skill docs can't drift from the API. The
+gate is offline (free per commit); only `just test-ignored` hits the API.
+
+Or run the underlying commands directly:
+
 ```sh
 # Build everything
 cargo build --all-features
