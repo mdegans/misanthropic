@@ -649,6 +649,19 @@ pub struct MethodDef {
     /// with the tool-search tool). Defaults to `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub defer_loading: Option<bool>,
+    /// Which contexts may invoke this tool — the
+    /// [`allowed_callers`](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling)
+    /// field. [`None`] (omitted) means the API's default of `["direct"]`. List
+    /// [`AllowedCaller::code_execution_20260120`] to let the model call this
+    /// tool from a code-execution container ([programmatic tool calling]).
+    ///
+    /// The docs advise choosing *one* caller per tool rather than enabling
+    /// both; a `tool_choice` naming a tool whose callers omit `direct` is a
+    /// `400`.
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowed_callers: Option<Vec<AllowedCaller>>,
 }
 
 #[cfg(feature = "markdown")]
@@ -665,6 +678,7 @@ impl crate::markdown::ToMarkdown for MethodDef {
         payload.as_object_mut().unwrap().remove("cache_control");
         payload.as_object_mut().unwrap().remove("strict");
         payload.as_object_mut().unwrap().remove("defer_loading");
+        payload.as_object_mut().unwrap().remove("allowed_callers");
 
         if options.tool_use {
             Box::new(
@@ -725,6 +739,8 @@ impl<'de> Deserialize<'de> for MethodBuilder {
             strict: Option<bool>,
             #[serde(default)]
             defer_loading: Option<bool>,
+            #[serde(default)]
+            allowed_callers: Option<Vec<AllowedCaller>>,
         }
 
         let foreign = Foreign::deserialize(deserializer)?;
@@ -736,6 +752,7 @@ impl<'de> Deserialize<'de> for MethodBuilder {
             cache_control,
             strict,
             defer_loading,
+            allowed_callers,
         } = foreign;
 
         Ok(MethodBuilder {
@@ -746,6 +763,7 @@ impl<'de> Deserialize<'de> for MethodBuilder {
                 cache_control,
                 strict,
                 defer_loading,
+                allowed_callers,
             },
         })
     }
@@ -778,6 +796,31 @@ impl MethodBuilder {
     pub fn defer_loading(mut self, defer_loading: bool) -> Self {
         self.tool.defer_loading = Some(defer_loading);
         self
+    }
+
+    /// Set [`allowed_callers`] — the contexts that may invoke this tool — from
+    /// any iterator of [`AllowedCaller`]. An empty iterator clears it back to
+    /// the API default (`["direct"]`). For the common "callable only from a
+    /// code-execution container" case, see [`programmatic`](Self::programmatic).
+    ///
+    /// [`allowed_callers`]: MethodDef::allowed_callers
+    pub fn allowed_callers(
+        mut self,
+        callers: impl IntoIterator<Item = AllowedCaller>,
+    ) -> Self {
+        let callers: Vec<_> = callers.into_iter().collect();
+        self.tool.allowed_callers = (!callers.is_empty()).then_some(callers);
+        self
+    }
+
+    /// Mark this tool callable only from a `code_execution_20260120` container
+    /// ([programmatic tool calling]) — shorthand for
+    /// [`allowed_callers`]\([`[AllowedCaller::code_execution_20260120()]`]).
+    ///
+    /// [`allowed_callers`]: Self::allowed_callers
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    pub fn programmatic(self) -> Self {
+        self.allowed_callers([AllowedCaller::code_execution_20260120()])
     }
 
     /// Set a cache breakpoint at this [`MethodDef`] by setting [`cache_control`] to
@@ -1025,6 +1068,7 @@ impl MethodDef {
                 cache_control: None,
                 strict: None,
                 defer_loading: None,
+                allowed_callers: None,
             },
         }
     }
@@ -1046,6 +1090,7 @@ impl MethodDef {
             cache_control: None,
             strict: None,
             defer_loading: None,
+            allowed_callers: None,
         }
     }
 
@@ -1075,6 +1120,7 @@ impl MethodDef {
             cache_control: None,
             strict: None,
             defer_loading: None,
+            allowed_callers: None,
         }
     }
 
@@ -1231,6 +1277,68 @@ impl Caller {
         Self::Known(KnownCaller::CodeExecution20250825 {
             tool_id: tool_id.into(),
         })
+    }
+}
+
+/// A *context* that may invoke a tool, named in a [`MethodDef`]'s
+/// [`allowed_callers`](MethodDef::allowed_callers) to opt that tool into
+/// [programmatic tool calling]. Unlike [`Caller`] (which reports who *did*
+/// call a tool and carries the `srvtoolu_` id), this is the bare *kind* a tool
+/// definition permits — no id.
+///
+/// Modeled like [`Caller`]/[`model::Id`](crate::model::Id): recognized kinds
+/// are typed in [`KnownAllowedCaller`], and anything else is preserved verbatim
+/// in [`Self::Other`] so a future, API-versioned caller token still round-trips.
+///
+/// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(untagged)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+pub enum AllowedCaller {
+    /// A caller kind this crate recognizes.
+    Known(KnownAllowedCaller),
+    /// A caller token not yet modeled, preserved verbatim so it round-trips.
+    Other(String),
+}
+
+/// The recognized [`AllowedCaller`] kinds, each serialized as its bare wire
+/// string (`"direct"`, `"code_execution_20260120"`, …).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+pub enum KnownAllowedCaller {
+    /// The model may call the tool directly. The default the API assumes when
+    /// `allowed_callers` is omitted.
+    #[serde(rename = "direct")]
+    Direct,
+    /// The model may call the tool from a `code_execution_20260120` container.
+    #[serde(rename = "code_execution_20260120")]
+    CodeExecution20260120,
+    /// The model may call the tool from a `code_execution_20250825` container.
+    #[serde(rename = "code_execution_20250825")]
+    CodeExecution20250825,
+}
+
+impl AllowedCaller {
+    /// The model may call the tool directly. See [`KnownAllowedCaller::Direct`].
+    ///
+    /// `const` so it composes in the [`ALLOWED_CALLERS`] slice the `#[tool]`
+    /// macro emits.
+    ///
+    /// [`ALLOWED_CALLERS`]: crate::tool::ToolArgs::ALLOWED_CALLERS
+    pub const fn direct() -> Self {
+        Self::Known(KnownAllowedCaller::Direct)
+    }
+
+    /// The model may call the tool from a `code_execution_20260120` container.
+    /// See [`KnownAllowedCaller::CodeExecution20260120`].
+    pub const fn code_execution_20260120() -> Self {
+        Self::Known(KnownAllowedCaller::CodeExecution20260120)
+    }
+
+    /// The model may call the tool from a `code_execution_20250825` container.
+    /// See [`KnownAllowedCaller::CodeExecution20250825`].
+    pub const fn code_execution_20250825() -> Self {
+        Self::Known(KnownAllowedCaller::CodeExecution20250825)
     }
 }
 
@@ -2103,6 +2211,66 @@ mod tests {
         // Round-trips through the builder-based `Deserialize`.
         let back: MethodDef = serde_json::from_value(json).unwrap();
         assert_eq!(back.defer_loading, Some(true));
+    }
+
+    #[test]
+    fn allowed_caller_serializes_to_bare_string() {
+        // Known kinds are their bare wire token; an unknown one round-trips
+        // verbatim through `Other`.
+        assert_eq!(
+            serde_json::to_value(AllowedCaller::code_execution_20260120())
+                .unwrap(),
+            serde_json::json!("code_execution_20260120")
+        );
+        assert_eq!(
+            serde_json::to_value(AllowedCaller::direct()).unwrap(),
+            serde_json::json!("direct")
+        );
+        let future = serde_json::json!("code_execution_29991231");
+        let parsed: AllowedCaller =
+            serde_json::from_value(future.clone()).unwrap();
+        assert!(matches!(parsed, AllowedCaller::Other(_)));
+        assert_eq!(serde_json::to_value(&parsed).unwrap(), future);
+    }
+
+    #[test]
+    fn allowed_callers_builder_and_serde() {
+        // `.programmatic()` is sugar for the code-execution caller.
+        let method = MethodDef::builder("query_sales")
+            .description("Query sales.")
+            .schema(serde_json::json!({"type": "object"}))
+            .programmatic()
+            .build()
+            .unwrap();
+        assert_eq!(
+            method.allowed_callers,
+            Some(vec![AllowedCaller::code_execution_20260120()])
+        );
+        let json = serde_json::to_value(&method).unwrap();
+        assert_eq!(
+            json["allowed_callers"],
+            serde_json::json!(["code_execution_20260120"])
+        );
+
+        // Round-trips through the builder-based `Deserialize`.
+        let back: MethodDef = serde_json::from_value(json).unwrap();
+        assert_eq!(back.allowed_callers, method.allowed_callers);
+
+        // Omitted when unset; an empty list clears back to the default.
+        let bare = MethodDef::simple("ping", "Ping.");
+        assert!(
+            serde_json::to_value(&bare)
+                .unwrap()
+                .get("allowed_callers")
+                .is_none()
+        );
+        let cleared = MethodDef::builder("ping")
+            .description("Ping.")
+            .schema(serde_json::json!({"type": "object"}))
+            .allowed_callers([])
+            .build()
+            .unwrap();
+        assert_eq!(cleared.allowed_callers, None);
     }
 
     #[test]

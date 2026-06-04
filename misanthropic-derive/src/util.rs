@@ -1,6 +1,6 @@
 //! Shared helpers for the derive and attribute macros.
 
-use syn::{Attribute, Expr, ExprLit, Lit, LitBool, Meta, Token};
+use syn::{Attribute, Expr, ExprLit, Ident, Lit, LitBool, Meta, Token};
 
 /// Concatenate the `///` doc comment on `attrs` into a single string: each
 /// line trimmed, joined with newlines. Empty when there is no doc comment.
@@ -35,4 +35,27 @@ pub fn parse_defer_loading(
     } else {
         Ok(true)
     }
+}
+
+/// Parse an `allowed_callers(a, b, …)` list inside `#[tool(…)]` / `#[method(…)]`
+/// into its caller idents (e.g. `direct`, `code_execution_20260120`). `meta` is
+/// the entry already matched as `allowed_callers`. The idents are emitted
+/// verbatim as `AllowedCaller::<ident>()` constructor calls, so any
+/// `AllowedCaller` const-fn constructor name is valid; an unknown one surfaces
+/// as a normal "no associated function" error.
+pub fn parse_allowed_callers(
+    meta: &syn::meta::ParseNestedMeta,
+) -> syn::Result<Vec<Ident>> {
+    let mut callers = Vec::new();
+    meta.parse_nested_meta(|inner| {
+        callers.push(inner.path.require_ident()?.clone());
+        Ok(())
+    })?;
+    if callers.is_empty() {
+        return Err(meta.error(
+            "`allowed_callers(…)` needs at least one caller, e.g. \
+             `allowed_callers(code_execution_20260120)`",
+        ));
+    }
+    Ok(callers)
 }

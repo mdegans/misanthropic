@@ -49,6 +49,16 @@ pub trait ToolArgs:
     /// [`Prompt::defer_tools`]: crate::Prompt::defer_tools
     const DEFER_LOADING: bool = false;
 
+    /// Contexts this method may be invoked from — the generated
+    /// [`MethodDef`]'s [`allowed_callers`](MethodDef::allowed_callers). Empty
+    /// (the default) omits the field, i.e. the API's `["direct"]`. Set it on a
+    /// `#[tool]` type with `#[method(allowed_callers(code_execution_20260120))]`
+    /// (or at the `#[tool(...)]` level for every method) to opt the tool into
+    /// [programmatic tool calling].
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    const ALLOWED_CALLERS: &'static [crate::tool::AllowedCaller] = &[];
+
     /// JSON Schema for `Self`, sanitized for Anthropic. See
     /// [`sanitize_for_anthropic`](crate::prompt::output::sanitize_for_anthropic).
     fn schema() -> serde_json::Value {
@@ -67,6 +77,8 @@ pub trait ToolArgs:
             .build()
             .expect("a ToolArgs-derived schema is valid");
         def.defer_loading = Self::DEFER_LOADING.then_some(true);
+        def.allowed_callers = (!Self::ALLOWED_CALLERS.is_empty())
+            .then(|| Self::ALLOWED_CALLERS.to_vec());
         def
     }
 }

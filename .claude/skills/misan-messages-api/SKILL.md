@@ -308,11 +308,12 @@ let mut chat = Prompt::default()
             },
             "required": ["city"],
         }),
-        // These three are plain `Option`s — NOT feature-gated. Leave `None`
+        // These four are plain `Option`s — NOT feature-gated. Leave `None`
         // unless you need them:
-        cache_control: None,   // prompt-caching breakpoint
-        strict: None,          // Some(true) = grammar-constrained decoding
-        defer_loading: None,   // Some(true) = defer schema (tool-search)
+        cache_control: None,    // prompt-caching breakpoint
+        strict: None,           // Some(true) = grammar-constrained decoding
+        defer_loading: None,    // Some(true) = defer schema (tool-search)
+        allowed_callers: None,  // Some(...) = programmatic tool calling
     })
     .set_system("Use tools when appropriate.")
     .add_message((Role::User, "What's the weather in Paris?"))?;

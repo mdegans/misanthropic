@@ -2057,6 +2057,7 @@ mod tests {
             cache_control: None,
             strict: None,
             defer_loading: None,
+            allowed_callers: None,
         });
 
         assert!(
@@ -2407,6 +2408,7 @@ mod tests {
             cache_control: None,
             strict: None,
             defer_loading: None,
+            allowed_callers: None,
         };
 
         let request = Prompt::default()
@@ -2506,6 +2508,7 @@ mod tests {
                 cache_control: None,
                 strict: None,
                 defer_loading: None,
+                allowed_callers: None,
             }])
             .set_system("You are a very succinct assistant.")
             .set_messages([

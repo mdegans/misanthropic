@@ -2,9 +2,9 @@
 
 use proc_macro2::TokenStream;
 use quote::quote;
-use syn::{DeriveInput, LitStr};
+use syn::{DeriveInput, Ident, LitStr};
 
-use crate::util::{doc_string, parse_defer_loading};
+use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
 
 /// Expand `#[derive(ToolArgs)]` on `input`.
 ///
@@ -19,6 +19,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
     let mut defer_loading: Option<bool> = None;
+    let mut allowed_callers: Vec<Ident> = Vec::new();
     for attr in &input.attrs {
         if attr.path().is_ident("tool") {
             attr.parse_nested_meta(|meta| {
@@ -32,10 +33,13 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
                 } else if meta.path.is_ident("defer_loading") {
                     defer_loading = Some(parse_defer_loading(&meta)?);
                     Ok(())
+                } else if meta.path.is_ident("allowed_callers") {
+                    allowed_callers = parse_allowed_callers(&meta)?;
+                    Ok(())
                 } else {
                     Err(meta.error(
                         "unknown `tool` key; expected `name`, `description`, \
-                         or `defer_loading`",
+                         `defer_loading`, or `allowed_callers`",
                     ))
                 }
             })?;
@@ -44,9 +48,17 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
 
     let name = name.unwrap_or_else(|| ident.to_string());
     let description = description.unwrap_or_else(|| doc_string(&input.attrs));
-    // Only emit the const when set, so the trait default (`false`) stands.
+    // Only emit the consts when set, so the trait defaults stand.
     let defer =
         defer_loading.map(|v| quote! { const DEFER_LOADING: bool = #v; });
+    let allowed = (!allowed_callers.is_empty()).then(|| {
+        quote! {
+            const ALLOWED_CALLERS:
+                &'static [::misanthropic::tool::AllowedCaller] = &[
+                #( ::misanthropic::tool::AllowedCaller::#allowed_callers() ),*
+            ];
+        }
+    });
 
     let (impl_generics, ty_generics, where_clause) =
         input.generics.split_for_impl();
@@ -59,6 +71,7 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
             const NAME: &'static str = #name;
             const DESCRIPTION: &'static str = #description;
             #defer
+            #allowed
         }
     })
 }

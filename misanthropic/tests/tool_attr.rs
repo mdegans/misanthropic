@@ -31,7 +31,7 @@ struct Calc {
 #[tool(name = "Calc")]
 impl Calc {
     /// Add x and y to the accumulator.
-    #[method]
+    #[method(allowed_callers(code_execution_20260120))]
     async fn add(&mut self, args: Add) -> Result<Content, Content> {
         self.acc += args.x + args.y;
         Ok(self.acc.to_string().into())
@@ -128,6 +128,33 @@ fn method_defer_loading_attribute_flows_through() {
     };
     assert_eq!(defer("Calc__add"), None);
     assert_eq!(defer("Calc__reset"), Some(true));
+}
+
+#[test]
+fn method_allowed_callers_attribute_flows_through() {
+    use misanthropic::tool::AllowedCaller;
+
+    // `#[method(allowed_callers(code_execution_20260120))]` on `add` opts only
+    // that method into programmatic calling; `reset` keeps the default.
+    assert_eq!(
+        <Add as ToolArgs>::ALLOWED_CALLERS,
+        &[AllowedCaller::code_execution_20260120()]
+    );
+    assert!(<Reset as ToolArgs>::ALLOWED_CALLERS.is_empty());
+
+    let defs = Typed(Calc::default()).definitions();
+    let callers = |name: &str| {
+        defs.iter()
+            .find(|d| d.name == name)
+            .unwrap()
+            .allowed_callers
+            .clone()
+    };
+    assert_eq!(
+        callers("Calc__add"),
+        Some(vec![AllowedCaller::code_execution_20260120()])
+    );
+    assert_eq!(callers("Calc__reset"), None);
 }
 
 #[tokio::test]

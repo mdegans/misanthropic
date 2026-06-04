@@ -272,6 +272,7 @@ mod test {
                 cache_control: None,
                 strict: None,
                 defer_loading: None,
+                allowed_callers: None,
             })
             .set_system(Content(vec!["sys0".into(), "sys1".into()]))
             .add_message((Role::User, "hi"))

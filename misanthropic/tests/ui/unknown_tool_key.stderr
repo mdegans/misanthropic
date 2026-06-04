@@ -1,4 +1,4 @@
-error: unknown `tool` key; expected `name`, `description`, or `defer_loading`
+error: unknown `tool` key; expected `name`, `description`, `defer_loading`, or `allowed_callers`
  --> tests/ui/unknown_tool_key.rs:6:8
   |
 6 | #[tool(bogus = "x")]

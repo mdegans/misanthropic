@@ -19,7 +19,7 @@ use syn::{
     Type, parse::Parser,
 };
 
-use crate::util::{doc_string, parse_defer_loading};
+use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
 
 /// Marker attributes recognized (and stripped) inside a `#[tool]` impl.
 const MARKERS: &[&str] =
@@ -88,6 +88,17 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         let defer = m
             .defer_loading
             .map(|v| quote! { const DEFER_LOADING: bool = #v; });
+        // Emit `ALLOWED_CALLERS` only when the method opts in; the idents are
+        // `AllowedCaller` const-fn constructor names, so they compose directly.
+        let allowed = (!m.allowed_callers.is_empty()).then(|| {
+            let callers = &m.allowed_callers;
+            quote! {
+                const ALLOWED_CALLERS:
+                    &'static [::misanthropic::tool::AllowedCaller] = &[
+                    #( ::misanthropic::tool::AllowedCaller::#callers() ),*
+                ];
+            }
+        });
 
         wrappers.push(quote! {
             #[doc(hidden)]
@@ -99,6 +110,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
                 const NAME: &'static str = #name;
                 const DESCRIPTION: &'static str = #desc;
                 #defer
+                #allowed
             }
 
             #[automatically_derived]
@@ -218,29 +230,42 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 }
 
 /// One `#[method]` fn: its name, doc, `Args` type, and optional
-/// `defer_loading` override (from `#[method(defer_loading)]`).
+/// `defer_loading` / `allowed_callers` overrides (from `#[method(…)]`).
 struct MethodInfo {
     ident: Ident,
     doc: String,
     args_ty: Type,
     defer_loading: Option<bool>,
+    allowed_callers: Vec<Ident>,
 }
 
 impl MethodInfo {
     fn parse(f: &ImplItemFn) -> syn::Result<Self> {
+        let MethodArgs {
+            defer_loading,
+            allowed_callers,
+        } = parse_method_args(&f.attrs)?;
         Ok(Self {
             ident: f.sig.ident.clone(),
             doc: doc_string(&f.attrs),
             args_ty: method_arg_type(&f.sig)?,
-            defer_loading: parse_method_args(&f.attrs)?,
+            defer_loading,
+            allowed_callers,
         })
     }
 }
 
-/// Parse the `#[method(…)]` attribute's keys. Currently only `defer_loading`
-/// (bare or `= true|false`); a bare `#[method]` has no keys.
-fn parse_method_args(attrs: &[Attribute]) -> syn::Result<Option<bool>> {
-    let mut defer_loading = None;
+/// The parsed `#[method(…)]` keys.
+#[derive(Default)]
+struct MethodArgs {
+    defer_loading: Option<bool>,
+    allowed_callers: Vec<Ident>,
+}
+
+/// Parse the `#[method(…)]` attribute's keys: `defer_loading` (bare or
+/// `= true|false`) and `allowed_callers(…)`. A bare `#[method]` has no keys.
+fn parse_method_args(attrs: &[Attribute]) -> syn::Result<MethodArgs> {
+    let mut args = MethodArgs::default();
     for attr in attrs.iter().filter(|a| a.path().is_ident("method")) {
         // A bare `#[method]` (path-only) carries no keys to parse.
         if matches!(attr.meta, syn::Meta::Path(_)) {
@@ -248,15 +273,20 @@ fn parse_method_args(attrs: &[Attribute]) -> syn::Result<Option<bool>> {
         }
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("defer_loading") {
-                defer_loading = Some(parse_defer_loading(&meta)?);
+                args.defer_loading = Some(parse_defer_loading(&meta)?);
+                Ok(())
+            } else if meta.path.is_ident("allowed_callers") {
+                args.allowed_callers = parse_allowed_callers(&meta)?;
                 Ok(())
             } else {
-                Err(meta
-                    .error("unknown `method` key; expected `defer_loading`"))
+                Err(meta.error(
+                    "unknown `method` key; expected `defer_loading` or \
+                     `allowed_callers`",
+                ))
             }
         })?;
     }
-    Ok(defer_loading)
+    Ok(args)
 }
 
 /// The `Args` type of a `#[method]` fn: it must take `&mut self` (or `&self`)

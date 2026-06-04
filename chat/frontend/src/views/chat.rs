@@ -138,6 +138,7 @@ fn make_prompt() -> Prompt {
             cache_control: None,
             strict: Some(true),
             defer_loading: None,
+            allowed_callers: None,
         })
         // Inform the assistant about their limitations.
         .set_system(include_str!("../../../../misanthropic/examples/python_system.md"))

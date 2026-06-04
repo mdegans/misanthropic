@@ -492,6 +492,7 @@ mod tests {
                 cache_control: None,
                 strict: None,
                 defer_loading: None,
+                allowed_callers: None,
             }]
         }
 
@@ -596,6 +597,7 @@ mod tests {
                 cache_control: None,
                 strict: None,
                 defer_loading: None,
+                allowed_callers: None,
             }]
         }
 
