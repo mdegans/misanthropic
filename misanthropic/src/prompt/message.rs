@@ -1069,6 +1069,51 @@ pub enum Block {
         /// The [`name`](crate::tool::MethodDef::name) of the tool to expand.
         tool_name: Cow<'static, str>,
     },
+    /// Result of a [code execution] server tool call
+    /// (`code_execution_tool_result`) — the captured `stdout`/`stderr`/exit
+    /// code after the container finished running the model's code, including
+    /// any [programmatic tool calls] it made. Appears in the assistant turn
+    /// after its `code_execution` [`ServerToolUse`](Block::ServerToolUse) block.
+    ///
+    /// [code execution]: crate::tool::ServerTool::code_execution
+    /// [programmatic tool calls]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    CodeExecutionToolResult {
+        /// The [`id`](tool::Use::id) of the `code_execution`
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'static, str>,
+        /// The execution outcome.
+        content: CodeExecutionResult,
+        /// Who invoked the execution — set by the API on responses, omitted on
+        /// the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
+    },
+}
+
+/// The `content` of a [`Block::CodeExecutionToolResult`]: the captured output
+/// of the container run (the `code_execution_result` object). A failure is
+/// reported in-band via [`return_code`](Self::return_code) / `stderr` /
+/// [`abort_reason`](Self::abort_reason) rather than a separate error shape.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "code_execution_result")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct CodeExecutionResult {
+    /// Captured standard output.
+    pub stdout: Cow<'static, str>,
+    /// Captured standard error (a Python traceback, `TimeoutError`, …).
+    pub stderr: Cow<'static, str>,
+    /// Process exit code — `0` on success.
+    pub return_code: i64,
+    /// Rich outputs the run produced (e.g. files). Empty for plain
+    /// `stdout`/`stderr` runs; left as raw JSON pending a captured shape.
+    #[serde(default)]
+    pub content: Vec<serde_json::Value>,
+    /// Why the run aborted, if it did. Undocumented but always present on the
+    /// wire (explicit `null` when it ran to completion), so it is serialized
+    /// even when [`None`] to round-trip the captured bytes.
+    #[serde(default)]
+    pub abort_reason: Option<Cow<'static, str>>,
 }
 
 /// The `content` of a [`Block::WebSearchToolResult`]: either the search results
@@ -1459,6 +1504,9 @@ impl Block {
                     Block::ToolSearchToolResult { .. } => {
                         stringify!(Block::ToolSearchToolResult)
                     }
+                    Block::CodeExecutionToolResult { .. } => {
+                        stringify!(Block::CodeExecutionToolResult)
+                    }
                     Block::ToolReference { .. } => {
                         stringify!(Block::ToolReference)
                     }
@@ -1529,6 +1577,7 @@ impl Block {
             | Self::WebSearchToolResult { .. }
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1560,6 +1609,7 @@ impl Block {
             | Self::WebSearchToolResult { .. }
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1586,6 +1636,7 @@ impl Block {
             | Self::WebSearchToolResult { .. }
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1617,6 +1668,7 @@ impl Block {
             | Self::WebSearchToolResult { .. }
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => 0,
         }
     }
@@ -1678,7 +1730,8 @@ impl crate::markdown::ToMarkdown for Block {
             Block::ToolResult { .. }
             | Block::WebSearchToolResult { .. }
             | Block::WebFetchToolResult { .. }
-            | Block::ToolSearchToolResult { .. } => {
+            | Block::ToolSearchToolResult { .. }
+            | Block::CodeExecutionToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
                         [
@@ -2442,6 +2495,29 @@ mod tests {
     }
 
     #[test]
+    fn code_execution_tool_result_block_roundtrip() {
+        // The completion of a programmatic-tool-calling run: the container's
+        // captured stdout/exit code. Note the undocumented `abort_reason`
+        // (explicit `null` on the wire), which the round-trip would catch if
+        // dropped. Captured live on Sonnet 4.6; see `test/data/README.md`.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/code_execution_result.json"
+        ));
+        let Block::CodeExecutionToolResult {
+            tool_use_id,
+            content,
+            ..
+        } = &block
+        else {
+            panic!("expected CodeExecutionToolResult");
+        };
+        assert_eq!(tool_use_id, "srvtoolu_01EnSeFfRxcsNTUgLjYHD5XG");
+        assert_eq!(content.return_code, 0);
+        assert!(content.abort_reason.is_none());
+        assert!(content.stdout.contains("Highest: West"));
+    }
+
+    #[test]
     fn tool_reference_block_roundtrip() {
         let block: Block = crate::utils::roundtrip(include_str!(
             "../../test/data/server_tools/tool_reference.json"
@@ -2681,6 +2757,7 @@ mod tests {
             stop_reason: None,
             stop_sequence: None,
             usage: Default::default(),
+            container: None,
         };
 
         let message: Message = response.into();

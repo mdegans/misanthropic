@@ -610,6 +610,7 @@ fn message_to_chat_messages(msg: &Message) -> Vec<ChatMessage> {
             | Block::WebSearchToolResult { .. }
             | Block::WebFetchToolResult { .. }
             | Block::ToolSearchToolResult { .. }
+            | Block::CodeExecutionToolResult { .. }
             | Block::ToolReference { .. } => {}
         }
     }

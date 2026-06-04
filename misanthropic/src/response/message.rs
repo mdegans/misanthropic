@@ -52,6 +52,38 @@ pub struct Message {
     /// Usage statistics for the message.
     #[serde(default)]
     pub usage: Usage,
+    /// The [code execution] container backing this turn, present when the
+    /// request used the [`code_execution`] tool. Pass its
+    /// [`id`](Container::id) to [`Prompt::container`] to resume the *same*
+    /// container — required when a [programmatic tool call] paused the turn and
+    /// you are sending its [`tool::Result`](crate::tool::Result) back.
+    ///
+    /// [code execution]: crate::tool::ServerTool::code_execution
+    /// [`code_execution`]: crate::tool::ServerTool::code_execution
+    /// [`Prompt::container`]: crate::Prompt::container
+    /// [programmatic tool call]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    ///
+    /// Boxed because it is absent on the vast majority of turns (only code
+    /// execution populates it), keeping [`Message`] small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<Box<Container>>,
+}
+
+/// The [code execution] container backing a response turn (the `container`
+/// field). Its [`id`](Self::id) is what you pass to
+/// [`Prompt::container`](crate::Prompt::container) to resume the same sandbox.
+///
+/// [code execution]: crate::tool::ServerTool::code_execution
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct Container {
+    /// The container id (`container_…`), reused via [`Prompt::container`].
+    ///
+    /// [`Prompt::container`]: crate::Prompt::container
+    pub id: Cow<'static, str>,
+    /// When the container expires (RFC 3339). Idle containers are reaped after
+    /// ~4.5 minutes; respond before then to keep a paused turn alive.
+    pub expires_at: Cow<'static, str>,
 }
 
 impl Message {
@@ -384,6 +416,7 @@ mod tests {
             stop_reason,
             stop_sequence: None,
             usage: Usage::default(),
+            container: None,
         }
     }
 
@@ -499,6 +532,7 @@ mod tests {
                 output_tokens: 4,
                 server_tool_use: None,
             },
+            container: None,
         };
 
         let expected = "### User\n\nHello, **world**!";

@@ -158,7 +158,7 @@ impl Choice {
 /// [`tool::Result`]: Result
 /// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
 /// [`Prompt::add_server_tool`]: crate::Prompt::add_server_tool
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum ServerTool {
@@ -200,6 +200,20 @@ pub enum ServerTool {
     /// [`tool_search_bm25`]: ServerTool::tool_search_bm25
     #[serde(rename = "tool_search_tool_bm25_20251119")]
     ToolSearchBm25(ToolSearch<ToolSearchBm25Name>),
+    /// Anthropic's [code execution] tool (`code_execution_20260120`). The model
+    /// writes Python and runs it in a sandboxed container; the run's output
+    /// arrives as a [`Block::CodeExecutionToolResult`]. Enabling it also unlocks
+    /// [programmatic tool calling]: any custom [`MethodDef`] whose
+    /// [`allowed_callers`](MethodDef::allowed_callers) includes
+    /// [`code_execution_20260120`] may be invoked from that code, pausing the
+    /// turn with a `tool_use` you fulfill normally.
+    ///
+    /// [code execution]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool>
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    /// [`Block::CodeExecutionToolResult`]: crate::prompt::message::Block::CodeExecutionToolResult
+    /// [`code_execution_20260120`]: AllowedCaller::code_execution_20260120
+    #[serde(rename = "code_execution_20260120")]
+    CodeExecution(CodeExecution),
 }
 
 impl ServerTool {
@@ -233,6 +247,14 @@ impl ServerTool {
         Self::ToolSearchBm25(ToolSearch::default())
     }
 
+    /// The [code execution](Self::CodeExecution) tool with default
+    /// configuration. Required for [programmatic tool calling].
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    pub fn code_execution() -> Self {
+        Self::CodeExecution(CodeExecution::default())
+    }
+
     /// Whether this server tool carries a cache breakpoint.
     pub fn is_cached(&self) -> bool {
         self.cache_control().is_some()
@@ -245,6 +267,7 @@ impl ServerTool {
             Self::WebFetch(c) => c.cache_control.as_ref(),
             Self::ToolSearchRegex(c) => c.cache_control.as_ref(),
             Self::ToolSearchBm25(c) => c.cache_control.as_ref(),
+            Self::CodeExecution(c) => c.cache_control.as_ref(),
         }
     }
 
@@ -258,6 +281,7 @@ impl ServerTool {
             Self::WebFetch(c) => c.cache_control = Some(cache_control),
             Self::ToolSearchRegex(c) => c.cache_control = Some(cache_control),
             Self::ToolSearchBm25(c) => c.cache_control = Some(cache_control),
+            Self::CodeExecution(c) => c.cache_control = Some(cache_control),
         }
     }
 }
@@ -372,6 +396,27 @@ pub struct WebFetch {
 
 impl WebFetch {}
 
+/// Configuration for the [code execution] server tool
+/// ([`ServerTool::CodeExecution`]). Construct via
+/// [`ServerTool::code_execution`]; the only knob is an optional cache
+/// breakpoint.
+///
+/// [code execution]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool>
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct CodeExecution {
+    /// The fixed tool `name` (`"code_execution"`), supplied automatically by
+    /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: CodeExecutionName,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
 /// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
@@ -430,6 +475,10 @@ tool_name_marker!(
     /// The fixed `"tool_search_tool_bm25"` name for
     /// [`ServerTool::ToolSearchBm25`].
     ToolSearchBm25Name => "tool_search_tool_bm25"
+);
+tool_name_marker!(
+    /// The fixed `"code_execution"` name for [`CodeExecution`].
+    CodeExecutionName => "code_execution"
 );
 
 /// Approximate user location used to bias [`WebSearch`] results. Serializes
@@ -512,18 +561,6 @@ impl ToolDef {
             Self::Server(server) => server.set_cache_control(cache_control),
         }
         self
-    }
-}
-
-impl From<WebSearch> for ServerTool {
-    fn from(config: WebSearch) -> Self {
-        ServerTool::WebSearch(config)
-    }
-}
-
-impl From<WebFetch> for ServerTool {
-    fn from(config: WebFetch) -> Self {
-        ServerTool::WebFetch(config)
     }
 }
 
@@ -1581,6 +1618,21 @@ impl crate::markdown::ToMarkdown for Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn code_execution_server_tool_wire_shape() {
+        // `{"type":"code_execution_20260120","name":"code_execution"}` — the
+        // shape sent during the live PTC capture. `From` (derive_more) builds
+        // the variant from its config.
+        let tool: ServerTool = CodeExecution::default().into();
+        let json = serde_json::to_value(&tool).unwrap();
+        assert_eq!(json["type"], "code_execution_20260120");
+        assert_eq!(json["name"], "code_execution");
+        assert!(json.get("cache_control").is_none());
+
+        let back: ServerTool = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ServerTool::CodeExecution(_)));
+    }
 
     #[test]
     fn web_search_server_tool_wire_shape() {

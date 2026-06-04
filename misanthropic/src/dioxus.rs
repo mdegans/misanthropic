@@ -518,6 +518,36 @@ impl IntoElement for &Block {
                     }
                 }
             }
+            Block::CodeExecutionToolResult { content, .. } => {
+                // Failure is in-band: a non-zero exit code or an abort reason.
+                let is_error =
+                    content.return_code != 0 || content.abort_reason.is_some();
+                match &opts.tool_result {
+                    opts::ToolResult::Hidden => rsx!(),
+                    opts::ToolResult::Placeholder { error, ok } => {
+                        rsx!(div {
+                            title: if is_error { "Error" } else { "Ok" },
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                        })
+                    }
+                    opts::ToolResult::Show { error, ok } => {
+                        rsx!(code {
+                            title: if is_error { "Error" } else { "Ok" },
+                            lang: "json",
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                            {serde_json::to_string_pretty(content).unwrap()}
+                        })
+                    }
+                }
+            }
             // A `tool_reference` is tool-search plumbing, not user content.
             Block::ToolReference { .. } => rsx!(),
         }

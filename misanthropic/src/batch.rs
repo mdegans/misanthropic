@@ -1074,6 +1074,7 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: Some("potato".into()),
                 usage: Usage::default(),
+                container: None,
             }),
         );
         results.insert(
@@ -1261,6 +1262,7 @@ mod tests {
             stop_reason: None,
             stop_sequence: Some("potato".into()),
             usage: Usage::default(),
+            container: None,
         }));
         assert!(ok.is_ok());
 

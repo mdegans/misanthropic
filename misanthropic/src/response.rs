@@ -143,6 +143,7 @@ mod tests {
                     output_tokens: 4,
                     server_tool_use: None,
                 },
+                container: None,
             },
         }
     }
