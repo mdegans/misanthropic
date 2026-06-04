@@ -2,6 +2,29 @@
 
 Unofficial, ergonomic, async Rust client for the Anthropic Messages API.
 
+## How we work
+
+This is a collaboration, not a request queue. The best results here come from
+designing together, so:
+
+- **Chat before you plan; chat before you code.** When a task is open-ended —
+  especially a new feature or an API-shape decision — start an *informal,
+  two-directional* conversation. Say what you'd do and why, ask Michael what he
+  would do given what we're trying to achieve, and bounce it back and forth.
+  Surface the tension and your leanings in prose so he can add wider context.
+  Do **not** jump straight to a plan, and do not reduce a design discussion to
+  multiple choice.
+- **`AskUserQuestion` is not for design.** Only use it *after a plan has been
+  accepted* (it pings Michael's phone — that's its purpose). It is one-
+  directional and a poor substitute for talking. Open design questions belong
+  in the conversation, as questions, not as a menu.
+- **Design the example first.** For a new feature, write the example you *wish*
+  worked — the ideal, ergonomic API as a `Strawberry`-style program — and then
+  build the code to make it real. Most of this crate's ergonomics and its many
+  `From`/`Into` conversions came from exactly that: write the call site you
+  want, then make it compile. Propose this up front rather than building
+  bottom-up and fitting an example on at the end.
+
 ## Project structure
 
 Cargo workspace with 4 members:
