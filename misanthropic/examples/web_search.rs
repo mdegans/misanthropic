@@ -1,4 +1,4 @@
-//! Example: the **`web_search` server tool** ([`ServerTool::WebSearch`]).
+//! Example: the **`web_search` server tool** ([`ServerMethodDef::WebSearch`]).
 //!
 //! Unlike a custom tool (which you execute via [`Tool::call`]), a *server tool*
 //! is run by Anthropic. You add it to the prompt and the model issues search
@@ -25,7 +25,7 @@
 //!
 //! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
-//! [`ServerTool::WebSearch`]: misanthropic::tool::ServerTool::WebSearch
+//! [`ServerMethodDef::WebSearch`]: misanthropic::tool::ServerMethodDef::WebSearch
 //! [`Tool::call`]: misanthropic::tool::Tool::call
 //! [`ServerToolUse`]: misanthropic::prompt::message::Block::ServerToolUse
 //! [`WebSearchToolResult`]: misanthropic::prompt::message::Block::WebSearchToolResult
@@ -41,7 +41,7 @@ use misanthropic::{
     AnthropicModel, Client, Prompt,
     prompt::message::Role,
     response::StopReason,
-    tool::{ServerTool, WebSearch},
+    tool::{ServerMethodDef, WebSearch},
 };
 
 #[tokio::main]
@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prompt = Prompt::default()
         .model(AnthropicModel::Haiku45)
         .add_message((Role::User, question))?
-        .add_tool(ServerTool::web_search(WebSearch {
+        .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(5),
             ..Default::default()
         }));

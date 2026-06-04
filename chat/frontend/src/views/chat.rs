@@ -115,14 +115,14 @@ fn make_prompt() -> Prompt {
             message::{Block, Content, Role},
             Message,
         },
-        tool::{self, MethodDef},
+        tool::{self, CustomMethodDef},
         AnthropicModel,
     };
     use AnthropicModel::*;
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(MethodDef {
+        .add_tool(CustomMethodDef {
             name: "python".into(),
             description: "Run a Python script.".into(),
             schema: json!({

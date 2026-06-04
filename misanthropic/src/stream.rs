@@ -79,7 +79,7 @@ pub enum Event {
     /// executed server-side and needs no [`tool::Result`].
     ///
     /// [`ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
-    /// [`web_search`]: crate::tool::ServerTool::web_search
+    /// [`web_search`]: crate::tool::ServerMethodDef::web_search
     /// [`tool::Result`]: crate::tool::Result
     ServerToolUse {
         /// The server tool use.

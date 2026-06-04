@@ -4,7 +4,7 @@
 //! [`code_execution`] container instead of one model round-trip per call. You
 //!
 //! 1. add the [`code_execution`] server tool, and
-//! 2. mark a custom [`MethodDef`] callable from it with
+//! 2. mark a custom [`CustomMethodDef`] callable from it with
 //!    [`programmatic`](misanthropic::tool::MethodBuilder::programmatic)
 //!    (`allowed_callers: ["code_execution_20260120"]`).
 //!
@@ -33,8 +33,8 @@
 //! requires a `code_execution_20260120`-capable model (Opus/Sonnet 4.5+); it is
 //! not available on Haiku.
 //!
-//! [`code_execution`]: misanthropic::tool::ServerTool::code_execution
-//! [`MethodDef`]: misanthropic::tool::MethodDef
+//! [`code_execution`]: misanthropic::tool::ServerMethodDef::code_execution
+//! [`CustomMethodDef`]: misanthropic::tool::CustomMethodDef
 //! [`tool_use`]: misanthropic::prompt::message::Block::ToolUse
 //! [`CodeExecutionToolResult`]: misanthropic::prompt::message::Block::CodeExecutionToolResult
 //! [`response.container`]: misanthropic::response::Message::container
@@ -46,7 +46,7 @@ use misanthropic::{
     AnthropicModel, Client, Prompt, json,
     prompt::message::{Block, Role},
     response::StopReason,
-    tool::{self, Caller, KnownCaller, MethodDef, ServerTool},
+    tool::{self, Caller, CustomMethodDef, KnownCaller, ServerMethodDef},
 };
 
 /// Stand-in for a real data source: revenue per region. A real tool would hit a
@@ -81,7 +81,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new(key)?;
 
     // A custom tool the model may call *only* from code execution.
-    let query_sales_tool = MethodDef::builder("query_sales")
+    let query_sales_tool = CustomMethodDef::builder("query_sales")
         .description(
             "Look up sales revenue for a region. Returns a JSON object like \
              {\"region\": \"West\", \"revenue\": 12345}.",
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut prompt = Prompt::default()
         .model(AnthropicModel::Sonnet46)
-        .add_tool(ServerTool::code_execution())
+        .add_tool(ServerMethodDef::code_execution())
         .add_tool(query_sales_tool)
         .add_message((
             Role::User,

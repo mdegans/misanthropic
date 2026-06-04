@@ -1,4 +1,4 @@
-//! Client-side execution of the [memory tool] ([`ServerTool::Memory`]).
+//! Client-side execution of the [memory tool] ([`ServerMethodDef::Memory`]).
 //!
 //! The memory tool is *predefined* (you add it by versioned name via
 //! [`Memory::latest`], no schema of your own) but *client-executed*: the model
@@ -22,7 +22,7 @@
 //! ```
 //!
 //! [memory tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool>
-//! [`ServerTool::Memory`]: crate::tool::ServerTool::Memory
+//! [`ServerMethodDef::Memory`]: crate::tool::ServerMethodDef::Memory
 //! [`Memory::latest`]: crate::tool::Memory::latest
 //! [`Use`]: crate::tool::Use
 
@@ -33,7 +33,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-fs")]
-use super::{ServerTool, Tool, ToolDef, Use};
+use super::{MethodDef, ServerMethodDef, Tool, Use};
 
 /// The wire root the model addresses memory files under (`/memories`), which a
 /// backend maps onto its real directory. Only the (optional) filesystem backend
@@ -264,7 +264,7 @@ impl From<std::io::Error> for MemoryError {
 ///
 /// Drop it into a [`ToolBox`](crate::tool::ToolBox) like any other tool, or
 /// **use it directly** by calling [`Tool::call`] with the memory `tool_use`.
-/// Unlike a custom tool, it contributes a [`Server`](crate::tool::ToolDef)
+/// Unlike a custom tool, it contributes a [`Server`](crate::tool::MethodDef)
 /// def (via [`definitions`](Tool::definitions)) and is routed by its fixed bare
 /// wire name `"memory"` rather than namespaced — so a `ToolBox` installs the
 /// def *and* dispatches the resulting `tool_use` back here, with no per-tool
@@ -619,14 +619,14 @@ impl Tool for FsMemoryBackend {
         "memory"
     }
 
-    /// The predefined [`memory`](ServerTool::Memory) tool def. Contributing it
+    /// The predefined [`memory`](ServerMethodDef::Memory) tool def. Contributing it
     /// here (rather than expecting the caller to
     /// [`add_tool`](crate::Prompt::add_tool) it separately) is what lets the
     /// backend drop into a [`ToolBox`](crate::tool::ToolBox): the box installs
     /// this def and routes the resulting bare `"memory"` `tool_use` straight
     /// back to [`call`](Self::call).
-    fn definitions(&self) -> Vec<ToolDef> {
-        vec![ToolDef::Server(ServerTool::memory())]
+    fn definitions(&self) -> Vec<MethodDef> {
+        vec![MethodDef::Server(ServerMethodDef::memory())]
     }
 
     async fn call(&mut self, call: Use) -> crate::tool::Result {
@@ -820,14 +820,14 @@ mod tests {
 
     #[test]
     fn memory_definition_roundtrips() {
-        use crate::tool::{Memory, ServerTool, ToolDef};
+        use crate::tool::{Memory, MethodDef, ServerMethodDef};
         // Request-side wire shape: a bare versioned `type` + `name`, no schema.
-        let server: ServerTool = crate::utils::roundtrip(
+        let server: ServerMethodDef = crate::utils::roundtrip(
             r#"{"type":"memory_20250818","name":"memory"}"#,
         );
-        assert!(matches!(server, ServerTool::Memory(_)));
-        // `add_tool(Memory::latest())` wraps it as a `ToolDef::Server`.
-        let def: ToolDef = Memory::latest().into();
+        assert!(matches!(server, ServerMethodDef::Memory(_)));
+        // `add_tool(Memory::latest())` wraps it as a `MethodDef::Server`.
+        let def: MethodDef = Memory::latest().into();
         assert_eq!(
             serde_json::to_value(&def).unwrap(),
             serde_json::json!({ "type": "memory_20250818", "name": "memory" }),
@@ -841,13 +841,13 @@ mod tests {
     #[cfg(feature = "memory-fs")]
     #[tokio::test]
     async fn toolbox_memory_def_matches_hand_added() {
-        use crate::tool::{Memory, Tool, ToolBox, ToolDef};
+        use crate::tool::{Memory, MethodDef, Tool, ToolBox};
 
         let dir = tempfile::tempdir().unwrap();
         let tools =
             ToolBox::new().add(FsMemoryBackend::new(dir.path()).await.unwrap());
 
-        let hand: ToolDef = Memory::latest().into();
+        let hand: MethodDef = Memory::latest().into();
         assert_eq!(tools.definitions(), vec![hand]);
     }
 

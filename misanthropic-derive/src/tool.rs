@@ -185,7 +185,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 
             fn definitions(
                 &self,
-            ) -> ::std::vec::Vec<::misanthropic::tool::ToolDef> {
+            ) -> ::std::vec::Vec<::misanthropic::tool::MethodDef> {
                 ::misanthropic::tool::methods_definitions(self)
             }
 

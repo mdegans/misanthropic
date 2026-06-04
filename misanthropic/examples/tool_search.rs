@@ -1,4 +1,4 @@
-//! Example: the **tool-search tool** ([`ServerTool::tool_search_regex`]) over a
+//! Example: the **tool-search tool** ([`ServerMethodDef::tool_search_regex`]) over a
 //! catalog of [`defer_loading`] tools.
 //!
 //! When you have many tools, loading every schema into the prompt up front
@@ -11,7 +11,7 @@
 //!
 //! The catalog here is a single [`tool`]-macro toolkit with several
 //! pure-function methods (like the [`strawberry`] example, but many methods).
-//! Each generated [`MethodDef`] is its own deferred tool the search can find.
+//! Each generated [`CustomMethodDef`] is its own deferred tool the search can find.
 //!
 //! ## The loop
 //!
@@ -32,12 +32,12 @@
 //!
 //! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
-//! [`ServerTool::tool_search_regex`]: misanthropic::tool::ServerTool::tool_search_regex
-//! [`defer_loading`]: misanthropic::tool::MethodDef::defer_loading
+//! [`ServerMethodDef::tool_search_regex`]: misanthropic::tool::ServerMethodDef::tool_search_regex
+//! [`defer_loading`]: misanthropic::tool::CustomMethodDef::defer_loading
 //! [`Prompt::defer_tools`]: misanthropic::Prompt::defer_tools
 //! [`tool_reference`]: misanthropic::prompt::message::Block::ToolReference
 //! [`tool`]: misanthropic::tool::tool
-//! [`MethodDef`]: misanthropic::tool::MethodDef
+//! [`CustomMethodDef`]: misanthropic::tool::CustomMethodDef
 //! [`strawberry`]: https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/strawberry.rs
 //! [`web_search`]: https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/web_search.rs
 //! [`StopReason::PauseTurn`]: misanthropic::response::StopReason::PauseTurn
@@ -50,7 +50,7 @@ use misanthropic::{
     AnthropicModel, Client, Prompt,
     prompt::message::{Block, Content, Role, ToolSearchToolResultContent},
     response::StopReason,
-    tool::{ServerTool, Tool, tool},
+    tool::{ServerMethodDef, Tool, tool},
 };
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -60,7 +60,7 @@ use serde::Deserialize;
 type MethodResult = Result<Content, Content>;
 
 /// A grab-bag of small, deterministic utilities. The [`tool`] macro turns each
-/// `#[method]` into a deferred-able [`MethodDef`](misanthropic::tool::MethodDef)
+/// `#[method]` into a deferred-able [`CustomMethodDef`](misanthropic::tool::CustomMethodDef)
 /// the search tool can discover by its name, description, and argument names —
 /// so write those to read like the questions a user would ask.
 ///
@@ -233,7 +233,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         prompt = prompt.add_tool(definition);
     }
     prompt = prompt
-        .add_tool(ServerTool::tool_search_regex())
+        .add_tool(ServerMethodDef::tool_search_regex())
         .defer_tools();
 
     // Drive the conversation: resume on `pause_turn` (a server-side search in

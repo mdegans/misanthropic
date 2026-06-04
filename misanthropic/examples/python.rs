@@ -20,7 +20,7 @@ use misanthropic::{
         Message,
         message::{Content, Role},
     },
-    tool::{self, MethodDef},
+    tool::{self, CustomMethodDef},
 };
 
 /// Use Python to answer the user's questions.
@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             AnthropicModel::Haiku30
         })
         .add_tool(
-            MethodDef::builder("python")
+            CustomMethodDef::builder("python")
                 .description("Run a Python script.")
                 .schema(json!({
                     "type": "object",

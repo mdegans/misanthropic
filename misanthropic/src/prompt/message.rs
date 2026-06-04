@@ -992,7 +992,7 @@ pub enum Block {
     /// result block follows in the same assistant turn and you never return a
     /// [`tool::Result`]. The [`id`](tool::Use::id) carries a `srvtoolu_` prefix.
     ///
-    /// [`web_search`]: crate::tool::ServerTool::web_search
+    /// [`web_search`]: crate::tool::ServerMethodDef::web_search
     #[cfg_attr(not(feature = "markdown"), display(""))]
     ServerToolUse {
         /// The server tool call.
@@ -1003,7 +1003,7 @@ pub enum Block {
     /// appearing in the assistant turn right after its
     /// [`ServerToolUse`](Block::ServerToolUse) block.
     ///
-    /// [`web_search`]: crate::tool::ServerTool::web_search
+    /// [`web_search`]: crate::tool::ServerMethodDef::web_search
     #[cfg_attr(not(feature = "markdown"), display(""))]
     WebSearchToolResult {
         /// The [`id`](tool::Use::id) of the
@@ -1021,7 +1021,7 @@ pub enum Block {
     /// [`ServerToolUse`](Block::ServerToolUse) block. Carries the fetched
     /// document (text or base64 PDF) and its source URL, or an error.
     ///
-    /// [`web_fetch`]: crate::tool::ServerTool::web_fetch
+    /// [`web_fetch`]: crate::tool::ServerMethodDef::web_fetch
     #[cfg_attr(not(feature = "markdown"), display(""))]
     WebFetchToolResult {
         /// The [`id`](tool::Use::id) of the
@@ -1040,7 +1040,7 @@ pub enum Block {
     /// [`tool_reference`](ToolReference)s the API discovered (and expands into
     /// full definitions automatically), or an error.
     ///
-    /// [tool-search]: crate::tool::ServerTool::tool_search_regex
+    /// [tool-search]: crate::tool::ServerMethodDef::tool_search_regex
     #[cfg_attr(not(feature = "markdown"), display(""))]
     ToolSearchToolResult {
         /// The [`id`](tool::Use::id) of the
@@ -1060,7 +1060,7 @@ pub enum Block {
     /// tool-search tool instead nests [`ToolReference`]s in a
     /// [`ToolSearchToolResult`](Block::ToolSearchToolResult).)
     ///
-    /// [`defer_loading`]: crate::tool::MethodDef::defer_loading
+    /// [`defer_loading`]: crate::tool::CustomMethodDef::defer_loading
     /// [custom client-side tool search]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation>
     /// [`tool::Result`]: crate::tool::Result
     /// [`User`]: Role::User
@@ -1075,7 +1075,7 @@ pub enum Block {
     /// any [programmatic tool calls] it made. Appears in the assistant turn
     /// after its `code_execution` [`ServerToolUse`](Block::ServerToolUse) block.
     ///
-    /// [code execution]: crate::tool::ServerTool::code_execution
+    /// [code execution]: crate::tool::ServerMethodDef::code_execution
     /// [programmatic tool calls]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     #[cfg_attr(not(feature = "markdown"), display(""))]
     CodeExecutionToolResult {
@@ -1252,9 +1252,9 @@ pub enum ToolSearchToolResultContent {
 }
 
 /// A pointer to a deferred tool discovered by the [tool-search
-/// tool](crate::tool::ServerTool::tool_search_regex), naming a tool whose full
+/// tool](crate::tool::ServerMethodDef::tool_search_regex), naming a tool whose full
 /// definition lives in the request's tools array with
-/// [`defer_loading`](crate::tool::MethodDef::defer_loading) set. Appears in
+/// [`defer_loading`](crate::tool::CustomMethodDef::defer_loading) set. Appears in
 /// [`ToolSearchToolResultContent::Results`].
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "tool_reference")]
@@ -1307,7 +1307,7 @@ impl Block {
     /// [`defer_loading`] tool. Return these in a custom tool's
     /// [`tool::Result`] content to implement [custom client-side tool search].
     ///
-    /// [`defer_loading`]: crate::tool::MethodDef::defer_loading
+    /// [`defer_loading`]: crate::tool::CustomMethodDef::defer_loading
     /// [`tool::Result`]: crate::tool::Result
     /// [custom client-side tool search]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool#custom-tool-search-implementation>
     pub fn tool_reference<T>(tool_name: T) -> Self

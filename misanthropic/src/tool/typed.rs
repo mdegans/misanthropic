@@ -24,7 +24,7 @@
 use crate::{
     Prompt,
     prompt::message::Content,
-    tool::{self, MethodDef, Tool, ToolBox, Use},
+    tool::{self, CustomMethodDef, Tool, ToolBox, Use},
 };
 
 /// A deserializable argument struct for a [`Method`]. The schema is derived
@@ -38,10 +38,10 @@ pub trait ToolArgs:
     const NAME: &'static str;
     /// Method description shown to the model.
     const DESCRIPTION: &'static str;
-    /// When `true`, the generated [`MethodDef`] is marked
-    /// [`defer_loading`](MethodDef::defer_loading) so the API loads its schema
+    /// When `true`, the generated [`CustomMethodDef`] is marked
+    /// [`defer_loading`](CustomMethodDef::defer_loading) so the API loads its schema
     /// only when the model discovers it through the [tool-search
-    /// tool](crate::tool::ServerTool::tool_search_regex). Defaults to `false`.
+    /// tool](crate::tool::ServerMethodDef::tool_search_regex). Defaults to `false`.
     /// Set it on a `#[tool]`/`#[derive(ToolArgs)]` type with
     /// `#[tool(defer_loading)]` (or `#[method(defer_loading)]`), or flip a whole
     /// toolset at assembly time with [`Prompt::defer_tools`].
@@ -50,7 +50,7 @@ pub trait ToolArgs:
     const DEFER_LOADING: bool = false;
 
     /// Contexts this method may be invoked from — the generated
-    /// [`MethodDef`]'s [`allowed_callers`](MethodDef::allowed_callers). Empty
+    /// [`CustomMethodDef`]'s [`allowed_callers`](CustomMethodDef::allowed_callers). Empty
     /// (the default) omits the field, i.e. the API's `["direct"]`. Set it on a
     /// `#[tool]` type with `#[method(allowed_callers(code_execution_20260120))]`
     /// (or at the `#[tool(...)]` level for every method) to opt the tool into
@@ -68,10 +68,10 @@ pub trait ToolArgs:
         schema
     }
 
-    /// The wire [`MethodDef`] assembled from [`NAME`](Self::NAME),
+    /// The wire [`CustomMethodDef`] assembled from [`NAME`](Self::NAME),
     /// [`DESCRIPTION`](Self::DESCRIPTION), and [`schema`](Self::schema).
-    fn definition() -> MethodDef {
-        let mut def = MethodDef::builder(Self::NAME)
+    fn definition() -> CustomMethodDef {
+        let mut def = CustomMethodDef::builder(Self::NAME)
             .description(Self::DESCRIPTION)
             .schema(Self::schema())
             .build()
@@ -109,8 +109,8 @@ pub trait Method<S: Send>: Send + Sync {
 pub trait ErasedMethod<S>: Send + Sync {
     /// Method name (cheap; for routing). See [`ToolArgs::NAME`].
     fn name(&self) -> &'static str;
-    /// The wire [`MethodDef`] (builds the schema). See [`ToolArgs::definition`].
-    fn definition(&self) -> MethodDef;
+    /// The wire [`CustomMethodDef`] (builds the schema). See [`ToolArgs::definition`].
+    fn definition(&self) -> CustomMethodDef;
     /// Deserialize `input` into the method's `Args` and run it, returning the
     /// result content and whether it is an error.
     async fn dispatch(
@@ -126,7 +126,7 @@ impl<S: Send, M: Method<S>> ErasedMethod<S> for M {
         <M::Args as ToolArgs>::NAME
     }
 
-    fn definition(&self) -> MethodDef {
+    fn definition(&self) -> CustomMethodDef {
         <M::Args as ToolArgs>::definition()
     }
 
@@ -201,14 +201,14 @@ pub trait Methods: Send + Sized {
 /// (`box__tool__method`). Shared by [`Typed`] and the `#[tool]`-generated
 /// `impl Tool`.
 #[doc(hidden)]
-pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<tool::ToolDef> {
+pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<tool::MethodDef> {
     tool.methods()
         .iter()
         .map(|m| {
             let mut def = m.definition();
             def.name =
                 format!("{}{}{}", M::NAME, ToolBox::SEP, def.name).into();
-            tool::ToolDef::Custom(def)
+            tool::MethodDef::Custom(def)
         })
         .collect()
 }
@@ -252,7 +252,7 @@ impl<T: Methods + Send> Tool for Typed<T> {
         T::NAME
     }
 
-    fn definitions(&self) -> Vec<tool::ToolDef> {
+    fn definitions(&self) -> Vec<tool::MethodDef> {
         methods_definitions(&self.0)
     }
 
@@ -413,7 +413,7 @@ mod tests {
     fn defer_loading_const_flows_into_definition() {
         // Default is `false`, so the field elides.
         assert_eq!(<Clear as ToolArgs>::definition().defer_loading, None);
-        // Overridden to `true`, so it is carried onto the `MethodDef`.
+        // Overridden to `true`, so it is carried onto the `CustomMethodDef`.
         assert_eq!(
             <Deferred as ToolArgs>::definition().defer_loading,
             Some(true)

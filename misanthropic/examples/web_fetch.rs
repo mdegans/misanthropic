@@ -1,4 +1,4 @@
-//! Example: the **`web_fetch` server tool** ([`ServerTool::WebFetch`]).
+//! Example: the **`web_fetch` server tool** ([`ServerMethodDef::WebFetch`]).
 //!
 //! Like [`web_search`], `web_fetch` is run by Anthropic: you add it to the
 //! prompt and the model fetches a URL itself, receiving the page (or PDF) as a
@@ -26,9 +26,9 @@
 //!
 //! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
-//! [`ServerTool::WebFetch`]: misanthropic::tool::ServerTool::WebFetch
+//! [`ServerMethodDef::WebFetch`]: misanthropic::tool::ServerMethodDef::WebFetch
 //! [`WebFetch::citations`]: misanthropic::tool::WebFetch::citations
-//! [`web_search`]: misanthropic::tool::ServerTool::web_search
+//! [`web_search`]: misanthropic::tool::ServerMethodDef::web_search
 //! [`WebFetchToolResult`]: misanthropic::prompt::message::Block::WebFetchToolResult
 //! [`Text`]: misanthropic::prompt::message::Block::Text
 //! [`StopReason::PauseTurn`]: misanthropic::response::StopReason::PauseTurn
@@ -39,7 +39,7 @@ use misanthropic::{
     AnthropicModel, Client, Prompt,
     prompt::message::{CitationsConfig, Role},
     response::StopReason,
-    tool::{ServerTool, WebFetch, WebSearch},
+    tool::{ServerMethodDef, WebFetch, WebSearch},
 };
 
 #[tokio::main]
@@ -69,11 +69,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut prompt = Prompt::default()
         .model(AnthropicModel::Haiku45)
         .add_message((Role::User, question))?
-        .add_tool(ServerTool::web_search(WebSearch {
+        .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(3),
             ..Default::default()
         }))
-        .add_tool(ServerTool::web_fetch(WebFetch {
+        .add_tool(ServerMethodDef::web_fetch(WebFetch {
             max_uses: Some(5),
             citations: Some(CitationsConfig { enabled: true }),
             ..Default::default()

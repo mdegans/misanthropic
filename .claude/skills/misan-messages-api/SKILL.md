@@ -3,7 +3,7 @@ name: misan-messages-api
 description: >-
   Write Rust code against the `misanthropic` crate's non-streaming
   (`Client::message`) path — single messages, multi-turn chats, system
-  prompts, and tool use (the `#[tool]` macro and manual `MethodDef`s). Use
+  prompts, and tool use (the `#[tool]` macro and manual `CustomMethodDef`s). Use
   when writing or editing Rust that calls the Anthropic Messages API through
   the `misanthropic` crate, or when the user mentions `misanthropic`,
   `Client::message`, or `Prompt`. For token-by-token streaming, see the
@@ -281,16 +281,17 @@ Notes on the macro:
 
 See the runnable example: `misanthropic/examples/strawberry.rs`.
 
-## Tool use — manual `MethodDef` (no macro)
+## Tool use — manual `CustomMethodDef` (no macro)
 
-When you want a hand-written schema, build a `tool::MethodDef` and hand it to
-`add_tool`. (This struct was previously named `Method`.)
+When you want a hand-written schema, build a `tool::CustomMethodDef` and hand it
+to `add_tool`. (This struct was previously named `MethodDef`, and before that
+`Method`.)
 
 ```no_run
 use misanthropic::{
     Client, Prompt, json,
     prompt::{Message, message::Role},
-    tool::MethodDef,
+    tool::CustomMethodDef,
 };
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -298,7 +299,7 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 
 let mut chat = Prompt::default()
     .model(misanthropic::AnthropicModel::Sonnet46)
-    .add_tool(MethodDef {
+    .add_tool(CustomMethodDef {
         name: "get_weather".into(),
         description: "Get the weather for a city.".into(),
         schema: json!({
@@ -346,9 +347,9 @@ if let Some(call) = message.tool_use() {
 # }
 ```
 
-`add_tool` accepts anything `Into<ToolDef>` — a custom `MethodDef`, a
-`ServerTool` (Anthropic-executed, e.g. `web_search`), or a `Memory` (the
-client-executed memory tool). `try_add_tool` accepts `TryInto<MethodDef>`
+`add_tool` accepts anything `Into<MethodDef>` — a `CustomMethodDef`, a
+`ServerMethodDef` (Anthropic-executed, e.g. `web_search`), or a `Memory` (the
+client-executed memory tool). `try_add_tool` accepts `TryInto<CustomMethodDef>`
 (e.g. a `MethodBuilder` with validation).
 
 ## Predefined tools — server tools & `memory`

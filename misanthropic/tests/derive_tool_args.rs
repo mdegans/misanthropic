@@ -46,7 +46,7 @@ fn defer_loading_defaults_false_and_is_overridable() {
     // Default: the const is `false` and the field elides on the wire.
     assert!(!<Push as ToolArgs>::DEFER_LOADING);
     assert_eq!(<Push as ToolArgs>::definition().defer_loading, None);
-    // `#[tool(defer_loading)]` flips it and carries onto the `MethodDef`.
+    // `#[tool(defer_loading)]` flips it and carries onto the `CustomMethodDef`.
     assert!(<Lookup as ToolArgs>::DEFER_LOADING);
     assert_eq!(<Lookup as ToolArgs>::definition().defer_loading, Some(true));
 }

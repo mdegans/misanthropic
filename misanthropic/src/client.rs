@@ -1500,7 +1500,7 @@ mod tests {
     async fn test_web_search_server_tool() {
         use crate::prompt::message::{Block, WebSearchToolResultContent};
         use crate::response::StopReason;
-        use crate::tool::{ServerTool, WebSearch};
+        use crate::tool::{ServerMethodDef, WebSearch};
 
         #[cfg(feature = "log")]
         init_log();
@@ -1519,7 +1519,7 @@ mod tests {
                  Cite the page you used.",
             ))
             .unwrap()
-            .add_tool(ServerTool::web_search(WebSearch {
+            .add_tool(ServerMethodDef::web_search(WebSearch {
                 max_uses: Some(1),
                 allowed_domains: Some(vec!["anthropic.com".into()]),
                 ..Default::default()
@@ -1597,7 +1597,9 @@ mod tests {
         // the final answer is a deterministic invariant.
         use crate::prompt::message::Block;
         use crate::response::StopReason;
-        use crate::tool::{self, Caller, KnownCaller, MethodDef, ServerTool};
+        use crate::tool::{
+            self, Caller, CustomMethodDef, KnownCaller, ServerMethodDef,
+        };
 
         #[cfg(feature = "log")]
         init_log();
@@ -1614,7 +1616,7 @@ mod tests {
             _ => 0,
         };
 
-        let query_sales = MethodDef::builder("query_sales")
+        let query_sales = CustomMethodDef::builder("query_sales")
             .description(
                 "Look up sales revenue for a region. Returns JSON like \
                  {\"region\": \"West\", \"revenue\": 12345}.",
@@ -1630,7 +1632,7 @@ mod tests {
 
         let mut prompt = Prompt::default()
             .model(crate::AnthropicModel::Sonnet46)
-            .add_tool(ServerTool::code_execution())
+            .add_tool(ServerMethodDef::code_execution())
             .add_tool(query_sales)
             .add_message((
                 Role::User,
@@ -1718,7 +1720,7 @@ mod tests {
     async fn test_web_fetch_server_tool() {
         use crate::prompt::message::{Block, WebFetchToolResultContent};
         use crate::response::StopReason;
-        use crate::tool::{ServerTool, WebFetch};
+        use crate::tool::{ServerMethodDef, WebFetch};
 
         #[cfg(feature = "log")]
         init_log();
@@ -1742,7 +1744,7 @@ mod tests {
                 ),
             ))
             .unwrap()
-            .add_tool(ServerTool::web_fetch(WebFetch {
+            .add_tool(ServerMethodDef::web_fetch(WebFetch {
                 max_uses: Some(2),
                 allowed_domains: Some(vec![
                     "rust-lang.org".into(),

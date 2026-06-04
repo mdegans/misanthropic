@@ -1,20 +1,20 @@
-//! [`Index`] and related types for addressing a [`MethodDef`] or [`Content`]
+//! [`Index`] and related types for addressing a [`CustomMethodDef`] or [`Content`]
 //! [`Block`] inside a [`Prompt`].
 //!
 //! The motivating use is cache-breakpoint placement: [`Prompt::indices`] yields
 //! every addressable position in Anthropic's cache-prefix order (tools →
 //! system → messages), and [`Prompt::get_mut`] resolves one to a `&mut Block`
-//! (or `&mut MethodDef`) so a [`CacheControl`] can be dropped on it.
+//! (or `&mut CustomMethodDef`) so a [`CacheControl`] can be dropped on it.
 //!
 //! [`CacheControl`]: crate::prompt::message::CacheControl
-use super::{Prompt, message::Block, tool::MethodDef};
+use super::{Prompt, message::Block, tool::CustomMethodDef};
 
-/// An index into a [`Prompt`]. Addresses either a [`MethodDef`] in
+/// An index into a [`Prompt`]. Addresses either a [`CustomMethodDef`] in
 /// [`Prompt::tools`] or a [`Content`] [`Block`] in [`Prompt::system`] /
 /// [`Prompt::messages`].
 ///
 /// The derived [`Ord`] matches Anthropic's cache-prefix order: every
-/// [`MethodDef`] sorts before every [`Block`], system blocks before message
+/// [`CustomMethodDef`] sorts before every [`Block`], system blocks before message
 /// blocks. [`Prompt::indices`] yields indices in this order.
 ///
 /// [`Prompt::tools`]: Prompt::tools
@@ -31,13 +31,13 @@ use super::{Prompt, message::Block, tool::MethodDef};
     derive_more::IsVariant,
 )]
 pub enum Index {
-    /// A [`MethodDef`] in [`Prompt::tools`].
+    /// A [`CustomMethodDef`] in [`Prompt::tools`].
     Method(MethodIndex),
     /// A [`Content`] [`Block`] in [`Prompt::system`] or [`Prompt::messages`].
     Block(BlockIndex),
 }
 
-/// Index of a [`MethodDef`] in [`Prompt::tools`].
+/// Index of a [`CustomMethodDef`] in [`Prompt::tools`].
 #[derive(
     Clone,
     Copy,
@@ -72,20 +72,20 @@ pub enum BlockIndex {
     Message((usize, usize)),
 }
 
-/// A shared reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
+/// A shared reference to a [`CustomMethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get`].
 pub enum IndexRef<'a> {
-    /// Reference to a [`MethodDef`] in [`Prompt::tools`].
-    Method(&'a MethodDef),
+    /// Reference to a [`CustomMethodDef`] in [`Prompt::tools`].
+    Method(&'a CustomMethodDef),
     /// Reference to a [`Content`] [`Block`] in a [`Prompt`].
     Block(&'a Block),
 }
 
-/// A mutable reference to a [`MethodDef`] or a [`Content`] [`Block`] in a
+/// A mutable reference to a [`CustomMethodDef`] or a [`Content`] [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get_mut`].
 pub enum IndexMut<'a> {
-    /// Mutable reference to a [`MethodDef`] in [`Prompt::tools`].
-    Method(&'a mut MethodDef),
+    /// Mutable reference to a [`CustomMethodDef`] in [`Prompt::tools`].
+    Method(&'a mut CustomMethodDef),
     /// Mutable reference to a [`Content`] [`Block`] in a [`Prompt`].
     Block(&'a mut Block),
 }
@@ -171,28 +171,32 @@ impl Prompt {
 }
 
 impl std::ops::Index<MethodIndex> for Prompt {
-    type Output = MethodDef;
+    type Output = CustomMethodDef;
 
     /// # Panics
     /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
-    ///   addressed tool is a [`ServerTool`](crate::tool::ServerTool) rather
-    ///   than a custom [`MethodDef`].
+    ///   addressed tool is a [`ServerMethodDef`](crate::tool::ServerMethodDef) rather
+    ///   than a custom [`CustomMethodDef`].
     fn index(&self, index: MethodIndex) -> &Self::Output {
         self.methods.as_ref().expect("no tools on this prompt")[index.0]
             .as_method()
-            .expect("tool at this index is a server tool, not a MethodDef")
+            .expect(
+                "tool at this index is a server tool, not a CustomMethodDef",
+            )
     }
 }
 
 impl std::ops::IndexMut<MethodIndex> for Prompt {
     /// # Panics
     /// - If [`Prompt::tools`] is absent, the index is out of bounds, or the
-    ///   addressed tool is a [`ServerTool`](crate::tool::ServerTool) rather
-    ///   than a custom [`MethodDef`].
+    ///   addressed tool is a [`ServerMethodDef`](crate::tool::ServerMethodDef) rather
+    ///   than a custom [`CustomMethodDef`].
     fn index_mut(&mut self, index: MethodIndex) -> &mut Self::Output {
         self.methods.as_mut().expect("no tools on this prompt")[index.0]
             .as_method_mut()
-            .expect("tool at this index is a server tool, not a MethodDef")
+            .expect(
+                "tool at this index is a server tool, not a CustomMethodDef",
+            )
     }
 }
 
@@ -262,10 +266,10 @@ mod test {
     #[test]
     fn indices_in_cache_prefix_order() {
         use crate::prompt::message::{Content, Role};
-        use crate::tool::MethodDef;
+        use crate::tool::CustomMethodDef;
 
         let prompt = Prompt::default()
-            .add_tool(MethodDef {
+            .add_tool(CustomMethodDef {
                 name: "a".into(),
                 description: "a".into(),
                 schema: serde_json::json!({}),

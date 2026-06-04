@@ -12,7 +12,7 @@ use std::{
 use crate::{
     model,
     stream::{self, DeltaError},
-    tool::{self, MethodDef},
+    tool::{self, CustomMethodDef},
 };
 use message::Content;
 
@@ -91,14 +91,15 @@ pub struct Prompt {
     /// [`tool::Choice`] for the model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<tool::Choice>,
-    /// Tool definitions for the model — custom [`MethodDef`]s you execute and
-    /// [`ServerTool`]s the API runs, intermixed via [`ToolDef`].
+    /// Tool definitions for the model — the [`CustomMethodDef`]s you execute
+    /// and [`ServerMethodDef`]s the API runs, intermixed via [`MethodDef`].
     ///
-    /// [`ServerTool`]: crate::tool::ServerTool
-    /// [`ToolDef`]: crate::tool::ToolDef
+    /// [`ServerMethodDef`]: crate::tool::ServerMethodDef
+    /// [`CustomMethodDef`]: crate::tool::CustomMethodDef
+    /// [`MethodDef`]: crate::tool::MethodDef
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(rename = "tools")]
-    pub methods: Option<Vec<tool::ToolDef>>,
+    pub methods: Option<Vec<tool::MethodDef>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -128,7 +129,7 @@ pub struct Prompt {
     ///
     /// [`Text`]: crate::prompt::message::Block::Text
     /// [`Block`]: crate::prompt::message::Block
-    /// [`strict`]: crate::tool::MethodDef::strict
+    /// [`strict`]: crate::tool::CustomMethodDef::strict
     /// [`Refusal`]: crate::response::StopReason::Refusal
     /// [`StopReason`]: crate::response::StopReason
     /// [`citations`]: <https://docs.anthropic.com/en/docs/build-with-claude/citations>
@@ -780,13 +781,13 @@ impl Prompt {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<MethodDef>,
+        T: Into<CustomMethodDef>,
         Ts: IntoIterator<Item = T>,
     {
         self.methods = Some(
             tools
                 .into_iter()
-                .map(|t| tool::ToolDef::Custom(t.into()))
+                .map(|t| tool::MethodDef::Custom(t.into()))
                 .collect(),
         );
         self
@@ -815,33 +816,36 @@ impl Prompt {
     /// [`tool_use_id`]: crate::tool::Result::tool_use_id
     pub fn try_tools<T, E, Ts>(mut self, tools: Ts) -> Result<Self, E>
     where
-        T: TryInto<MethodDef, Error = E>,
+        T: TryInto<CustomMethodDef, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
         self.methods = Some(
             tools
                 .into_iter()
-                .map(|t| t.try_into().map(tool::ToolDef::Custom))
+                .map(|t| t.try_into().map(tool::MethodDef::Custom))
                 .collect::<Result<_, _>>()?,
         );
         Ok(self)
     }
 
-    /// Add a tool to the request — anything [`Into`] a [`ToolDef`]: a custom
-    /// [`MethodDef`], a [`ServerTool`], or (with the `memory` feature) a memory
-    /// tool. The right [`ToolDef`] variant is chosen for you.
+    /// Add a tool to the request — anything [`Into`] a [`MethodDef`]: a
+    /// [`CustomMethodDef`], a [`ServerMethodDef`], or (with the `memory`
+    /// feature) a memory tool. The right [`MethodDef`] variant is chosen for
+    /// you.
     ///
     /// ```
-    /// # use misanthropic::{Prompt, tool::{MethodDef, ServerTool}};
+    /// # use misanthropic::{Prompt, tool::{CustomMethodDef, ServerMethodDef}};
     /// let prompt = Prompt::default()
-    ///     .add_tool(MethodDef::simple("get_weather", "Get the weather."))
-    ///     .add_tool(ServerTool::web_search(Default::default()));
+    ///     .add_tool(CustomMethodDef::simple("get_weather", "Get the weather."))
+    ///     .add_tool(ServerMethodDef::web_search(Default::default()));
     /// ```
     ///
-    /// [`ServerTool`]: crate::tool::ServerTool
+    /// [`MethodDef`]: crate::tool::MethodDef
+    /// [`CustomMethodDef`]: crate::tool::CustomMethodDef
+    /// [`ServerMethodDef`]: crate::tool::ServerMethodDef
     pub fn add_tool<T>(mut self, tool: T) -> Self
     where
-        T: Into<tool::ToolDef>,
+        T: Into<tool::MethodDef>,
     {
         self.methods
             .get_or_insert_with(Default::default)
@@ -850,26 +854,27 @@ impl Prompt {
     }
 
     /// Try to add a custom tool to the request. Returns an error if the value
-    /// cannot be converted into a [`MethodDef`].
+    /// cannot be converted into a [`CustomMethodDef`].
     pub fn try_add_tool<T, E>(mut self, tool: T) -> Result<Self, E>
     where
-        T: TryInto<MethodDef, Error = E>,
+        T: TryInto<CustomMethodDef, Error = E>,
     {
         self.methods
             .get_or_insert_with(Default::default)
-            .push(tool::ToolDef::Custom(tool.try_into()?));
+            .push(tool::MethodDef::Custom(tool.try_into()?));
         Ok(self)
     }
 
     /// Add several custom tools at once — the plural of [`add_tool`]. Each item
-    /// is anything [`Into`] a [`MethodDef`], so this composes with a tool's
-    /// [`definitions`] just as well as with hand-built [`MethodDef`]s:
+    /// is anything [`Into`] a [`CustomMethodDef`], so this composes with a
+    /// tool's [`definitions`] just as well as with hand-built
+    /// [`CustomMethodDef`]s:
     ///
     /// ```
-    /// # use misanthropic::{Prompt, tool::MethodDef};
+    /// # use misanthropic::{Prompt, tool::CustomMethodDef};
     /// let prompt = Prompt::default().add_tools([
-    ///     MethodDef::simple("get_weather", "Get the weather."),
-    ///     MethodDef::simple("get_time", "Get the time."),
+    ///     CustomMethodDef::simple("get_weather", "Get the weather."),
+    ///     CustomMethodDef::simple("get_time", "Get the time."),
     /// ]);
     /// ```
     ///
@@ -877,16 +882,16 @@ impl Prompt {
     /// [`definitions`]: crate::Tool::definitions
     pub fn add_tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<MethodDef>,
+        T: Into<CustomMethodDef>,
         Ts: IntoIterator<Item = T>,
     {
-        self.methods
-            .get_or_insert_with(Default::default)
-            .extend(tools.into_iter().map(|t| tool::ToolDef::Custom(t.into())));
+        self.methods.get_or_insert_with(Default::default).extend(
+            tools.into_iter().map(|t| tool::MethodDef::Custom(t.into())),
+        );
         self
     }
 
-    /// Register every [`ToolDef`] a [`Tool`] exposes through its
+    /// Register every [`MethodDef`] a [`Tool`] exposes through its
     /// [`definitions`] — the one-liner for the common case of handing the
     /// model a typed tool:
     ///
@@ -904,9 +909,9 @@ impl Prompt {
     ///
     /// [`Tool`]: crate::Tool
     /// [`definitions`]: crate::Tool::definitions
-    /// [`ToolDef`]: crate::tool::ToolDef
-    /// [`Server`]: crate::tool::ToolDef::Server
-    /// [`Custom`]: crate::tool::ToolDef::Custom
+    /// [`MethodDef`]: crate::tool::MethodDef
+    /// [`Server`]: crate::tool::MethodDef::Server
+    /// [`Custom`]: crate::tool::MethodDef::Custom
     pub fn register_tool<T>(mut self, tool: &T) -> Self
     where
         T: tool::Tool + ?Sized,
@@ -917,10 +922,10 @@ impl Prompt {
         self
     }
 
-    /// Mark every custom tool's [`MethodDef`] as
-    /// [`defer_loading`](MethodDef::defer_loading), so the API loads their
+    /// Mark every custom tool's [`CustomMethodDef`] as
+    /// [`defer_loading`](CustomMethodDef::defer_loading), so the API loads their
     /// schemas only when the model discovers them through the [tool-search
-    /// tool](tool::ServerTool::tool_search_regex). Server tools are left
+    /// tool](tool::ServerMethodDef::tool_search_regex). Server tools are left
     /// untouched (they are never deferred).
     ///
     /// The Messages API requires at least one non-deferred tool, so pair this
@@ -928,16 +933,17 @@ impl Prompt {
     /// model a way to find the deferred ones:
     ///
     /// ```
-    /// # use misanthropic::{Prompt, tool::{MethodDef, ServerTool}};
+    /// # use misanthropic::{Prompt, tool::{CustomMethodDef, ServerMethodDef}};
     /// let prompt = Prompt::default()
-    ///     .add_tool(MethodDef::simple("get_weather", "Get the weather."))
-    ///     .add_tool(ServerTool::tool_search_regex())
+    ///     .add_tool(CustomMethodDef::simple("get_weather", "Get the weather."))
+    ///     .add_tool(ServerMethodDef::tool_search_regex())
     ///     .defer_tools();
     /// ```
     pub fn defer_tools(mut self) -> Self {
         if let Some(methods) = self.methods.as_mut() {
-            for method in
-                methods.iter_mut().filter_map(tool::ToolDef::as_method_mut)
+            for method in methods
+                .iter_mut()
+                .filter_map(tool::MethodDef::as_method_mut)
             {
                 method.defer_loading = Some(true);
             }
@@ -1571,9 +1577,9 @@ mod tests {
     #[test]
     fn defer_tools_marks_only_custom_tools() {
         let prompt = Prompt::default()
-            .add_tool(crate::tool::MethodDef::simple("a", "Tool A."))
-            .add_tool(crate::tool::MethodDef::simple("b", "Tool B."))
-            .add_tool(crate::tool::ServerTool::tool_search_regex())
+            .add_tool(crate::tool::CustomMethodDef::simple("a", "Tool A."))
+            .add_tool(crate::tool::CustomMethodDef::simple("b", "Tool B."))
+            .add_tool(crate::tool::ServerMethodDef::tool_search_regex())
             .defer_tools();
 
         let methods = prompt.methods.as_ref().unwrap();
@@ -1594,13 +1600,13 @@ mod tests {
 
     #[test]
     fn add_tools_appends_each_method() {
-        use crate::tool::MethodDef;
+        use crate::tool::CustomMethodDef;
         // Appends to any tools already present rather than replacing them.
         let prompt = Prompt::default()
-            .add_tool(MethodDef::simple("a", "Tool A."))
+            .add_tool(CustomMethodDef::simple("a", "Tool A."))
             .add_tools([
-                MethodDef::simple("b", "Tool B."),
-                MethodDef::simple("c", "Tool C."),
+                CustomMethodDef::simple("b", "Tool B."),
+                CustomMethodDef::simple("c", "Tool C."),
             ]);
 
         let names: Vec<_> = prompt
@@ -1616,7 +1622,7 @@ mod tests {
 
     #[test]
     fn register_tool_pulls_definitions() {
-        use crate::tool::{MethodDef, Tool, ToolDef, Use};
+        use crate::tool::{CustomMethodDef, MethodDef, Tool, Use};
 
         struct PairTool;
 
@@ -1625,10 +1631,10 @@ mod tests {
             fn name(&self) -> &str {
                 "PairTool"
             }
-            fn definitions(&self) -> Vec<ToolDef> {
+            fn definitions(&self) -> Vec<MethodDef> {
                 vec![
-                    MethodDef::simple("PairTool__a", "A.").into(),
-                    MethodDef::simple("PairTool__b", "B.").into(),
+                    CustomMethodDef::simple("PairTool__a", "A.").into(),
+                    CustomMethodDef::simple("PairTool__b", "B.").into(),
                 ]
             }
             async fn call(&mut self, call: Use) -> crate::tool::Result {
@@ -2049,7 +2055,7 @@ mod tests {
 
         // Test with no system prompt or messages that the call to cache affects
         // the tools.
-        let request = Prompt::default().add_tool(MethodDef {
+        let request = Prompt::default().add_tool(CustomMethodDef {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: json!({}),
@@ -2400,7 +2406,7 @@ mod tests {
         // A tool can be created from a Tool itself. This is infallible, however
         // the API might reject the request if the tool is invalid. There is
         // currently no schema validation in this crate.
-        let tool = MethodDef {
+        let tool = CustomMethodDef {
             name: "ping".into(),
             description: "Ping a server.".into(),
             schema: schema.clone(),
@@ -2491,7 +2497,7 @@ mod tests {
         use crate::markdown::{Markdown, ToMarkdown};
 
         let request = Prompt::default()
-            .tools([MethodDef {
+            .tools([CustomMethodDef {
                 name: "ping".into(),
                 description: "Ping a server.".into(),
                 schema: json!({

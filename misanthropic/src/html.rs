@@ -176,7 +176,7 @@ mod tests {
 
     use crate::{
         prompt::{Message, message::Role},
-        tool::{self, MethodDef},
+        tool::{self, CustomMethodDef},
     };
 
     use super::*;
@@ -208,24 +208,26 @@ mod tests {
     fn test_prompt_html() {
         let prompt = crate::prompt::Prompt {
             system: Some("Do stuff the user says.".into()),
-            methods: Some(vec![crate::tool::ToolDef::Custom(MethodDef {
-                name: "python".into(),
-                description: "Run a Python script.".into(),
-                schema: json!({
-                    "type": "object",
-                    "properties": {
-                        "script": {
-                            "type": "string",
-                            "description": "Python script to run.",
+            methods: Some(vec![crate::tool::MethodDef::Custom(
+                CustomMethodDef {
+                    name: "python".into(),
+                    description: "Run a Python script.".into(),
+                    schema: json!({
+                        "type": "object",
+                        "properties": {
+                            "script": {
+                                "type": "string",
+                                "description": "Python script to run.",
+                            },
                         },
-                    },
-                    "required": ["script"],
-                }),
-                cache_control: None,
-                strict: None,
-                defer_loading: None,
-                allowed_callers: None,
-            })]),
+                        "required": ["script"],
+                    }),
+                    cache_control: None,
+                    strict: None,
+                    defer_loading: None,
+                    allowed_callers: None,
+                },
+            )]),
             messages: vec![
                 Message {
                     role: Role::User,

@@ -58,8 +58,8 @@ pub struct Message {
     /// container — required when a [programmatic tool call] paused the turn and
     /// you are sending its [`tool::Result`](crate::tool::Result) back.
     ///
-    /// [code execution]: crate::tool::ServerTool::code_execution
-    /// [`code_execution`]: crate::tool::ServerTool::code_execution
+    /// [code execution]: crate::tool::ServerMethodDef::code_execution
+    /// [`code_execution`]: crate::tool::ServerMethodDef::code_execution
     /// [`Prompt::container`]: crate::Prompt::container
     /// [programmatic tool call]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     ///
@@ -73,7 +73,7 @@ pub struct Message {
 /// field). Its [`id`](Self::id) is what you pass to
 /// [`Prompt::container`](crate::Prompt::container) to resume the same sandbox.
 ///
-/// [code execution]: crate::tool::ServerTool::code_execution
+/// [code execution]: crate::tool::ServerMethodDef::code_execution
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Container {
@@ -182,12 +182,12 @@ pub enum StopReason {
     StopSequence,
     /// A tool was used.
     ToolUse,
-    /// A long-running [`ServerTool`] (e.g. web search) paused the turn. Send
+    /// A long-running [`ServerMethodDef`] (e.g. web search) paused the turn. Send
     /// the response's content back as an [`Assistant`] message in a follow-up
     /// request — keeping the same tools — to let the model continue. See
     /// [server tools].
     ///
-    /// [`ServerTool`]: crate::tool::ServerTool
+    /// [`ServerMethodDef`]: crate::tool::ServerMethodDef
     /// [`Assistant`]: crate::prompt::message::Role::Assistant
     /// [server tools]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools>
     PauseTurn,
@@ -216,12 +216,12 @@ pub struct Usage {
     /// Number of output tokens generated.
     pub output_tokens: u64,
     /// Server-tool invocation counts (e.g. web searches), when any server tool
-    /// ran. See [`ServerTool`](crate::tool::ServerTool).
+    /// ran. See [`ServerMethodDef`](crate::tool::ServerMethodDef).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
 }
 
-/// Per-request counts of [`ServerTool`](crate::tool::ServerTool) invocations,
+/// Per-request counts of [`ServerMethodDef`](crate::tool::ServerMethodDef) invocations,
 /// reported in [`Usage::server_tool_use`].
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -229,10 +229,10 @@ pub struct Usage {
 pub struct ServerToolUsage {
     /// Number of web searches performed.
     pub web_search_requests: u64,
-    /// Number of [web fetches](crate::tool::ServerTool::web_fetch) performed.
+    /// Number of [web fetches](crate::tool::ServerMethodDef::web_fetch) performed.
     #[serde(default)]
     pub web_fetch_requests: u64,
-    /// Number of [tool-search](crate::tool::ServerTool::tool_search_regex)
+    /// Number of [tool-search](crate::tool::ServerMethodDef::tool_search_regex)
     /// queries performed.
     ///
     /// **As of 2026-06-04 the API does not populate this.** The documented

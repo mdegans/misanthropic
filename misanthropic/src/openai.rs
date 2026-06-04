@@ -469,8 +469,8 @@ impl From<&Prompt> for ChatCompletionRequest {
     }
 }
 
-impl From<&tool::MethodDef> for ChatTool {
-    fn from(method: &tool::MethodDef) -> Self {
+impl From<&tool::CustomMethodDef> for ChatTool {
+    fn from(method: &tool::CustomMethodDef) -> Self {
         ChatTool {
             kind: "function".to_string(),
             function: ChatFunction {
@@ -767,7 +767,7 @@ mod tests {
 
     #[test]
     fn tool_method_to_chat_tool() {
-        let method = tool::MethodDef::builder("get_weather")
+        let method = tool::CustomMethodDef::builder("get_weather")
             .description("Get the weather")
             .schema(serde_json::json!({
                 "type": "object",

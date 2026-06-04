@@ -42,7 +42,7 @@ mod notepad;
 #[cfg(feature = "notepad")]
 pub use notepad::Notepad;
 
-/// Client-side execution of the [`memory`](ServerTool::Memory) tool: the typed
+/// Client-side execution of the [`memory`](ServerMethodDef::Memory) tool: the typed
 /// [`Command`](memory::Command) vocabulary and the [`FsMemoryBackend`]
 /// reference implementation.
 ///
@@ -50,18 +50,18 @@ pub use notepad::Notepad;
 #[cfg(feature = "memory")]
 pub mod memory;
 
-/// Constrain the [`Assistant`]'s choice of [`MethodDef`]s.
+/// Constrain the [`Assistant`]'s choice of [`CustomMethodDef`]s.
 ///
 /// # Note:
 /// - Anthropic calls this a "tool" in the API, but since [`Tool`]s can have
-///   multiple [`MethodDef`] in this crate, we use "method" instead.
+///   multiple [`CustomMethodDef`] in this crate, we use "method" instead.
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum Choice {
-    /// [`Model`] chooses whether and which [`MethodDef`] of a [`Tool`] to use.
+    /// [`Model`] chooses whether and which [`CustomMethodDef`] of a [`Tool`] to use.
     ///
     /// [`Model`]: crate::model::Model
     Auto {
@@ -69,13 +69,13 @@ pub enum Choice {
         #[serde(default, skip_serializing_if = "is_false")]
         disable_parallel_tool_use: bool,
     },
-    /// Model must use at least one of the provided [`MethodDef`]s.
+    /// Model must use at least one of the provided [`CustomMethodDef`]s.
     Any {
         /// If `true`, the model uses at most one tool (no parallel calls).
         #[serde(default, skip_serializing_if = "is_false")]
         disable_parallel_tool_use: bool,
     },
-    /// Model must use a specific [`MethodDef`].
+    /// Model must use a specific [`CustomMethodDef`].
     #[serde(rename = "tool")]
     Method {
         /// The [`MethodDef::name`] to use.
@@ -117,7 +117,7 @@ impl Choice {
         }
     }
 
-    /// Model must use the [`MethodDef`] with this name.
+    /// Model must use the [`CustomMethodDef`] with this name.
     pub fn method(name: impl Into<String>) -> Self {
         Self::Method {
             name: name.into(),
@@ -151,8 +151,8 @@ impl Choice {
 }
 
 /// A **predefined** tool, identified on the wire by a versioned `type` rather
-/// than a schema you supply — as opposed to a custom [`MethodDef`]. Add one
-/// with [`Prompt::add_tool`] (it takes anything [`Into<ToolDef>`], so these
+/// than a schema you supply — as opposed to a custom [`CustomMethodDef`]. Add one
+/// with [`Prompt::add_tool`] (it takes anything [`Into<MethodDef>`], so these
 /// drop in next to custom tools).
 ///
 /// Most are **server-executed**: the API runs them internally and returns a
@@ -167,14 +167,14 @@ impl Choice {
 /// new versions become new variants.
 ///
 /// [`Prompt::add_tool`]: crate::Prompt::add_tool
-/// [`Into<ToolDef>`]: ToolDef
+/// [`Into<MethodDef>`]: MethodDef
 /// [`Block::ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
 /// [`tool::Result`]: Result
 /// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum ServerTool {
+pub enum ServerMethodDef {
     /// Anthropic's web search tool (`web_search_20250305`). The model issues
     /// queries and receives results it can cite via
     /// [`Citation::WebSearchResultLocation`].
@@ -197,11 +197,11 @@ pub enum ServerTool {
     WebFetch(WebFetch),
     /// The [tool-search tool], regex variant (`tool_search_tool_regex_20251119`).
     /// The model writes Python-`re`-style patterns to discover tools marked
-    /// [`defer_loading`](MethodDef::defer_loading); the matching definitions are
+    /// [`defer_loading`](CustomMethodDef::defer_loading); the matching definitions are
     /// expanded into the conversation on demand. See [`tool_search_regex`].
     ///
     /// [tool-search tool]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool>
-    /// [`tool_search_regex`]: ServerTool::tool_search_regex
+    /// [`tool_search_regex`]: ServerMethodDef::tool_search_regex
     #[serde(rename = "tool_search_tool_regex_20251119")]
     ToolSearchRegex(ToolSearch<ToolSearchRegexName>),
     /// The [tool-search tool], BM25 variant (`tool_search_tool_bm25_20251119`).
@@ -210,14 +210,14 @@ pub enum ServerTool {
     /// [`tool_search_bm25`].
     ///
     /// [tool-search tool]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/tool-search-tool>
-    /// [`tool_search_bm25`]: ServerTool::tool_search_bm25
+    /// [`tool_search_bm25`]: ServerMethodDef::tool_search_bm25
     #[serde(rename = "tool_search_tool_bm25_20251119")]
     ToolSearchBm25(ToolSearch<ToolSearchBm25Name>),
     /// Anthropic's [code execution] tool (`code_execution_20260120`). The model
     /// writes Python and runs it in a sandboxed container; the run's output
     /// arrives as a [`Block::CodeExecutionToolResult`]. Enabling it also unlocks
-    /// [programmatic tool calling]: any custom [`MethodDef`] whose
-    /// [`allowed_callers`](MethodDef::allowed_callers) includes
+    /// [programmatic tool calling]: any custom [`CustomMethodDef`] whose
+    /// [`allowed_callers`](CustomMethodDef::allowed_callers) includes
     /// [`code_execution_20260120`] may be invoked from that code, pausing the
     /// turn with a `tool_use` you fulfill normally.
     ///
@@ -244,23 +244,23 @@ pub enum ServerTool {
     Memory(Memory),
 }
 
-impl ServerTool {
+impl ServerMethodDef {
     /// A [`WebSearch`] server tool with default configuration. Configure it
     /// with struct-update syntax, e.g.
-    /// `ServerTool::web_search(WebSearch { max_uses: Some(5), ..Default::default() })`.
+    /// `ServerMethodDef::web_search(WebSearch { max_uses: Some(5), ..Default::default() })`.
     pub fn web_search(config: WebSearch) -> Self {
         Self::WebSearch(config)
     }
 
     /// A [`WebFetch`] server tool with default configuration. Configure it
     /// with struct-update syntax, e.g.
-    /// `ServerTool::web_fetch(WebFetch { max_uses: Some(5), ..Default::default() })`.
+    /// `ServerMethodDef::web_fetch(WebFetch { max_uses: Some(5), ..Default::default() })`.
     pub fn web_fetch(config: WebFetch) -> Self {
         Self::WebFetch(config)
     }
 
     /// The regex [tool-search tool](Self::ToolSearchRegex). Add it alongside a
-    /// catalog of [`defer_loading`](MethodDef::defer_loading) tools (see
+    /// catalog of [`defer_loading`](CustomMethodDef::defer_loading) tools (see
     /// [`Prompt::defer_tools`]) so the model can find them on demand without
     /// paying for every schema up front.
     ///
@@ -343,11 +343,11 @@ impl ServerTool {
 }
 
 /// Configuration for the tool-search server tools
-/// ([`ServerTool::ToolSearchRegex`] / [`ServerTool::ToolSearchBm25`]). The wire
+/// ([`ServerMethodDef::ToolSearchRegex`] / [`ServerMethodDef::ToolSearchBm25`]). The wire
 /// `name` (`tool_search_tool_regex` / `tool_search_tool_bm25`) is fixed by the
 /// marker type `N` and supplied automatically; the only knob is an optional
-/// cache breakpoint. Construct via [`ServerTool::tool_search_regex`] /
-/// [`ServerTool::tool_search_bm25`].
+/// cache breakpoint. Construct via [`ServerMethodDef::tool_search_regex`] /
+/// [`ServerMethodDef::tool_search_bm25`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct ToolSearch<N> {
@@ -363,7 +363,7 @@ pub struct ToolSearch<N> {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-/// Configuration for the [`ServerTool::WebSearch`] tool.
+/// Configuration for the [`ServerMethodDef::WebSearch`] tool.
 ///
 /// All fields are optional; the wire `name` (`"web_search"`) is fixed and
 /// supplied automatically. Use either [`allowed_domains`] or [`blocked_domains`],
@@ -402,7 +402,7 @@ pub struct WebSearch {
 
 impl WebSearch {}
 
-/// Configuration for the [`ServerTool::WebFetch`] tool.
+/// Configuration for the [`ServerMethodDef::WebFetch`] tool.
 ///
 /// All fields are optional; the wire `name` (`"web_fetch"`) is fixed and
 /// supplied automatically. Use either [`allowed_domains`] or [`blocked_domains`],
@@ -453,8 +453,8 @@ pub struct WebFetch {
 impl WebFetch {}
 
 /// Configuration for the [code execution] server tool
-/// ([`ServerTool::CodeExecution`]). Construct via
-/// [`ServerTool::code_execution`]; the only knob is an optional cache
+/// ([`ServerMethodDef::CodeExecution`]). Construct via
+/// [`ServerMethodDef::code_execution`]; the only knob is an optional cache
 /// breakpoint.
 ///
 /// [code execution]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool>
@@ -473,7 +473,7 @@ pub struct CodeExecution {
     pub cache_control: Option<crate::prompt::message::CacheControl>,
 }
 
-/// Configuration for Anthropic's [memory tool] ([`ServerTool::Memory`]) — a
+/// Configuration for Anthropic's [memory tool] ([`ServerMethodDef::Memory`]) — a
 /// *client-side* predefined tool. Added by versioned name with no schema of
 /// your own (construct via [`Memory::latest`]); the model then emits ordinary
 /// [`Use`] blocks (`name: "memory"`) carrying a [`memory::Command`] that you
@@ -507,20 +507,20 @@ pub struct Memory {
 impl Memory {
     /// The newest memory-tool version this crate supports (`memory_20250818`),
     /// with default configuration. Named `latest` because Anthropic versions
-    /// the tool: when a newer one ships it becomes a new [`ServerTool`] variant
+    /// the tool: when a newer one ships it becomes a new [`ServerMethodDef`] variant
     /// and this points at it.
     pub fn latest() -> Self {
         Self::default()
     }
 }
 
-/// Bridges the [`Memory`] front-door type straight into a [`ToolDef`] so
+/// Bridges the [`Memory`] front-door type straight into a [`MethodDef`] so
 /// [`Prompt::add_tool`] accepts it (`Into` is not transitive, so
-/// `Memory: Into<ServerTool>` alone would not give `Memory: Into<ToolDef>`).
+/// `Memory: Into<ServerMethodDef>` alone would not give `Memory: Into<MethodDef>`).
 #[cfg(feature = "memory")]
-impl From<Memory> for ToolDef {
+impl From<Memory> for MethodDef {
     fn from(memory: Memory) -> Self {
-        ToolDef::Server(ServerTool::Memory(memory))
+        MethodDef::Server(ServerMethodDef::Memory(memory))
     }
 }
 
@@ -575,12 +575,12 @@ tool_name_marker!(
 );
 tool_name_marker!(
     /// The fixed `"tool_search_tool_regex"` name for
-    /// [`ServerTool::ToolSearchRegex`].
+    /// [`ServerMethodDef::ToolSearchRegex`].
     ToolSearchRegexName => "tool_search_tool_regex"
 );
 tool_name_marker!(
     /// The fixed `"tool_search_tool_bm25"` name for
-    /// [`ServerTool::ToolSearchBm25`].
+    /// [`ServerMethodDef::ToolSearchBm25`].
     ToolSearchBm25Name => "tool_search_tool_bm25"
 );
 tool_name_marker!(
@@ -615,14 +615,14 @@ pub struct UserLocation {
 
 impl UserLocation {}
 
-/// An entry in a [`Prompt`]'s tools array: either a custom [`MethodDef`] you
-/// execute yourself via [`Tool::call`], or a [`ServerTool`] the API runs
+/// An entry in a [`Prompt`]'s tools array: either a custom [`CustomMethodDef`] you
+/// execute yourself via [`Tool::call`], or a [`ServerMethodDef`] the API runs
 /// internally.
 ///
 /// Distinguished on the wire by the presence of a `type` field — predefined
 /// (server) tools carry a versioned one, custom tools do not. Most users never
-/// name this type: [`Prompt::add_tool`] takes anything [`Into`] a `ToolDef`
-/// (a [`MethodDef`], a [`ServerTool`], or — with the `memory` feature — a
+/// name this type: [`Prompt::add_tool`] takes anything [`Into`] a `MethodDef`
+/// (a [`CustomMethodDef`], a [`ServerMethodDef`], or — with the `memory` feature — a
 /// `Memory`) and wraps the right variant.
 ///
 /// [`Prompt::add_tool`]: crate::Prompt::add_tool
@@ -636,16 +636,16 @@ impl UserLocation {}
 )]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub enum ToolDef {
+pub enum MethodDef {
     /// A server-side tool the API executes (carries a `type`).
-    Server(ServerTool),
+    Server(ServerMethodDef),
     /// A custom tool you execute via [`Tool::call`].
-    Custom(MethodDef),
+    Custom(CustomMethodDef),
 }
 
-impl ToolDef {
+impl MethodDef {
     /// The bare wire `name` this definition advertises — a custom tool's
-    /// [`MethodDef::name`] or a [`ServerTool`]'s fixed name. This is the key a
+    /// [`CustomMethodDef::name`] or a [`ServerMethodDef`]'s fixed name. This is the key a
     /// [`ToolBox`](crate::tool::ToolBox) routes on (namespaced for custom
     /// tools, left bare for server-declared ones).
     pub fn name(&self) -> &str {
@@ -655,16 +655,16 @@ impl ToolDef {
         }
     }
 
-    /// The custom [`MethodDef`], if this is a [`ToolDef::Custom`].
-    pub fn as_method(&self) -> Option<&MethodDef> {
+    /// The custom [`CustomMethodDef`], if this is a [`MethodDef::Custom`].
+    pub fn as_method(&self) -> Option<&CustomMethodDef> {
         match self {
             Self::Custom(method) => Some(method),
             Self::Server(_) => None,
         }
     }
 
-    /// The custom [`MethodDef`] mutably, if this is a [`ToolDef::Custom`].
-    pub fn as_method_mut(&mut self) -> Option<&mut MethodDef> {
+    /// The custom [`CustomMethodDef`] mutably, if this is a [`MethodDef::Custom`].
+    pub fn as_method_mut(&mut self) -> Option<&mut CustomMethodDef> {
         match self {
             Self::Custom(method) => Some(method),
             Self::Server(_) => None,
@@ -696,21 +696,21 @@ impl ToolDef {
 }
 
 /// A `Tool` that the [`Assistant`] can [`Use`]. Tools can have multiple
-/// [`MethodDef`]s. Tools should generally go in the [`ToolBox`].
+/// [`CustomMethodDef`]s. Tools should generally go in the [`ToolBox`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
 #[async_trait::async_trait]
 pub trait Tool: Send {
     /// [`Tool`] name.
     fn name(&self) -> &str;
-    /// The [`ToolDef`](s) this [`Tool`] contributes to a [`Prompt`]'s tools
-    /// array. Usually [`Custom`](ToolDef::Custom) method schemas you execute,
+    /// The [`MethodDef`]s this [`Tool`] contributes to a [`Prompt`]'s tools
+    /// array. Usually [`Custom`](MethodDef::Custom) method schemas you execute,
     /// but a client-executed *predefined* tool (e.g. the
     /// [`memory`](crate::tool::memory) backend) instead contributes a
-    /// [`Server`](ToolDef::Server) def — added by versioned name, routed by its
+    /// [`Server`](MethodDef::Server) def — added by versioned name, routed by its
     /// fixed bare name rather than namespaced. See
     /// [`ToolBox`](crate::tool::ToolBox).
-    fn definitions(&self) -> Vec<ToolDef>;
+    fn definitions(&self) -> Vec<MethodDef>;
     /// [`Use`] the [`Tool`], returning a [`tool::Result`].
     ///
     /// [`tool::Result`]: Result
@@ -775,7 +775,7 @@ static_assertions::assert_obj_safe!(Tool);
 // Ensure Tool is Send (but not Sync) for use in async contexts and ToolBox
 static_assertions::assert_impl_all!(dyn Tool: Send);
 
-/// `MethodDef` definition for a [`Tool`] a [`Model`] can [`Use`] while
+/// `CustomMethodDef` definition for a [`Tool`] a [`Model`] can [`Use`] while
 /// completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
@@ -784,7 +784,7 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder")]
 #[serde(rename = "tool")]
-pub struct MethodDef {
+pub struct CustomMethodDef {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'static, str>,
     /// Description of the tool. The model will use this as documentation.
@@ -814,7 +814,7 @@ pub struct MethodDef {
     ///
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     /// [`Use::input`]: crate::tool::Use::input
-    /// [`schema`]: MethodDef::schema
+    /// [`schema`]: CustomMethodDef::schema
     /// [`Prompt::output_config`]: crate::Prompt::output_config
     #[serde(skip_serializing_if = "Option::is_none")]
     pub strict: Option<bool>,
@@ -844,7 +844,7 @@ pub struct MethodDef {
 }
 
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for MethodDef {
+impl crate::markdown::ToMarkdown for CustomMethodDef {
     fn markdown_events_custom(
         &self,
         options: crate::markdown::Options,
@@ -878,7 +878,7 @@ impl crate::markdown::ToMarkdown for MethodDef {
     }
 }
 
-impl TryFrom<MethodBuilder> for MethodDef {
+impl TryFrom<MethodBuilder> for CustomMethodDef {
     type Error = ToolBuildError;
 
     fn try_from(
@@ -888,20 +888,20 @@ impl TryFrom<MethodBuilder> for MethodDef {
     }
 }
 
-/// A builder for creating a [`MethodDef`] with some basic validation. See
-/// [`MethodDef::builder`] to create one.
+/// A builder for creating a [`CustomMethodDef`] with some basic validation. See
+/// [`CustomMethodDef::builder`] to create one.
 pub struct MethodBuilder {
-    tool: MethodDef,
+    tool: CustomMethodDef,
 }
 
-// `MethodDef` is annotated with `#[serde(try_from = "MethodBuilder")]`, so
-// deserializing a `MethodDef` routes through `MethodBuilder::deserialize` and
+// `CustomMethodDef` is annotated with `#[serde(try_from = "MethodBuilder")]`, so
+// deserializing a `CustomMethodDef` routes through `MethodBuilder::deserialize` and
 // then `MethodBuilder::build`. If we derived `Deserialize` on
 // `MethodBuilder`, serde would generate an impl that defers to
-// `MethodDef::deserialize`, which in turn calls back into
+// `CustomMethodDef::deserialize`, which in turn calls back into
 // `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
 // a private `Foreign` helper struct that owns the actual field mapping.
-// Every public field on `MethodDef` must have a matching entry here.
+// Every public field on `CustomMethodDef` must have a matching entry here.
 impl<'de> Deserialize<'de> for MethodBuilder {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
@@ -935,7 +935,7 @@ impl<'de> Deserialize<'de> for MethodBuilder {
         } = foreign;
 
         Ok(MethodBuilder {
-            tool: MethodDef {
+            tool: CustomMethodDef {
                 name,
                 description,
                 schema: input_schema,
@@ -958,20 +958,20 @@ impl MethodBuilder {
         self
     }
 
-    /// Set the [`strict`] flag on the [`MethodDef`], enabling [strict tool
+    /// Set the [`strict`] flag on the [`CustomMethodDef`], enabling [strict tool
     /// use] (grammar-constrained decoding of tool inputs).
     ///
-    /// [`strict`]: MethodDef::strict
+    /// [`strict`]: CustomMethodDef::strict
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn strict(mut self, strict: bool) -> Self {
         self.tool.strict = Some(strict);
         self
     }
 
-    /// Set the [`defer_loading`] flag on the [`MethodDef`], allowing the API to
+    /// Set the [`defer_loading`] flag on the [`CustomMethodDef`], allowing the API to
     /// defer loading this tool's definition until the model selects it.
     ///
-    /// [`defer_loading`]: MethodDef::defer_loading
+    /// [`defer_loading`]: CustomMethodDef::defer_loading
     pub fn defer_loading(mut self, defer_loading: bool) -> Self {
         self.tool.defer_loading = Some(defer_loading);
         self
@@ -982,7 +982,7 @@ impl MethodBuilder {
     /// the API default (`["direct"]`). For the common "callable only from a
     /// code-execution container" case, see [`programmatic`](Self::programmatic).
     ///
-    /// [`allowed_callers`]: MethodDef::allowed_callers
+    /// [`allowed_callers`]: CustomMethodDef::allowed_callers
     pub fn allowed_callers(
         mut self,
         callers: impl IntoIterator<Item = AllowedCaller>,
@@ -1002,7 +1002,7 @@ impl MethodBuilder {
         self.allowed_callers([AllowedCaller::code_execution_20260120()])
     }
 
-    /// Set a cache breakpoint at this [`MethodDef`] by setting [`cache_control`] to
+    /// Set a cache breakpoint at this [`CustomMethodDef`] by setting [`cache_control`] to
     /// [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// [`cache_control`]: Spec::cache_control
@@ -1014,7 +1014,7 @@ impl MethodBuilder {
         self
     }
 
-    /// Set the [`MethodDef::input_schema`]. The schema should be a JSON Schema
+    /// Set the [`CustomMethodDef::schema`]. The schema should be a JSON Schema
     /// object conforming to the [JSON Schema] specification like the following
     /// example:
     ///
@@ -1126,9 +1126,9 @@ impl MethodBuilder {
         self
     }
 
-    /// This will build the [`MethodDef`] without checking any of the fields. This is
+    /// This will build the [`CustomMethodDef`] without checking any of the fields. This is
     /// recommended only with static strings.
-    pub fn build_unchecked(self) -> MethodDef {
+    pub fn build_unchecked(self) -> CustomMethodDef {
         self.tool
     }
 
@@ -1193,9 +1193,9 @@ impl MethodBuilder {
         Ok(())
     }
 
-    /// This will build the [`MethodDef`] and do some basic validation on the fields.
+    /// This will build the [`CustomMethodDef`] and do some basic validation on the fields.
     /// This does not guarantee that the tool will be accepted by the API.
-    pub fn build(self) -> std::result::Result<MethodDef, ToolBuildError> {
+    pub fn build(self) -> std::result::Result<CustomMethodDef, ToolBuildError> {
         if self.tool.name.is_empty() {
             return Err(ToolBuildError::EmptyName);
         }
@@ -1219,7 +1219,7 @@ impl MethodBuilder {
     }
 }
 
-/// Errors that can occur when building a [`MethodDef`] with a [`MethodBuilder`].
+/// Errors that can occur when building a [`CustomMethodDef`] with a [`MethodBuilder`].
 #[derive(Debug, thiserror::Error)]
 #[allow(missing_docs)]
 pub enum ToolBuildError {
@@ -1236,11 +1236,11 @@ pub enum ToolBuildError {
     },
 }
 
-impl MethodDef {
+impl CustomMethodDef {
     /// Use a builder to create a new tool with some very basic validation.
     pub fn builder(name: impl Into<Cow<'static, str>>) -> MethodBuilder {
         MethodBuilder {
-            tool: MethodDef {
+            tool: CustomMethodDef {
                 name: name.into(),
                 description: Cow::Owned(String::new()),
                 schema: serde_json::Value::Null,
@@ -1258,7 +1258,7 @@ impl MethodDef {
         name: impl Into<Cow<'static, str>>,
         description: impl Into<Cow<'static, str>>,
     ) -> Self {
-        MethodDef {
+        CustomMethodDef {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({
@@ -1283,7 +1283,7 @@ impl MethodDef {
     ) -> Self {
         let required_array = if required { vec![param_name] } else { vec![] };
 
-        MethodDef {
+        CustomMethodDef {
             name: name.into(),
             description: description.into(),
             schema: serde_json::json!({
@@ -1303,7 +1303,7 @@ impl MethodDef {
         }
     }
 
-    /// Create a cache breakpoint at this [`MethodDef`] by setting [`cache_control`]
+    /// Create a cache breakpoint at this [`CustomMethodDef`] by setting [`cache_control`]
     /// to [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
     /// Uses the default 5-minute TTL. For a 1-hour TTL, use
@@ -1316,14 +1316,14 @@ impl MethodDef {
         self.cache_with(crate::prompt::message::CacheControl::ephemeral())
     }
 
-    /// Create a 1-hour cache breakpoint at this [`MethodDef`]. Behaves
+    /// Create a 1-hour cache breakpoint at this [`CustomMethodDef`]. Behaves
     /// identically to [`cache`](Self::cache) but uses
     /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
     pub fn cache_1h(&mut self) -> &mut Self {
         self.cache_with(crate::prompt::message::CacheControl::one_hour())
     }
 
-    /// Create a cache breakpoint at this [`MethodDef`] with a caller-provided
+    /// Create a cache breakpoint at this [`CustomMethodDef`] with a caller-provided
     /// [`CacheControl`](crate::prompt::message::CacheControl).
     pub fn cache_with(
         &mut self,
@@ -1333,36 +1333,36 @@ impl MethodDef {
         self
     }
 
-    /// Returns true if the [`MethodDef`] has a cache breakpoint set (if
+    /// Returns true if the [`CustomMethodDef`] has a cache breakpoint set (if
     /// `cache_control` is [`Some`]).
     pub fn is_cached(&self) -> bool {
         self.cache_control.is_some()
     }
 
-    /// Set the [`strict`] flag on the [`MethodDef`], enabling [strict tool
+    /// Set the [`strict`] flag on the [`CustomMethodDef`], enabling [strict tool
     /// use]. See [`MethodBuilder::strict`] for the builder variant.
     ///
-    /// [`strict`]: MethodDef::strict
+    /// [`strict`]: CustomMethodDef::strict
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn strict(&mut self, strict: bool) -> &mut Self {
         self.strict = Some(strict);
         self
     }
 
-    /// Returns `true` if [strict tool use] is enabled on this [`MethodDef`].
+    /// Returns `true` if [strict tool use] is enabled on this [`CustomMethodDef`].
     ///
     /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
     pub fn is_strict(&self) -> bool {
         self.strict == Some(true)
     }
 
-    /// Try to convert from a serializable value to a [`MethodDef`].
+    /// Try to convert from a serializable value to a [`CustomMethodDef`].
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
     // Serialize. This is a bit of a hack but it works.
     pub fn from_serializable<T>(
         value: T,
-    ) -> std::result::Result<MethodDef, serde_json::Error>
+    ) -> std::result::Result<CustomMethodDef, serde_json::Error>
     where
         T: Serialize,
     {
@@ -1371,7 +1371,7 @@ impl MethodDef {
     }
 }
 
-impl TryFrom<serde_json::Value> for MethodDef {
+impl TryFrom<serde_json::Value> for CustomMethodDef {
     type Error = serde_json::Error;
 
     fn try_from(
@@ -1459,8 +1459,8 @@ impl Caller {
     }
 }
 
-/// A *context* that may invoke a tool, named in a [`MethodDef`]'s
-/// [`allowed_callers`](MethodDef::allowed_callers) to opt that tool into
+/// A *context* that may invoke a tool, named in a [`CustomMethodDef`]'s
+/// [`allowed_callers`](CustomMethodDef::allowed_callers) to opt that tool into
 /// [programmatic tool calling]. Unlike [`Caller`] (which reports who *did*
 /// call a tool and carries the `srvtoolu_` id), this is the bare *kind* a tool
 /// definition permits — no id.
@@ -1521,7 +1521,7 @@ impl AllowedCaller {
     }
 }
 
-/// `MethodDef` [`Use`] of the model. This should be handled and a response sent
+/// `CustomMethodDef` [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///
 /// [`Block::ToolResult`]: crate::prompt::message::Block::ToolResult
@@ -1563,7 +1563,7 @@ pub struct Use {
     /// the user turn answering it must contain **only** `tool_result` blocks
     /// (no trailing text; the API rejects a mix), and you must resume the same
     /// container via [`Prompt::container`](crate::Prompt::container) before it
-    /// idles out. See [`ServerTool::code_execution`].
+    /// idles out. See [`ServerMethodDef::code_execution`].
     ///
     /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1661,7 +1661,7 @@ impl std::fmt::Display for Use {
     }
 }
 
-/// Result of [`MethodDef`] [`Use`] sent back to the [`Assistant`] as a [`User`]
+/// Result of [`CustomMethodDef`] [`Use`] sent back to the [`Assistant`] as a [`User`]
 /// [`Message`].
 ///
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
@@ -1775,19 +1775,19 @@ mod tests {
         // `{"type":"code_execution_20260120","name":"code_execution"}` — the
         // shape sent during the live PTC capture. `From` (derive_more) builds
         // the variant from its config.
-        let tool: ServerTool = CodeExecution::default().into();
+        let tool: ServerMethodDef = CodeExecution::default().into();
         let json = serde_json::to_value(&tool).unwrap();
         assert_eq!(json["type"], "code_execution_20260120");
         assert_eq!(json["name"], "code_execution");
         assert!(json.get("cache_control").is_none());
 
-        let back: ServerTool = serde_json::from_value(json).unwrap();
-        assert!(matches!(back, ServerTool::CodeExecution(_)));
+        let back: ServerMethodDef = serde_json::from_value(json).unwrap();
+        assert!(matches!(back, ServerMethodDef::CodeExecution(_)));
     }
 
     #[test]
     fn web_search_server_tool_wire_shape() {
-        let tool = ServerTool::web_search(WebSearch {
+        let tool = ServerMethodDef::web_search(WebSearch {
             max_uses: Some(5),
             allowed_domains: Some(vec!["anthropic.com".into()]),
             ..Default::default()
@@ -1800,8 +1800,8 @@ mod tests {
         // blocked_domains/user_location/cache_control are skipped when None.
         assert!(json.get("blocked_domains").is_none());
 
-        let back: ServerTool = serde_json::from_value(json).unwrap();
-        let ServerTool::WebSearch(config) = back else {
+        let back: ServerMethodDef = serde_json::from_value(json).unwrap();
+        let ServerMethodDef::WebSearch(config) = back else {
             panic!("expected WebSearch");
         };
         assert_eq!(config.max_uses, Some(5));
@@ -1811,7 +1811,7 @@ mod tests {
     fn web_fetch_server_tool_wire_shape() {
         use crate::prompt::message::CitationsConfig;
 
-        let tool = ServerTool::web_fetch(WebFetch {
+        let tool = ServerMethodDef::web_fetch(WebFetch {
             max_uses: Some(5),
             allowed_domains: Some(vec!["docs.rs".into()]),
             citations: Some(CitationsConfig { enabled: true }),
@@ -1828,8 +1828,8 @@ mod tests {
         // blocked_domains/cache_control are skipped when None.
         assert!(json.get("blocked_domains").is_none());
 
-        let back: ServerTool = serde_json::from_value(json).unwrap();
-        let ServerTool::WebFetch(config) = back else {
+        let back: ServerMethodDef = serde_json::from_value(json).unwrap();
+        let ServerMethodDef::WebFetch(config) = back else {
             panic!("expected WebFetch");
         };
         assert_eq!(config.max_uses, Some(5));
@@ -1840,12 +1840,12 @@ mod tests {
     fn tool_search_variants_wire_shape() {
         for (tool, ty, name) in [
             (
-                ServerTool::tool_search_regex(),
+                ServerMethodDef::tool_search_regex(),
                 "tool_search_tool_regex_20251119",
                 "tool_search_tool_regex",
             ),
             (
-                ServerTool::tool_search_bm25(),
+                ServerMethodDef::tool_search_bm25(),
                 "tool_search_tool_bm25_20251119",
                 "tool_search_tool_bm25",
             ),
@@ -1857,14 +1857,14 @@ mod tests {
             assert!(json.get("cache_control").is_none());
 
             // Round-trips back to the same variant.
-            let back: ServerTool = serde_json::from_value(json).unwrap();
+            let back: ServerMethodDef = serde_json::from_value(json).unwrap();
             assert_eq!(back, tool);
         }
     }
 
     #[test]
     fn tool_search_is_cacheable() {
-        let mut def: ToolDef = ServerTool::tool_search_regex().into();
+        let mut def: MethodDef = ServerMethodDef::tool_search_regex().into();
         assert!(!def.is_cached());
         def.cache_with(crate::prompt::message::CacheControl::ephemeral());
         assert!(def.is_cached());
@@ -1879,7 +1879,7 @@ mod tests {
             "type": "tool_search_tool_regex_20251119",
             "name": "not_the_right_name",
         });
-        assert!(serde_json::from_value::<ServerTool>(bad).is_err());
+        assert!(serde_json::from_value::<ServerMethodDef>(bad).is_err());
     }
 
     #[test]
@@ -1889,39 +1889,39 @@ mod tests {
             "type": "web_search_20250305",
             "name": "not_web_search",
         });
-        assert!(serde_json::from_value::<ServerTool>(bad).is_err());
+        assert!(serde_json::from_value::<ServerMethodDef>(bad).is_err());
     }
 
     #[test]
     fn tooldef_untagged_discriminates_by_type() {
         // A custom tool (no `type`) round-trips as Custom; a server tool (has a
         // versioned `type`) round-trips as Server.
-        let custom: ToolDef =
-            MethodDef::simple("ping", "Ping a server.").into();
-        let server: ToolDef =
-            ServerTool::web_search(WebSearch::default()).into();
+        let custom: MethodDef =
+            CustomMethodDef::simple("ping", "Ping a server.").into();
+        let server: MethodDef =
+            ServerMethodDef::web_search(WebSearch::default()).into();
 
         let custom_json = serde_json::to_value(&custom).unwrap();
         assert!(custom_json.get("type").is_none());
         assert!(custom_json.get("input_schema").is_some());
         assert!(matches!(
-            serde_json::from_value::<ToolDef>(custom_json).unwrap(),
-            ToolDef::Custom(_)
+            serde_json::from_value::<MethodDef>(custom_json).unwrap(),
+            MethodDef::Custom(_)
         ));
 
         let server_json = serde_json::to_value(&server).unwrap();
         assert_eq!(server_json["type"], "web_search_20250305");
         assert!(matches!(
-            serde_json::from_value::<ToolDef>(server_json).unwrap(),
-            ToolDef::Server(_)
+            serde_json::from_value::<MethodDef>(server_json).unwrap(),
+            MethodDef::Server(_)
         ));
     }
 
     #[test]
     fn prompt_mixes_custom_and_server_tools_in_tools_array() {
         let prompt = crate::Prompt::default()
-            .add_tool(MethodDef::simple("ping", "Ping a server."))
-            .add_tool(ServerTool::web_search(WebSearch::default()));
+            .add_tool(CustomMethodDef::simple("ping", "Ping a server."))
+            .add_tool(ServerMethodDef::web_search(WebSearch::default()));
 
         let json = serde_json::to_value(&prompt).unwrap();
         let tools = json["tools"].as_array().unwrap();
@@ -1935,13 +1935,14 @@ mod tests {
         // The whole prompt round-trips, preserving both tool kinds.
         let back: crate::Prompt = serde_json::from_value(json).unwrap();
         let methods = back.methods.unwrap();
-        assert!(matches!(methods[0], ToolDef::Custom(_)));
-        assert!(matches!(methods[1], ToolDef::Server(_)));
+        assert!(matches!(methods[0], MethodDef::Custom(_)));
+        assert!(matches!(methods[1], MethodDef::Server(_)));
     }
 
     #[test]
     fn test_method_simple() {
-        let method = MethodDef::simple("test_method", "A simple test method");
+        let method =
+            CustomMethodDef::simple("test_method", "A simple test method");
 
         assert_eq!(method.name, "test_method");
         assert_eq!(method.description, "A simple test method");
@@ -1957,7 +1958,7 @@ mod tests {
 
     #[test]
     fn test_method_with_string_param() {
-        let method = MethodDef::with_string_param(
+        let method = CustomMethodDef::with_string_param(
             "get_weather",
             "Get weather for a location",
             "location",
@@ -1984,7 +1985,7 @@ mod tests {
 
     #[test]
     fn test_method_builder_param_helpers() {
-        let method = MethodDef::builder("test_method")
+        let method = CustomMethodDef::builder("test_method")
             .description("Test method with multiple params")
             .string_param("name", "A person's name", true)
             .number_param("age", "A person's age", false)
@@ -2020,7 +2021,7 @@ mod tests {
     #[test]
     fn test_method_builder_param_helpers_with_existing_schema() {
         // Start with an existing schema and add to it
-        let method = MethodDef::builder("test_method")
+        let method = CustomMethodDef::builder("test_method")
             .description("Test method")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2139,7 +2140,7 @@ mod tests {
 
     #[test]
     fn test_build() {
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2179,7 +2180,7 @@ mod tests {
         );
 
         // Test error cases
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2203,7 +2204,7 @@ mod tests {
         ));
 
         // input schema not an object
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::Value::String("blah".into()))
             .build();
@@ -2214,7 +2215,7 @@ mod tests {
         ));
 
         // Properties not an object
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2229,7 +2230,7 @@ mod tests {
         ));
 
         // `required` lists keys absent from (here, missing) `properties`
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2244,7 +2245,7 @@ mod tests {
 
         // No `required` array is valid (all-optional / no-arg methods). It is
         // optional per JSON Schema and treated as empty when absent.
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2264,7 +2265,7 @@ mod tests {
         assert!(tool.is_ok());
 
         // required keys not found in properties
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2288,7 +2289,7 @@ mod tests {
         ));
 
         // required keys not strings
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2312,14 +2313,14 @@ mod tests {
         ));
 
         // missing schema
-        let tool = MethodDef::builder("test_name")
+        let tool = CustomMethodDef::builder("test_name")
             .description("test_description")
             .build();
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyInputSchema)));
 
         // with missing names and descriptions
-        let tool = MethodDef::builder("")
+        let tool = CustomMethodDef::builder("")
             .description("foo")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2339,7 +2340,7 @@ mod tests {
 
         assert!(matches!(tool, Err(ToolBuildError::EmptyName)));
 
-        let tool = MethodDef::builder("foo")
+        let tool = CustomMethodDef::builder("foo")
             .description("")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2398,7 +2399,7 @@ mod tests {
 
     #[test]
     fn test_defer_loading_serde() {
-        let mut method = MethodDef::simple("ping", "Ping a server.");
+        let mut method = CustomMethodDef::simple("ping", "Ping a server.");
         // Omitted when unset.
         assert!(
             serde_json::to_value(&method)
@@ -2412,7 +2413,7 @@ mod tests {
         assert_eq!(json["defer_loading"], true);
 
         // Round-trips through the builder-based `Deserialize`.
-        let back: MethodDef = serde_json::from_value(json).unwrap();
+        let back: CustomMethodDef = serde_json::from_value(json).unwrap();
         assert_eq!(back.defer_loading, Some(true));
     }
 
@@ -2439,7 +2440,7 @@ mod tests {
     #[test]
     fn allowed_callers_builder_and_serde() {
         // `.programmatic()` is sugar for the code-execution caller.
-        let method = MethodDef::builder("query_sales")
+        let method = CustomMethodDef::builder("query_sales")
             .description("Query sales.")
             .schema(serde_json::json!({"type": "object"}))
             .programmatic()
@@ -2456,18 +2457,18 @@ mod tests {
         );
 
         // Round-trips through the builder-based `Deserialize`.
-        let back: MethodDef = serde_json::from_value(json).unwrap();
+        let back: CustomMethodDef = serde_json::from_value(json).unwrap();
         assert_eq!(back.allowed_callers, method.allowed_callers);
 
         // Omitted when unset; an empty list clears back to the default.
-        let bare = MethodDef::simple("ping", "Ping.");
+        let bare = CustomMethodDef::simple("ping", "Ping.");
         assert!(
             serde_json::to_value(&bare)
                 .unwrap()
                 .get("allowed_callers")
                 .is_none()
         );
-        let cleared = MethodDef::builder("ping")
+        let cleared = CustomMethodDef::builder("ping")
             .description("Ping.")
             .schema(serde_json::json!({"type": "object"}))
             .allowed_callers([])
@@ -2502,7 +2503,7 @@ mod tests {
 
     #[test]
     fn test_tool_from_serializable() {
-        let tool = MethodDef::from_serializable(serde_json::json!({
+        let tool = CustomMethodDef::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
@@ -2544,7 +2545,7 @@ mod tests {
 
         // Test invalid schema. Comprehensive testing of this is in the builder
         // tests. This just makes sure that the error is propagated.
-        let tool = MethodDef::from_serializable(serde_json::json!({
+        let tool = CustomMethodDef::from_serializable(serde_json::json!({
             "name": "test_name",
             "description": "test_description",
             "input_schema": {
@@ -2569,7 +2570,7 @@ mod tests {
 
     #[test]
     fn test_method_strict_defaults_none_and_elides() {
-        let tool = MethodDef::simple("ping", "Ping a server.");
+        let tool = CustomMethodDef::simple("ping", "Ping a server.");
         assert_eq!(tool.strict, None);
         assert!(!tool.is_strict());
 
@@ -2582,7 +2583,7 @@ mod tests {
 
     #[test]
     fn test_method_builder_strict_flag() {
-        let tool = MethodDef::builder("ping")
+        let tool = CustomMethodDef::builder("ping")
             .description("Ping a server.")
             .schema(serde_json::json!({
                 "type": "object",
@@ -2603,7 +2604,7 @@ mod tests {
 
     #[test]
     fn test_method_strict_mut_setter() {
-        let mut tool = MethodDef::simple("ping", "Ping a server.");
+        let mut tool = CustomMethodDef::simple("ping", "Ping a server.");
         tool.strict(true);
         assert_eq!(tool.strict, Some(true));
     }
@@ -2622,13 +2623,13 @@ mod tests {
             },
             "strict": true,
         });
-        let tool = MethodDef::from_serializable(wire).unwrap();
+        let tool = CustomMethodDef::from_serializable(wire).unwrap();
         assert_eq!(tool.strict, Some(true));
     }
 
     #[test]
     fn test_method_builder_preserves_strict() {
-        let tool = MethodDef::builder("ping")
+        let tool = CustomMethodDef::builder("ping")
             .description("Ping a server.")
             .schema(serde_json::json!({
                 "type": "object",

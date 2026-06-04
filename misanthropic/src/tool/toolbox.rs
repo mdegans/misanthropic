@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, Methods, Tool, ToolDef, Typed, Use},
+    tool::{self, MethodDef, Methods, Tool, Typed, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -281,8 +281,8 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`ToolDef`]s for all [`Tool`]s in the [`ToolBox`].
-    fn definitions(&self) -> Vec<ToolDef> {
+    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
+    fn definitions(&self) -> Vec<MethodDef> {
         self.tool_name_to_tool
             .values()
             .flat_map(|tool| {
@@ -472,7 +472,7 @@ impl Tool for ToolBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::{MethodDef, Result};
+    use crate::tool::{CustomMethodDef, Result};
 
     struct TestTool {
         calls: Vec<Use>,
@@ -484,8 +484,8 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<ToolDef> {
-            vec![ToolDef::Custom(MethodDef {
+        fn definitions(&self) -> Vec<MethodDef> {
+            vec![MethodDef::Custom(CustomMethodDef {
                 name: "TestTool__test".into(),
                 description: "Test Tool".into(),
                 schema: serde_json::json!({
@@ -597,8 +597,8 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<ToolDef> {
-            vec![ToolDef::Custom(MethodDef {
+        fn definitions(&self) -> Vec<MethodDef> {
+            vec![MethodDef::Custom(CustomMethodDef {
                 name: "TestTool__replaced".into(),
                 description: "Replacement Tool".into(),
                 schema: serde_json::json!({ "type": "object" }),
@@ -650,7 +650,7 @@ mod tests {
     #[test]
     fn test_methods() {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods: Vec<ToolDef> = toolbox.definitions();
+        let methods: Vec<MethodDef> = toolbox.definitions();
         assert_eq!(methods.len(), 1);
         assert_eq!(methods[0].name(), "toolbox__TestTool__test");
     }
