@@ -696,6 +696,11 @@ pub struct MethodDef {
     /// both; a `tool_choice` naming a tool whose callers omit `direct` is a
     /// `400`.
     ///
+    /// Programmatic calling is incompatible with a few other knobs: a
+    /// code-execution-callable tool cannot also set [`strict`](Self::strict)
+    /// (`true`), `tool_choice` cannot *force* it, and
+    /// `disable_parallel_tool_use` is unsupported alongside it.
+    ///
     /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     #[serde(skip_serializing_if = "Option::is_none")]
     pub allowed_callers: Option<Vec<AllowedCaller>>,
@@ -1413,6 +1418,15 @@ pub struct Use {
     /// [`Caller::Known`]\([`KnownCaller::Direct`]); the API omits the field
     /// in that case). A code-execution variant means a container called the
     /// tool on the model's behalf, carrying the `srvtoolu_` id of that call.
+    ///
+    /// ## Answering a programmatic call
+    ///
+    /// You fulfill a code-execution call exactly like a direct one — run the
+    /// tool, send a [`tool::Result`](crate::tool::Result) — with two caveats:
+    /// the user turn answering it must contain **only** `tool_result` blocks
+    /// (no trailing text; the API rejects a mix), and you must resume the same
+    /// container via [`Prompt::container`](crate::Prompt::container) before it
+    /// idles out. See [`ServerTool::code_execution`].
     ///
     /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     #[serde(skip_serializing_if = "Option::is_none")]

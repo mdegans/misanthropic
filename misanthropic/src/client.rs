@@ -1589,6 +1589,132 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "client")]
     #[ignore = "This test requires a real API key."]
+    async fn test_programmatic_tool_calling() {
+        // The live counterpart to `examples/programmatic_tool_calling.rs`: the
+        // model calls our `query_sales` tool from inside the `code_execution`
+        // container, we answer each pause with a `tool_result`-only turn and
+        // resume the same container. Fake data makes "West" the unique max, so
+        // the final answer is a deterministic invariant.
+        use crate::prompt::message::Block;
+        use crate::response::StopReason;
+        use crate::tool::{self, Caller, KnownCaller, MethodDef, ServerTool};
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let revenue = |region: &str| match region {
+            "West" => 98_000,
+            "East" => 72_000,
+            "Central" => 65_000,
+            "North" => 54_000,
+            "South" => 81_000,
+            _ => 0,
+        };
+
+        let query_sales = MethodDef::builder("query_sales")
+            .description(
+                "Look up sales revenue for a region. Returns JSON like \
+                 {\"region\": \"West\", \"revenue\": 12345}.",
+            )
+            .schema(crate::json!({
+                "type": "object",
+                "properties": { "region": { "type": "string" } },
+                "required": ["region"],
+            }))
+            .programmatic()
+            .build()
+            .unwrap();
+
+        let mut prompt = Prompt::default()
+            .model(crate::AnthropicModel::Sonnet46)
+            .add_server_tool(ServerTool::code_execution())
+            .add_tool(query_sales)
+            .add_message((
+                Role::User,
+                "For West, East, Central, North, and South, call query_sales \
+                 for each and tell me which region had the highest revenue. \
+                 Do the lookups in code.",
+            ))
+            .unwrap();
+
+        let mut calls_made = 0u32;
+        let mut pauses = 0u32;
+        let answer = loop {
+            let response = client.message(&prompt).await.unwrap();
+
+            if let Some(container) = &response.container {
+                prompt.container = Some(container.id.clone());
+            }
+
+            if !matches!(response.stop_reason, Some(StopReason::ToolUse)) {
+                break response;
+            }
+
+            pauses += 1;
+            assert!(pauses <= 20, "runaway programmatic-call loop: {pauses}");
+
+            let calls: Vec<tool::Use> = response
+                .inner
+                .content
+                .iter()
+                .filter_map(|block| match block {
+                    Block::ToolUse { call }
+                        if matches!(
+                            &call.caller,
+                            Some(Caller::Known(
+                                KnownCaller::CodeExecution20260120 { .. }
+                            ))
+                        ) =>
+                    {
+                        Some(call.clone())
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert!(
+                !calls.is_empty(),
+                "stop_reason was tool_use but no programmatic call was present"
+            );
+
+            prompt.push_message(response).unwrap();
+            for call in calls {
+                calls_made += 1;
+                let region = call.input["region"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                let payload = crate::json!({
+                    "region": region,
+                    "revenue": revenue(&region),
+                })
+                .to_string();
+                prompt
+                    .push_message(tool::Result::new(call.id, payload))
+                    .unwrap();
+            }
+        };
+
+        assert_eq!(
+            answer.stop_reason,
+            Some(StopReason::EndTurn),
+            "expected the container loop to finish"
+        );
+        assert!(
+            calls_made >= 5,
+            "the model should have queried all five regions, got {calls_made}"
+        );
+        assert!(
+            answer.to_string().contains("West"),
+            "the answer should name West (the max): {answer}"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "This test requires a real API key."]
     async fn test_web_fetch_server_tool() {
         use crate::prompt::message::{Block, WebFetchToolResultContent};
         use crate::response::StopReason;
