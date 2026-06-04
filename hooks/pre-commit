@@ -1,0 +1,18 @@
+#!/bin/sh
+# Pre-commit gate: run the full offline check suite (format, lint, tests with
+# all features and with no default features, including the __skills doc-tests)
+# before allowing a commit. This is offline only — it never hits the live API,
+# so it costs nothing per commit. The API-hitting `#[ignore]`d tests are run
+# manually with `just test-ignored`.
+#
+# Enable with `just install-hooks` (sets core.hooksPath to this directory).
+# Bypass for a work-in-progress commit with `git commit --no-verify`.
+set -e
+
+if ! command -v just >/dev/null 2>&1; then
+    echo "pre-commit: 'just' not found. Install it" \
+         "(https://github.com/casey/just) or commit with --no-verify." >&2
+    exit 1
+fi
+
+just test
