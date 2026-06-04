@@ -2526,14 +2526,13 @@ mod tests {
                     role: Role::User,
                     content: Content::text("Call a tool."),
                 },
-                tool::Use {
-                    id: "abc123".into(),
-                    name: "ping".into(),
-                    input: json!({
+                tool::Use::new(
+                    "ping",
+                    json!({
                         "host": "example.com"
                     }),
-                    cache_control: None,
-                }
+                )
+                .with_id("abc123")
                 .into(),
                 tool::Result {
                     tool_use_id: "abc123".into(),

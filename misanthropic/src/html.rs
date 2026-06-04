@@ -230,14 +230,13 @@ mod tests {
                     role: Role::User,
                     content: "Run a hello world python program.".into(),
                 },
-                tool::Use {
-                    id: "id".into(),
-                    name: "python".into(),
-                    input: json!({
+                tool::Use::new(
+                    "python",
+                    json!({
                         "script": "print('Hello, world!')",
                     }),
-                    cache_control: None,
-                }
+                )
+                .with_id("id")
                 .into(),
                 tool::Result {
                     tool_use_id: "id".into(),

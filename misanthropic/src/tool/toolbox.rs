@@ -635,12 +635,10 @@ mod tests {
 
         // A call to the advertised name routes to the replacement.
         let result = toolbox
-            .call(Use {
-                id: "id".into(),
-                name: "toolbox__TestTool__replaced".into(),
-                input: serde_json::json!({}),
-                cache_control: None,
-            })
+            .call(
+                Use::new("toolbox__TestTool__replaced", serde_json::json!({}))
+                    .with_id("id"),
+            )
             .await;
         assert!(!result.is_error);
         assert_eq!(result.content, "Replaced tool called".into());
@@ -664,12 +662,8 @@ mod tests {
     #[tokio::test]
     async fn test_call() {
         let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let call = Use {
-            id: "id".into(),
-            name: "toolbox__TestTool__test".into(),
-            input: serde_json::json!({}),
-            cache_control: None,
-        };
+        let call = Use::new("toolbox__TestTool__test", serde_json::json!({}))
+            .with_id("id");
         let result = toolbox.call(call.clone()).await;
         assert!(!result.is_error);
         assert_eq!(result.content, "Tool called".into());
@@ -705,12 +699,7 @@ mod tests {
         assert_eq!(advertised, "toolbox__potato__TestTool__test");
 
         let result = toolbox
-            .call(Use {
-                id: "id".into(),
-                name: advertised.into(),
-                input: serde_json::json!({}),
-                cache_control: None,
-            })
+            .call(Use::new(advertised, serde_json::json!({})).with_id("id"))
             .await;
         assert!(!result.is_error, "nested call did not route: {result:?}");
         assert_eq!(result.content, "Tool called".into());

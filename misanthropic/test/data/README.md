@@ -62,6 +62,7 @@ the win; fix the types, then commit the real bytes.
 | `server_tools/tool_search_error.json` | docs | **pending live capture** |
 | `server_tools/tool_reference.json` | docs | **pending live capture** |
 | `server_tools/server_tool_use.json` | live (`web_search`, Haiku 4.5) | captured |
+| `server_tools/ptc_tool_use.json` | live (programmatic tool calling, Sonnet 4.6) | captured (`caller` of `code_execution_20260120` verified; PTC is unavailable on Haiku) |
 
 "pending live capture" fixtures are our best current guess from the docs and
 round-trip cleanly against today's types; they should be replaced with real

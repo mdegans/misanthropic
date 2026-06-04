@@ -351,12 +351,7 @@ mod tests {
     }
 
     fn call_with(name: &str, input: serde_json::Value) -> Use {
-        Use {
-            id: "id".into(),
-            name: name.to_string().into(),
-            input,
-            cache_control: None,
-        }
+        Use::new(name.to_string(), input).with_id("id")
     }
 
     #[tokio::test]

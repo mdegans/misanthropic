@@ -110,12 +110,13 @@ mod hand_written_method {
     async fn derived_args_drive_a_hand_written_method() {
         let mut greeter = Typed(Greeter);
         let result = greeter
-            .call(Use {
-                id: "id".into(),
-                name: "Greeter__greet".into(),
-                input: serde_json::json!({ "name": "world" }),
-                cache_control: None,
-            })
+            .call(
+                Use::new(
+                    "Greeter__greet",
+                    serde_json::json!({ "name": "world" }),
+                )
+                .with_id("id"),
+            )
             .await;
         assert!(!result.is_error, "{}", result.content);
         assert_eq!(result.content.to_string(), "Hello, world!");

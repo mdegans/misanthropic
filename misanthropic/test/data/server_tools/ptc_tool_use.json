@@ -1,0 +1,12 @@
+{
+  "type": "tool_use",
+  "id": "toolu_01Ep3muNAqgo6WcHSNzL7cYK",
+  "name": "query_sales",
+  "input": {
+    "region": "West"
+  },
+  "caller": {
+    "type": "code_execution_20260120",
+    "tool_id": "srvtoolu_01EnSeFfRxcsNTUgLjYHD5XG"
+  }
+}

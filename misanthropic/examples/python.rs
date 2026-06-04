@@ -227,14 +227,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 role: Role::Assistant,
                 content: Content(vec![
                     r#"<thinking>I can't do that myself, but I can run a Python script to count the number of r's in "strawberry". The user did not specify case sensitivity so I will default to case insensitive.</thinking>"#.into(),
-                    tool::Use {
-                        id: "calibration_000".into(),
-                        name: "python".into(),
-                        input: json!({
+                    tool::Use::new(
+                        "python",
+                        json!({
                             "script": r#"print("strawberry".lower().count("r"))"#
                         }),
-                        cache_control: None
-                    }.into()
+                    )
+                    .with_id("calibration_000")
+                    .into()
                 ]),
             },
             tool::Result {
@@ -249,14 +249,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 role: Role::Assistant,
                 content: Content(vec![
                     r#"<thinking>This request is complex enough to need Python. I should use the itertools module for this.</thinking>"#.into(),
-                    tool::Use {
-                        id: "calibration_001".into(),
-                        name: "python".into(),
-                        input: json!({
+                    tool::Use::new(
+                        "python",
+                        json!({
                             "script": r#"import itertools\nprint(','.join("".join(t) for t in itertools.permutations(('a', 'b', 'c', 'd'))))"#
                         }),
-                        cache_control: None
-                    }.into()
+                    )
+                    .with_id("calibration_001")
+                    .into()
                 ]),
             },
             tool::Result {

@@ -165,14 +165,14 @@ fn make_prompt() -> Prompt {
                     // Regular, plain old, legacy thinking block. When displayed
                     // with `ThoughtsOrSpeech`, it will be styled as a thought.
                     r#"<thinking>I can't do that myself, but I can run a Python script to count the number of r's in "strawberry". The user did not specify case sensitivity so I will default to case insensitive.</thinking>"#.into(),
-                    tool::Use {
-                        id: "calibration_000".into(),
-                        name: "python".into(),
-                        input: json!({
+                    tool::Use::new(
+                        "python",
+                        json!({
                             "script": r#"print("strawberry".lower().count("r"))"#
                         }),
-                        cache_control: None
-                    }.into()
+                    )
+                    .with_id("calibration_000")
+                    .into()
                 ]),
             },
             tool::Result {
@@ -197,14 +197,14 @@ fn make_prompt() -> Prompt {
                     // depending on your prompt and application. The option is
                     // here for flexibility.
                     Block::Thought { thought: "This request is complex enough to need Python. I should use the itertools module for this...".into(), signature: "...".into() },
-                    tool::Use {
-                        id: "calibration_001".into(),
-                        name: "python".into(),
-                        input: json!({
+                    tool::Use::new(
+                        "python",
+                        json!({
                             "script": r#"import itertools\nprint(','.join("".join(t) for t in itertools.permutations(('a', 'b', 'c', 'd'))))"#
                         }),
-                        cache_control: None
-                    }.into()
+                    )
+                    .with_id("calibration_001")
+                    .into()
                 ]),
             },
             tool::Result {

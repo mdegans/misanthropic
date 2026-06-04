@@ -19,8 +19,6 @@
 //! [`Prompt`]: crate::Prompt
 //! [`Message`]: crate::prompt::Message
 
-use std::borrow::Cow;
-
 use serde::{Deserialize, Serialize};
 
 use crate::CowStr;
@@ -390,12 +388,7 @@ impl ChatStreamAccumulator {
                 serde_json::from_str(&call.arguments)
                     .unwrap_or(serde_json::Value::Null);
             blocks.push(Block::ToolUse {
-                call: tool::Use {
-                    id: Cow::Owned(call.id),
-                    name: Cow::Owned(call.name),
-                    input,
-                    cache_control: None,
-                },
+                call: tool::Use::new(call.name, input).with_id(call.id),
             });
         }
 
@@ -494,12 +487,7 @@ impl From<ChatToolCall> for tool::Use {
         let input: serde_json::Value =
             serde_json::from_str(&call.function.arguments)
                 .unwrap_or(serde_json::Value::Null);
-        tool::Use {
-            id: Cow::Owned(call.id),
-            name: Cow::Owned(call.function.name),
-            input,
-            cache_control: None,
-        }
+        Self::new(call.function.name, input).with_id(call.id)
     }
 }
 
@@ -833,7 +821,7 @@ mod tests {
     #[test]
     fn tool_result_to_chat_message() {
         let result = tool::Result {
-            tool_use_id: Cow::Borrowed("call_456"),
+            tool_use_id: std::borrow::Cow::Borrowed("call_456"),
             content: Content::text("Sunny, 22°C"),
             is_error: false,
             cache_control: None,

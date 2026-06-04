@@ -329,12 +329,9 @@ mod tests {
         message.stop_reason = Some(StopReason::ToolUse);
         assert!(message.tool_use().is_none());
 
-        message.inner.content_mut().push(crate::tool::Use {
-            id: "id".into(),
-            name: "name".into(),
-            input: serde_json::json!({}),
-            cache_control: None,
-        });
+        message.inner.content_mut().push(
+            crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
+        );
         assert!(message.tool_use().is_some());
     }
 
@@ -457,12 +454,8 @@ mod tests {
     fn json_returns_no_text_block_when_only_tool_blocks() {
         use prompt::message::{Block, Content};
         let content = Content(vec![Block::ToolUse {
-            call: crate::tool::Use {
-                id: "u".into(),
-                name: "x".into(),
-                input: serde_json::json!({}),
-                cache_control: None,
-            },
+            call: crate::tool::Use::new("x", serde_json::json!({}))
+                .with_id("u"),
         }]);
         // stop_reason == EndTurn so we pass the stop-reason guard and hit
         // the no-text-block path.

@@ -1204,6 +1204,36 @@ pub enum KnownCaller {
     },
 }
 
+impl Caller {
+    /// The model called the tool directly (traditional tool use). Equivalent
+    /// to the API omitting the `caller` field; see [`KnownCaller::Direct`].
+    pub fn direct() -> Self {
+        Self::Known(KnownCaller::Direct)
+    }
+
+    /// A `code_execution_20260120` container called the tool programmatically,
+    /// carrying the `srvtoolu_` id of the code-execution call. See
+    /// [`KnownCaller::CodeExecution20260120`].
+    pub fn code_execution_20260120(
+        tool_id: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self::Known(KnownCaller::CodeExecution20260120 {
+            tool_id: tool_id.into(),
+        })
+    }
+
+    /// A `code_execution_20250825` container called the tool programmatically,
+    /// carrying the `srvtoolu_` id of the code-execution call. See
+    /// [`KnownCaller::CodeExecution20250825`].
+    pub fn code_execution_20250825(
+        tool_id: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self::Known(KnownCaller::CodeExecution20250825 {
+            tool_id: tool_id.into(),
+        })
+    }
+}
+
 /// `MethodDef` [`Use`] of the model. This should be handled and a response sent
 /// back in a [`Block::ToolResult`].
 ///
@@ -1233,9 +1263,61 @@ pub struct Use {
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<crate::prompt::message::CacheControl>,
+    /// How this tool was invoked, surfaced by [programmatic tool calling].
+    /// [`None`] on a tool the model called directly (equivalent to
+    /// [`Caller::Known`]\([`KnownCaller::Direct`]); the API omits the field
+    /// in that case). A code-execution variant means a container called the
+    /// tool on the model's behalf, carrying the `srvtoolu_` id of that call.
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caller: Option<Caller>,
 }
 
-impl Use {}
+impl Use {
+    /// Construct a tool [`Use`] for tool `name` with `input` — the semantic
+    /// half of a tool call (*which* tool, with *what* arguments). The two
+    /// fields that actually drive the model.
+    ///
+    /// The [`id`](Self::id) defaults to empty; set it with
+    /// [`with_id`](Self::with_id) before echoing a constructed call back as
+    /// assistant history, so a [`tool::Result`](crate::tool::Result) can
+    /// reference it. A `Use` *received* from the API always carries its id.
+    /// [`caller`](Self::caller) and [`cache_control`](Self::cache_control)
+    /// likewise default to [`None`]; set the caller with
+    /// [`with_caller`](Self::with_caller).
+    pub fn new(
+        name: impl Into<Cow<'static, str>>,
+        input: serde_json::Value,
+    ) -> Self {
+        Self {
+            id: Cow::Borrowed(""),
+            name: name.into(),
+            input,
+            cache_control: None,
+            caller: None,
+        }
+    }
+
+    /// Set the [`id`](Self::id). Required before echoing a constructed call
+    /// back as assistant history; see [`new`](Self::new).
+    #[must_use]
+    pub fn with_id(mut self, id: impl Into<Cow<'static, str>>) -> Self {
+        self.id = id.into();
+        self
+    }
+
+    /// Set the [`caller`](Self::caller), marking *how* this tool was invoked
+    /// (e.g. [programmatically] from a code-execution container). See
+    /// [`Caller`].
+    ///
+    /// [programmatically]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    #[must_use]
+    pub fn with_caller(mut self, caller: Caller) -> Self {
+        self.caller = Some(caller);
+        self
+    }
+}
 
 impl TryFrom<serde_json::Value> for Use {
     type Error = serde_json::Error;
@@ -1637,14 +1719,13 @@ mod tests {
     fn test_use_markdown() {
         use crate::markdown::ToMarkdown;
 
-        let use_ = Use {
-            id: "test_id".into(),
-            name: "test_name".into(),
-            input: serde_json::json!({
+        let use_ = Use::new(
+            "test_name",
+            serde_json::json!({
                 "test_key": "test_value"
             }),
-            cache_control: None,
-        };
+        )
+        .with_id("test_id");
 
         let markdown = use_.markdown_verbose();
 

@@ -2268,6 +2268,29 @@ mod tests {
     }
 
     #[test]
+    fn tool_use_block_with_caller_roundtrip() {
+        // A programmatic-tool-calling `tool_use`: a code-execution container
+        // called `query_sales` on the model's behalf, so the block carries a
+        // `caller` of `code_execution_20260120` with the `srvtoolu_` id of the
+        // code-execution call. Captured live on Sonnet 4.6 (PTC is not
+        // available on Haiku); see `test/data/README.md`.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/ptc_tool_use.json"
+        ));
+        let Block::ToolUse { call } = &block else {
+            panic!("expected ToolUse");
+        };
+        assert_eq!(call.id, "toolu_01Ep3muNAqgo6WcHSNzL7cYK");
+        assert_eq!(call.name, "query_sales");
+        assert_eq!(
+            call.caller,
+            Some(crate::tool::Caller::code_execution_20260120(
+                "srvtoolu_01EnSeFfRxcsNTUgLjYHD5XG"
+            ))
+        );
+    }
+
+    #[test]
     fn web_search_tool_result_block_roundtrip() {
         let block: Block = crate::utils::roundtrip(include_str!(
             "../../test/data/server_tools/web_search_result.json"
@@ -2523,13 +2546,9 @@ mod tests {
 
     #[test]
     fn test_message_tool_use() {
-        let tool_use: Message = tool::Use {
-            id: "tool_123".into(),
-            name: "tool".into(),
-            input: serde_json::json!({}),
-            cache_control: None,
-        }
-        .into();
+        let tool_use: Message = tool::Use::new("tool", serde_json::json!({}))
+            .with_id("tool_123")
+            .into();
 
         assert!(tool_use.tool_use().is_some());
     }
@@ -2550,13 +2569,9 @@ mod tests {
         let image: Image = Image::from_parts(MediaType::Png, "data".into());
         assert_eq!(image.to_string(), "![Image](data:image/png;base64,data)");
 
-        let tool_use: Block = tool::Use {
-            id: "tool_123".into(),
-            name: "tool".into(),
-            input: serde_json::json!({}),
-            cache_control: None,
-        }
-        .into();
+        let tool_use: Block = tool::Use::new("tool", serde_json::json!({}))
+            .with_id("tool_123")
+            .into();
         assert_eq!(
             tool_use.markdown_verbose().as_ref(),
             "\n````json\n{\"type\":\"tool_use\",\"id\":\"tool_123\",\"name\":\"tool\",\"input\":{}}\n````"
@@ -2590,12 +2605,8 @@ mod tests {
 
         // with tool use
         let mut block: Block = Block::ToolUse {
-            call: tool::Use {
-                id: "tool_123".into(),
-                name: "tool".into(),
-                input: serde_json::json!({}),
-                cache_control: None,
-            },
+            call: tool::Use::new("tool", serde_json::json!({}))
+                .with_id("tool_123"),
         };
 
         // partial json to apply to the input portion
@@ -2731,12 +2742,8 @@ mod tests {
         let err = text_block.merge_deltas(json_deltas).unwrap_err();
 
         let mut json_block = Block::ToolUse {
-            call: tool::Use {
-                id: "tool_123".into(),
-                name: "tool".into(),
-                input: serde_json::json!({}),
-                cache_control: None,
-            },
+            call: tool::Use::new("tool", serde_json::json!({}))
+                .with_id("tool_123"),
         };
 
         let json_deltas = [Delta::Json {
@@ -2817,12 +2824,8 @@ mod tests {
 
     #[test]
     fn test_block_tool_use() {
-        let expected = tool::Use {
-            id: "tool_123".into(),
-            name: "tool".into(),
-            input: serde_json::json!({}),
-            cache_control: None,
-        };
+        let expected =
+            tool::Use::new("tool", serde_json::json!({})).with_id("tool_123");
 
         let block = Block::ToolUse {
             call: expected.clone(),
