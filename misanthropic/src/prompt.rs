@@ -137,7 +137,7 @@ pub struct Prompt<'a> {
     /// [batching]: <https://docs.anthropic.com/en/docs/build-with-claude/batch-processing>
     /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub output_config: Option<OutputConfig>,
+    pub output_config: Option<OutputConfig<'a>>,
     /// Capacity tier for the request. See [`ServiceTier`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
@@ -934,7 +934,7 @@ impl<'a> Prompt<'a> {
     /// [`effort`]: Prompt::effort
     pub fn output_config<C>(mut self, config: C) -> Self
     where
-        C: Into<OutputConfig>,
+        C: Into<OutputConfig<'a>>,
     {
         self.output_config = Some(config.into());
         self
@@ -944,7 +944,7 @@ impl<'a> Prompt<'a> {
     /// it leaves unset.
     ///
     /// [`output_config`]: Prompt::output_config
-    fn merge_output_config(&mut self, config: OutputConfig) {
+    fn merge_output_config(&mut self, config: OutputConfig<'a>) {
         match &mut self.output_config {
             Some(existing) => existing.overlay(config),
             none => *none = Some(config),
@@ -974,7 +974,7 @@ impl<'a> Prompt<'a> {
     ///
     /// [`format`]: OutputConfig::format
     /// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
-    pub fn effort(mut self, effort: Effort) -> Self {
+    pub fn effort(mut self, effort: Effort<'a>) -> Self {
         self.merge_output_config(OutputConfig::effort(effort));
         self
     }
@@ -1124,7 +1124,7 @@ impl<'a> Prompt<'a> {
             top_k: self.top_k,
             top_p: self.top_p,
             thinking: self.thinking,
-            output_config: self.output_config,
+            output_config: self.output_config.map(OutputConfig::into_static),
             service_tier: self.service_tier,
             inference_geo: self.inference_geo,
             container: self.container.map(Cow::into_owned).map(Cow::Owned),

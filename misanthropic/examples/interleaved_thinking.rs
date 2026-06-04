@@ -79,7 +79,7 @@ enum EffortArg {
     Max,
 }
 
-impl From<EffortArg> for Effort {
+impl From<EffortArg> for Effort<'_> {
     fn from(arg: EffortArg) -> Self {
         match arg {
             EffortArg::Low => Effort::Low,

@@ -5,6 +5,8 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::prompt::Effort;
+
 /// All available models.
 #[derive(Debug, Serialize, Deserialize, derive_more::Deref)]
 #[serde(rename_all = "snake_case")]
@@ -23,7 +25,7 @@ pub struct Model<'a> {
     pub display_name: Cow<'a, str>,
     /// What the model supports — see [`Capabilities`].
     #[serde(default)]
-    pub capabilities: Capabilities,
+    pub capabilities: Capabilities<'a>,
     /// Maximum number of input tokens the model accepts.
     #[serde(default)]
     pub max_input_tokens: u32,
@@ -52,12 +54,39 @@ pub enum Kind {
 
 /// Whether a single model [`Capability`] is supported — the leaf node of the
 /// [`Capabilities`] tree, a bare `{ "supported": bool }`.
+///
+/// Compares against `bool` for sugar, so `caps.pdf_input == true` reads
+/// straight through to [`supported`](Self::supported).
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
 )]
 pub struct Capability {
     /// Whether the capability is supported.
     pub supported: bool,
+}
+
+impl From<bool> for Capability {
+    fn from(supported: bool) -> Self {
+        Self { supported }
+    }
+}
+
+impl From<Capability> for bool {
+    fn from(c: Capability) -> Self {
+        c.supported
+    }
+}
+
+impl PartialEq<bool> for Capability {
+    fn eq(&self, other: &bool) -> bool {
+        self.supported == *other
+    }
+}
+
+impl PartialEq<Capability> for bool {
+    fn eq(&self, other: &Capability) -> bool {
+        *self == other.supported
+    }
 }
 
 /// What a [`Model`] supports, from the `capabilities` field of the
@@ -67,7 +96,7 @@ pub struct Capability {
 /// capabilities are ignored on deserialization — mirroring the forward-compat
 /// stance of [`Id::Custom`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct Capabilities {
+pub struct Capabilities<'a> {
     /// [Message Batches](crate::Client::batch) support.
     #[serde(default)]
     pub batch: Capability,
@@ -82,7 +111,7 @@ pub struct Capabilities {
     pub context_management: ContextManagement,
     /// Reasoning-[`effort`](crate::prompt::Effort) support, per level.
     #[serde(default)]
-    pub effort: EffortSupport,
+    pub effort: EffortSupport<'a>,
     /// Image input support.
     #[serde(default)]
     pub image_input: Capability,
@@ -119,13 +148,14 @@ pub struct ContextManagement {
 /// The API reports a flag per level (`low`, `medium`, `high`, `xhigh`,
 /// `max`), kept as an untyped map so new levels don't break parsing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
-pub struct EffortSupport {
+pub struct EffortSupport<'a> {
     /// Whether configurable effort is supported at all.
     #[serde(default)]
     pub supported: bool,
-    /// Supported effort levels, keyed by name.
+    /// Supported levels, keyed by [`Effort`]. Levels this crate doesn't know
+    /// land in [`Effort::Custom`] rather than breaking the parse.
     #[serde(flatten)]
-    pub levels: BTreeMap<String, Capability>,
+    pub levels: BTreeMap<Effort<'a>, Capability>,
 }
 
 /// Extended-[`thinking`](crate::prompt::Thinking) support — the `thinking`
@@ -504,17 +534,24 @@ mod tests {
         assert!(caps.pdf_input.supported);
         assert!(caps.structured_outputs.supported);
 
-        // Open-ended strategy / level maps land in the untyped sub-maps,
-        // `supported` is pulled out of the flattened object.
+        // Sugar: a `Capability` compares straight against `bool`, both ways.
+        assert!(caps.pdf_input == true);
+        assert!(true == caps.image_input);
+
+        // Open-ended strategy / level maps land in their sub-maps, with
+        // `supported` pulled out of the flattened object.
         assert!(caps.context_management.supported);
         assert!(
             caps.context_management.strategies["compact_20260112"].supported
         );
         assert!(!caps.context_management.strategies.contains_key("supported"));
 
+        // Effort levels are keyed by the typed `Effort`; a known level is a
+        // unit variant, and `supported` does not leak into the map.
         assert!(caps.effort.supported);
-        assert!(caps.effort.levels["xhigh"].supported);
-        assert!(!caps.effort.levels.contains_key("supported"));
+        assert!(caps.effort.levels[&Effort::XHigh].supported);
+        assert_eq!(caps.effort.levels.len(), 5);
+        assert!(!caps.effort.levels.contains_key(&Effort::from("supported")));
 
         assert!(caps.thinking.supported);
         assert!(caps.thinking.types["adaptive"].supported);

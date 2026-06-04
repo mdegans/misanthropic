@@ -9,7 +9,9 @@
 //!
 //! [Anthropic structured outputs guide]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs>
 
-use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
+
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 /// Structured output configuration for a [`Prompt`].
 ///
@@ -32,7 +34,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
-pub struct OutputConfig {
+pub struct OutputConfig<'a> {
     /// Desired [`OutputFormat`] for the response. `None` leaves the response
     /// unconstrained — useful for an [`effort`](Self::effort)-only config.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,7 +43,7 @@ pub struct OutputConfig {
     /// ([`Effort::High`]). Orthogonal to [`format`](Self::format); see
     /// [`Effort`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effort: Option<Effort>,
+    pub effort: Option<Effort<'a>>,
 }
 
 /// How eagerly the model spends tokens, set on [`OutputConfig::effort`].
@@ -53,11 +55,9 @@ pub struct OutputConfig {
 ///
 /// [`Thinking`]: crate::prompt::Thinking
 /// [`Thinking::adaptive`]: crate::prompt::Thinking::adaptive
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
-#[serde(rename_all = "lowercase")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
-pub enum Effort {
+pub enum Effort<'a> {
     /// Most efficient — significant token savings with some capability
     /// reduction. Good for simple or latency-sensitive tasks.
     Low,
@@ -70,6 +70,89 @@ pub enum Effort {
     XHigh,
     /// Absolute maximum capability, no constraint on token spend.
     Max,
+    /// A level this crate doesn't know — e.g. one Anthropic adds after this
+    /// release. Like [`Id::Custom`](crate::model::Id::Custom), it round-trips
+    /// over the wire, so a level read from a model's
+    /// [`capabilities`](crate::model::Capabilities) can be sent right back on
+    /// a request.
+    Custom(Cow<'a, str>),
+}
+
+impl<'a> Effort<'a> {
+    /// The wire string for this level, e.g. `"xhigh"`.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Effort::Low => "low",
+            Effort::Medium => "medium",
+            Effort::High => "high",
+            Effort::XHigh => "xhigh",
+            Effort::Max => "max",
+            Effort::Custom(s) => s,
+        }
+    }
+
+    /// Convert to a `'static` lifetime by taking ownership of the [`Cow`].
+    pub fn into_static(self) -> Effort<'static> {
+        match self {
+            Effort::Low => Effort::Low,
+            Effort::Medium => Effort::Medium,
+            Effort::High => Effort::High,
+            Effort::XHigh => Effort::XHigh,
+            Effort::Max => Effort::Max,
+            Effort::Custom(s) => Effort::Custom(Cow::Owned(s.into_owned())),
+        }
+    }
+}
+
+impl std::fmt::Display for Effort<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl<'a> From<Cow<'a, str>> for Effort<'a> {
+    fn from(s: Cow<'a, str>) -> Self {
+        match s.as_ref() {
+            "low" => Effort::Low,
+            "medium" => Effort::Medium,
+            "high" => Effort::High,
+            "xhigh" => Effort::XHigh,
+            "max" => Effort::Max,
+            _ => Effort::Custom(s),
+        }
+    }
+}
+
+impl<'a> From<&'a str> for Effort<'a> {
+    fn from(s: &'a str) -> Self {
+        Effort::from(Cow::Borrowed(s))
+    }
+}
+
+impl From<String> for Effort<'_> {
+    fn from(s: String) -> Self {
+        Effort::from(Cow::Owned(s))
+    }
+}
+
+impl Serialize for Effort<'_> {
+    fn serialize<S: Serializer>(
+        &self,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de, 'a> Deserialize<'de> for Effort<'a> {
+    fn deserialize<D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Self, D::Error> {
+        // Owned: borrowing from the deserializer would tie `Effort`'s lifetime
+        // to the input. Custom levels are rare, so the allocation is cheap;
+        // borrow explicitly via [`Effort::from`] a `&str` when it matters.
+        Ok(Effort::from(String::deserialize(deserializer)?))
+    }
 }
 
 /// Format the response must conform to.
@@ -112,7 +195,7 @@ pub struct JsonSchemaFormat {
     pub schema: serde_json::Value,
 }
 
-impl OutputConfig {
+impl<'a> OutputConfig<'a> {
     /// Construct from a raw [JSON Schema] value. The schema is not
     /// validated by this crate — the caller is responsible for conformance
     /// with Anthropic's [supported subset].
@@ -131,7 +214,7 @@ impl OutputConfig {
     ///
     /// [`effort`]: Self::effort
     /// [`format`]: Self::format
-    pub fn effort(effort: Effort) -> Self {
+    pub fn effort(effort: Effort<'a>) -> Self {
         Self {
             format: None,
             effort: Some(effort),
@@ -139,7 +222,7 @@ impl OutputConfig {
     }
 
     /// Set the [`effort`](Self::effort), preserving the [`format`](Self::format).
-    pub fn with_effort(mut self, effort: Effort) -> Self {
+    pub fn with_effort(mut self, effort: Effort<'a>) -> Self {
         self.effort = Some(effort);
         self
     }
@@ -149,7 +232,7 @@ impl OutputConfig {
     /// [`format`](Self::format) and [`effort`](Self::effort) in any order.
     ///
     /// [`Prompt`]: crate::Prompt
-    pub(crate) fn overlay(&mut self, other: OutputConfig) {
+    pub(crate) fn overlay(&mut self, other: OutputConfig<'a>) {
         let OutputConfig { format, effort } = other;
         if format.is_some() {
             self.format = format;
@@ -174,9 +257,18 @@ impl OutputConfig {
         sanitize_for_anthropic(&mut schema);
         Self::json_schema(schema)
     }
+
+    /// Convert to a `'static` lifetime by taking ownership of the
+    /// [`effort`](Self::effort)'s [`Cow`].
+    pub fn into_static(self) -> OutputConfig<'static> {
+        OutputConfig {
+            format: self.format,
+            effort: self.effort.map(Effort::into_static),
+        }
+    }
 }
 
-impl From<JsonSchemaFormat> for OutputConfig {
+impl From<JsonSchemaFormat> for OutputConfig<'_> {
     fn from(format: JsonSchemaFormat) -> Self {
         Self {
             format: Some(OutputFormat::JsonSchema(format)),
@@ -185,13 +277,13 @@ impl From<JsonSchemaFormat> for OutputConfig {
     }
 }
 
-impl From<Effort> for OutputConfig {
-    fn from(effort: Effort) -> Self {
+impl<'a> From<Effort<'a>> for OutputConfig<'a> {
+    fn from(effort: Effort<'a>) -> Self {
         Self::effort(effort)
     }
 }
 
-impl From<serde_json::Value> for OutputConfig {
+impl From<serde_json::Value> for OutputConfig<'_> {
     /// Treats the value as a raw JSON Schema.
     fn from(schema: serde_json::Value) -> Self {
         Self::json_schema(schema)
@@ -204,7 +296,7 @@ impl From<serde_json::Value> for JsonSchemaFormat {
     }
 }
 
-impl From<OutputFormat> for OutputConfig {
+impl From<OutputFormat> for OutputConfig<'_> {
     fn from(format: OutputFormat) -> Self {
         Self {
             format: Some(format),
@@ -357,11 +449,31 @@ mod tests {
             (Effort::Max, "max"),
         ] {
             assert_eq!(
-                serde_json::to_value(effort).unwrap(),
+                serde_json::to_value(&effort).unwrap(),
                 json!(wire),
                 "{effort:?} should serialize as {wire:?}"
             );
         }
+    }
+
+    #[test]
+    fn effort_custom_round_trips() {
+        // An unknown level deserializes to `Custom`, serializes back verbatim,
+        // and a known string still resolves to its unit variant.
+        let custom: Effort = serde_json::from_value(json!("ultra")).unwrap();
+        assert_eq!(custom, Effort::Custom("ultra".into()));
+        assert_eq!(serde_json::to_value(&custom).unwrap(), json!("ultra"));
+        assert_eq!(custom.as_str(), "ultra");
+
+        let known: Effort = serde_json::from_value(json!("xhigh")).unwrap();
+        assert_eq!(known, Effort::XHigh);
+
+        // `Custom` is usable on a request, not just readable from a model.
+        let cfg = OutputConfig::effort(Effort::from("ultra"));
+        assert_eq!(
+            serde_json::to_value(&cfg).unwrap(),
+            json!({ "effort": "ultra" })
+        );
     }
 
     #[test]
