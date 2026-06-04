@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, MethodDef, Methods, Tool, Typed, Use},
+    tool::{self, Methods, Tool, ToolDef, Typed, Use},
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -116,12 +116,21 @@ impl ToolBox {
 
     /// Push a boxed [`Tool`] to the [`ToolBox`].
     pub fn push_boxed(&mut self, tool: Box<dyn Tool + Send>) {
-        // Append the method names to self.method_to_tool_name.
-        for method in tool.definitions() {
-            self.method_to_tool_name.insert(
-                format!("{}{}{}", self.name, Self::SEP, method.name).into(),
-                tool.name().to_string(),
-            );
+        // Build a route per definition. Custom methods are namespaced under
+        // this box (`box__tool__method`); a server-declared def (e.g. the
+        // client-executed `memory` tool) keeps its fixed bare wire name — the
+        // model emits exactly that, so prefixing it would break routing. A bare
+        // name has no `box__` prefix to strip on descent, so it passes through
+        // nested boxes untouched, which is what makes it reachable from the
+        // root.
+        for def in tool.definitions() {
+            let route = if def.is_server() {
+                def.name().to_string()
+            } else {
+                format!("{}{}{}", self.name, Self::SEP, def.name())
+            };
+            self.method_to_tool_name
+                .insert(route.into(), tool.name().to_string());
         }
 
         #[allow(unused_variables)] // because of the `log` feature
@@ -187,12 +196,7 @@ impl ToolBox {
         &mut self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        prompt.methods = Some(
-            self.definitions()
-                .into_iter()
-                .map(super::ToolDef::Custom)
-                .collect(),
-        );
+        prompt.methods = Some(self.definitions());
         self.init_tools(prompt).await
     }
 
@@ -277,21 +281,25 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
-    fn definitions(&self) -> Vec<MethodDef> {
+    /// The [`ToolDef`]s for all [`Tool`]s in the [`ToolBox`].
+    fn definitions(&self) -> Vec<ToolDef> {
         self.tool_name_to_tool
             .values()
             .flat_map(|tool| {
-                tool.definitions().into_iter().map(|mut method| {
-                    // Append our prefix to the method name, which should
-                    // already include `tool__method` format for the name.
-                    method.name = Cow::Owned(format!(
-                        "{}{}{}",
-                        self.name(),
-                        Self::SEP,
-                        method.name
-                    ));
-                    method
+                tool.definitions().into_iter().map(|mut def| {
+                    // Prefix custom method names with this box's segment
+                    // (they already carry `tool__method`); leave server defs
+                    // bare so their fixed wire name survives every nesting
+                    // level. See [`push_boxed`](Self::push_boxed).
+                    if let Some(method) = def.as_method_mut() {
+                        method.name = Cow::Owned(format!(
+                            "{}{}{}",
+                            self.name(),
+                            Self::SEP,
+                            method.name
+                        ));
+                    }
+                    def
                 })
             })
             .collect()
@@ -464,7 +472,7 @@ impl Tool for ToolBox {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::Result;
+    use crate::tool::{MethodDef, Result};
 
     struct TestTool {
         calls: Vec<Use>,
@@ -476,8 +484,8 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<MethodDef> {
-            vec![MethodDef {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef::Custom(MethodDef {
                 name: "TestTool__test".into(),
                 description: "Test Tool".into(),
                 schema: serde_json::json!({
@@ -493,7 +501,7 @@ mod tests {
                 strict: None,
                 defer_loading: None,
                 allowed_callers: None,
-            }]
+            })]
         }
 
         async fn call(&mut self, call: Use) -> Result {
@@ -544,7 +552,7 @@ mod tests {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
         let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox__TestTool__test");
+        assert_eq!(methods[0].name(), "toolbox__TestTool__test");
     }
 
     #[tokio::test]
@@ -553,7 +561,7 @@ mod tests {
             ToolBox::new().add_boxed(Box::new(TestTool { calls: Vec::new() }));
         let methods = toolbox.definitions();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox__TestTool__test");
+        assert_eq!(methods[0].name(), "toolbox__TestTool__test");
     }
 
     #[test]
@@ -589,8 +597,8 @@ mod tests {
             "TestTool"
         }
 
-        fn definitions(&self) -> Vec<MethodDef> {
-            vec![MethodDef {
+        fn definitions(&self) -> Vec<ToolDef> {
+            vec![ToolDef::Custom(MethodDef {
                 name: "TestTool__replaced".into(),
                 description: "Replacement Tool".into(),
                 schema: serde_json::json!({ "type": "object" }),
@@ -598,7 +606,7 @@ mod tests {
                 strict: None,
                 defer_loading: None,
                 allowed_callers: None,
-            }]
+            })]
         }
 
         async fn call(&mut self, call: Use) -> Result {
@@ -642,9 +650,9 @@ mod tests {
     #[test]
     fn test_methods() {
         let toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-        let methods: Vec<MethodDef> = toolbox.definitions();
+        let methods: Vec<ToolDef> = toolbox.definitions();
         assert_eq!(methods.len(), 1);
-        assert_eq!(methods[0].name, "toolbox__TestTool__test");
+        assert_eq!(methods[0].name(), "toolbox__TestTool__test");
     }
 
     #[tokio::test]
@@ -683,7 +691,7 @@ mod tests {
         );
 
         // The name `definitions()` advertises must be routable end to end.
-        let advertised = toolbox.definitions()[0].name.to_string();
+        let advertised = toolbox.definitions()[0].name().to_string();
         assert_eq!(advertised, "toolbox__potato__TestTool__test");
 
         let result = toolbox

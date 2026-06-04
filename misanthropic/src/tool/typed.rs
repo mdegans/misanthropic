@@ -201,14 +201,14 @@ pub trait Methods: Send + Sized {
 /// (`box__tool__method`). Shared by [`Typed`] and the `#[tool]`-generated
 /// `impl Tool`.
 #[doc(hidden)]
-pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<MethodDef> {
+pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<tool::ToolDef> {
     tool.methods()
         .iter()
         .map(|m| {
             let mut def = m.definition();
             def.name =
                 format!("{}{}{}", M::NAME, ToolBox::SEP, def.name).into();
-            def
+            tool::ToolDef::Custom(def)
         })
         .collect()
 }
@@ -252,7 +252,7 @@ impl<T: Methods + Send> Tool for Typed<T> {
         T::NAME
     }
 
-    fn definitions(&self) -> Vec<MethodDef> {
+    fn definitions(&self) -> Vec<tool::ToolDef> {
         methods_definitions(&self.0)
     }
 
@@ -425,7 +425,7 @@ mod tests {
         let names: Vec<_> = Typed(Notes::default())
             .definitions()
             .into_iter()
-            .map(|d| d.name.into_owned())
+            .map(|d| d.name().to_string())
             .collect();
         assert!(names.contains(&"notes__push".to_string()));
         assert!(names.contains(&"notes__clear".to_string()));

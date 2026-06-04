@@ -232,7 +232,8 @@ mod tests {
         let defs = Typed(Notepad::new()).definitions();
         let push = defs
             .iter()
-            .find(|d| d.name == "Notepad__push")
+            .find(|d| d.name() == "Notepad__push")
+            .and_then(|d| d.as_method())
             .expect("push method present");
         assert_eq!(push.description, "Take a note for the next chat.");
         let props = push.schema["properties"].as_object().unwrap();
@@ -300,7 +301,7 @@ mod tests {
         let names: Vec<_> = toolbox
             .definitions()
             .into_iter()
-            .map(|d| d.name.into_owned())
+            .map(|d| d.name().to_string())
             .collect();
         assert!(names.contains(&"toolbox__Notepad__push".to_string()));
         assert!(names.contains(&"toolbox__Notepad__clear".to_string()));

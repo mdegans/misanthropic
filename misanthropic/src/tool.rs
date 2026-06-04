@@ -296,6 +296,22 @@ impl ServerTool {
         self.cache_control().is_some()
     }
 
+    /// The bare wire `name` the model emits for this tool (e.g. `"memory"`,
+    /// `"web_search"`) — *not* the versioned `type` tag. Used by
+    /// [`ToolBox`](crate::tool::ToolBox) to route client-executed predefined
+    /// tools (like [`memory`](Self::Memory)) by their fixed, un-namespaced name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::WebSearch(_) => "web_search",
+            Self::WebFetch(_) => "web_fetch",
+            Self::ToolSearchRegex(_) => "tool_search_tool_regex",
+            Self::ToolSearchBm25(_) => "tool_search_tool_bm25",
+            Self::CodeExecution(_) => "code_execution",
+            #[cfg(feature = "memory")]
+            Self::Memory(_) => "memory",
+        }
+    }
+
     /// This tool's cache breakpoint, if any.
     fn cache_control(&self) -> Option<&crate::prompt::message::CacheControl> {
         match self {
@@ -610,7 +626,14 @@ impl UserLocation {}
 /// `Memory`) and wraps the right variant.
 ///
 /// [`Prompt::add_tool`]: crate::Prompt::add_tool
-#[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    derive_more::From,
+    derive_more::IsVariant,
+)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub enum ToolDef {
@@ -621,6 +644,17 @@ pub enum ToolDef {
 }
 
 impl ToolDef {
+    /// The bare wire `name` this definition advertises — a custom tool's
+    /// [`MethodDef::name`] or a [`ServerTool`]'s fixed name. This is the key a
+    /// [`ToolBox`](crate::tool::ToolBox) routes on (namespaced for custom
+    /// tools, left bare for server-declared ones).
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Custom(method) => &method.name,
+            Self::Server(server) => server.name(),
+        }
+    }
+
     /// The custom [`MethodDef`], if this is a [`ToolDef::Custom`].
     pub fn as_method(&self) -> Option<&MethodDef> {
         match self {
@@ -669,8 +703,14 @@ impl ToolDef {
 pub trait Tool: Send {
     /// [`Tool`] name.
     fn name(&self) -> &str;
-    /// Get the [`MethodDef`](s) provided by the [`Tool`].
-    fn definitions(&self) -> Vec<MethodDef>;
+    /// The [`ToolDef`](s) this [`Tool`] contributes to a [`Prompt`]'s tools
+    /// array. Usually [`Custom`](ToolDef::Custom) method schemas you execute,
+    /// but a client-executed *predefined* tool (e.g. the
+    /// [`memory`](crate::tool::memory) backend) instead contributes a
+    /// [`Server`](ToolDef::Server) def — added by versioned name, routed by its
+    /// fixed bare name rather than namespaced. See
+    /// [`ToolBox`](crate::tool::ToolBox).
+    fn definitions(&self) -> Vec<ToolDef>;
     /// [`Use`] the [`Tool`], returning a [`tool::Result`].
     ///
     /// [`tool::Result`]: Result

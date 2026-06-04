@@ -98,7 +98,7 @@ fn name_and_namespaced_definitions() {
     let names: Vec<_> = Typed(Calc::default())
         .definitions()
         .into_iter()
-        .map(|d| d.name.into_owned())
+        .map(|d| d.name().to_string())
         .collect();
     assert!(names.contains(&"Calc__add".to_string()));
     assert!(names.contains(&"Calc__reset".to_string()));
@@ -124,7 +124,12 @@ fn method_defer_loading_attribute_flows_through() {
 
     let defs = Typed(Calc::default()).definitions();
     let defer = |name: &str| {
-        defs.iter().find(|d| d.name == name).unwrap().defer_loading
+        defs.iter()
+            .find(|d| d.name() == name)
+            .unwrap()
+            .as_method()
+            .unwrap()
+            .defer_loading
     };
     assert_eq!(defer("Calc__add"), None);
     assert_eq!(defer("Calc__reset"), Some(true));
@@ -145,7 +150,9 @@ fn method_allowed_callers_attribute_flows_through() {
     let defs = Typed(Calc::default()).definitions();
     let callers = |name: &str| {
         defs.iter()
-            .find(|d| d.name == name)
+            .find(|d| d.name() == name)
+            .unwrap()
+            .as_method()
             .unwrap()
             .allowed_callers
             .clone()
@@ -201,7 +208,7 @@ async fn generic_tool_defaults_name_to_ident() {
     let names: Vec<_> = holder
         .definitions()
         .into_iter()
-        .map(|d| d.name.into_owned())
+        .map(|d| d.name().to_string())
         .collect();
     assert_eq!(names, vec!["Holder__put".to_string()]);
 

@@ -33,7 +33,7 @@ use std::path::{Component, Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-fs")]
-use super::{MethodDef, Tool, Use};
+use super::{ServerTool, Tool, ToolDef, Use};
 
 /// The wire root the model addresses memory files under (`/memories`), which a
 /// backend maps onto its real directory. Only the (optional) filesystem backend
@@ -262,12 +262,14 @@ impl From<std::io::Error> for MemoryError {
 /// contributes no [`definitions`](Tool::definitions) of its own, since the
 /// definition is added with [`Memory::latest`](crate::tool::Memory::latest).
 ///
-/// **Use it directly** — call [`Tool::call`] with the memory `tool_use`. It is
-/// *not* a [`ToolBox`](crate::tool::ToolBox) member: a `ToolBox` namespaces
-/// method names (e.g. `Backend__method`), but the memory tool's wire name must
-/// stay exactly `"memory"`, so the prefix would break routing. There is also no
-/// per-conversation setup to defer to a lifecycle hook — the root directory is
-/// created eagerly in [`new`](Self::new).
+/// Drop it into a [`ToolBox`](crate::tool::ToolBox) like any other tool, or
+/// **use it directly** by calling [`Tool::call`] with the memory `tool_use`.
+/// Unlike a custom tool, it contributes a [`Server`](crate::tool::ToolDef)
+/// def (via [`definitions`](Tool::definitions)) and is routed by its fixed bare
+/// wire name `"memory"` rather than namespaced — so a `ToolBox` installs the
+/// def *and* dispatches the resulting `tool_use` back here, with no per-tool
+/// special-casing. There is no per-conversation setup to defer to a lifecycle
+/// hook — the root directory is created eagerly in [`new`](Self::new).
 ///
 /// Every path the model sends is mapped from [`MEMORY_ROOT`] onto [`root`] and
 /// validated to stay within it (no `..`, absolute, or prefix escapes).
@@ -617,11 +619,14 @@ impl Tool for FsMemoryBackend {
         "memory"
     }
 
-    /// None — the memory definition is predefined and added separately via
-    /// [`Memory::latest`](crate::tool::Memory::latest); the backend only
-    /// *executes*.
-    fn definitions(&self) -> Vec<MethodDef> {
-        Vec::new()
+    /// The predefined [`memory`](ServerTool::Memory) tool def. Contributing it
+    /// here (rather than expecting the caller to
+    /// [`add_tool`](crate::Prompt::add_tool) it separately) is what lets the
+    /// backend drop into a [`ToolBox`](crate::tool::ToolBox): the box installs
+    /// this def and routes the resulting bare `"memory"` `tool_use` straight
+    /// back to [`call`](Self::call).
+    fn definitions(&self) -> Vec<ToolDef> {
+        vec![ToolDef::Server(ServerTool::memory())]
     }
 
     async fn call(&mut self, call: Use) -> crate::tool::Result {
@@ -827,6 +832,89 @@ mod tests {
             serde_json::to_value(&def).unwrap(),
             serde_json::json!({ "type": "memory_20250818", "name": "memory" }),
         );
+    }
+
+    /// The whole point of #83: dropping the backend into a [`ToolBox`] must
+    /// surface *exactly* the def you'd otherwise hand to
+    /// `add_tool(Memory::latest())` — bare-named and un-namespaced — so the
+    /// wire bytes don't change, only who supplies them.
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn toolbox_memory_def_matches_hand_added() {
+        use crate::tool::{Memory, Tool, ToolBox, ToolDef};
+
+        let dir = tempfile::tempdir().unwrap();
+        let tools =
+            ToolBox::new().add(FsMemoryBackend::new(dir.path()).await.unwrap());
+
+        let hand: ToolDef = Memory::latest().into();
+        assert_eq!(tools.definitions(), vec![hand]);
+    }
+
+    /// A bare `"memory"` `tool_use` — exactly what the model emits — routes
+    /// through the box to the backend with no namespacing.
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn toolbox_routes_bare_memory_name() {
+        use crate::tool::{Tool, ToolBox, Use};
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut tools =
+            ToolBox::new().add(FsMemoryBackend::new(dir.path()).await.unwrap());
+
+        let result = tools
+            .call(
+                Use::new(
+                    "memory",
+                    serde_json::json!({
+                        "command": "create",
+                        "path": "/memories/note.md",
+                        "file_text": "remember this\n",
+                    }),
+                )
+                .with_id("id"),
+            )
+            .await;
+
+        assert!(!result.is_error, "{}", result.content);
+        assert!(dir.path().join("note.md").exists());
+    }
+
+    /// The bare name must survive nesting: an outer box discovers `"memory"` in
+    /// a child's subtree (it rides up through `definitions()` un-prefixed) and
+    /// routes a call straight down without namespacing.
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn toolbox_routes_bare_memory_through_nested_box() {
+        use crate::tool::{Tool, ToolBox, Use};
+
+        let dir = tempfile::tempdir().unwrap();
+        let inner = ToolBox::named("inner")
+            .unwrap()
+            .add(FsMemoryBackend::new(dir.path()).await.unwrap());
+        let mut outer = ToolBox::new().add(inner);
+
+        // The advertised def is the still-bare `"memory"`, not `outer__…`.
+        let advertised = outer.definitions();
+        assert_eq!(advertised.len(), 1);
+        assert_eq!(advertised[0].name(), "memory");
+
+        let result = outer
+            .call(
+                Use::new(
+                    "memory",
+                    serde_json::json!({
+                        "command": "create",
+                        "path": "/memories/nested.md",
+                        "file_text": "deep\n",
+                    }),
+                )
+                .with_id("id"),
+            )
+            .await;
+
+        assert!(!result.is_error, "{}", result.content);
+        assert!(dir.path().join("nested.md").exists());
     }
 
     #[cfg(feature = "memory-fs")]

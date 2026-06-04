@@ -47,12 +47,12 @@ use std::io::{BufRead, stdin};
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
-    tool::{Memory, Tool, memory::FsMemoryBackend},
+    tool::{Tool, ToolBox, memory::FsMemoryBackend},
 };
 use rustyline::{DefaultEditor, error::ReadlineError};
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
@@ -69,19 +69,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // The client-side executor. Every memory operation is confined to
     // `./memories` (created if missing) and, by default, to `.md` files;
-    // path-traversal attempts (`../`, absolute escapes) are rejected.
-    let mut memory = FsMemoryBackend::new("./memories").await?;
+    // path-traversal attempts (`../`, absolute escapes) are rejected. It drops
+    // into a `ToolBox` like any other tool — the box installs its predefined
+    // definition and routes the bare `"memory"` `tool_use` back to it. Add a
+    // custom tool here and the same `tools.call(..)` below dispatches both.
+    let mut tools =
+        ToolBox::new().add(FsMemoryBackend::new("./memories").await?);
 
     // The memory *protocol* ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
-    // injected server-side when the tool is enabled, so we don't repeat it —
-    // we just add the predefined definition. `add_tool` takes anything
-    // `Into<ToolDef>`, so the schema-less `Memory::latest()` drops in next to
-    // any custom tool.
-    let mut chat = Prompt::default().add_tool(Memory::latest()).set_system(
+    // injected server-side when the tool is enabled, so we don't repeat it.
+    let mut chat = Prompt::default().set_system(
         "You are a helpful assistant with a persistent memory. Record \
              durable facts, decisions, and progress so you can resume in a \
              later session, and keep your notes tidy — prune what's stale.",
     );
+
+    // Install the toolbox: writes the memory def onto `chat.methods` and runs
+    // each tool's `on_init`. One call, and every tool the box owns is wired.
+    tools.prepare(&mut chat).await?;
 
     println!("Memory chat — notes persist in ./memories across runs.");
     println!("Talk, then Ctrl-D to quit and run again to watch it remember.\n");
@@ -110,10 +115,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Own the call so we can append the assistant turn first.
             let call = call.clone();
             chat.push_message(message)?;
-            // Typed dispatch: `call.input` -> `memory::Command`, executed
-            // against `./memories`, with the canonical (line-numbered, etc.)
-            // string handed back to the model.
-            let result = memory.call(call).await;
+            // Every `tool_use` routes through the one box — here the bare
+            // `"memory"` call, dispatched to the backend, which executes the
+            // typed `memory::Command` against `./memories` and hands the
+            // canonical (line-numbered, etc.) string back to the model. No
+            // per-tool special-casing.
+            let result = tools.call(call).await;
             chat.push_message(result)?;
         };
 

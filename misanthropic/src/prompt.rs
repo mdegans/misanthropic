@@ -886,7 +886,7 @@ impl Prompt {
         self
     }
 
-    /// Register every [`MethodDef`] a [`Tool`] exposes through its
+    /// Register every [`ToolDef`] a [`Tool`] exposes through its
     /// [`definitions`] — the one-liner for the common case of handing the
     /// model a typed tool:
     ///
@@ -897,19 +897,24 @@ impl Prompt {
     /// # }
     /// ```
     ///
-    /// Equivalent to [`add_tools(tool.definitions())`](Self::add_tools) but
-    /// borrows the tool and needs no lifetime juggling, since a
-    /// [`MethodDef`] fits any [`Prompt`].
+    /// Unlike [`add_tools`](Self::add_tools), this preserves each def's variant:
+    /// a tool that contributes a [`Server`] def (e.g. the client-executed
+    /// `memory` backend) installs it as-is rather than forcing it into
+    /// [`Custom`].
     ///
     /// [`Tool`]: crate::Tool
     /// [`definitions`]: crate::Tool::definitions
-    pub fn register_tool<T>(self, tool: &T) -> Self
+    /// [`ToolDef`]: crate::tool::ToolDef
+    /// [`Server`]: crate::tool::ToolDef::Server
+    /// [`Custom`]: crate::tool::ToolDef::Custom
+    pub fn register_tool<T>(mut self, tool: &T) -> Self
     where
         T: tool::Tool + ?Sized,
     {
-        // A `MethodDef` is also a `MethodDef`, so the definitions
-        // drop straight into `add_tools`.
-        self.add_tools(tool.definitions())
+        self.methods
+            .get_or_insert_with(Default::default)
+            .extend(tool.definitions());
+        self
     }
 
     /// Mark every custom tool's [`MethodDef`] as
@@ -1611,7 +1616,7 @@ mod tests {
 
     #[test]
     fn register_tool_pulls_definitions() {
-        use crate::tool::{MethodDef, Tool, Use};
+        use crate::tool::{MethodDef, Tool, ToolDef, Use};
 
         struct PairTool;
 
@@ -1620,10 +1625,10 @@ mod tests {
             fn name(&self) -> &str {
                 "PairTool"
             }
-            fn definitions(&self) -> Vec<MethodDef> {
+            fn definitions(&self) -> Vec<ToolDef> {
                 vec![
-                    MethodDef::simple("PairTool__a", "A."),
-                    MethodDef::simple("PairTool__b", "B."),
+                    MethodDef::simple("PairTool__a", "A.").into(),
+                    MethodDef::simple("PairTool__b", "B.").into(),
                 ]
             }
             async fn call(&mut self, call: Use) -> crate::tool::Result {
