@@ -118,23 +118,17 @@ let prompt = Prompt::default()
 
 ### Available models (`AnthropicModel` enum)
 
-The enum tracks current and historical models. Each variant serializes to its
-wire ID. Selected current variants:
+`.model(...)` takes an `AnthropicModel`, a `model::Id`, or any string. The
+`AnthropicModel` enum tracks current and historical models (each variant
+serializes to its wire ID, e.g. `Sonnet46` → `claude-sonnet-4-6`), with both
+"latest"-style and pinned/dated variants. The **default** is `Haiku45`
+(`claude-haiku-4-5`).
 
-| Variant | Serialized ID |
-|---------|---------------|
-| `Haiku45` (**default**) | `claude-haiku-4-5` |
-| `Sonnet46` | `claude-sonnet-4-6` |
-| `Opus46` | `claude-opus-4-6` |
-| `Opus48` | `claude-opus-4-8` |
-| `Opus45` | `claude-opus-4-5` |
-| `Sonnet45` | `claude-sonnet-4-5` |
-| `Haiku35` | `claude-3-5-haiku-latest` |
-
-Pinned/dated variants exist too (e.g. `Opus45_20251101`,
-`Sonnet45_20250929`, `Haiku45_20251001`). For a model not yet in the enum,
-use `model::Id::Custom("your-model-id".into())` — `.model(...)` also accepts a
-plain string.
+Rather than reproduce the list here (it drifts as models ship), see the
+[`AnthropicModel` docs](https://docs.rs/misanthropic/latest/misanthropic/model/enum.AnthropicModel.html)
+for the authoritative set — the variant↔wire-ID mapping is verified against the
+live `/v1/models` endpoint by `test_client_models`. For a model not in the enum
+yet, pass `model::Id::Custom("your-model-id".into())` or just the string.
 
 ### Messages — generic conversions
 

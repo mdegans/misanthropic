@@ -1672,6 +1672,29 @@ mod tests {
         for model in models.iter() {
             dbg!(&model);
             assert!(!model.display_name.is_empty());
+
+            // `Display` (the hand-written `Id::name` match) and serde (the
+            // `#[serde(rename = ...)]` attributes on `AnthropicModel`) are
+            // independent sources of truth for a model's wire id. Assert they
+            // agree for every model the live API reports, so a typo or stale
+            // entry in either can't slip in unnoticed — this is what lets us
+            // point the docs at `AnthropicModel` instead of hand-listing ids.
+            let display = model.id.to_string();
+            let serde = serde_json::to_value(&model.id).unwrap();
+            let serde =
+                serde.as_str().expect("a model id serializes to a string");
+            assert_eq!(
+                serde, display,
+                "serde and Display disagree for model {:?}",
+                model.id
+            );
+
+            // A model the API offers but the `AnthropicModel` enum lacks falls
+            // through to `Id::Custom`. Not a failure — we deliberately skip
+            // some (e.g. Opus 4.7) — but surface it so the gap is visible.
+            if let crate::model::Id::Custom(name) = &model.id {
+                eprintln!("note: API model not in AnthropicModel: {name}");
+            }
         }
     }
 }
