@@ -28,12 +28,12 @@
 
 use std::borrow::Cow;
 #[cfg(feature = "memory-fs")]
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-fs")]
-use super::{MethodDef, ServerMethodDef, Tool, Use};
+use super::{MethodDef, ServerMethodDef, Tool, Use, fs};
 
 /// The wire root the model addresses memory files under (`/memories`), which a
 /// backend maps onto its real directory. Only the (optional) filesystem backend
@@ -320,28 +320,11 @@ impl FsMemoryBackend {
     }
 
     /// Map a model-supplied path onto [`root`](Self::root), rejecting anything
-    /// that would escape it.
+    /// that would escape it. The memory tool addresses files under the virtual
+    /// [`MEMORY_ROOT`]; see [`fs::resolve_jailed`].
     fn resolve(&self, path: &str) -> Result<PathBuf, MemoryError> {
-        // Accept only `/memories`, `/memories/...`, or a relative path; any
-        // other absolute path (or a `/memories`-lookalike) is an escape.
-        let rel = match path.strip_prefix(MEMORY_ROOT) {
-            Some("") => "",
-            Some(rest) if rest.starts_with('/') => rest.trim_start_matches('/'),
-            Some(_) | None if path.starts_with('/') => {
-                return Err(MemoryError::Traversal(path.to_string()));
-            }
-            None => path,
-            Some(_) => unreachable!("absolute case handled above"),
-        };
-        // Any non-`Normal` component (`..`, a root, a drive prefix) could climb
-        // out of `root`, so refuse before joining.
-        for component in Path::new(rel).components() {
-            match component {
-                Component::Normal(_) | Component::CurDir => {}
-                _ => return Err(MemoryError::Traversal(path.to_string())),
-            }
-        }
-        Ok(self.root.join(rel))
+        fs::resolve_jailed(&self.root, path, Some(MEMORY_ROOT))
+            .ok_or_else(|| MemoryError::Traversal(path.to_string()))
     }
 
     /// Whether `path`'s extension is permitted to be written.
@@ -404,7 +387,7 @@ impl FsMemoryBackend {
                 let content = tokio::fs::read_to_string(&resolved).await?;
                 Ok(format!(
                     "Here's the content of {path} with line numbers:\n{}",
-                    with_line_numbers(&content, range)
+                    fs::with_line_numbers(&content, range)
                 ))
             }
             _ => Err(MemoryError::NotFound(path.to_string())),
@@ -523,10 +506,7 @@ impl FsMemoryBackend {
             return Err(MemoryError::NotFound(path.to_string()));
         }
         let content = tokio::fs::read_to_string(&resolved).await?;
-        let matches: Vec<usize> = content
-            .match_indices(old_str)
-            .map(|(offset, _)| content[..offset].matches('\n').count() + 1)
-            .collect();
+        let matches = fs::match_lines(&content, old_str);
         match matches.len() {
             0 => Err(MemoryError::NoMatch {
                 old_str: old_str.to_string(),
@@ -537,7 +517,7 @@ impl FsMemoryBackend {
                 tokio::fs::write(&resolved, &updated).await?;
                 Ok(format!(
                     "The memory file has been edited.\n{}",
-                    with_line_numbers(&updated, None)
+                    fs::with_line_numbers(&updated, None)
                 ))
             }
             _ => Err(MemoryError::MultipleMatches {
@@ -558,17 +538,11 @@ impl FsMemoryBackend {
             return Err(MemoryError::NotFound(path.to_string()));
         }
         let content = tokio::fs::read_to_string(&resolved).await?;
-        let mut lines: Vec<&str> = content.lines().collect();
-        if insert_line as usize > lines.len() {
-            return Err(MemoryError::InvalidLine {
+        let updated = fs::insert_after(&content, insert_line, insert_text)
+            .ok_or_else(|| MemoryError::InvalidLine {
                 insert_line,
-                n_lines: lines.len(),
-            });
-        }
-        let insert_text = insert_text.strip_suffix('\n').unwrap_or(insert_text);
-        lines.insert(insert_line as usize, insert_text);
-        let mut updated = lines.join("\n");
-        updated.push('\n');
+                n_lines: content.lines().count(),
+            })?;
         tokio::fs::write(&resolved, &updated).await?;
         Ok(format!("The file {path} has been edited."))
     }
@@ -677,24 +651,6 @@ fn modified_rfc3339(meta: &std::fs::Metadata) -> serde_json::Value {
         })
         .map(serde_json::Value::String)
         .unwrap_or(serde_json::Value::Null)
-}
-
-/// Render `content` with 6-wide, right-aligned, 1-indexed line numbers and a
-/// tab separator — the coordinate system the model writes `insert`/`str_replace`
-/// against. An optional inclusive 1-indexed `[start, end]` range trims output.
-#[cfg(feature = "memory-fs")]
-fn with_line_numbers(content: &str, range: Option<[u64; 2]>) -> String {
-    let (start, end) = match range {
-        Some([start, end]) => (start.max(1), end),
-        None => (1, u64::MAX),
-    };
-    content
-        .lines()
-        .enumerate()
-        .map(|(i, line)| (i as u64 + 1, line))
-        .filter(|(n, _)| *n >= start && *n <= end)
-        .map(|(n, line)| format!("{n:6}\t{line}\n"))
-        .collect()
 }
 
 #[cfg(test)]

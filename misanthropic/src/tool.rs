@@ -50,6 +50,11 @@ pub use notepad::Notepad;
 #[cfg(feature = "memory")]
 pub mod memory;
 
+/// Pure path/text helpers shared by the file-oriented client-executed tools'
+/// filesystem backends ([`memory::FsMemoryBackend`]).
+#[cfg(feature = "memory-fs")]
+mod fs;
+
 /// Constrain the [`Assistant`]'s choice of [`CustomMethodDef`]s.
 ///
 /// # Note:
