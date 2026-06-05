@@ -230,7 +230,7 @@ pub fn Chat() -> Element {
     // Our signals. This is reactive state management. When these signals are
     // updated, the component will re-render. Signals are a Copy type, and use
     // automatic dependency tracking to determine when to re-render.
-    let mut attachments = use_signal(|| Vec::<Block>::new());
+    let mut attachments = use_signal(Vec::<Block>::new);
     let mut connected = use_signal(|| false);
     let mut dragged_file_supported = use_signal(|| false);
     let mut dragged_over = use_signal(|| true);
@@ -471,7 +471,7 @@ pub fn Chat() -> Element {
         }
     });
 
-    let mut input_buffer = use_signal(|| String::new());
+    let mut input_buffer = use_signal(String::new);
 
     if !*connected.read() {
         return rsx! {
@@ -482,7 +482,7 @@ pub fn Chat() -> Element {
                 // Do our little indicator dance.
                 {format!(
                     "Connecting{}",
-                    std::iter::repeat('.').take(*failures.read() % 4).collect::<String>(),
+                    ".".repeat(*failures.read() % 4),
                 )}
             }
         };
@@ -853,14 +853,12 @@ pub fn Chat() -> Element {
                 },
                 // Download the JSON.
                 a {
-                    href: if let Some(json) = ready_json.read().deref() {
-                        Some(format!(
+                    href: ready_json.read().deref().as_ref().map(|json| {
+                        format!(
                             "data:application/json;base64,{}",
                             BASE64.encode(json.as_bytes())
-                        ))
-                    } else {
-                        None
-                    },
+                        )
+                    }),
                     download: "prompt.json",
                     "Save"
                 }
@@ -883,14 +881,12 @@ pub fn Chat() -> Element {
                 },
                 // Download the JSON.
                 a {
-                    href: if let Some(json) = ready_tool_json.read().deref() {
-                        Some(format!(
+                    href: ready_tool_json.read().deref().as_ref().map(|json| {
+                        format!(
                             "data:application/json;base64,{}",
                             BASE64.encode(json.as_bytes())
-                        ))
-                    } else {
-                        None
-                    },
+                        )
+                    }),
                     download: "tool_state.json",
                     "Save Tools"
                 }

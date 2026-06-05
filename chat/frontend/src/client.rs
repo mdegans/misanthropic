@@ -43,8 +43,8 @@ impl Client {
 
             let event = event?;
             // get a JsValue from the event's data
-            let val = js_sys::JSON::parse(&event.data)
-                .map_err(|e| Error::JsValue(e.into()))?;
+            let val =
+                js_sys::JSON::parse(&event.data).map_err(Error::JsValue)?;
             let event: Response = serde_wasm_bindgen::from_value(val)?;
 
             Ok(event)

@@ -326,6 +326,10 @@ pub async fn events_stream(
                             .json_data(&response)
                             .unwrap();
 
+                        // `response` was just built as `Ok(Stream(event))`; we
+                        // round-trip through it to get the moved `event` back
+                        // after serializing, so the literal unwrap is deliberate.
+                        #[allow(clippy::unnecessary_literal_unwrap)]
                         let event = response.unwrap().unwrap_stream();
 
                         // The client rebuilds its own prompt from the raw stream

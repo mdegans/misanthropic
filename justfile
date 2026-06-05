@@ -16,7 +16,7 @@ fmt-check:
 # Offline gate run by the pre-commit hook: fmt, clippy, all-features + no-default tests.
 test:
     cargo fmt --all -- --check
-    cargo clippy --all-features
+    cargo clippy --all-features --all-targets
     cargo test --all-features
     cargo test --all-features --no-default-features
 
