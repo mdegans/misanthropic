@@ -1,39 +1,42 @@
-//! [`DockerSandbox`] — the reference [`BashSandbox`] that runs [`bashd`] inside a
-//! Docker (or Podman) container.
+//! [`DockerSandbox`] — the reference [`BashSandbox`] that runs `bashd` inside a
+//! Docker (or Podman) container, reached over HTTP/SSE.
 //!
 //! Lifecycle ([`start`](DockerSandbox::start)): optionally **provision** a custom
 //! image (run a `setup` script *with* network, plus create the run user, then
-//! `commit`), **run** a session container with `--network none` and resource
-//! caps, **inject** the `bashd` binary (`docker cp`), and **exec** it to open the
-//! persistent stdio connection, validating the [`Ready`] handshake. Each
-//! [`exec`](DockerSandbox::exec) writes one [`Request`] and aggregates the
-//! [`Reply`]s back into an [`ExecResult`]. [`teardown`](DockerSandbox::teardown)
-//! (and a blocking [`Drop`] leak-guard) removes the container.
+//! `commit`), **run** a session container (`--init`, resource caps, bashd's port
+//! published to `127.0.0.1`), **inject** the `bashd` binary (`docker cp`), and
+//! **launch** `bashd --http` (detached, as the run user), polling `GET /` until
+//! the [`Ready`] handshake validates. Each [`exec`](DockerSandbox::exec) POSTs a
+//! [`Command`](super::Command) and aggregates the SSE stream into an
+//! [`ExecResult`]. [`teardown`](DockerSandbox::teardown) (and a blocking
+//! [`Drop`] leak-guard) removes the container.
 //!
-//! Phase-1 scope: the happy path. Home backup/restore, the disk-cap mechanism,
-//! and `restart`-drops-a-borked-home are hardened in later phases.
-//!
-//! [`bashd`]: super::Request
+//! Egress isolation (an internal network + a trusted `bashd relay` sidecar) and
+//! home backup/restore are follow-ups.
 
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
-use tokio::process::{ChildStdin, ChildStdout, Command};
+use eventsource_stream::Eventsource;
+use futures::StreamExt;
+use tokio::process::Command;
 
 use super::{
-    BashError, BashSandbox, Command as BashCommand, ExecResult,
-    PROTOCOL_VERSION, Ready, Reply, Request, Stream,
+    BashError, BashSandbox, Chunk, Command as BashCommand, ExecResult, Outcome,
+    PROTOCOL_VERSION, Ready, Stream, event,
 };
 
-/// The live connection to a running `bashd`: the `docker exec -i bashd` child,
-/// its stdio, and the next request id.
-struct Daemon {
-    child: tokio::process::Child,
-    stdin: ChildStdin,
-    stdout: Lines<BufReader<ChildStdout>>,
-    next_id: u64,
+/// The container port `bashd --http` binds; published to an ephemeral
+/// `127.0.0.1` host port the host then discovers via `docker port`.
+const BASHD_PORT: u16 = 9099;
+
+/// The live HTTP connection to `bashd`: a client and the host base URL it
+/// reaches the published port at (e.g. `http://127.0.0.1:54321`).
+struct Http {
+    client: reqwest::Client,
+    base: String,
 }
 
 /// A [`BashSandbox`] that runs [`bashd`] inside a Docker/Podman container.
@@ -68,7 +71,7 @@ pub struct DockerSandbox {
     bashd_path: Option<PathBuf>,
     // Runtime state, populated by `start`.
     container: Option<String>,
-    daemon: Option<Daemon>,
+    http: Option<Http>,
 }
 
 impl DockerSandbox {
@@ -86,7 +89,7 @@ impl DockerSandbox {
             runtime: "docker".to_string(),
             bashd_path: None,
             container: None,
-            daemon: None,
+            http: None,
         }
     }
 
@@ -249,10 +252,15 @@ impl DockerSandbox {
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
+            // tini as PID 1 reaps orphaned grandchildren.
+            "--init".into(),
             "--name".into(),
             container.clone(),
-            "--network".into(),
-            "none".into(),
+            // Publish bashd's port to an ephemeral 127.0.0.1 host port. (Egress
+            // isolation — an internal network + a trusted `bashd relay` sidecar
+            // — is a follow-up; for now the agent shares the default bridge.)
+            "-p".into(),
+            format!("127.0.0.1::{BASHD_PORT}"),
             "--workdir".into(),
             self.workdir.clone(),
         ];
@@ -321,117 +329,88 @@ impl DockerSandbox {
         Ok(())
     }
 
-    /// `docker exec -i bashd` and read its [`Ready`] handshake.
-    async fn connect(&self, container: &str) -> Result<Daemon, BashError> {
-        let persist = self.persist_cwd;
-        let mut cmd = Command::new(&self.runtime);
-        cmd.arg("exec").arg("-i");
-        // `docker exec` runs as root by default — it does *not* inherit the
-        // container's `docker run --user`. Pass the run user explicitly so the
-        // agent's commands run unprivileged.
+    /// Launch `bashd --http` (detached, as the run user), discover its published
+    /// host port, and poll `GET /` until it's ready. Returns the connection and
+    /// the validated handshake.
+    async fn launch(
+        &self,
+        container: &str,
+    ) -> Result<(Http, Ready), BashError> {
+        // Start the HTTP daemon, detached. `docker exec` runs as root by default
+        // and does *not* inherit `docker run --user`, so pass the run user
+        // explicitly — the agent's commands then run unprivileged.
+        let mut args: Vec<String> = vec!["exec".into(), "-d".into()];
         if let Some(user) = &self.user {
-            cmd.arg("--user").arg(user);
+            args.push("--user".into());
+            args.push(user.clone());
         }
-        cmd.arg(container)
-            .arg("/usr/local/bin/bashd")
-            .arg("--workdir")
-            .arg(&self.workdir);
-        if persist {
-            cmd.arg("--persist-cwd");
+        args.push(container.into());
+        args.push("/usr/local/bin/bashd".into());
+        args.push("--http".into());
+        args.push(format!("0.0.0.0:{BASHD_PORT}"));
+        args.push("--workdir".into());
+        args.push(self.workdir.clone());
+        if self.persist_cwd {
+            args.push("--persist-cwd".into());
         }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+        let out = capture(&self.runtime, &args).await?;
+        if !out.status.success() {
+            return Err(BashError::Backend(format!(
+                "could not launch bashd: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
 
-        let mut child = cmd.spawn()?;
-        let stdin = child.stdin.take().expect("stdin piped");
-        let stdout =
-            BufReader::new(child.stdout.take().expect("stdout piped")).lines();
-        let mut daemon = Daemon {
-            child,
-            stdin,
-            stdout,
-            next_id: 1,
-        };
+        // Discover the published host port, e.g. `127.0.0.1:54321`.
+        let port = capture(
+            &self.runtime,
+            ["port", container, &format!("{BASHD_PORT}/tcp")],
+        )
+        .await?;
+        let mapping = String::from_utf8_lossy(&port.stdout);
+        let host_port = mapping
+            .lines()
+            .next()
+            .and_then(|l| l.trim().rsplit(':').next())
+            .ok_or_else(|| {
+                BashError::Backend(format!(
+                    "could not read published bashd port: {mapping:?}"
+                ))
+            })?;
+        let base = format!("http://127.0.0.1:{host_port}");
 
-        let line = daemon.stdout.next_line().await?.ok_or_else(|| {
-            BashError::Handshake("bashd sent no output".into())
-        })?;
-        let reply: Reply = serde_json::from_str(&line)
-            .map_err(|e| BashError::Handshake(format!("{e}: {line}")))?;
-        let ready = match reply {
-            Reply::Ready { ready } => ready,
-            other => {
-                return Err(BashError::Handshake(format!(
-                    "expected Ready, got {other:?}"
-                )));
-            }
-        };
+        let client = reqwest::Client::new();
+        let ready = await_ready(&client, &base).await?;
         if ready.protocol != PROTOCOL_VERSION {
             return Err(BashError::Handshake(format!(
                 "protocol mismatch: daemon speaks {}, host speaks {}",
                 ready.protocol, PROTOCOL_VERSION
             )));
         }
-        Ok(daemon)
+        Ok((Http { client, base }, ready))
     }
 
-    /// Send one [`Request`] and aggregate its [`Reply`]s into an [`ExecResult`].
+    /// Send one [`Command`] over HTTP and aggregate its SSE stream into an
+    /// [`ExecResult`].
     async fn request(
-        &mut self,
+        &self,
         command: BashCommand,
     ) -> Result<ExecResult, BashError> {
-        let daemon = self.daemon.as_mut().ok_or(BashError::NotStarted)?;
-        let id = daemon.next_id;
-        daemon.next_id += 1;
-
-        let req = Request { id, command };
-        let line = serde_json::to_string(&req)
-            .map_err(|e| BashError::Protocol(e.to_string()))?;
-        daemon.stdin.write_all(line.as_bytes()).await?;
-        daemon.stdin.write_all(b"\n").await?;
-        daemon.stdin.flush().await?;
-
-        let mut result = ExecResult::default();
-        loop {
-            let line = daemon.stdout.next_line().await?.ok_or_else(|| {
-                BashError::Protocol("bashd closed the connection".into())
-            })?;
-            let reply: Reply = serde_json::from_str(&line)
-                .map_err(|e| BashError::Protocol(format!("{e}: {line}")))?;
-            match reply {
-                Reply::Chunk(c) if c.id == id => match c.stream {
-                    Stream::Stdout => result.stdout.push_str(&c.data),
-                    Stream::Stderr => result.stderr.push_str(&c.data),
-                },
-                Reply::Outcome(o) if o.id == id => {
-                    if let Some(err) = o.error {
-                        return Err(BashError::Protocol(err.message));
-                    }
-                    result.exit = o.exit;
-                    result.running = o.running;
-                    result.timed_out = o.timed_out;
-                    result.truncated = o.truncated;
-                    result.job = o.job;
-                    result.advice = o.advice;
-                    break;
-                }
-                // Stray replies (a different id, or a late Ready) are ignored.
-                _ => {}
-            }
-        }
-        Ok(result)
+        let http = self.http.as_ref().ok_or(BashError::NotStarted)?;
+        let resp = http
+            .client
+            .post(format!("{}/run", http.base))
+            .json(&command)
+            .send()
+            .await
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+        aggregate(resp).await
     }
 
     /// Remove the container (best-effort), forgetting it so [`Drop`] won't retry.
     async fn remove_container(&mut self) {
-        if let Some(mut daemon) = self.daemon.take() {
-            // End the `exec -i bashd` child explicitly (its `kill_on_drop` is a
-            // backstop). bashd also exits on its own once `docker rm -f` below
-            // tears the container out from under it.
-            let _ = daemon.child.start_kill();
-        }
+        // Drop the HTTP client; bashd dies with the container removed below.
+        self.http = None;
         if let Some(container) = self.container.take() {
             let _ = capture(&self.runtime, ["rm", "-f", &container]).await;
         }
@@ -441,7 +420,7 @@ impl DockerSandbox {
 #[async_trait::async_trait]
 impl BashSandbox for DockerSandbox {
     async fn start(&mut self) -> Result<Ready, BashError> {
-        if self.daemon.is_some() {
+        if self.http.is_some() {
             return Err(BashError::Backend(
                 "sandbox already started".to_string(),
             ));
@@ -454,15 +433,9 @@ impl BashSandbox for DockerSandbox {
             self.remove_container().await;
             return Err(e);
         }
-        match self.connect(&container).await {
-            Ok(daemon) => {
-                let ready = Ready {
-                    protocol: PROTOCOL_VERSION,
-                    bashd: env!("CARGO_PKG_VERSION").into(),
-                    shell: "/bin/bash".into(),
-                    persist_cwd: self.persist_cwd,
-                };
-                self.daemon = Some(daemon);
+        match self.launch(&container).await {
+            Ok((http, ready)) => {
+                self.http = Some(http);
                 Ok(ready)
             }
             Err(e) => {
@@ -507,6 +480,62 @@ impl Drop for DockerSandbox {
                 .stderr(Stdio::null())
                 .status();
         }
+    }
+}
+
+/// Aggregate a `POST /run` SSE response into an [`ExecResult`]: `chunk` events
+/// append to stdout/stderr; the terminal `outcome` event sets the flags.
+async fn aggregate(resp: reqwest::Response) -> Result<ExecResult, BashError> {
+    let mut events = resp.bytes_stream().eventsource();
+    let mut result = ExecResult::default();
+    while let Some(event) = events.next().await {
+        let event = event.map_err(|e| BashError::Protocol(e.to_string()))?;
+        if event.event == event::CHUNK {
+            if let Ok(chunk) = serde_json::from_str::<Chunk>(&event.data) {
+                match chunk.stream {
+                    Stream::Stdout => result.stdout.push_str(&chunk.data),
+                    Stream::Stderr => result.stderr.push_str(&chunk.data),
+                }
+            }
+        } else if event.event == event::OUTCOME {
+            if let Ok(outcome) = serde_json::from_str::<Outcome>(&event.data) {
+                if let Some(err) = outcome.error {
+                    return Err(BashError::Protocol(err.message));
+                }
+                result.exit = outcome.exit;
+                result.running = outcome.running;
+                result.timed_out = outcome.timed_out;
+                result.truncated = outcome.truncated;
+                result.job = outcome.job;
+                result.advice = outcome.advice;
+            }
+            break;
+        }
+    }
+    Ok(result)
+}
+
+/// Poll `GET /` with bounded backoff until `bashd` answers a valid handshake —
+/// the readiness gate, since `docker exec -d` returns before the port is bound.
+async fn await_ready(
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<Ready, BashError> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut delay = Duration::from_millis(50);
+    loop {
+        if let Ok(resp) = client.get(format!("{base}/")).send().await
+            && let Ok(ready) = resp.json::<Ready>().await
+        {
+            return Ok(ready);
+        }
+        if Instant::now() >= deadline {
+            return Err(BashError::Handshake(
+                "bashd did not become ready in time".into(),
+            ));
+        }
+        tokio::time::sleep(delay).await;
+        delay = (delay * 2).min(Duration::from_millis(500));
     }
 }
 
@@ -646,16 +675,9 @@ mod tests {
         let out = sandbox.exec(run("exit 7")).await.unwrap();
         assert_eq!(out.exit, Some(7));
 
-        // Network is isolated (--network none): a connect attempt fails.
-        let out = sandbox
-            .exec(run("ping -c1 -W1 1.1.1.1 >/dev/null 2>&1; echo $?"))
-            .await
-            .unwrap();
-        assert!(
-            out.stdout.trim() != "0",
-            "network should be isolated, got: {:?}",
-            out.stdout
-        );
+        // NB: egress is currently *open* (the container shares the default
+        // bridge so its port can be published). Egress isolation — an internal
+        // network + a trusted `bashd relay` sidecar — is a follow-up.
 
         sandbox.restart().await.expect("restart");
         sandbox.teardown().await.expect("teardown");
