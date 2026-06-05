@@ -279,11 +279,12 @@ openai = []
 # Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
 # default; turn off to drop the proc-macro (syn) compile-time cost.
 derive = ["dep:misanthropic-derive"]
-# Doc-tests the agent skill files (`.claude/skills/*/SKILL.md`) so their code
-# blocks can't drift from the public API. Implies the features the skills
-# document: `client` (Client / streaming), `derive` (the `#[tool]` macro), and
-# `memory-fs` (the client-executed memory tool + its filesystem backend).
-__skills = ["client", "derive", "memory-fs"]
+# Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
+# resource files they point at) so their code blocks can't drift from the public
+# API. Implies the features the skills document: `client` (Client / streaming),
+# `derive` (the `#[tool]` macro), and the client-executed file tools `memory-fs`
+# (memory + its backend) and `text-editor-fs` (text editor + its backend).
+__skills = ["client", "derive", "memory-fs", "text-editor-fs"]
 
 [[example]]
 name = "strawberry"

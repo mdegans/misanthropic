@@ -352,51 +352,28 @@ if let Some(call) = message.tool_use() {
 client-executed memory tool). `try_add_tool` accepts `TryInto<CustomMethodDef>`
 (e.g. a `MethodBuilder` with validation).
 
-## Predefined tools — server tools & `memory`
+## Predefined tools — server tools & client-executed tools
 
 Predefined tools are added by versioned name with no schema of your own. Most
 are **server-executed**: Anthropic runs them and the result blocks arrive in
-the response (you never call anything). The `memory` tool (feature `memory` for
-the typed `Command` + definition) is the exception — **client-executed**: the
-model emits an ordinary `tool_use` that *you* run against storage you control,
-just like a custom tool. `tool::memory::FsMemoryBackend` (feature `memory-fs`,
-which adds an async tokio executor) is a ready-made filesystem backend, jailed
-to one directory and (by default) to markdown files:
+the response (you never call anything) — e.g. `web_search` (see
+`examples/web_search.rs`), `web_fetch`, `code_execution`, the tool-search
+tools.
 
-```no_run
-# async fn run() -> Result<(), Box<dyn std::error::Error>> {
-use misanthropic::{
-    Client, Prompt,
-    prompt::message::Role,
-    tool::{Memory, Tool, memory::FsMemoryBackend},
-};
+A few are **client-executed**: Anthropic defines the schema, but the model
+emits an ordinary `tool_use` that *you* run against storage you control, just
+like a custom tool — so they *define* like a server tool and *execute* like a
+custom one. Each has a focused guide; load the one you need:
 
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
-let mut memory = FsMemoryBackend::new("./memories").await?; // markdown-jailed
+- **memory** — persistent notes across sessions, filesystem-backed
+  (`FsMemoryBackend`). See [MEMORY.md](MEMORY.md).
+- **text editor** (`str_replace_based_edit_tool`) — view/edit files in a
+  working tree (`FsEditorBackend`). See [TEXT_EDITOR.md](TEXT_EDITOR.md).
 
-let mut chat = Prompt::default()
-    .add_tool(Memory::latest())                       // predefined, no schema
-    .add_message((Role::User, "Check your notes, then help me."))?;
-
-// Drive the tool loop: execute each memory `tool_use` locally and feed the
-// result back, until a turn arrives with no tool call — that one is the answer.
-let answer = loop {
-    let message = client.message(&chat).await?;
-    let Some(call) = message.tool_use() else { break message };
-    let call = call.clone();
-    chat.push_message(message)?;
-    let result = memory.call(call).await;             // typed dispatch
-    chat.push_message(result)?;
-};
-println!("{}", answer.inner.content);
-# Ok(())
-# }
-```
-
-The model's `tool_use` input deserializes into a typed `memory::Command`
-(`view`/`create`/`str_replace`/`insert`/`delete`/`rename`, plus an `Unknown`
-catch-all so a newer memory version still round-trips). `FsMemoryBackend`
-handles all of that for you; implement `Tool` yourself for a different store.
+Both share the same shape: `add_tool(Memory::latest())` /
+`add_tool(TextEditor::latest())`, then drive a tool loop that executes each
+`tool_use` locally and feeds the `tool::Result` back. Their backends drop into a
+`ToolBox` and route by their fixed bare name with no special-casing.
 
 ## Using `json!` instead of `Prompt`
 
@@ -557,6 +534,8 @@ your task — they're the most current, compiler-checked usage.
 | `interleaved_thinking.rs` | Adaptive extended thinking with interleaved thinking. |
 | `tool_search.rs` | The tool-search server tool over a large, `defer_loading` tool set. |
 | `web_search.rs` | The `web_search` server tool. |
+| `memory.rs` | The client-executed `memory` tool (`FsMemoryBackend`) — see [MEMORY.md](MEMORY.md). |
+| `text_editor.rs` | The client-executed `text_editor` tool (`FsEditorBackend`) — see [TEXT_EDITOR.md](TEXT_EDITOR.md). |
 | `neologism.rs` | `Client::message` with a custom system prompt. |
 | `website_wizard.rs` | **Streaming** (`Client::stream`) — see the misan-streaming-api skill. |
 
