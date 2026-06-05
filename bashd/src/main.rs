@@ -21,6 +21,8 @@ fn main() {
 mod server;
 #[cfg(unix)]
 mod session;
+#[cfg(unix)]
+mod tls;
 
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -29,6 +31,12 @@ use std::time::Duration;
 
 #[cfg(unix)]
 use clap::Parser;
+#[cfg(unix)]
+use misanthropic::tool::bash::TlsServerMaterial;
+#[cfg(unix)]
+use tokio::io::AsyncReadExt;
+#[cfg(unix)]
+use zeroize::Zeroize;
 
 /// Command-line configuration. The host (`DockerSandbox`) sets these when it
 /// launches the daemon inside the container.
@@ -40,8 +48,10 @@ use clap::Parser;
     about = "Persistent-session bash daemon for the misanthropic bash tool."
 )]
 struct Args {
-    /// Serve the HTTP/SSE front-end on this address (e.g. `0.0.0.0:9099`). The
-    /// host reaches it via a published `127.0.0.1` port.
+    /// Serve the HTTPS/SSE front-end on this address (e.g. `0.0.0.0:9099`). The
+    /// host reaches it via a published `127.0.0.1` port, over mutual TLS. The
+    /// TLS material is read from **stdin** at startup (never argv/env), then the
+    /// pipe is closed.
     #[arg(long)]
     http: std::net::SocketAddr,
 
@@ -76,8 +86,17 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    let listener = tokio::net::TcpListener::bind(args.http).await?;
-    eprintln!("bashd: serving HTTP on {}", listener.local_addr()?);
+    // Read the mutual-TLS material from stdin (never argv/env/disk), then close.
+    // The host writes one JSON object and shuts the pipe; we wipe the raw bytes
+    // once parsed.
+    let mut raw = String::new();
+    tokio::io::stdin().read_to_string(&mut raw).await?;
+    let material: TlsServerMaterial = serde_json::from_str(&raw)?;
+    raw.zeroize();
+
+    let listener = std::net::TcpListener::bind(args.http)?;
+    listener.set_nonblocking(true)?;
+    eprintln!("bashd: serving HTTPS on {}", listener.local_addr()?);
     server::serve(
         listener,
         server::ServeConfig {
@@ -87,6 +106,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             max_output_bytes: args.max_output_bytes,
             grace: Duration::from_secs(args.grace_secs),
         },
+        material,
     )
     .await?;
     Ok(())

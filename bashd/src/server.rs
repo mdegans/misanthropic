@@ -33,11 +33,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use misanthropic::tool::bash::{
     Command, ErrorKind, Known, Outcome, PROTOCOL_VERSION, ProtocolError, Ready,
-    Reply, event,
+    Reply, TlsServerMaterial, event,
 };
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::session::{RunParams, run_command};
@@ -138,13 +137,22 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Serve the router on `listener` until the process ends.
+/// Serve the router on `listener` over mutual TLS until the process ends. `tls`
+/// is the per-container PKI the host fed in over stdin; `bashd` presents the
+/// server cert and requires a client cert chaining to the same CA.
 pub async fn serve(
-    listener: TcpListener,
+    listener: std::net::TcpListener,
     config: ServeConfig,
+    tls: TlsServerMaterial,
 ) -> std::io::Result<()> {
     let state = Arc::new(AppState::new(config)?);
-    axum::serve(listener, router(state)).await
+    let tls_config = crate::tls::server_config(&tls)?;
+    // rustls now owns parsed copies of the certs/key; wipe the source PEMs.
+    drop(tls);
+    let rustls = axum_server::tls_rustls::RustlsConfig::from_config(tls_config);
+    axum_server::from_tcp_rustls(listener, rustls)?
+        .serve(router(state).into_make_service())
+        .await
 }
 
 /// `GET /` — the readiness/handshake the host polls with backoff.
@@ -554,9 +562,13 @@ struct WaitQuery {
 
 #[cfg(test)]
 mod tests {
+    use tokio::net::TcpListener;
+
     use super::*;
 
-    /// Start a server on an ephemeral 127.0.0.1 port; return its base URL.
+    /// Start a (plain-HTTP) server on an ephemeral 127.0.0.1 port; return its
+    /// base URL. These exercise the router/handlers directly — the mutual-TLS
+    /// serving path has its own end-to-end test in [`crate::tls`].
     async fn start() -> String {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();

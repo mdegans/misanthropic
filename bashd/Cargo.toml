@@ -34,10 +34,19 @@ serde_json = "1"
 
 # bashd manages process groups and signals — it is unix-only. On non-unix the
 # binary compiles to a stub `main` that exits with an error, so the workspace
-# still builds (e.g. the Windows CI matrix).
+# still builds (e.g. the Windows CI matrix). The TLS stack is unix-only too: the
+# server is only built where bashd actually runs.
 [target.'cfg(unix)'.dependencies]
 # Safe wrappers for killpg/Signal — no `unsafe` in this crate.
 nix = { version = "0.29", features = ["signal"] }
+# Mutual-TLS front-end: serve axum over rustls with a *required* client cert.
+# aws-lc-rs is rustls's default backend (tried first on the static-musl build; a
+# one-line flip to `ring` if it ever fights the toolchain — see `tls.rs`).
+rustls = "0.23"
+rustls-pemfile = "2"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+# Wipe the raw TLS material read from stdin once it's parsed into rustls.
+zeroize = "1"
 
 [dev-dependencies]
 # An HTTP client for the Docker-free in-process server tests (rustls/no OpenSSL,
@@ -45,6 +54,12 @@ nix = { version = "0.29", features = ["signal"] }
 reqwest = { version = "0.12", default-features = false, features = [
     "stream",
     "rustls-tls",
+] }
+# Mint a throwaway CA + leaves for the mutual-TLS handshake test (mirrors the
+# host's `pki` module, which bashd can't reach — it's behind `bash-container`).
+rcgen = { version = "0.14", default-features = false, features = [
+    "pem",
+    "ring",
 ] }
 
 [lints.rust]
