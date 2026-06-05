@@ -51,29 +51,10 @@ just install-hooks  # enable the pre-commit gate (once per clone)
 in `.claude/skills/*/SKILL.md` so the skill docs can't drift from the API. The
 gate is offline (free per commit); only `just test-ignored` hits the API.
 
-Or run the underlying commands directly:
-
-```sh
-# Build everything
-cargo build --all-features
-
-# Format check
-cargo fmt --all -- --check
-
-# Lint
-cargo clippy --all-features
-
-# Run all tests
-cargo test --all-features
-
-# Run tests without default features
-cargo test --all-features --no-default-features
-
-# Test individual features (CI tests each one separately)
-cargo test --features <feature> --verbose
-# Features: image, jpeg, png, gif, webp, prompt-caching, log, markdown,
-#           partial-eq, langsan, memsecurity
-```
+For the exact commands each recipe runs, read the `justfile` — it's the single
+source of truth, so they aren't transcribed here where they'd drift. CI also
+tests notable features individually; the authoritative set is the `[features]`
+table in `misanthropic/Cargo.toml`.
 
 ## Code style
 
