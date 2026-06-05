@@ -14,9 +14,10 @@
 //! # Usage
 //!
 //! ```sh
-//! # Needs Docker running and a linux bashd built for the container's arch:
+//! # Needs Docker running and a linux bashd built for the container's arch
+//! # (build-base + linux-headers build bashd's rustls/aws-lc-rs backend):
 //! docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/w/target-linux \
-//!     rust:alpine sh -c 'apk add --no-cache musl-dev && cargo build -p bashd --release'
+//!     rust:alpine sh -c 'apk add --no-cache build-base linux-headers && cargo build -p bashd --release'
 //! BASHD_PATH=target-linux/release/bashd \
 //!     cargo run --features "client bash-container" --example bash
 //! ```
