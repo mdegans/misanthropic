@@ -265,6 +265,14 @@ tokio = ["dep:tokio"]
 memory = []
 # The `FsMemoryBackend` reference executor for the memory tool — async on tokio.
 memory-fs = ["memory", "tokio"]
+# Typed client-side `text_editor` tool support: the `Command` vocabulary
+# (view/create/str_replace/insert) and the `TextEditor` definition. Runtime-
+# agnostic — bring your own executor, or enable `text-editor-fs` for the
+# filesystem one.
+text-editor = []
+# The `FsEditorBackend` reference executor for the text editor — async on tokio,
+# jailed to a working directory.
+text-editor-fs = ["text-editor", "tokio"]
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []

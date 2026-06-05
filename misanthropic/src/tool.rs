@@ -50,9 +50,17 @@ pub use notepad::Notepad;
 #[cfg(feature = "memory")]
 pub mod memory;
 
+/// Client-side execution of the [`text_editor`](ServerMethodDef::TextEditor)
+/// tool: the typed [`Command`](text_editor::Command) vocabulary and the
+/// [`FsEditorBackend`] reference implementation.
+///
+/// [`FsEditorBackend`]: text_editor::FsEditorBackend
+#[cfg(feature = "text-editor")]
+pub mod text_editor;
+
 /// Pure path/text helpers shared by the file-oriented client-executed tools'
-/// filesystem backends ([`memory::FsMemoryBackend`]).
-#[cfg(feature = "memory-fs")]
+/// filesystem backends (`memory::FsMemoryBackend`, `text_editor::FsEditorBackend`).
+#[cfg(any(feature = "memory-fs", feature = "text-editor-fs"))]
 mod fs;
 
 /// Constrain the [`Assistant`]'s choice of [`CustomMethodDef`]s.
@@ -247,6 +255,21 @@ pub enum ServerMethodDef {
     #[cfg(feature = "memory")]
     #[serde(rename = "memory_20250818")]
     Memory(Memory),
+    /// Anthropic's [text editor tool] (`text_editor_20250728`, the Claude-4
+    /// line) — a *client-side* predefined tool, like [`Memory`]. The API
+    /// defines it but does **not** run it: the model emits an ordinary [`Use`]
+    /// (`name: "str_replace_based_edit_tool"`) whose input is a
+    /// [`text_editor::Command`], and *you* execute it (e.g. with
+    /// [`text_editor::FsEditorBackend`]) and answer with a [`tool::Result`].
+    /// See [`TextEditor`].
+    ///
+    /// [text editor tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool>
+    /// [`text_editor::Command`]: crate::tool::text_editor::Command
+    /// [`text_editor::FsEditorBackend`]: crate::tool::text_editor::FsEditorBackend
+    /// [`tool::Result`]: Result
+    #[cfg(feature = "text-editor")]
+    #[serde(rename = "text_editor_20250728")]
+    TextEditor(TextEditor),
 }
 
 impl ServerMethodDef {
@@ -296,6 +319,14 @@ impl ServerMethodDef {
         Self::Memory(Memory::default())
     }
 
+    /// The [text editor](Self::TextEditor) tool with default configuration. A
+    /// *client-side* tool: you execute its [`Command`](text_editor::Command)s
+    /// yourself (the API does not run it). See [`TextEditor`].
+    #[cfg(feature = "text-editor")]
+    pub fn text_editor() -> Self {
+        Self::TextEditor(TextEditor::default())
+    }
+
     /// Whether this server tool carries a cache breakpoint.
     pub fn is_cached(&self) -> bool {
         self.cache_control().is_some()
@@ -314,6 +345,8 @@ impl ServerMethodDef {
             Self::CodeExecution(_) => "code_execution",
             #[cfg(feature = "memory")]
             Self::Memory(_) => "memory",
+            #[cfg(feature = "text-editor")]
+            Self::TextEditor(_) => "str_replace_based_edit_tool",
         }
     }
 
@@ -327,6 +360,8 @@ impl ServerMethodDef {
             Self::CodeExecution(c) => c.cache_control.as_ref(),
             #[cfg(feature = "memory")]
             Self::Memory(c) => c.cache_control.as_ref(),
+            #[cfg(feature = "text-editor")]
+            Self::TextEditor(c) => c.cache_control.as_ref(),
         }
     }
 
@@ -343,6 +378,8 @@ impl ServerMethodDef {
             Self::CodeExecution(c) => c.cache_control = Some(cache_control),
             #[cfg(feature = "memory")]
             Self::Memory(c) => c.cache_control = Some(cache_control),
+            #[cfg(feature = "text-editor")]
+            Self::TextEditor(c) => c.cache_control = Some(cache_control),
         }
     }
 }
@@ -529,6 +566,66 @@ impl From<Memory> for MethodDef {
     }
 }
 
+/// Configuration for Anthropic's [text editor tool]
+/// ([`ServerMethodDef::TextEditor`]) — a *client-side* predefined tool, like
+/// [`Memory`]. Added by versioned name with no schema of your own (construct
+/// via [`TextEditor::latest`]); the model then emits ordinary [`Use`] blocks
+/// (`name: "str_replace_based_edit_tool"`) carrying a [`text_editor::Command`]
+/// that you execute and answer with a [`tool::Result`]. See
+/// [`text_editor::FsEditorBackend`] for a ready-made executor.
+///
+/// The wire `name` (`"str_replace_based_edit_tool"`) is fixed and supplied
+/// automatically. The only knobs are an optional [`max_characters`] truncation
+/// cap on `view` and a cache breakpoint.
+///
+/// [text editor tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/text-editor-tool>
+/// [`text_editor::Command`]: crate::tool::text_editor::Command
+/// [`text_editor::FsEditorBackend`]: crate::tool::text_editor::FsEditorBackend
+/// [`tool::Result`]: Result
+/// [`max_characters`]: TextEditor::max_characters
+#[cfg(feature = "text-editor")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct TextEditor {
+    /// The fixed tool `name` (`"str_replace_based_edit_tool"`), supplied
+    /// automatically by [`Default`]. Not meant to be set by hand; use
+    /// `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: TextEditorName,
+    /// Truncate a `view`'s file contents to roughly this many characters, to
+    /// cap the token cost of large files. (`text_editor_20250728`+ only.)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_characters: Option<u32>,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
+#[cfg(feature = "text-editor")]
+impl TextEditor {
+    /// The newest text-editor version this crate supports
+    /// (`text_editor_20250728`, the Claude-4 line), with default configuration.
+    /// Named `latest` because Anthropic versions the tool: when a newer one
+    /// ships it becomes a new [`ServerMethodDef`] variant and this points at it.
+    pub fn latest() -> Self {
+        Self::default()
+    }
+}
+
+/// Bridges the [`TextEditor`] front-door type straight into a [`MethodDef`] so
+/// [`Prompt::add_tool`] accepts it (`Into` is not transitive, so
+/// `TextEditor: Into<ServerMethodDef>` alone would not give
+/// `TextEditor: Into<MethodDef>`).
+#[cfg(feature = "text-editor")]
+impl From<TextEditor> for MethodDef {
+    fn from(editor: TextEditor) -> Self {
+        MethodDef::Server(ServerMethodDef::TextEditor(editor))
+    }
+}
+
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
 /// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
@@ -596,6 +693,11 @@ tool_name_marker!(
 tool_name_marker!(
     /// The fixed `"memory"` name for [`Memory`].
     MemoryName => "memory"
+);
+#[cfg(feature = "text-editor")]
+tool_name_marker!(
+    /// The fixed `"str_replace_based_edit_tool"` name for [`TextEditor`].
+    TextEditorName => "str_replace_based_edit_tool"
 );
 
 /// Approximate user location used to bias [`WebSearch`] results. Serializes
