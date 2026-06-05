@@ -7,21 +7,42 @@
 //! can never corrupt a frame.
 //!
 //! See [`session`] for how commands are executed.
+//!
+//! bashd is **unix-only** (it manages process groups and signals). On non-unix
+//! it compiles to a stub `main` that exits with an error, so the workspace still
+//! builds on those targets.
 
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "bashd runs only on unix — it manages process groups and signals."
+    );
+    std::process::exit(1);
+}
+
+#[cfg(unix)]
 mod session;
 
+#[cfg(unix)]
 use std::path::PathBuf;
+#[cfg(unix)]
 use std::time::Duration;
 
+#[cfg(unix)]
 use clap::Parser;
+#[cfg(unix)]
 use misanthropic::tool::bash::{PROTOCOL_VERSION, Ready, Reply, Request};
+#[cfg(unix)]
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+#[cfg(unix)]
 use tokio::sync::mpsc;
 
+#[cfg(unix)]
 use session::Session;
 
 /// Command-line configuration. The host (`DockerSandbox`) sets these when it
 /// launches the daemon inside the container.
+#[cfg(unix)]
 #[derive(Parser, Debug)]
 #[command(
     name = "bashd",
@@ -55,6 +76,7 @@ struct Args {
     grace_secs: u64,
 }
 
+#[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();

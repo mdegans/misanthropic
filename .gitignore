@@ -11,3 +11,4 @@ lcov.info
 node_modules/
 notepad.json
 Secrets.toml
+/target-linux

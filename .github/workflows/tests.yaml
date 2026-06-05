@@ -8,6 +8,28 @@ on:
     branches: [main]
 
 jobs:
+  # Build the `bashd` daemon as a static linux-musl binary (the artifact the
+  # `DockerSandbox` injects into a container) and run its unit tests.
+  bashd-musl:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Rust (musl target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build static bashd
+        run: cargo build -p bashd --release --target x86_64-unknown-linux-musl
+
+      - name: Test bashd
+        run: cargo test -p bashd --verbose
+
   build:
     runs-on: ${{ matrix.os }}
     strategy:
