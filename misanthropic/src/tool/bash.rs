@@ -31,6 +31,13 @@ use serde::{Deserialize, Serialize};
 
 use super::{MethodDef, Tool, Use};
 
+/// The reference [`BashSandbox`] backed by a Docker/Podman container (the
+/// `bash-container` feature).
+#[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
+pub mod docker;
+#[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
+pub use docker::DockerSandbox;
+
 /// The `bashd` wire-protocol version. Bumped on a breaking change; the host
 /// refuses a daemon whose [`Ready::protocol`] does not match.
 pub const PROTOCOL_VERSION: u32 = 1;

@@ -280,8 +280,9 @@ text-editor-fs = ["text-editor", "tokio"]
 # enable `bash-container` for the Docker/Podman one.
 bash = []
 # The `DockerSandbox` reference executor for the bash tool — runs `bashd` in a
-# Docker/Podman container. Async on tokio. Does not build on wasm32.
-bash-container = ["bash", "tokio"]
+# Docker/Podman container. Async on tokio (process + io-util). Does not build on
+# wasm32.
+bash-container = ["bash", "tokio", "tokio/process", "tokio/io-util"]
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
@@ -368,6 +369,11 @@ doc-scrape-examples = true
 [[example]]
 name = "interleaved_thinking"
 required-features = ["client", "derive"]
+doc-scrape-examples = true
+
+[[example]]
+name = "bash"
+required-features = ["client", "bash-container"]
 doc-scrape-examples = true
 
 # See also the `chat` example in the root of the repository.
