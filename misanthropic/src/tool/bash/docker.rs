@@ -14,6 +14,7 @@
 //! Egress isolation (an internal network + a trusted `bashd relay` sidecar) and
 //! home backup/restore are follow-ups.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,6 +73,8 @@ pub struct DockerSandbox {
     // Runtime state, populated by `start`.
     container: Option<String>,
     http: Option<Http>,
+    /// Per-background-job read cursor (byte offset) for `poll`/`wait`.
+    cursors: HashMap<u64, u64>,
 }
 
 impl DockerSandbox {
@@ -90,6 +93,7 @@ impl DockerSandbox {
             bashd_path: None,
             container: None,
             http: None,
+            cursors: HashMap::new(),
         }
     }
 
@@ -390,16 +394,22 @@ impl DockerSandbox {
         Ok((Http { client, base }, ready))
     }
 
+    /// The HTTP client + base URL, cloned so callers needn't hold a `self`
+    /// borrow across an `.await` (the cursor updates take `&mut self`).
+    fn endpoint(&self) -> Result<(reqwest::Client, String), BashError> {
+        let http = self.http.as_ref().ok_or(BashError::NotStarted)?;
+        Ok((http.client.clone(), http.base.clone()))
+    }
+
     /// Send one [`Command`] over HTTP and aggregate its SSE stream into an
     /// [`ExecResult`].
     async fn request(
         &self,
         command: BashCommand,
     ) -> Result<ExecResult, BashError> {
-        let http = self.http.as_ref().ok_or(BashError::NotStarted)?;
-        let resp = http
-            .client
-            .post(format!("{}/run", http.base))
+        let (client, base) = self.endpoint()?;
+        let resp = client
+            .post(format!("{base}/run"))
             .json(&command)
             .send()
             .await
@@ -450,6 +460,62 @@ impl BashSandbox for DockerSandbox {
         command: BashCommand,
     ) -> Result<ExecResult, BashError> {
         self.request(command).await
+    }
+
+    async fn poll(&mut self, job: u64) -> Result<ExecResult, BashError> {
+        let (client, base) = self.endpoint()?;
+        let cursor = self.cursors.get(&job).copied().unwrap_or(0);
+        let resp = client
+            .get(format!("{base}/jobs/{job}?cursor={cursor}"))
+            .send()
+            .await
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+        let result = aggregate(resp).await?;
+        if let Some(cursor) = result.cursor {
+            self.cursors.insert(job, cursor);
+        }
+        Ok(result)
+    }
+
+    async fn wait(
+        &mut self,
+        job: u64,
+        timeout: Option<Duration>,
+    ) -> Result<ExecResult, BashError> {
+        let (client, base) = self.endpoint()?;
+        let cursor = self.cursors.get(&job).copied().unwrap_or(0);
+        let mut url = format!("{base}/jobs/{job}/wait?cursor={cursor}");
+        if let Some(timeout) = timeout {
+            url.push_str(&format!("&timeout={}", timeout.as_secs()));
+        }
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+        let result = aggregate(resp).await?;
+        if let Some(cursor) = result.cursor {
+            self.cursors.insert(job, cursor);
+        }
+        Ok(result)
+    }
+
+    async fn kill(&mut self, job: u64) -> Result<(), BashError> {
+        let (client, base) = self.endpoint()?;
+        let resp = client
+            .post(format!("{base}/jobs/{job}/kill"))
+            .send()
+            .await
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+        let outcome: Outcome = resp
+            .json()
+            .await
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+        if let Some(error) = outcome.error {
+            return Err(BashError::Protocol(error.message));
+        }
+        self.cursors.remove(&job);
+        Ok(())
     }
 
     async fn restart(&mut self) -> Result<(), BashError> {
@@ -508,6 +574,7 @@ async fn aggregate(resp: reqwest::Response) -> Result<ExecResult, BashError> {
                 result.truncated = outcome.truncated;
                 result.job = outcome.job;
                 result.advice = outcome.advice;
+                result.cursor = outcome.cursor;
             }
             break;
         }
@@ -636,6 +703,14 @@ mod tests {
         })
     }
 
+    fn run_bg(cmd: &str) -> crate::tool::bash::Command {
+        crate::tool::bash::Command::Known(crate::tool::bash::Known::Run {
+            command: cmd.to_string().into(),
+            background: Some(true),
+            timeout_secs: None,
+        })
+    }
+
     /// End-to-end: provision an Alpine image with a non-root user, run the
     /// network-isolated container, inject + exec bashd, run real commands, and
     /// tear it all down. Deterministic (no model). Skips if Docker or a linux
@@ -678,6 +753,41 @@ mod tests {
         // NB: egress is currently *open* (the container shares the default
         // bridge so its port can be published). Egress isolation — an internal
         // network + a trusted `bashd relay` sidecar — is a follow-up.
+
+        // Background: launch a job, poll partial output, then wait it to done.
+        let receipt = sandbox
+            .exec(run_bg("for i in 1 2 3; do echo line $i; sleep 1; done"))
+            .await
+            .unwrap();
+        let job = receipt.job.expect("background job id");
+        assert!(receipt.running, "background job should report running");
+
+        // A poll mid-flight returns some output and still-running status.
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let partial = sandbox.poll(job).await.unwrap();
+        assert!(partial.stdout.contains("line 1"), "{:?}", partial.stdout);
+
+        // wait() blocks until completion; the soft timeout is well beyond ~3s.
+        let done = sandbox
+            .wait(job, Some(std::time::Duration::from_secs(15)))
+            .await
+            .unwrap();
+        assert!(!done.running, "job should be finished");
+        assert!(done.stdout.contains("line 3"), "{:?}", done.stdout);
+
+        // Kill: start a long background job, then stop it.
+        let job = sandbox
+            .exec(run_bg("sleep 30"))
+            .await
+            .unwrap()
+            .job
+            .expect("job id");
+        sandbox.kill(job).await.expect("kill");
+        let after = sandbox
+            .wait(job, Some(std::time::Duration::from_secs(5)))
+            .await
+            .unwrap();
+        assert!(!after.running, "killed job should be finished");
 
         sandbox.restart().await.expect("restart");
         sandbox.teardown().await.expect("teardown");

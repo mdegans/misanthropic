@@ -25,6 +25,7 @@
 //! [`Use`]: crate::tool::Use
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -315,6 +316,9 @@ pub struct ExecResult {
     pub job: Option<u64>,
     /// Model-facing steering from the daemon.
     pub advice: Option<String>,
+    /// On a `poll`/`wait` result: the read cursor to send on the next poll
+    /// (host bookkeeping — not rendered to the model).
+    pub cursor: Option<u64>,
 }
 
 impl ExecResult {
@@ -392,9 +396,26 @@ pub trait BashSandbox: Send {
     /// backup, and complete the [`Ready`] handshake.
     async fn start(&mut self) -> Result<Ready, BashError>;
 
-    /// Run one [`Command`] in the session, returning the aggregated result.
+    /// Run one [`Command`] in the session, returning the aggregated result. A
+    /// `Run` with `background: true` returns immediately with the job id set on
+    /// [`ExecResult::job`].
     async fn exec(&mut self, command: Command)
     -> Result<ExecResult, BashError>;
+
+    /// Poll a background job: new output since the host's cursor, plus
+    /// running/exit status.
+    async fn poll(&mut self, job: u64) -> Result<ExecResult, BashError>;
+
+    /// Block until a background job finishes (or the soft `timeout` elapses,
+    /// after which it returns the output so far with `running: true`).
+    async fn wait(
+        &mut self,
+        job: u64,
+        timeout: Option<Duration>,
+    ) -> Result<ExecResult, BashError>;
+
+    /// Signal a background job's process group (TERM→grace→KILL).
+    async fn kill(&mut self, job: u64) -> Result<(), BashError>;
 
     /// Reset the session (a fresh shell). At this layer `restart` may *also*
     /// drop a borked home volume for a clean start.
@@ -483,25 +504,58 @@ impl<S: BashSandbox> Tool for BashTool<S> {
             }
         };
 
-        // `restart` routes to the sandbox layer (it may drop a borked home),
-        // not into the daemon as a command.
-        if let Command::Known(Known::Restart { .. }) = &command {
-            return match self.sandbox.restart().await {
-                Ok(()) => {
-                    crate::tool::Result::new(id, "bash session restarted")
+        match command {
+            // `restart` routes to the sandbox layer (it may drop a borked
+            // home), not into the daemon as a command.
+            Command::Known(Known::Restart { .. }) => {
+                match self.sandbox.restart().await {
+                    Ok(()) => {
+                        crate::tool::Result::new(id, "bash session restarted")
+                    }
+                    Err(e) => {
+                        crate::tool::Result::new(id, e.to_string()).error()
+                    }
                 }
-                Err(e) => crate::tool::Result::new(id, e.to_string()).error(),
-            };
-        }
-
-        match self.sandbox.exec(command).await {
-            Ok(result) => {
-                let is_error = result.timed_out;
-                let reply = crate::tool::Result::new(id, result.render());
-                if is_error { reply.error() } else { reply }
             }
-            Err(e) => crate::tool::Result::new(id, e.to_string()).error(),
+            // `poll`/`kill` address a background job by id, via their own
+            // endpoints rather than the run stream.
+            Command::Known(Known::Poll { poll }) => {
+                render(id, self.sandbox.poll(poll).await)
+            }
+            Command::Known(Known::Kill { kill }) => {
+                match self.sandbox.kill(kill).await {
+                    Ok(()) => crate::tool::Result::new(
+                        id,
+                        format!("killed background job {kill}"),
+                    ),
+                    Err(e) => {
+                        crate::tool::Result::new(id, e.to_string()).error()
+                    }
+                }
+            }
+            // `Run` (foreground or background) and anything unknown go to the
+            // run endpoint.
+            other => render(id, self.sandbox.exec(other).await),
         }
+    }
+}
+
+/// Render an [`ExecResult`] (or error) into a model-facing
+/// [`tool::Result`](crate::tool::Result); a timeout is surfaced as an error.
+fn render(
+    id: Cow<'static, str>,
+    result: std::result::Result<ExecResult, BashError>,
+) -> crate::tool::Result {
+    match result {
+        Ok(result) => {
+            let reply = crate::tool::Result::new(id, result.render());
+            if result.timed_out {
+                reply.error()
+            } else {
+                reply
+            }
+        }
+        Err(e) => crate::tool::Result::new(id, e.to_string()).error(),
     }
 }
 
@@ -665,6 +719,7 @@ mod tests {
         started: bool,
         torn_down: bool,
         restarts: usize,
+        kills: usize,
     }
 
     #[async_trait::async_trait]
@@ -693,6 +748,28 @@ mod tests {
                 exit: Some(0),
                 ..Default::default()
             })
+        }
+        async fn poll(&mut self, job: u64) -> Result<ExecResult, BashError> {
+            Ok(ExecResult {
+                stdout: format!("output of job {job}"),
+                exit: Some(0),
+                ..Default::default()
+            })
+        }
+        async fn wait(
+            &mut self,
+            job: u64,
+            _timeout: Option<Duration>,
+        ) -> Result<ExecResult, BashError> {
+            Ok(ExecResult {
+                stdout: format!("job {job} done"),
+                exit: Some(0),
+                ..Default::default()
+            })
+        }
+        async fn kill(&mut self, _job: u64) -> Result<(), BashError> {
+            self.kills += 1;
+            Ok(())
         }
         async fn restart(&mut self) -> Result<(), BashError> {
             self.restarts += 1;
@@ -736,6 +813,32 @@ mod tests {
             .await;
         assert!(!restarted.is_error);
         assert_eq!(tool.sandbox().restarts, 1);
+
+        // `poll` routes to the sandbox and renders its output.
+        let polled = tool
+            .call(
+                Use::new("bash", serde_json::json!({ "poll": 7 }))
+                    .with_id("u3"),
+            )
+            .await;
+        assert!(!polled.is_error, "{}", polled.content);
+        assert!(polled.content.to_string().contains("job 7"));
+
+        // `kill` routes to the sandbox layer.
+        let killed = tool
+            .call(
+                Use::new("bash", serde_json::json!({ "kill": 7 }))
+                    .with_id("u4"),
+            )
+            .await;
+        assert!(!killed.is_error);
+        assert!(
+            killed
+                .content
+                .to_string()
+                .contains("killed background job 7")
+        );
+        assert_eq!(tool.sandbox().kills, 1);
 
         tool.on_teardown(&mut prompt).await.unwrap();
         assert!(tool.sandbox().torn_down);
