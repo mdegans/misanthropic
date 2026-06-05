@@ -9,7 +9,7 @@
 //! unsupported.
 
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -23,6 +23,7 @@ use nix::sys::signal::{Signal, killpg};
 use nix::unistd::Pid;
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 
 /// A persistent bash session. Holds the working directory it carries across
 /// commands (when `persist_cwd` is on) and the limits applied to each run.
@@ -110,7 +111,8 @@ impl Session {
         }
     }
 
-    /// Run one foreground command to completion, streaming its output.
+    /// Run one foreground command to completion, streaming its output, then
+    /// send the terminal [`Outcome`]. Delegates to the shared [`run_command`].
     async fn run(
         &mut self,
         id: u64,
@@ -131,127 +133,226 @@ impl Session {
                 self.seq
             ))
         });
-        let script = match &cwd_path {
-            Some(p) => format!(
-                "{command}\n__bashd_ec=$?; pwd > {} 2>/dev/null; exit $__bashd_ec",
-                single_quote(&p.to_string_lossy())
-            ),
-            None => command.to_string(),
-        };
 
-        // Build via std so we can set the process group with the *safe*
-        // `process_group(0)` (no `pre_exec`/unsafe), then adopt into tokio.
-        use std::os::unix::process::CommandExt;
-        let mut std_cmd = std::process::Command::new(&self.shell);
-        std_cmd
-            .arg("-lc")
-            .arg(&script)
-            .current_dir(&self.cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        std_cmd.process_group(0);
-        let mut cmd = tokio::process::Command::from(std_cmd);
-        cmd.kill_on_drop(true);
-
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                let _ = tx.send(Reply::Outcome(Outcome {
-                    id,
-                    error: Some(ProtocolError {
-                        kind: ErrorKind::Spawn,
-                        message: format!(
-                            "failed to spawn {:?}: {e}",
-                            self.shell
-                        ),
-                    }),
-                    ..Default::default()
-                }));
-                return;
-            }
-        };
-        // The child leads its own group (pgid == pid), so signalling the pgid
-        // reaches the whole tree it spawns.
-        let pgid = child.id().map(|p| Pid::from_raw(p as i32));
-
-        let budget = Arc::new(AtomicUsize::new(self.max_output_bytes));
-        let stdout = child.stdout.take().expect("stdout is piped");
-        let stderr = child.stderr.take().expect("stderr is piped");
-        let out_task = tokio::spawn(read_stream(
+        let done = run_command(
+            RunParams {
+                shell: &self.shell,
+                cwd: &self.cwd,
+                command,
+                timeout_secs,
+                max_output_bytes: self.max_output_bytes,
+                grace: self.grace,
+                cwd_capture: cwd_path.as_deref(),
+            },
             id,
-            Stream::Stdout,
-            stdout,
-            tx.clone(),
-            budget.clone(),
-        ));
-        let err_task = tokio::spawn(read_stream(
-            id,
-            Stream::Stderr,
-            stderr,
-            tx.clone(),
-            budget.clone(),
-        ));
+            tx,
+            None,
+        )
+        .await;
 
-        let mut timed_out = false;
-        let status = match timeout_secs {
-            Some(secs) if secs > 0 => {
-                let deadline = Duration::from_secs(secs);
-                match tokio::time::timeout(deadline, child.wait()).await {
-                    Ok(status) => status,
-                    Err(_) => {
-                        timed_out = true;
-                        if let Some(pgid) = pgid {
-                            let _ = killpg(pgid, Signal::SIGTERM);
-                        }
-                        match tokio::time::timeout(self.grace, child.wait())
-                            .await
-                        {
-                            Ok(status) => status,
-                            Err(_) => {
-                                if let Some(pgid) = pgid {
-                                    let _ = killpg(pgid, Signal::SIGKILL);
-                                }
-                                child.wait().await
-                            }
-                        }
-                    }
-                }
-            }
-            _ => child.wait().await,
-        };
-
-        // Both read tasks finish once the pipes hit EOF (the child is reaped),
-        // so all chunks are enqueued before we send the terminal Outcome.
-        let out_truncated = out_task.await.unwrap_or(false);
-        let err_truncated = err_task.await.unwrap_or(false);
-
-        let exit = status.ok().and_then(|s| s.code());
-
-        if let Some(p) = &cwd_path {
-            if let Ok(contents) = std::fs::read_to_string(p) {
-                let trimmed = contents.trim();
-                if !trimmed.is_empty() {
-                    let candidate = PathBuf::from(trimmed);
-                    if candidate.is_dir() {
-                        self.cwd = candidate;
-                    }
-                }
-            }
-            let _ = std::fs::remove_file(p);
+        if let Some(error) = done.spawn_error {
+            let _ = tx.send(Reply::Outcome(Outcome {
+                id,
+                error: Some(error),
+                ..Default::default()
+            }));
+            return;
         }
-
+        if let Some(cwd) = done.new_cwd {
+            self.cwd = cwd;
+        }
         let _ = tx.send(Reply::Outcome(Outcome {
             id,
-            exit,
+            exit: done.exit,
             running: false,
-            timed_out,
-            truncated: out_truncated || err_truncated,
-            job: None,
-            advice: None,
-            cursor: None,
-            error: None,
+            timed_out: done.timed_out,
+            truncated: done.truncated,
+            ..Default::default()
         }));
+    }
+}
+
+/// Where and how to run one command, independent of session bookkeeping — so the
+/// stdio loop ([`Session::run`]) and the HTTP server ([`crate::server`]) share
+/// one runner.
+pub(crate) struct RunParams<'a> {
+    /// The shell to drive, run as a login shell (`-lc`).
+    pub shell: &'a Path,
+    /// The directory the command starts in.
+    pub cwd: &'a Path,
+    /// The shell command to run.
+    pub command: &'a str,
+    /// Kill (and report a timeout) after this many seconds, if `Some(>0)`.
+    pub timeout_secs: Option<u64>,
+    /// Hard per-command output cap before truncation.
+    pub max_output_bytes: usize,
+    /// Grace period after SIGTERM before SIGKILL.
+    pub grace: Duration,
+    /// When `Some`, capture the command's final `$PWD` to this private path.
+    pub cwd_capture: Option<&'a Path>,
+}
+
+/// The terminal facts of a [`run_command`]; the caller composes the [`Outcome`]
+/// (it owns the `job`/`cursor`/`advice` fields).
+pub(crate) struct RunDone {
+    /// The exit code, if the process exited normally.
+    pub exit: Option<i32>,
+    /// Whether the command was killed for exceeding its timeout.
+    pub timed_out: bool,
+    /// Whether output was truncated at the byte cap.
+    pub truncated: bool,
+    /// The captured final cwd, if `cwd_capture` was set and a valid directory.
+    pub new_cwd: Option<PathBuf>,
+    /// A spawn failure, if the child never started.
+    pub spawn_error: Option<ProtocolError>,
+}
+
+/// Run one command to completion, streaming tagged [`Chunk`]s on `tx`. Returns
+/// the terminal facts. If `cancel` fires (the consumer dropped — e.g. an SSE
+/// client disconnected), the process group is signalled and reaped early.
+pub(crate) async fn run_command(
+    params: RunParams<'_>,
+    id: u64,
+    tx: &UnboundedSender<Reply>,
+    cancel: Option<oneshot::Receiver<()>>,
+) -> RunDone {
+    let script = match params.cwd_capture {
+        Some(p) => format!(
+            "{}\n__bashd_ec=$?; pwd > {} 2>/dev/null; exit $__bashd_ec",
+            params.command,
+            single_quote(&p.to_string_lossy())
+        ),
+        None => params.command.to_string(),
+    };
+
+    // Build via std so we can set the process group with the *safe*
+    // `process_group(0)` (no `pre_exec`/unsafe), then adopt into tokio.
+    use std::os::unix::process::CommandExt;
+    let mut std_cmd = std::process::Command::new(params.shell);
+    std_cmd
+        .arg("-lc")
+        .arg(&script)
+        .current_dir(params.cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    std_cmd.process_group(0);
+    let mut cmd = tokio::process::Command::from(std_cmd);
+    cmd.kill_on_drop(true);
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return RunDone {
+                exit: None,
+                timed_out: false,
+                truncated: false,
+                new_cwd: None,
+                spawn_error: Some(ProtocolError {
+                    kind: ErrorKind::Spawn,
+                    message: format!("failed to spawn {:?}: {e}", params.shell),
+                }),
+            };
+        }
+    };
+    // The child leads its own group (pgid == pid), so signalling the pgid
+    // reaches the whole tree it spawns.
+    let pgid = child.id().map(|p| Pid::from_raw(p as i32));
+
+    let budget = Arc::new(AtomicUsize::new(params.max_output_bytes));
+    let stdout = child.stdout.take().expect("stdout is piped");
+    let stderr = child.stderr.take().expect("stderr is piped");
+    let out_task = tokio::spawn(read_stream(
+        id,
+        Stream::Stdout,
+        stdout,
+        tx.clone(),
+        budget.clone(),
+    ));
+    let err_task = tokio::spawn(read_stream(
+        id,
+        Stream::Stderr,
+        stderr,
+        tx.clone(),
+        budget.clone(),
+    ));
+
+    let mut timed_out = false;
+    let status =
+        wait_for(&mut child, pgid, &params, cancel, &mut timed_out).await;
+
+    // Both read tasks finish once the pipes hit EOF (the child is reaped),
+    // so all chunks are enqueued before the caller sends the terminal Outcome.
+    let out_truncated = out_task.await.unwrap_or(false);
+    let err_truncated = err_task.await.unwrap_or(false);
+    let exit = status.ok().and_then(|s| s.code());
+
+    let new_cwd = params.cwd_capture.and_then(|p| {
+        let captured = std::fs::read_to_string(p).ok().and_then(|c| {
+            let trimmed = c.trim();
+            (!trimmed.is_empty())
+                .then(|| PathBuf::from(trimmed))
+                .filter(|d| d.is_dir())
+        });
+        let _ = std::fs::remove_file(p);
+        captured
+    });
+
+    RunDone {
+        exit,
+        timed_out,
+        truncated: out_truncated || err_truncated,
+        new_cwd,
+        spawn_error: None,
+    }
+}
+
+/// Await the child, honoring an optional timeout and an optional cancel signal.
+/// On either, signal the group SIGTERM→grace→SIGKILL and reap. Sets `timed_out`
+/// when it was the timeout (not a cancel) that fired.
+async fn wait_for(
+    child: &mut tokio::process::Child,
+    pgid: Option<Pid>,
+    params: &RunParams<'_>,
+    cancel: Option<oneshot::Receiver<()>>,
+    timed_out: &mut bool,
+) -> std::io::Result<std::process::ExitStatus> {
+    let timeout = async {
+        match params.timeout_secs {
+            Some(secs) if secs > 0 => {
+                tokio::time::sleep(Duration::from_secs(secs)).await
+            }
+            _ => std::future::pending::<()>().await,
+        }
+    };
+    let cancelled = async {
+        match cancel {
+            Some(rx) => {
+                let _ = rx.await;
+            }
+            None => std::future::pending::<()>().await,
+        }
+    };
+    tokio::pin!(timeout, cancelled);
+
+    tokio::select! {
+        status = child.wait() => return status,
+        _ = &mut timeout => *timed_out = true,
+        _ = &mut cancelled => {}
+    }
+
+    // Timed out or cancelled: TERM, grace, KILL, reap.
+    if let Some(pgid) = pgid {
+        let _ = killpg(pgid, Signal::SIGTERM);
+    }
+    match tokio::time::timeout(params.grace, child.wait()).await {
+        Ok(status) => status,
+        Err(_) => {
+            if let Some(pgid) = pgid {
+                let _ = killpg(pgid, Signal::SIGKILL);
+            }
+            child.wait().await
+        }
     }
 }
 

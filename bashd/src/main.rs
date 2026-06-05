@@ -24,6 +24,9 @@ fn main() {
 mod session;
 
 #[cfg(unix)]
+mod server;
+
+#[cfg(unix)]
 use std::path::PathBuf;
 #[cfg(unix)]
 use std::time::Duration;
@@ -74,12 +77,37 @@ struct Args {
     /// Seconds to wait after SIGTERM before SIGKILL on a timed-out command.
     #[arg(long, default_value_t = 5)]
     grace_secs: u64,
+
+    /// Serve the HTTP/SSE front-end on this address instead of the stdio
+    /// protocol (e.g. `0.0.0.0:9099`). The host reaches it via a published
+    /// `127.0.0.1` port.
+    #[arg(long)]
+    http: Option<std::net::SocketAddr>,
 }
 
 #[cfg(unix)]
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
+
+    // HTTP/SSE front-end: serve and return. The stdio path below is the legacy
+    // transport, kept until the host fully moves over.
+    if let Some(addr) = args.http {
+        let listener = tokio::net::TcpListener::bind(addr).await?;
+        eprintln!("bashd: serving HTTP on {}", listener.local_addr()?);
+        server::serve(
+            listener,
+            server::ServeConfig {
+                shell: args.shell,
+                workdir: args.workdir,
+                persist_cwd: args.persist_cwd,
+                max_output_bytes: args.max_output_bytes,
+                grace: Duration::from_secs(args.grace_secs),
+            },
+        )
+        .await?;
+        return Ok(());
+    }
 
     // A single writer task owns stdout, so the two per-command stream readers
     // (and the main loop) never interleave a half-written line.
