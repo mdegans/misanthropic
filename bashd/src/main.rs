@@ -1,12 +1,9 @@
 //! `bashd` — a persistent-session bash daemon for the misanthropic bash tool.
 //!
-//! It runs *inside* a sandbox container, owns one persistent shell session, and
-//! speaks the [`misanthropic::tool::bash`] newline-delimited JSON protocol over
-//! stdio: it reads a [`Request`] per line on stdin and writes [`Reply`] lines on
-//! stdout. **stdout is protocol-only** — all diagnostics go to stderr, so they
-//! can never corrupt a frame.
-//!
-//! See [`session`] for how commands are executed.
+//! It runs *inside* a sandbox container, owns the session, and serves the
+//! [`misanthropic::tool::bash`] HTTP/SSE protocol (see [`server`]) on a TCP port
+//! the host reaches via a published `127.0.0.1` mapping. See [`session`] for how
+//! individual commands are executed.
 //!
 //! bashd is **unix-only** (it manages process groups and signals). On non-unix
 //! it compiles to a stub `main` that exits with an error, so the workspace still
@@ -21,10 +18,9 @@ fn main() {
 }
 
 #[cfg(unix)]
-mod session;
-
-#[cfg(unix)]
 mod server;
+#[cfg(unix)]
+mod session;
 
 #[cfg(unix)]
 use std::path::PathBuf;
@@ -33,15 +29,6 @@ use std::time::Duration;
 
 #[cfg(unix)]
 use clap::Parser;
-#[cfg(unix)]
-use misanthropic::tool::bash::{PROTOCOL_VERSION, Ready, Reply, Request};
-#[cfg(unix)]
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-#[cfg(unix)]
-use tokio::sync::mpsc;
-
-#[cfg(unix)]
-use session::Session;
 
 /// Command-line configuration. The host (`DockerSandbox`) sets these when it
 /// launches the daemon inside the container.
@@ -53,6 +40,11 @@ use session::Session;
     about = "Persistent-session bash daemon for the misanthropic bash tool."
 )]
 struct Args {
+    /// Serve the HTTP/SSE front-end on this address (e.g. `0.0.0.0:9099`). The
+    /// host reaches it via a published `127.0.0.1` port.
+    #[arg(long)]
+    http: std::net::SocketAddr,
+
     /// Persist the working directory across commands. Off (the default) starts
     /// each command in `--workdir`; on captures each command's final cwd and
     /// reuses it for the next. Off is race-safe under parallel calls.
@@ -77,12 +69,6 @@ struct Args {
     /// Seconds to wait after SIGTERM before SIGKILL on a timed-out command.
     #[arg(long, default_value_t = 5)]
     grace_secs: u64,
-
-    /// Serve the HTTP/SSE front-end on this address instead of the stdio
-    /// protocol (e.g. `0.0.0.0:9099`). The host reaches it via a published
-    /// `127.0.0.1` port.
-    #[arg(long)]
-    http: Option<std::net::SocketAddr>,
 }
 
 #[cfg(unix)]
@@ -90,78 +76,18 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
-    // HTTP/SSE front-end: serve and return. The stdio path below is the legacy
-    // transport, kept until the host fully moves over.
-    if let Some(addr) = args.http {
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        eprintln!("bashd: serving HTTP on {}", listener.local_addr()?);
-        server::serve(
-            listener,
-            server::ServeConfig {
-                shell: args.shell,
-                workdir: args.workdir,
-                persist_cwd: args.persist_cwd,
-                max_output_bytes: args.max_output_bytes,
-                grace: Duration::from_secs(args.grace_secs),
-            },
-        )
-        .await?;
-        return Ok(());
-    }
-
-    // A single writer task owns stdout, so the two per-command stream readers
-    // (and the main loop) never interleave a half-written line.
-    let (tx, mut rx) = mpsc::unbounded_channel::<Reply>();
-    let writer = tokio::spawn(async move {
-        let mut out = tokio::io::stdout();
-        while let Some(reply) = rx.recv().await {
-            match serde_json::to_string(&reply) {
-                Ok(line) => {
-                    if out.write_all(line.as_bytes()).await.is_err()
-                        || out.write_all(b"\n").await.is_err()
-                    {
-                        break;
-                    }
-                    let _ = out.flush().await;
-                }
-                Err(e) => eprintln!("bashd: failed to serialize reply: {e}"),
-            }
-        }
-    });
-
-    // Handshake first, so the host can validate the protocol version.
-    tx.send(Reply::Ready {
-        ready: Ready {
-            protocol: PROTOCOL_VERSION,
-            bashd: env!("CARGO_PKG_VERSION").into(),
-            shell: args.shell.display().to_string(),
+    let listener = tokio::net::TcpListener::bind(args.http).await?;
+    eprintln!("bashd: serving HTTP on {}", listener.local_addr()?);
+    server::serve(
+        listener,
+        server::ServeConfig {
+            shell: args.shell,
+            workdir: args.workdir,
             persist_cwd: args.persist_cwd,
+            max_output_bytes: args.max_output_bytes,
+            grace: Duration::from_secs(args.grace_secs),
         },
-    })?;
-
-    let mut session = Session::new(
-        args.workdir,
-        args.shell,
-        args.persist_cwd,
-        args.max_output_bytes,
-        Duration::from_secs(args.grace_secs),
-    );
-
-    // Serial FIFO: handle each request fully before reading the next. (Parallel
-    // / background execution is a later phase.)
-    let mut lines = BufReader::new(tokio::io::stdin()).lines();
-    while let Some(line) = lines.next_line().await? {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        match serde_json::from_str::<Request>(line) {
-            Ok(req) => session.handle(req, &tx).await,
-            Err(e) => eprintln!("bashd: ignoring unparseable request: {e}"),
-        }
-    }
-
-    drop(tx);
-    let _ = writer.await;
+    )
+    .await?;
     Ok(())
 }

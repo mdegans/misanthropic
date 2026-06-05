@@ -6,9 +6,8 @@
 //! [`input`](Use::input) is a [`Command`], and *you* run it — in a **sandbox**,
 //! not a filesystem jail. Because `docker exec` per command loses the working
 //! directory and environment, the sandbox runs a tiny **`bashd`** daemon inside
-//! the container that owns a persistent session and speaks the newline-delimited
-//! JSON protocol in this module ([`Request`] in, [`Reply`] out) over the
-//! container's stdio.
+//! the container that owns a persistent session and serves the HTTP/SSE protocol
+//! in this module, reached over a published `127.0.0.1` port.
 //!
 //! This module is sandbox-agnostic: it provides the typed [`Command`] vocabulary,
 //! the wire protocol the daemon and host share, the [`BashSandbox`] trait, and
@@ -44,8 +43,7 @@ pub use docker::DockerSandbox;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// A typed bash command, deserialized from a bash [`Use`]'s [`input`](Use::input)
-/// — and the payload the host sends to `bashd` (it doubles as the wire request,
-/// see [`Request`]).
+/// — and the JSON body the host `POST`s to `bashd`'s `/run`.
 ///
 /// A known/unknown union (à la [`model::Id`]/[`Caller`]): commands this crate
 /// types land in [`Known`]; anything else round-trips through
@@ -125,27 +123,15 @@ impl TryFrom<serde_json::Value> for Command {
 }
 
 // ---------------------------------------------------------------------------
-// `bashd` wire protocol (host <-> daemon, newline-delimited JSON).
-// This is *our* protocol, not Anthropic's — designed clean, round-trip tested.
+// `bashd` reply framing — *our* protocol, not Anthropic's. It is `bashd`'s
+// internal reply representation, mapped onto SSE events (see [`event`]) and
+// background-job files. Designed clean, round-trip tested.
 // ---------------------------------------------------------------------------
 
-/// Host→`bashd`: a correlation `id` wrapping a [`Command`]. One JSON object per
-/// line. The command's fields are flattened alongside `id`, e.g.
-/// `{"id":1,"command":"ls -la"}`.
-#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
-#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Request {
-    /// Correlates this request with its [`Reply`]s.
-    pub id: u64,
-    /// The command to run.
-    #[serde(flatten)]
-    pub command: Command,
-}
-
-/// `bashd`→host, one JSON object per line. [`Ready`](Reply::Ready) is emitted
-/// once at startup; then, per [`Request`], zero or more [`Chunk`](Reply::Chunk)s
-/// of streamed output (tagged by [`Stream`]) followed by exactly one terminal
-/// [`Outcome`](Reply::Outcome).
+/// `bashd`'s reply representation: zero or more [`Chunk`](Reply::Chunk)s of
+/// streamed output (tagged by [`Stream`]) followed by exactly one terminal
+/// [`Outcome`](Reply::Outcome). [`Ready`](Reply::Ready) is the (bare) `GET /`
+/// handshake.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(untagged)]
@@ -617,15 +603,6 @@ mod tests {
             let cmd: Command = serde_json::from_str(raw).unwrap();
             assert_eq!(serde_json::to_string(&cmd).unwrap(), raw, "{raw}");
         }
-    }
-
-    #[test]
-    fn request_flattens_command_with_id() {
-        let raw = r#"{"id":1,"command":"echo hi"}"#;
-        let req: Request = serde_json::from_str(raw).unwrap();
-        assert_eq!(req.id, 1);
-        assert!(matches!(req.command, Command::Known(Known::Run { .. })));
-        assert_eq!(serde_json::to_string(&req).unwrap(), raw);
     }
 
     #[test]
