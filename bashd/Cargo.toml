@@ -1,0 +1,32 @@
+[package]
+name = "bashd"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+homepage.workspace = true
+repository.workspace = true
+license.workspace = true
+description = "Persistent-session bash daemon for the misanthropic bash tool. Runs inside a sandbox container and speaks the misanthropic::tool::bash NDJSON protocol over stdio."
+
+[dependencies]
+# Shared wire types (Request/Reply/Ready/Chunk/Outcome/Command). No client/
+# batch — just the `bash` types, so the daemon stays small.
+misanthropic = { path = "../misanthropic", default-features = false, features = [
+    "bash",
+] }
+tokio = { version = "1", features = [
+    "rt-multi-thread",
+    "macros",
+    "process",
+    "io-util",
+    "io-std",
+    "time",
+    "sync",
+] }
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+# Safe wrappers for killpg/Signal — no `unsafe` in this crate.
+nix = { version = "0.29", features = ["signal"] }
+
+[lints.rust]
+unsafe_code = "forbid"

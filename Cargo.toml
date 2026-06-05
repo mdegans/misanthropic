@@ -6,6 +6,7 @@ members = [
     "chat/backend",
     "chat/frontend",
     "chat/model",
+    "bashd",
 ]
 
 # Shared package metadata. Members opt in per-field with `version.workspace =
