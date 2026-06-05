@@ -1377,6 +1377,19 @@ impl Prompt {
     {
         tool.on_turn(self).await
     }
+
+    /// Tear down a [`Tool`], releasing resources it acquired in
+    /// [`Tool::on_init`]. Call this when the conversation ends; it invokes
+    /// [`Tool::on_teardown`].
+    pub async fn teardown_tool<T>(
+        &mut self,
+        tool: &mut T,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+    where
+        T: ?Sized + crate::tool::Tool,
+    {
+        tool.on_teardown(self).await
+    }
 }
 
 /// Error when [`extend`]ing a [`Prompt`].

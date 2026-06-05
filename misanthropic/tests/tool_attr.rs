@@ -26,6 +26,7 @@ struct Reset {}
 struct Calc {
     acc: i64,
     inited: bool,
+    torn_down: bool,
 }
 
 #[tool(name = "Calc")]
@@ -50,6 +51,15 @@ impl Calc {
         _prompt: &mut Prompt,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.inited = true;
+        Ok(())
+    }
+
+    #[on_teardown]
+    async fn teardown(
+        &mut self,
+        _prompt: &mut Prompt,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.torn_down = true;
         Ok(())
     }
 
@@ -206,6 +216,16 @@ async fn on_init_hook_runs() {
 }
 
 #[tokio::test]
+async fn on_teardown_hook_runs() {
+    // The `#[on_teardown]`-tagged fn is forwarded through the generated
+    // `Methods`/`Tool` impls, just like `on_init`.
+    let mut calc = Typed(Calc::default());
+    let mut prompt = Prompt::default();
+    calc.on_teardown(&mut prompt).await.unwrap();
+    assert!(calc.0.torn_down);
+}
+
+#[tokio::test]
 async fn generic_tool_defaults_name_to_ident() {
     assert_eq!(<Holder as Methods>::NAME, "Holder");
     let mut holder = Typed(Holder::default());
@@ -227,7 +247,7 @@ async fn generic_tool_defaults_name_to_ident() {
 async fn save_and_load_round_trip() {
     let mut calc = Calc {
         acc: 42,
-        inited: false,
+        ..Default::default()
     };
     // `Calc` impls both `Tool` and `Methods` (they share these method names),
     // and both are in scope here, so qualify which one we mean.

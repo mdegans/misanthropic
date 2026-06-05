@@ -8,7 +8,8 @@
 //! - an `impl ToolArgs` for each method's `Args` type (name from the fn ident,
 //!   description from its doc comment);
 //! - one `impl Methods` collecting the wrappers and delegating any tagged
-//!   lifecycle hooks (`#[on_init]`/`#[on_turn]`/`#[save_json]`/`#[load_json]`).
+//!   lifecycle hooks
+//!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`).
 //!
 //! Generated code names everything by absolute `::misanthropic::…` path.
 
@@ -22,8 +23,14 @@ use syn::{
 use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
 
 /// Marker attributes recognized (and stripped) inside a `#[tool]` impl.
-const MARKERS: &[&str] =
-    &["method", "on_init", "on_turn", "save_json", "load_json"];
+const MARKERS: &[&str] = &[
+    "method",
+    "on_init",
+    "on_turn",
+    "on_teardown",
+    "save_json",
+    "load_json",
+];
 
 /// Expand `#[tool(attr)] item`.
 ///
@@ -225,6 +232,16 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
                 <Self as ::misanthropic::tool::Methods>::on_turn(self, prompt)
                     .await
             }
+
+            async fn on_teardown(
+                &mut self,
+                prompt: &mut ::misanthropic::Prompt,
+            ) -> ::core::result::Result<(), #box_err> {
+                <Self as ::misanthropic::tool::Methods>::on_teardown(
+                    self, prompt,
+                )
+                .await
+            }
         }
     })
 }
@@ -321,6 +338,7 @@ fn method_arg_type(sig: &Signature) -> syn::Result<Type> {
 struct Lifecycle {
     on_init: Option<Ident>,
     on_turn: Option<Ident>,
+    on_teardown: Option<Ident>,
     save_json: Option<Ident>,
     load_json: Option<Ident>,
 }
@@ -330,6 +348,7 @@ impl Lifecycle {
         let slot = match kind {
             "on_init" => &mut self.on_init,
             "on_turn" => &mut self.on_turn,
+            "on_teardown" => &mut self.on_teardown,
             "save_json" => &mut self.save_json,
             "load_json" => &mut self.load_json,
             _ => unreachable!("kind is one of MARKERS minus `method`"),
@@ -366,6 +385,16 @@ impl Lifecycle {
         if let Some(f) = &self.on_turn {
             out.push(quote! {
                 async fn on_turn(
+                    &mut self,
+                    prompt: &mut ::misanthropic::Prompt,
+                ) -> ::core::result::Result<(), #box_err> {
+                    self.#f(prompt).await
+                }
+            });
+        }
+        if let Some(f) = &self.on_teardown {
+            out.push(quote! {
+                async fn on_teardown(
                     &mut self,
                     prompt: &mut ::misanthropic::Prompt,
                 ) -> ::core::result::Result<(), #box_err> {

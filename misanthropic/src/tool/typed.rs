@@ -193,6 +193,13 @@ pub trait Methods: Send + Sized {
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
+    /// See [`Tool::on_teardown`].
+    async fn on_teardown(
+        &mut self,
+        _prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 }
 
 /// Namespace each of `tool`'s methods as `tool__method` for the wire, so
@@ -283,6 +290,13 @@ impl<T: Methods + Send> Tool for Typed<T> {
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.0.on_turn(prompt).await
+    }
+
+    async fn on_teardown(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.0.on_teardown(prompt).await
     }
 }
 

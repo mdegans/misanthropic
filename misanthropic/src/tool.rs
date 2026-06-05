@@ -876,6 +876,28 @@ pub trait Tool: Send {
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
     }
+
+    /// Called once when the tool is being torn down (e.g. at the end of a
+    /// conversation, via [`ToolBox::teardown`](crate::tool::ToolBox::teardown)
+    /// or [`Prompt::teardown_tool`]). Use this to release external resources a
+    /// tool acquired in [`on_init`](Self::on_init) — close a connection, stop a
+    /// subprocess, tear down a sandbox container.
+    ///
+    /// # Note:
+    /// - Unlike [`on_init`](Self::on_init), teardown is **best-effort**: a
+    ///   container's owner runs *every* tool's teardown even if an earlier one
+    ///   errors, so a single failure can't leak the rest. Return an error to
+    ///   report a problem, but don't rely on it halting other teardowns.
+    /// - There is no async [`Drop`]; an explicit teardown is the contract.
+    ///   Resource-owning tools may *also* keep a blocking `Drop` as a leak guard.
+    ///
+    /// [`Prompt::teardown_tool`]: crate::Prompt::teardown_tool
+    async fn on_teardown(
+        &mut self,
+        _prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Ok(())
+    }
 }
 
 static_assertions::assert_obj_safe!(Tool);

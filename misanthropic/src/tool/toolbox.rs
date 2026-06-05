@@ -267,6 +267,43 @@ impl ToolBox {
                 .into())
         }
     }
+
+    /// Tear down all tools in the toolbox — releasing external resources they
+    /// acquired in [`on_init`](crate::tool::Tool::on_init). Call this once when a
+    /// conversation ends.
+    ///
+    /// Unlike [`init_tools`](Self::init_tools), teardown is **best-effort**:
+    /// every tool is torn down even if an earlier one errors (so one failure
+    /// can't leak the rest), and the [`Prompt`] is **not** rolled back. Errors
+    /// are collected and joined into the returned message.
+    pub async fn teardown_tools(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let mut errors = Vec::new();
+
+        for tool in self.tool_name_to_tool.values_mut() {
+            #[cfg(feature = "log")]
+            log::debug!("Tearing down tool: {}", tool.name());
+
+            if let Err(e) = tool.on_teardown(prompt).await {
+                #[cfg(feature = "log")]
+                log::error!("Error tearing down tool {}: {}", tool.name(), e);
+                errors.push(e);
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors
+                .iter()
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+                .into())
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -466,6 +503,13 @@ impl Tool for ToolBox {
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         self.update_turn_context(prompt).await
+    }
+
+    async fn on_teardown(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.teardown_tools(prompt).await
     }
 }
 
@@ -717,5 +761,80 @@ mod tests {
         // store). It must load cleanly rather than erroring.
         let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
         toolbox.load_json(serde_json::Value::Null).await.unwrap();
+    }
+
+    /// A tool that records when it was torn down (via a shared counter) and can
+    /// be made to fail teardown, to exercise the best-effort-continue semantics.
+    struct TeardownTool {
+        torn_down: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        fail: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for TeardownTool {
+        fn name(&self) -> &str {
+            // Names must differ so both land in the box; suffix by `fail`.
+            if self.fail { "boom" } else { "ok" }
+        }
+        fn definitions(&self) -> Vec<MethodDef> {
+            let name = if self.fail { "boom__m" } else { "ok__m" };
+            vec![MethodDef::Custom(CustomMethodDef {
+                name: name.into(),
+                description: "t".into(),
+                schema: serde_json::json!({ "type": "object" }),
+                cache_control: None,
+                strict: None,
+                defer_loading: None,
+                allowed_callers: None,
+            })]
+        }
+        async fn call(&mut self, call: Use) -> Result {
+            Result::new(call.id, "called")
+        }
+        async fn on_teardown(
+            &mut self,
+            _prompt: &mut Prompt,
+        ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+        {
+            // Count the teardown *before* (maybe) erroring, so the test can see
+            // that a failing tool still ran and the others ran regardless.
+            self.torn_down
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.fail {
+                Err("teardown boom".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// `teardown_tools` is best-effort: every tool is torn down even when one
+    /// errors, the errors are surfaced, and the prompt is not rolled back.
+    #[tokio::test]
+    async fn test_teardown_best_effort_continue() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut toolbox = ToolBox::new()
+            .add(TeardownTool {
+                torn_down: count.clone(),
+                fail: true,
+            })
+            .add(TeardownTool {
+                torn_down: count.clone(),
+                fail: false,
+            });
+
+        let mut prompt = Prompt::default();
+        let before = prompt.clone();
+        let err = toolbox.teardown_tools(&mut prompt).await.unwrap_err();
+
+        // Both tools were torn down despite one failing (best-effort-continue).
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+        // The failure is surfaced...
+        assert!(err.to_string().contains("teardown boom"));
+        // ...and the prompt is untouched (no rollback step that could mutate it).
+        assert_eq!(prompt, before);
     }
 }
