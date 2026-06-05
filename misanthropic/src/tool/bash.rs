@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::{MethodDef, Tool, Use};
 
@@ -37,6 +38,10 @@ use super::{MethodDef, Tool, Use};
 pub mod docker;
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
 pub use docker::{DockerSandbox, Network};
+
+/// Ephemeral per-container PKI for the [`DockerSandbox`] ↔ `bashd` mTLS channel.
+#[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
+mod pki;
 
 /// The `bashd` wire-protocol version. Bumped on a breaking change; the host
 /// refuses a daemon whose [`Ready::protocol`] does not match.
@@ -274,6 +279,29 @@ pub mod event {
     pub const CHUNK: &str = "chunk";
     /// The terminal [`Outcome`](super::Outcome).
     pub const OUTCOME: &str = "outcome";
+}
+
+/// The mutual-TLS material `bashd` reads from **stdin** at startup — never argv,
+/// env, or disk. The host (`DockerSandbox`) generates an ephemeral per-container
+/// PKI, feeds this server half over the launch pipe (then closes it), and keeps
+/// the matching client identity to itself. Serialized as one JSON object.
+///
+/// Stdin is the deliberate channel: argv shows in `ps`/`docker inspect`, and env
+/// is logged *and* inherited by the very shell commands `bashd` runs as its
+/// children — either would hand the sandboxed payload the keys. The client
+/// private key never appears here, only the server identity and the CA public
+/// cert `bashd` checks the host's client cert against, so reading this grants at
+/// most the ability to *impersonate* `bashd`, never to drive it. Zeroized on
+/// drop on both ends.
+#[derive(Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
+pub struct TlsServerMaterial {
+    /// PEM: the server leaf certificate followed by the issuing CA — the chain
+    /// `bashd` presents to the host.
+    pub cert_chain_pem: String,
+    /// PEM: the server leaf's PKCS#8 private key.
+    pub key_pem: String,
+    /// PEM: the CA certificate `bashd` verifies the host's client cert against.
+    pub ca_pem: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +686,20 @@ mod tests {
     fn sse_event_names() {
         assert_eq!(event::CHUNK, "chunk");
         assert_eq!(event::OUTCOME, "outcome");
+    }
+
+    #[test]
+    fn tls_material_roundtrips() {
+        let json = serde_json::to_string(&TlsServerMaterial {
+            cert_chain_pem: "CERT\nCA".into(),
+            key_pem: "KEY".into(),
+            ca_pem: "CA".into(),
+        })
+        .unwrap();
+        let back: TlsServerMaterial = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.cert_chain_pem, "CERT\nCA");
+        assert_eq!(back.key_pem, "KEY");
+        assert_eq!(back.ca_pem, "CA");
     }
 
     #[test]

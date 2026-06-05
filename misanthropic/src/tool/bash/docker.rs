@@ -22,8 +22,11 @@ use std::time::{Duration, Instant};
 
 use eventsource_stream::Eventsource;
 use futures::StreamExt;
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use zeroize::Zeroizing;
 
+use super::pki::Pki;
 use super::{
     BashError, BashSandbox, Chunk, Command as BashCommand, ExecResult, Outcome,
     PROTOCOL_VERSION, Ready, Stream, event,
@@ -33,11 +36,16 @@ use super::{
 /// `127.0.0.1` host port the host then discovers via `docker port`.
 const BASHD_PORT: u16 = 9099;
 
-/// The live HTTP connection to `bashd`: a client and the host base URL it
-/// reaches the published port at (e.g. `http://127.0.0.1:54321`).
+/// The live HTTPS connection to `bashd`: a pinned mutual-TLS client and the host
+/// base URL it reaches the published port at (e.g. `https://127.0.0.1:54321`),
+/// plus the attached `docker exec` process running `bashd`.
 struct Http {
     client: reqwest::Client,
     base: String,
+    /// The attached (`docker exec -i`) host process running `bashd`. Its stdin
+    /// carried the TLS material, then was closed; retained so teardown can reap
+    /// it once `bashd` dies with the container.
+    exec: tokio::process::Child,
 }
 
 /// How the sandbox container is networked, and therefore how the host reaches
@@ -379,17 +387,34 @@ impl DockerSandbox {
         Ok(())
     }
 
-    /// Launch `bashd --http` (detached, as the run user), discover its published
-    /// host port, and poll `GET /` until it's ready. Returns the connection and
-    /// the validated handshake.
+    /// Launch `bashd --http` (attached, as the run user) over an ephemeral
+    /// per-container mutual-TLS channel, discover its published host port, and
+    /// poll `GET /` until it's ready. Returns the connection and the validated
+    /// handshake.
     async fn launch(
         &self,
         container: &str,
     ) -> Result<(Http, Ready), BashError> {
-        // Start the HTTP daemon, detached. `docker exec` runs as root by default
-        // and does *not* inherit `docker run --user`, so pass the run user
-        // explicitly — the agent's commands then run unprivileged.
-        let mut args: Vec<String> = vec!["exec".into(), "-d".into()];
+        // Mint the per-container PKI host-side. The server half goes to bashd
+        // over stdin below; the client half stays here, in the pinned client.
+        let pki = Pki::generate()?;
+
+        // bashd binds *inside* the container. Host networking shares the
+        // namespace, so bind loopback (don't expose bashd on every host
+        // interface). Bridge/named publish via DNAT to the container's eth0, so
+        // bashd must bind 0.0.0.0 to be reachable through the mapping.
+        let bind = match &self.network {
+            Network::Host => format!("127.0.0.1:{BASHD_PORT}"),
+            Network::Bridge | Network::Named(_) => {
+                format!("0.0.0.0:{BASHD_PORT}")
+            }
+        };
+
+        // Launch bashd *attached* (`-i`, not `-d`): we feed the TLS material to
+        // its stdin and then close it. `docker exec` runs as root and does not
+        // inherit `docker run --user`, so pass the run user explicitly — the
+        // agent's commands then run unprivileged.
+        let mut args: Vec<String> = vec!["exec".into(), "-i".into()];
         if let Some(user) = &self.user {
             args.push("--user".into());
             args.push(user.clone());
@@ -397,25 +422,43 @@ impl DockerSandbox {
         args.push(container.into());
         args.push("/usr/local/bin/bashd".into());
         args.push("--http".into());
-        args.push(format!("0.0.0.0:{BASHD_PORT}"));
+        args.push(bind);
         args.push("--workdir".into());
         args.push(self.workdir.clone());
         if self.persist_cwd {
             args.push("--persist-cwd".into());
         }
-        let out = capture(&self.runtime, &args).await?;
-        if !out.status.success() {
-            return Err(BashError::Backend(format!(
-                "could not launch bashd: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
+        let mut exec = Command::new(&self.runtime)
+            .args(&args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+
+        // Hand bashd its TLS material over stdin (never argv/env/disk), then
+        // EOF. A write failure means the exec never really started (bad
+        // container, missing binary) — surface it rather than waiting out the
+        // readiness deadline.
+        let payload = Zeroizing::new(
+            serde_json::to_string(&pki.server)
+                .map_err(|e| BashError::Backend(e.to_string()))?,
+        );
+        let mut stdin = exec.stdin.take().ok_or_else(|| {
+            BashError::Backend("could not open bashd stdin".into())
+        })?;
+        stdin.write_all(payload.as_bytes()).await.map_err(|e| {
+            BashError::Backend(format!(
+                "could not send bashd TLS material: {e}"
+            ))
+        })?;
+        stdin.shutdown().await.ok();
+        drop(stdin);
 
         // Where the host reaches bashd depends on the network mode.
         let base = match &self.network {
             // Host networking shares the host namespace: bashd's port is on the
             // host loopback directly (no published mapping to discover).
-            Network::Host => format!("http://127.0.0.1:{BASHD_PORT}"),
+            Network::Host => format!("https://127.0.0.1:{BASHD_PORT}"),
             // Published modes: discover the ephemeral host port (127.0.0.1:NNNNN).
             Network::Bridge | Network::Named(_) => {
                 let port = capture(
@@ -433,11 +476,28 @@ impl DockerSandbox {
                             "could not read published bashd port: {mapping:?}"
                         ))
                     })?;
-                format!("http://127.0.0.1:{host_port}")
+                format!("https://127.0.0.1:{host_port}")
             }
         };
 
-        let client = reqwest::Client::new();
+        // A pinned mTLS client: present our client identity and trust *only* the
+        // per-container CA (built-in roots off). bashd verifies our client cert
+        // against the same CA, so nothing else on the host can drive it. `pki`
+        // (and every PEM in it) drops at the end of this fn — reqwest has parsed
+        // what it needs.
+        let client = reqwest::Client::builder()
+            .add_root_certificate(
+                reqwest::Certificate::from_pem(pki.ca_pem.as_bytes())
+                    .map_err(|e| BashError::Backend(e.to_string()))?,
+            )
+            .tls_built_in_root_certs(false)
+            .identity(
+                reqwest::Identity::from_pem(pki.client_identity_pem.as_bytes())
+                    .map_err(|e| BashError::Backend(e.to_string()))?,
+            )
+            .build()
+            .map_err(|e| BashError::Backend(e.to_string()))?;
+
         let ready = await_ready(&client, &base).await?;
         if ready.protocol != PROTOCOL_VERSION {
             return Err(BashError::Handshake(format!(
@@ -445,7 +505,7 @@ impl DockerSandbox {
                 ready.protocol, PROTOCOL_VERSION
             )));
         }
-        Ok((Http { client, base }, ready))
+        Ok((Http { client, base, exec }, ready))
     }
 
     /// The HTTP client + base URL, cloned so callers needn't hold a `self`
@@ -474,9 +534,15 @@ impl DockerSandbox {
     /// Remove the container (best-effort), forgetting it so [`Drop`] won't retry.
     async fn remove_container(&mut self) {
         // Drop the HTTP client; bashd dies with the container removed below.
-        self.http = None;
+        let http = self.http.take();
         if let Some(container) = self.container.take() {
             let _ = capture(&self.runtime, ["rm", "-f", &container]).await;
+        }
+        // Reap the attached `docker exec` process now that bashd (and the
+        // container) is gone, so it doesn't linger as a zombie.
+        if let Some(mut http) = http {
+            let _ = http.exec.start_kill();
+            let _ = http.exec.wait().await;
         }
     }
 }

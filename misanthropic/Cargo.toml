@@ -191,6 +191,19 @@ misanthropic-derive = { workspace = true, optional = true }
 # Async filesystem for the `memory-fs` backend. The crate core is runtime-
 # agnostic; only `FsMemoryBackend` needs a runtime, so tokio stays optional.
 tokio = { version = "1", optional = true, features = ["fs"] }
+# Ephemeral per-container mTLS for the `bash-container` sandbox: generate a
+# throwaway CA + server/client leaves (host-side only — `bashd` just consumes the
+# PEMs over stdin). `ring` to match reqwest's rustls backend (no second crypto
+# stack on the host); `zeroize` so rcgen wipes its own key material.
+rcgen = { version = "0.14", default-features = false, features = [
+    "pem",
+    "ring",
+    "zeroize",
+], optional = true }
+# The validity window for those ephemeral certs (rcgen's date type is `time`'s).
+time = { version = "0.3", default-features = false, features = [
+    "std",
+], optional = true }
 
 [dev-dependencies]
 # for all examples
@@ -280,9 +293,18 @@ text-editor-fs = ["text-editor", "tokio"]
 # enable `bash-container` for the Docker/Podman one.
 bash = []
 # The `DockerSandbox` reference executor for the bash tool — runs `bashd` in a
-# Docker/Podman container. Async on tokio (process + io-util). Does not build on
-# wasm32.
-bash-container = ["bash", "tokio", "tokio/process", "tokio/io-util"]
+# Docker/Podman container, reached over an ephemeral per-container mutual-TLS
+# channel (always on). Async on tokio (process + io-util); needs a reqwest TLS
+# backend (rustls) for the pinned client. Does not build on wasm32.
+bash-container = [
+    "bash",
+    "tokio",
+    "tokio/process",
+    "tokio/io-util",
+    "rustls-tls",
+    "dep:rcgen",
+    "dep:time",
+]
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
