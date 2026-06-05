@@ -688,4 +688,72 @@ mod tests {
         assert!(!result.is_error, "{}", result.content);
         assert!(dir.path().join("note.py").exists());
     }
+
+    #[tokio::test]
+    #[cfg(all(feature = "client", feature = "text-editor-fs"))]
+    #[ignore = "This test requires a real API key."]
+    async fn live_text_editor_fixes_file_on_disk() {
+        // The live counterpart to `examples/text_editor.rs`: plant a `primes.py`
+        // with a syntax error (a `for` line missing its colon), give the model
+        // the text editor tool, execute each `tool_use` locally through
+        // `FsEditorBackend` (jailed to a tempdir), and assert the file on disk
+        // is actually repaired. The editor is a Claude-4 tool, supported on
+        // Haiku 4.5 (the cheapest model).
+        use crate::{AnthropicModel, Client, Prompt, prompt::message::Role};
+
+        const BUGGY: &str = "\
+def get_primes(limit):
+    primes = []
+    for num in range(2, limit + 1)
+        if is_prime(num):
+            primes.append(num)
+    return primes
+";
+
+        let key = crate::utils::load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        tokio::fs::write(dir.path().join("primes.py"), BUGGY)
+            .await
+            .unwrap();
+        let mut editor = FsEditorBackend::new(dir.path()).await.unwrap();
+
+        let mut chat = Prompt::default()
+            .model(AnthropicModel::Haiku45)
+            .add_tool(crate::tool::TextEditor::latest())
+            .add_message((
+                Role::User,
+                "There's a syntax error in primes.py. Please fix it.",
+            ))
+            .unwrap();
+
+        // Drive the tool loop exactly as the example does.
+        let mut turns = 0;
+        loop {
+            let message = client.message(&chat).await.unwrap();
+            turns += 1;
+            assert!(turns <= 12, "runaway editor loop ({turns} turns)");
+            let Some(call) = message.tool_use() else {
+                break;
+            };
+            let call = call.clone();
+            assert_eq!(call.name, "str_replace_based_edit_tool");
+            chat.push_message(message).unwrap();
+            let result = editor.call(call).await;
+            chat.push_message(result).unwrap();
+        }
+
+        // The buggy `for` line must be gone, and a colon-terminated one present.
+        let fixed =
+            std::fs::read_to_string(dir.path().join("primes.py")).unwrap();
+        assert!(
+            !fixed.contains("for num in range(2, limit + 1)\n"),
+            "the broken `for` line should be gone:\n{fixed}"
+        );
+        assert!(
+            fixed.contains("for num in range(2, limit + 1):"),
+            "the `for` line should end with a colon:\n{fixed}"
+        );
+    }
 }

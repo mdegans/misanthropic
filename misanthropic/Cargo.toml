@@ -336,6 +336,11 @@ required-features = ["client", "memory-fs"]
 doc-scrape-examples = true
 
 [[example]]
+name = "text_editor"
+required-features = ["client", "text-editor-fs"]
+doc-scrape-examples = true
+
+[[example]]
 name = "web_fetch"
 required-features = ["client"]
 doc-scrape-examples = true
