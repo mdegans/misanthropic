@@ -40,6 +40,30 @@ struct Http {
     base: String,
 }
 
+/// How the sandbox container is networked, and therefore how the host reaches
+/// `bashd`. **None of these isolate the agent's egress** — restricting what the
+/// agent's commands can reach is the host environment's concern (most real
+/// deployments already have one), or a future opt-in relay sidecar. They differ
+/// only in reachability.
+///
+/// (`--network none` is intentionally absent: with no network there is no port
+/// to publish and no route in, so `bashd` would be unreachable over HTTP.)
+#[derive(Clone, Debug, Default)]
+pub enum Network {
+    /// A bridge network with `bashd`'s port published to `127.0.0.1` (an
+    /// ephemeral host port). Works out of the box, including on Docker Desktop.
+    #[default]
+    Bridge,
+    /// Share the host's network namespace (`--network host`); `bashd` is reached
+    /// on host loopback directly, no published port. Linux-friendly — but the
+    /// agent shares the host's network (so it is *less* isolated), and host
+    /// networking is finicky on Docker Desktop.
+    Host,
+    /// Join a pre-existing docker network by name (the port is still published
+    /// to `127.0.0.1`). The hook for your own topology or egress proxy.
+    Named(String),
+}
+
 /// A [`BashSandbox`] that runs [`bashd`] inside a Docker/Podman container.
 ///
 /// Build it fluently, then hand it to a
@@ -68,6 +92,7 @@ pub struct DockerSandbox {
     storage_limit: Option<u64>,
     memory_limit: Option<String>,
     pids_limit: Option<u64>,
+    network: Network,
     runtime: String,
     bashd_path: Option<PathBuf>,
     // Runtime state, populated by `start`.
@@ -89,6 +114,7 @@ impl DockerSandbox {
             storage_limit: Some(10 << 30), // 10 GiB default (best-effort)
             memory_limit: None,
             pids_limit: None,
+            network: Network::default(),
             runtime: "docker".to_string(),
             bashd_path: None,
             container: None,
@@ -103,8 +129,8 @@ impl DockerSandbox {
     }
 
     /// A provisioning script run **with network** in a build phase, then
-    /// committed into the image the (network-isolated) session runs from. Use it
-    /// to `apk add`/`pip install` what the agent will need.
+    /// committed into the image the session runs from. Use it to `apk add`/`pip
+    /// install` what the agent will need.
     pub fn setup(mut self, script: impl Into<String>) -> Self {
         self.setup = Some(script.into());
         self
@@ -149,6 +175,13 @@ impl DockerSandbox {
     /// Cap the number of processes (`--pids-limit`).
     pub fn pids_limit(mut self, limit: u64) -> Self {
         self.pids_limit = Some(limit);
+        self
+    }
+
+    /// How the container is networked (default [`Network::Bridge`]). See
+    /// [`Network`] — note that **none** of the modes isolate the agent's egress.
+    pub fn network(mut self, network: Network) -> Self {
+        self.network = network;
         self
     }
 
@@ -250,7 +283,7 @@ impl DockerSandbox {
         matches!(driver.trim(), "btrfs" | "zfs" | "devicemapper")
     }
 
-    /// `docker run -d` the network-isolated session container.
+    /// `docker run -d` the session container (networked per [`Network`]).
     async fn run_container(&self, image: &str) -> Result<String, BashError> {
         let container = format!("misan-bashd-{}", unique());
         let mut args: Vec<String> = vec![
@@ -260,14 +293,27 @@ impl DockerSandbox {
             "--init".into(),
             "--name".into(),
             container.clone(),
-            // Publish bashd's port to an ephemeral 127.0.0.1 host port. (Egress
-            // isolation — an internal network + a trusted `bashd relay` sidecar
-            // — is a follow-up; for now the agent shares the default bridge.)
-            "-p".into(),
-            format!("127.0.0.1::{BASHD_PORT}"),
-            "--workdir".into(),
-            self.workdir.clone(),
         ];
+        // Networking. None of these isolate the agent's egress (see `Network`);
+        // they differ only in how the host reaches bashd's port.
+        match &self.network {
+            Network::Bridge => {
+                args.push("-p".into());
+                args.push(format!("127.0.0.1::{BASHD_PORT}"));
+            }
+            Network::Host => {
+                args.push("--network".into());
+                args.push("host".into());
+            }
+            Network::Named(name) => {
+                args.push("--network".into());
+                args.push(name.clone());
+                args.push("-p".into());
+                args.push(format!("127.0.0.1::{BASHD_PORT}"));
+            }
+        }
+        args.push("--workdir".into());
+        args.push(self.workdir.clone());
         if let Some(mem) = &self.memory_limit {
             args.push("--memory".into());
             args.push(mem.clone());
@@ -365,23 +411,31 @@ impl DockerSandbox {
             )));
         }
 
-        // Discover the published host port, e.g. `127.0.0.1:54321`.
-        let port = capture(
-            &self.runtime,
-            ["port", container, &format!("{BASHD_PORT}/tcp")],
-        )
-        .await?;
-        let mapping = String::from_utf8_lossy(&port.stdout);
-        let host_port = mapping
-            .lines()
-            .next()
-            .and_then(|l| l.trim().rsplit(':').next())
-            .ok_or_else(|| {
-                BashError::Backend(format!(
-                    "could not read published bashd port: {mapping:?}"
-                ))
-            })?;
-        let base = format!("http://127.0.0.1:{host_port}");
+        // Where the host reaches bashd depends on the network mode.
+        let base = match &self.network {
+            // Host networking shares the host namespace: bashd's port is on the
+            // host loopback directly (no published mapping to discover).
+            Network::Host => format!("http://127.0.0.1:{BASHD_PORT}"),
+            // Published modes: discover the ephemeral host port (127.0.0.1:NNNNN).
+            Network::Bridge | Network::Named(_) => {
+                let port = capture(
+                    &self.runtime,
+                    ["port", container, &format!("{BASHD_PORT}/tcp")],
+                )
+                .await?;
+                let mapping = String::from_utf8_lossy(&port.stdout);
+                let host_port = mapping
+                    .lines()
+                    .next()
+                    .and_then(|l| l.trim().rsplit(':').next())
+                    .ok_or_else(|| {
+                        BashError::Backend(format!(
+                            "could not read published bashd port: {mapping:?}"
+                        ))
+                    })?;
+                format!("http://127.0.0.1:{host_port}")
+            }
+        };
 
         let client = reqwest::Client::new();
         let ready = await_ready(&client, &base).await?;
@@ -650,9 +704,13 @@ mod tests {
             .persist_cwd(true)
             .memory("512m")
             .pids_limit(128)
+            .network(Network::Named("my-net".into()))
             .runtime("podman")
             .bashd_path("/tmp/bashd");
         assert_eq!(s.base_image, "alpine:3");
+        assert!(matches!(&s.network, Network::Named(n) if n == "my-net"));
+        // The default is a published bridge.
+        assert!(matches!(DockerSandbox::alpine().network, Network::Bridge));
         assert_eq!(s.setup.as_deref(), Some("apk add bash"));
         assert_eq!(s.user.as_deref(), Some("agent"));
         assert_eq!(s.workdir, "/work");
@@ -750,9 +808,8 @@ mod tests {
         let out = sandbox.exec(run("exit 7")).await.unwrap();
         assert_eq!(out.exit, Some(7));
 
-        // NB: egress is currently *open* (the container shares the default
-        // bridge so its port can be published). Egress isolation — an internal
-        // network + a trusted `bashd relay` sidecar — is a follow-up.
+        // NB: the default bridge does not isolate the agent's egress — that is
+        // the host environment's concern (see `Network`).
 
         // Background: launch a job, poll partial output, then wait it to done.
         let receipt = sandbox

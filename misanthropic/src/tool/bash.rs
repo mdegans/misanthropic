@@ -36,7 +36,7 @@ use super::{MethodDef, Tool, Use};
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
 pub mod docker;
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
-pub use docker::DockerSandbox;
+pub use docker::{DockerSandbox, Network};
 
 /// The `bashd` wire-protocol version. Bumped on a breaking change; the host
 /// refuses a daemon whose [`Ready::protocol`] does not match.
