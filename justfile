@@ -24,6 +24,12 @@ test:
 test-ignored:
     cargo test -p misanthropic --all-features -- --ignored
 
+# Cross-build the static linux-musl `bashd` into target-linux/ (via a container, no host musl toolchain needed).
+build-bashd:
+    docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/w/target-linux \
+        rust:alpine sh -c 'apk add --no-cache musl-dev && cargo build -p bashd --release'
+    @echo "built: target-linux/release/bashd  — use it via BASHD_PATH=$PWD/target-linux/release/bashd"
+
 # Enable the pre-commit gate by pointing git at hooks/ (run once per clone).
 install-hooks:
     git config core.hooksPath hooks
