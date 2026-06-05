@@ -249,6 +249,7 @@ impl Session {
             truncated: out_truncated || err_truncated,
             job: None,
             advice: None,
+            cursor: None,
             error: None,
         }));
     }

@@ -221,6 +221,11 @@ pub struct Outcome {
     /// Model-facing steering, e.g. a hint not to busy-loop a `poll`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<String>,
+    /// On a `poll` response (`GET /jobs/{id}`): the new read cursor (byte offset
+    /// into the job's output) the host should send on its next poll. `None`
+    /// outside of poll responses.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<u64>,
     /// An op-level failure (e.g. an unsupported command), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<ProtocolError>,
@@ -252,6 +257,36 @@ pub enum ErrorKind {
     /// Anything else, including kinds a newer daemon introduced.
     #[serde(other)]
     Other,
+}
+
+// ---------------------------------------------------------------------------
+// HTTP/SSE transport (host <-> bashd). bashd serves these over a TCP port the
+// host reaches via a published `127.0.0.1` mapping (see [`docker`]). Still *our*
+// protocol — designed clean, round-trip tested.
+//
+// - `GET /`               → a bare [`Ready`] (no [`Reply`] wrapper): the
+//                           readiness/handshake the host polls with backoff.
+// - `POST /run` (Command) → an SSE stream: [`event::CHUNK`] events carrying a
+//                           [`Chunk`], then a terminal [`event::OUTCOME`]
+//                           carrying an [`Outcome`]. A backgrounded run instead
+//                           emits a single [`event::OUTCOME`] (`running: true`,
+//                           `job` set) and closes.
+// - `GET /jobs/{id}`      → a `poll`: the buffered output since `?cursor=` then
+//                           an [`Outcome`] whose [`cursor`](Outcome::cursor)
+//                           advances the host's read position.
+// - `GET /jobs/{id}/wait` → like a poll, but the stream *follows* the job to
+//                           completion (soft `?timeout=` → terminal
+//                           `running: true`).
+// - `POST /jobs/{id}/kill`→ signal the job's group (TERM→grace→KILL).
+// ---------------------------------------------------------------------------
+
+/// SSE `event:` names on the streaming endpoints. The host matches on these to
+/// decode each event's `data` as a [`Chunk`] or an [`Outcome`].
+pub mod event {
+    /// A [`Chunk`](super::Chunk) of streamed output.
+    pub const CHUNK: &str = "chunk";
+    /// The terminal [`Outcome`](super::Outcome).
+    pub const OUTCOME: &str = "outcome";
 }
 
 // ---------------------------------------------------------------------------
@@ -557,6 +592,41 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(outcome, Reply::Outcome(_)));
+    }
+
+    #[test]
+    fn ready_handshake_roundtrips_bare() {
+        // `GET /` returns a bare `Ready`, not wrapped in a `Reply`.
+        let ready: Ready = crate::utils::roundtrip(
+            r#"{"protocol":1,"bashd":"0.1.0","shell":"/bin/bash","persist_cwd":false}"#,
+        );
+        assert_eq!(ready.protocol, PROTOCOL_VERSION);
+        assert!(!ready.persist_cwd);
+    }
+
+    #[test]
+    fn outcome_carries_poll_cursor() {
+        let o: Outcome = crate::utils::roundtrip(
+            r#"{"id":0,"running":true,"timed_out":false,"truncated":false,"job":7,"cursor":4096}"#,
+        );
+        assert_eq!(o.job, Some(7));
+        assert_eq!(o.cursor, Some(4096));
+        assert!(o.running);
+    }
+
+    #[test]
+    fn outcome_without_cursor_omits_it() {
+        // Back-compat: an Outcome with no cursor round-trips unchanged.
+        let o: Outcome = crate::utils::roundtrip(
+            r#"{"id":1,"running":false,"timed_out":false,"truncated":false,"exit":0}"#,
+        );
+        assert_eq!(o.cursor, None);
+    }
+
+    #[test]
+    fn sse_event_names() {
+        assert_eq!(event::CHUNK, "chunk");
+        assert_eq!(event::OUTCOME, "outcome");
     }
 
     #[test]
