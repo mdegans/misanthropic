@@ -273,6 +273,15 @@ text-editor = []
 # The `FsEditorBackend` reference executor for the text editor — async on tokio,
 # jailed to a working directory.
 text-editor-fs = ["text-editor", "tokio"]
+# Typed client-side `bash` tool support: the `Command` vocabulary
+# (run/restart/poll/kill), the `Bash` definition, the `bashd` wire protocol, the
+# `BashSandbox` trait, and the `BashTool<S>` adapter. Sandbox-agnostic — bring
+# your own `BashSandbox` (the shared types the `bashd` daemon also speaks), or
+# enable `bash-container` for the Docker/Podman one.
+bash = []
+# The `DockerSandbox` reference executor for the bash tool — runs `bashd` in a
+# Docker/Podman container. Async on tokio. Does not build on wasm32.
+bash-container = ["bash", "tokio"]
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []

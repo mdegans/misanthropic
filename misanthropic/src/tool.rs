@@ -58,6 +58,15 @@ pub mod memory;
 #[cfg(feature = "text-editor")]
 pub mod text_editor;
 
+/// Client-side execution of the [`bash`](ServerMethodDef::Bash) tool: the typed
+/// [`Command`](bash::Command) vocabulary, the [`bashd`] daemon wire protocol,
+/// the [`BashSandbox`](bash::BashSandbox) trait, and the [`BashTool`](bash::BashTool)
+/// adapter. Bring your own sandbox, or enable `bash-container` for `DockerSandbox`.
+///
+/// [`bashd`]: bash::Request
+#[cfg(feature = "bash")]
+pub mod bash;
+
 /// Pure path/text helpers shared by the file-oriented client-executed tools'
 /// filesystem backends (`memory::FsMemoryBackend`, `text_editor::FsEditorBackend`).
 #[cfg(any(feature = "memory-fs", feature = "text-editor-fs"))]
@@ -270,6 +279,19 @@ pub enum ServerMethodDef {
     #[cfg(feature = "text-editor")]
     #[serde(rename = "text_editor_20250728")]
     TextEditor(TextEditor),
+    /// Anthropic's [bash tool] (`bash_20250124`) — a *client-side* predefined
+    /// tool, like [`Memory`]. The API defines it but does **not** run it: the
+    /// model emits an ordinary [`Use`] (`name: "bash"`) whose input is a
+    /// [`bash::Command`], and *you* execute it in a sandbox (e.g. with the
+    /// `bash-container` `DockerSandbox`) and answer with a [`tool::Result`]. See
+    /// [`Bash`].
+    ///
+    /// [bash tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool>
+    /// [`bash::Command`]: crate::tool::bash::Command
+    /// [`tool::Result`]: Result
+    #[cfg(feature = "bash")]
+    #[serde(rename = "bash_20250124")]
+    Bash(Bash),
 }
 
 impl ServerMethodDef {
@@ -327,6 +349,14 @@ impl ServerMethodDef {
         Self::TextEditor(TextEditor::default())
     }
 
+    /// The [bash](Self::Bash) tool with default configuration. A *client-side*
+    /// tool: you execute its [`Command`](bash::Command)s in a sandbox yourself
+    /// (the API does not run it). See [`Bash`].
+    #[cfg(feature = "bash")]
+    pub fn bash() -> Self {
+        Self::Bash(Bash::default())
+    }
+
     /// Whether this server tool carries a cache breakpoint.
     pub fn is_cached(&self) -> bool {
         self.cache_control().is_some()
@@ -347,6 +377,8 @@ impl ServerMethodDef {
             Self::Memory(_) => "memory",
             #[cfg(feature = "text-editor")]
             Self::TextEditor(_) => "str_replace_based_edit_tool",
+            #[cfg(feature = "bash")]
+            Self::Bash(_) => "bash",
         }
     }
 
@@ -362,6 +394,8 @@ impl ServerMethodDef {
             Self::Memory(c) => c.cache_control.as_ref(),
             #[cfg(feature = "text-editor")]
             Self::TextEditor(c) => c.cache_control.as_ref(),
+            #[cfg(feature = "bash")]
+            Self::Bash(c) => c.cache_control.as_ref(),
         }
     }
 
@@ -380,6 +414,8 @@ impl ServerMethodDef {
             Self::Memory(c) => c.cache_control = Some(cache_control),
             #[cfg(feature = "text-editor")]
             Self::TextEditor(c) => c.cache_control = Some(cache_control),
+            #[cfg(feature = "bash")]
+            Self::Bash(c) => c.cache_control = Some(cache_control),
         }
     }
 }
@@ -626,6 +662,82 @@ impl From<TextEditor> for MethodDef {
     }
 }
 
+/// Front-door for the [bash tool] ([`ServerMethodDef::Bash`]) — a *client-side*
+/// predefined tool, like [`Memory`]/[`TextEditor`]. [`latest`](Self::latest)
+/// adds it by versioned name (`bash_20250124`, the model-trained narrow schema
+/// that only elicits `command`/`restart`); [`rich`](Self::rich) instead yields a
+/// [`Custom`](MethodDef::Custom) def whose schema is *derived* from
+/// [`bash::Known`](crate::tool::bash::Known), advertising the full
+/// run/restart/poll/kill vocabulary (background jobs, timeouts) to the model.
+/// Execute its [`Command`](crate::tool::bash::Command)s with a
+/// [`BashTool`](crate::tool::bash::BashTool) over some
+/// [`BashSandbox`](crate::tool::bash::BashSandbox).
+///
+/// [bash tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool>
+#[cfg(feature = "bash")]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct Bash {
+    /// The fixed tool `name` (`"bash"`), supplied automatically by [`Default`].
+    /// Not meant to be set by hand; use `..Default::default()`.
+    #[doc(hidden)]
+    #[serde(default)]
+    pub name: BashName,
+    /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
+    ///
+    /// [`Prompt::cache`]: crate::Prompt::cache
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<crate::prompt::message::CacheControl>,
+}
+
+#[cfg(feature = "bash")]
+impl Bash {
+    /// The newest bash-tool version this crate supports (`bash_20250124`), with
+    /// default configuration — the predefined, model-trained schema (only
+    /// `command`/`restart`). Named `latest` because Anthropic versions the tool:
+    /// when a newer one ships it becomes a new [`ServerMethodDef`] variant and
+    /// this points at it.
+    pub fn latest() -> Self {
+        Self::default()
+    }
+
+    /// A [`Custom`](MethodDef::Custom) bash def whose input schema is *derived*
+    /// from [`bash::Known`](crate::tool::bash::Known) (via [`schemars`] +
+    /// [`sanitize_for_anthropic`], the same path the typed-tool layer uses), so
+    /// the model sees the full run/restart/poll/kill vocabulary the predefined
+    /// `bash_20250124` schema omits. Use this when you want the model to drive
+    /// background jobs (`background`/`timeout_secs`) and `poll`/`kill` them.
+    ///
+    /// [`sanitize_for_anthropic`]: crate::prompt::output::sanitize_for_anthropic
+    pub fn rich() -> CustomMethodDef {
+        let mut schema = serde_json::to_value(schemars::schema_for!(
+            crate::tool::bash::Known
+        ))
+        .expect("schemars Schema always serializes");
+        crate::prompt::output::sanitize_for_anthropic(&mut schema);
+        CustomMethodDef::builder("bash")
+            .description(
+                "Run shell commands in a persistent sandbox session. Provide \
+                 `command` to run (optionally `background: true` and \
+                 `timeout_secs`), `restart: true` to reset the session, \
+                 `poll: <job>` to check a background job, or `kill: <job>` to \
+                 stop one.",
+            )
+            .schema(schema)
+            .build_unchecked()
+    }
+}
+
+/// Bridges the [`Bash`] front-door type straight into a [`MethodDef`] so
+/// [`Prompt::add_tool`] accepts it (`Into` is not transitive — see
+/// [`From<TextEditor>`](MethodDef)).
+#[cfg(feature = "bash")]
+impl From<Bash> for MethodDef {
+    fn from(bash: Bash) -> Self {
+        MethodDef::Server(ServerMethodDef::Bash(bash))
+    }
+}
+
 /// Define a zero-sized server-tool `name` marker that always (de)serializes as
 /// one constant string, so the wire `name` can never be set to anything else.
 /// Each is public-but-`#[doc(hidden)]` so the owning config struct supports
@@ -698,6 +810,11 @@ tool_name_marker!(
 tool_name_marker!(
     /// The fixed `"str_replace_based_edit_tool"` name for [`TextEditor`].
     TextEditorName => "str_replace_based_edit_tool"
+);
+#[cfg(feature = "bash")]
+tool_name_marker!(
+    /// The fixed `"bash"` name for [`Bash`].
+    BashName => "bash"
 );
 
 /// Approximate user location used to bias [`WebSearch`] results. Serializes
