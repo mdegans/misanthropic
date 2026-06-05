@@ -42,6 +42,10 @@ fn attributes_override_name_and_description() {
 }
 
 #[test]
+// The `assert!`s below deliberately pin the value of a compile-time associated
+// const (`DEFER_LOADING`) as a regression guard — that's the point of the test,
+// not a mistake clippy should flatten.
+#[allow(clippy::assertions_on_constants)]
 fn defer_loading_defaults_false_and_is_overridable() {
     // Default: the const is `false` and the field elides on the wire.
     assert!(!<Push as ToolArgs>::DEFER_LOADING);

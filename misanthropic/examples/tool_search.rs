@@ -277,7 +277,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .content
                     .iter()
                     .filter_map(Block::tool_use)
-                    .map(|call| call.clone())
+                    .cloned()
                     .collect();
 
                 for call in &calls {

@@ -116,6 +116,10 @@ fn derived_tool_args_from_fn() {
 }
 
 #[test]
+// The `assert!`s deliberately pin the value of a compile-time associated const
+// (`DEFER_LOADING`) as a regression guard — the point of the test, not a lint to
+// flatten.
+#[allow(clippy::assertions_on_constants)]
 fn method_defer_loading_attribute_flows_through() {
     // `#[method(defer_loading)]` on `reset` defers only that method; `add`
     // (a bare `#[method]`) is left loaded.
