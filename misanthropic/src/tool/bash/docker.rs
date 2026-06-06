@@ -26,6 +26,7 @@ use eventsource_stream::Eventsource;
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use uuid::Uuid;
 use zeroize::Zeroizing;
 
 use super::pki::Pki;
@@ -46,6 +47,10 @@ const DEFAULT_IMAGE: &str = "misan-bashd:dev";
 /// The home directory of the baked `agent` user — the default workdir and the
 /// mount point for the `$HOME` volume.
 const AGENT_HOME: &str = "/home/agent";
+
+/// The uid/gid the baked `agent` user has (pinned in the Dockerfile) — used to
+/// own a tmpfs `$HOME` (a fresh tmpfs is otherwise root-owned, unwritable).
+const AGENT_UID: u32 = 1000;
 
 /// The live HTTPS connection to `bashd`: a pinned mutual-TLS client and the host
 /// base URL it reaches the published port at (e.g. `https://127.0.0.1:54321`),
@@ -83,6 +88,33 @@ pub enum Network {
     Named(String),
 }
 
+/// What backs the agent's `$HOME`. Mirrors [`Network`] — pass it to
+/// [`DockerSandbox::home_fs`] (also accepts `"tmpfs"`/`"volume"`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum HomeFs {
+    /// A Docker volume (disk-backed). Anonymous + ephemeral by default;
+    /// persistent and named when [`DockerSandbox::home_id`] is set. The size cap
+    /// ([`home_limit`](DockerSandbox::home_limit)) is **best-effort** — volume
+    /// quotas aren't enforced on the common storage drivers.
+    #[default]
+    Volume,
+    /// A tmpfs (RAM-backed, ephemeral). The size cap is **hard-enforced** but
+    /// counts against `--memory`. Mutually exclusive with a persistent
+    /// [`home_id`](DockerSandbox::home_id).
+    Tmpfs,
+}
+
+impl From<&str> for HomeFs {
+    /// `"tmpfs"`/`"ramfs"` → [`Tmpfs`](HomeFs::Tmpfs); anything else →
+    /// [`Volume`](HomeFs::Volume).
+    fn from(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "tmpfs" | "ramfs" => HomeFs::Tmpfs,
+            _ => HomeFs::Volume,
+        }
+    }
+}
+
 /// A [`BashSandbox`] that runs [`bashd`] inside a Docker/Podman container.
 ///
 /// Build it fluently, then hand it to a
@@ -106,6 +138,9 @@ pub struct DockerSandbox {
     workdir: String,
     persist_cwd: bool,
     tmp_limit: u64,
+    home_limit: u64,
+    home_id: Option<Uuid>,
+    home_fs: HomeFs,
     memory_limit: Option<String>,
     pids_limit: Option<u64>,
     network: Network,
@@ -135,6 +170,9 @@ impl Default for DockerSandbox {
             workdir: AGENT_HOME.to_string(),
             persist_cwd: false,
             tmp_limit: 1 << 30, // 1 GiB tmpfs /tmp (hard-enforced)
+            home_limit: 10 << 30, // 10 GiB $HOME (hard for tmpfs, advisory else)
+            home_id: None,
+            home_fs: HomeFs::Volume,
             memory_limit: None,
             pids_limit: None,
             network: Network::default(),
@@ -196,6 +234,32 @@ impl DockerSandbox {
         self
     }
 
+    /// Give the agent a **persistent** `$HOME`: a named Docker volume keyed by
+    /// `id`, mounted at [`AGENT_HOME`] and surviving teardown — so a later
+    /// session with the same `id` "boots the same computer back up", files
+    /// intact. Without it, `$HOME` is ephemeral (see [`home_fs`](Self::home_fs)).
+    /// Delete it with [`remove_home`](Self::remove_home). Mutually exclusive with
+    /// `home_fs(`[`Tmpfs`](HomeFs::Tmpfs)`)` — [`start`](Self::start) errors.
+    pub fn home_id(mut self, id: impl Into<Uuid>) -> Self {
+        self.home_id = Some(id.into());
+        self
+    }
+
+    /// What backs `$HOME` (default [`HomeFs::Volume`]). Accepts a [`HomeFs`] or a
+    /// string (`"tmpfs"`/`"volume"`).
+    pub fn home_fs(mut self, fs: impl Into<HomeFs>) -> Self {
+        self.home_fs = fs.into();
+        self
+    }
+
+    /// Size cap for `$HOME`, in bytes (default 10 GiB). **Hard-enforced** for a
+    /// tmpfs home (and then counts against `--memory`); **advisory** for a volume
+    /// (volume quotas aren't enforced on the common storage drivers).
+    pub fn home_limit(mut self, bytes: u64) -> Self {
+        self.home_limit = bytes;
+        self
+    }
+
     /// Cap container memory (e.g. `"512m"`, `"2g"`). Passed to `--memory`.
     pub fn memory(mut self, limit: impl Into<String>) -> Self {
         self.memory_limit = Some(limit.into());
@@ -234,6 +298,44 @@ impl DockerSandbox {
     /// The running container's name, once [`start`](Self::start)ed.
     pub fn container(&self) -> Option<&str> {
         self.container.as_deref()
+    }
+
+    /// Delete a persistent [`home_id`](Self::home_id) volume (`docker volume
+    /// rm`). The `$HOME` named volume survives teardown by design, so this is the
+    /// explicit way to reclaim it. Errors if it's still in use by a live sandbox.
+    pub async fn remove_home(
+        runtime: impl AsRef<str>,
+        id: impl Into<Uuid>,
+    ) -> Result<(), BashError> {
+        let volume = format!("misan-bashd-home-{}", id.into());
+        let out = capture(runtime.as_ref(), ["volume", "rm", &volume]).await?;
+        if !out.status.success() {
+            return Err(BashError::Backend(format!(
+                "could not remove home volume {volume}: {}",
+                String::from_utf8_lossy(&out.stderr).trim()
+            )));
+        }
+        Ok(())
+    }
+
+    /// Start-time invariants the fluent builders can't enforce (they return
+    /// `Self`, not `Result`). Pure — called at the top of [`start`](Self::start).
+    fn validate(&self) -> Result<(), BashError> {
+        if self.home_id.is_some() && self.home_fs == HomeFs::Tmpfs {
+            return Err(BashError::Backend(
+                "home_id is persistent but home_fs(tmpfs) is ephemeral — \
+                 pick one"
+                    .to_string(),
+            ));
+        }
+        #[cfg(feature = "log")]
+        if self.home_fs == HomeFs::Tmpfs && self.memory_limit.is_some() {
+            log::warn!(
+                "bash sandbox: a tmpfs $HOME and /tmp both count against \
+                 --memory; size home_limit + tmp_limit to fit within it"
+            );
+        }
+        Ok(())
     }
 
     /// Resolve (provisioning if needed) the image the session runs from.
@@ -333,14 +435,35 @@ impl DockerSandbox {
             // counts against --memory. nosuid/nodev: no setuid bins, no devices.
             "--tmpfs".into(),
             format!("/tmp:size={},mode=1777,nosuid,nodev", self.tmp_limit),
-            // Writable $HOME. An anonymous volume (disk-backed, seeded from the
-            // image so dotfiles + ownership carry over); reaped by `rm -fv` at
-            // teardown. A persistent named volume is opt-in (see `home_id`).
-            "--mount".into(),
-            format!("type=volume,target={AGENT_HOME}"),
             "--pids-limit".into(),
             pids.to_string(),
         ];
+        // Writable $HOME. Persistent named volume when `home_id` is set (survives
+        // teardown); otherwise ephemeral — an anonymous volume (disk, reaped by
+        // `rm -fv`) or a tmpfs (RAM, owned by the pinned agent uid since a fresh
+        // tmpfs is root-owned). Volumes are seeded from the image, so dotfiles +
+        // ownership carry over on first mount. (`validate` rejected id+tmpfs.)
+        match (&self.home_id, &self.home_fs) {
+            (Some(id), _) => {
+                args.push("--mount".into());
+                args.push(format!(
+                    "type=volume,source=misan-bashd-home-{id},\
+                     target={AGENT_HOME}"
+                ));
+            }
+            (None, HomeFs::Tmpfs) => {
+                args.push("--tmpfs".into());
+                args.push(format!(
+                    "{AGENT_HOME}:size={},uid={AGENT_UID},gid={AGENT_UID},\
+                     mode=0700",
+                    self.home_limit
+                ));
+            }
+            (None, HomeFs::Volume) => {
+                args.push("--mount".into());
+                args.push(format!("type=volume,target={AGENT_HOME}"));
+            }
+        }
         // Networking. None of these isolate the agent's egress (see `Network`);
         // they differ only in how the host reaches bashd's port.
         match &self.network {
@@ -603,6 +726,7 @@ impl BashSandbox for DockerSandbox {
                 "sandbox already started".to_string(),
             ));
         }
+        self.validate()?;
         self.ensure_default_image().await?;
         let image = self.provision().await?;
         // A committed image (not the base) must be `rmi`'d at teardown.
@@ -881,6 +1005,32 @@ mod tests {
         assert_ne!(unique(), unique());
     }
 
+    #[test]
+    fn home_fs_parses_from_str() {
+        assert_eq!(HomeFs::from("tmpfs"), HomeFs::Tmpfs);
+        assert_eq!(HomeFs::from("RamFS"), HomeFs::Tmpfs);
+        assert_eq!(HomeFs::from("volume"), HomeFs::Volume);
+        assert_eq!(HomeFs::from("anything-else"), HomeFs::Volume);
+    }
+
+    #[test]
+    fn validate_rejects_persistent_tmpfs() {
+        // A persistent id on an ephemeral tmpfs is a contradiction.
+        let s = DockerSandbox::default()
+            .home_id(Uuid::nil())
+            .home_fs("tmpfs");
+        assert!(s.validate().is_err());
+        // Either alone is fine.
+        assert!(
+            DockerSandbox::default()
+                .home_id(Uuid::nil())
+                .validate()
+                .is_ok()
+        );
+        assert!(DockerSandbox::default().home_fs("tmpfs").validate().is_ok());
+        assert!(DockerSandbox::default().validate().is_ok());
+    }
+
     /// An optional dev `bashd` to bind-mount over the baked one, from
     /// `BASHD_PATH` (exercises the override path). `None` → use the baked binary.
     fn bashd_override() -> Option<PathBuf> {
@@ -1082,5 +1232,56 @@ mod tests {
             before,
             "the provisioned image must be rmi'd at teardown"
         );
+    }
+
+    /// A `home_id` volume persists across sessions; `remove_home` reclaims it,
+    /// after which a fresh boot starts clean. Exercises #86 end to end.
+    #[tokio::test]
+    #[ignore = "requires Docker running and the misan-bashd image (just build-bashd)"]
+    async fn live_home_id_persists_across_sessions() {
+        if !docker_available().await || !default_image_built().await {
+            eprintln!("skipping: docker / misan-bashd image unavailable");
+            return;
+        }
+        let id = Uuid::new_v4();
+
+        // Boot 1: write a file into the persistent $HOME, then tear down.
+        let mut s = DockerSandbox::default().home_id(id);
+        s.start().await.expect("start 1");
+        let out = s
+            .exec(run("echo persisted > ~/state.txt && cat ~/state.txt"))
+            .await
+            .unwrap();
+        assert!(out.stdout.contains("persisted"), "{:?}", out.stdout);
+        s.teardown().await.expect("teardown 1");
+
+        // Boot 2: same id → the file is still there (the volume survived).
+        let mut s = DockerSandbox::default().home_id(id);
+        s.start().await.expect("start 2");
+        let out = s.exec(run("cat ~/state.txt 2>&1")).await.unwrap();
+        assert!(
+            out.stdout.contains("persisted"),
+            "home did not persist: {:?}",
+            out.stdout
+        );
+        s.teardown().await.expect("teardown 2");
+
+        // Reclaim the volume; a fresh boot then starts clean.
+        DockerSandbox::remove_home("docker", id)
+            .await
+            .expect("remove_home");
+        let mut s = DockerSandbox::default().home_id(id);
+        s.start().await.expect("start 3");
+        let out = s
+            .exec(run("cat ~/state.txt 2>&1; echo done"))
+            .await
+            .unwrap();
+        assert!(
+            !out.stdout.contains("persisted"),
+            "home was not cleared: {:?}",
+            out.stdout
+        );
+        s.teardown().await.expect("teardown 3");
+        DockerSandbox::remove_home("docker", id).await.ok();
     }
 }

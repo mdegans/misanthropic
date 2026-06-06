@@ -37,7 +37,10 @@ use super::{MethodDef, Tool, Use};
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
 pub mod docker;
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
-pub use docker::{DockerSandbox, Network};
+pub use docker::{DockerSandbox, HomeFs, Network};
+/// Re-exported for [`DockerSandbox::home_id`].
+#[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
+pub use uuid::Uuid;
 
 /// Ephemeral per-container PKI for the [`DockerSandbox`] ↔ `bashd` mTLS channel.
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
