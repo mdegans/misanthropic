@@ -75,6 +75,10 @@ pub(crate) type CowStr = langsan::CowStr<'static>;
 /// Small utility functions and types.
 pub(crate) mod utils;
 
+/// Crate-internal, cross-cutting tests (the `wire_coverage` gate, …).
+#[cfg(test)]
+mod tests;
+
 /// Re-exports of commonly used crates to avoid version conflicts and reduce
 /// dependency bloat.
 pub mod exports {

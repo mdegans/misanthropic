@@ -222,6 +222,11 @@ tempfile = "3.12"
 rustyline = "14"
 # Compile-fail (UI) tests for the `derive` proc-macros.
 trybuild = "1"
+# Variant enumeration for the wire-coverage gate: `EnumDiscriminants` derives a
+# `BlockKind` from `Block` and `EnumIter` enumerates it (and `KnownCaller`), so a
+# new wire variant is forced to have a captured fixture. Test-only — derives are
+# `cfg_attr(test)`-gated, so this stays a dev-dependency.
+strum = { version = "0.26", features = ["derive"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.

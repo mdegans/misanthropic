@@ -878,6 +878,16 @@ where
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+// `BlockKind`: a fieldless mirror of this enum's variants, for the wire-coverage
+// gate (`tests::wire_coverage`). `EnumIter` enumerates every variant; adding one
+// here forces it through `is_wire` and, if wire-sourced, into a captured fixture.
+// Both derive lines are `cfg_attr(test)`-gated, so `strum` stays a dev-dep and
+// `BlockKind` exists only under test.
+#[cfg_attr(test, derive(strum::EnumDiscriminants))]
+#[cfg_attr(
+    test,
+    strum_discriminants(name(BlockKind), derive(strum::EnumIter, Hash))
+)]
 pub enum Block {
     /// Text content.
     #[serde(alias = "text_delta")]

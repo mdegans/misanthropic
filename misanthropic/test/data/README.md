@@ -17,14 +17,55 @@ checklist that fails loudly in the offline gate (`just test`).
 ## The discipline
 
 1. **Capture** the real shape from the live API (see below), once.
-2. **Save** it here under a descriptive name. Streaming → `*.sse.stream.txt`
-   (raw SSE) or `*.sse.stream.jsonl` (one JSON `Event` per line);
-   non-streaming blocks → `*.json`.
+2. **Save** it here under a descriptive name. Non-streaming blocks → `*.json`.
+   Streaming → `*.sse.stream.txt` (raw SSE, with `event:`/`data:` framing) or
+   `*.sse.stream.jsonl` (one JSON value per line). See *fixture formats* below.
 3. **Replay offline** and assert an **exact** round-trip:
    - non-streaming: `crate::utils::roundtrip::<T>(include_str!(…))` —
-     deserialize, re-serialize, assert value-equal to the captured bytes.
-   - streaming: `stream::tests::mock_stream` (raw SSE) or `mock_stream_jsonl`
-     (JSONL), then assert the assembled `Block`/`Message`.
+     deserialize, re-serialize, assert value-equal to the captured bytes. Use
+     `roundtrip_checked` for the non-panicking variant (collect many failures).
+   - streaming: `crate::utils::roundtrip_sse(…)` asserts an exact per-line
+     round-trip of an SSE-JSONL fixture and returns the events; or
+     `stream::tests::mock_stream` (raw SSE) / `mock_stream_jsonl` to assert the
+     **assembled** `Block`/`Message`.
+
+## Fixture formats
+
+| extension | contents | replayed by | what it guards |
+| --- | --- | --- | --- |
+| `*.json` | one response `Block` | `roundtrip` / `roundtrip_checked` | block (de)serialization, exact |
+| `*.sse.stream.txt` | raw SSE bytes (`event:`/`data:` framing) | `mock_stream` | the SSE **parser** (framing → events) |
+| `*.sse.stream.jsonl` | one value per line | `roundtrip_sse` / `mock_stream_jsonl` | event (de)serialization / assembly |
+
+**On streaming round-trip:** it is exact only for events the crate models 1:1
+with the wire (`ping`, `content_block_stop`, `message_stop`, …). It is *not*
+exact for **delta** events — a `content_block_delta` of `text_delta`
+deserializes into `Block::Text` (via its `text_delta` alias) and re-serializes
+as `text`, because the crate models streaming deltas as their *assembled* block.
+And **error** events (`{"type":"error",…}`) are the `Err` arm of the stream's
+`Result<Event, _>`, not an `Event` variant — which is why the older
+`*.sse.stream.jsonl` capture (`redacted_thought…`) is `{"Ok": …}`-wrapped.
+So full-stream wire verification is an *assemble-and-compare* job (see #78), not
+a byte round-trip; `roundtrip_sse` is for the faithful events and for per-event
+checks within #78.
+
+## The coverage gate
+
+`src/tests/wire_coverage.rs` is the forcing function that keeps this from
+lapsing. It auto-discovers every fixture in `server_tools/` (no hand-maintained
+list) and:
+
+- round-trips each `*.json` as a `Block`, asserting exactness **and** that it is
+  a wire-sourced block (a misfiled one fails);
+- asserts every *wire-sourced* `Block` variant — and every known `Caller` shape
+  — is covered by at least one fixture. Adding a `Block`/`KnownCaller` variant
+  fails to compile (`BlockKind`/`KnownCallerKind` via `strum::EnumDiscriminants`)
+  until it is classified in `needs_fixture`/`caller_needs_fixture`, and then
+  fails the test until a fixture exists. **You cannot add a server tool without
+  capturing it.**
+
+Streaming twins (a `.sse.stream.jsonl` per block fixture) are reported as a
+pending list today and hard-gated once the streaming captures land.
 
 The round-trip assertion is load-bearing: **no response type uses
 `#[serde(deny_unknown_fields)]`**, so an undocumented, renamed, or mis-tagged

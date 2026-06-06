@@ -1656,6 +1656,14 @@ pub enum Caller {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+// `KnownCallerKind`: fieldless mirror for the wire-coverage gate
+// (`tests::wire_coverage`), so each known caller shape is forced into a fixture.
+// `cfg_attr(test)`-gated — `strum` stays a dev-dep; the kind exists only in test.
+#[cfg_attr(test, derive(strum::EnumDiscriminants))]
+#[cfg_attr(
+    test,
+    strum_discriminants(name(KnownCallerKind), derive(strum::EnumIter, Hash))
+)]
 pub enum KnownCaller {
     /// The model called the tool directly (traditional tool use).
     #[serde(rename = "direct")]
