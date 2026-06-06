@@ -1,5 +1,5 @@
 //! Example: analyze a social-network post and produce a structured
-//! [`VoteIntent`].
+//! `VoteIntent`.
 //!
 //! Reads a post body from `--post PATH` (or stdin), sends it to Claude
 //! with [`Prompt::structured_output::<VoteIntent>()`], and prints the
@@ -14,8 +14,8 @@
 //! order. That means field order *is* the generation order, which in
 //! turn acts as inline chain-of-thought for the model.
 //!
-//! We deliberately declare [`rationale`] and [`concerns`] before
-//! [`stance`] and [`confidence`] so the model reasons out loud before
+//! We deliberately declare `rationale` and `concerns` before
+//! `stance` and `confidence` so the model reasons out loud before
 //! committing to a decision — otherwise `stance` gets decided first and
 //! `rationale` becomes post-hoc justification. The effect is biggest on
 //! smaller models like Haiku; larger models tend to think ahead
@@ -36,10 +36,6 @@
 //! [Agora]: https://subliminal.technology/agora/hello-world
 //! [`Prompt::structured_output::<VoteIntent>()`]:
 //!     misanthropic::Prompt::structured_output
-//! [`rationale`]: VoteIntent::rationale
-//! [`concerns`]: VoteIntent::concerns
-//! [`stance`]: VoteIntent::stance
-//! [`confidence`]: VoteIntent::confidence
 
 use std::io::{BufRead, Read, stdin};
 
@@ -69,14 +65,9 @@ enum Stance {
 
 /// Structured vote intent produced by an agent reasoning about a post.
 ///
-/// Field order is deliberate: the model reasons in [`rationale`] and
-/// [`concerns`] before committing to [`stance`] and [`confidence`].
+/// Field order is deliberate: the model reasons in `rationale` and
+/// `concerns` before committing to `stance` and `confidence`.
 /// See the module-level docs for why this matters.
-///
-/// [`rationale`]: VoteIntent::rationale
-/// [`concerns`]: VoteIntent::concerns
-/// [`stance`]: VoteIntent::stance
-/// [`confidence`]: VoteIntent::confidence
 #[derive(Debug, Deserialize, JsonSchema)]
 struct VoteIntent {
     /// One-paragraph rationale, 2–4 sentences, written as if explaining

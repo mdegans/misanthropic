@@ -214,7 +214,7 @@ impl DeltaError {}
 impl Delta {
     /// Return true if `self` is a [`Thought`] delta and `signature` is `Some`.
     ///
-    /// [`Thought`]: Delta::Thinking
+    /// [`Thought`]: Delta::Thought
     pub fn thought_complete(&self) -> bool {
         matches!(
             self,
@@ -632,7 +632,7 @@ pub trait FilterExt:
 
     /// Adds [`Event::Message`] to the stream by assembling a message from
     /// the stream. If you need to interrupt the stream and take the partially
-    /// assembled message with you, use [`with_message_ip`].
+    /// assembled message with you, use [`Self::with_message_ip`].
     fn with_message(
         self,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {

@@ -34,7 +34,7 @@ pub struct Client {
     /// ## Note:
     /// - The API [`Key`] is **set automatically on requests**. Set
     ///   [`Self::key`] to change the [`Key`].
-    /// - **Do not use** `client.inner.get` directly. Use [`Self::get`] instead
+    /// - **Do not use** `client.inner.get` directly. Use `Self::get` instead
     ///   to safely set the API [`Key`] as sensitive.
     pub inner: reqwest::Client,
     /// Encrypted API [`Key`] for convenience. It can be set to a new [`Key`] to
@@ -335,7 +335,7 @@ impl Client {
     /// [`AnthropicError`]. If that fails (edge proxy returned HTML,
     /// plaintext rate-limit notice, Cloudflare challenge, …), surfaces
     /// an [`Error::NonJsonResponse`] with the HTTP status and a
-    /// truncated body snippet — mirroring [`Self::get`]'s behaviour so
+    /// truncated body snippet — mirroring `Self::get`'s behaviour so
     /// operators get the same diagnostic signal for POST and GET
     /// failures.
     pub async fn post<U, B>(&self, url: U, body: B) -> Result<reqwest::Response>
@@ -379,7 +379,7 @@ impl Client {
     /// Get all available [`Models`] from the API. [`Models`] is a thin wrapper
     /// around a `Vec` of [`Model`]s and derefs to it.
     ///
-    /// [`Model``]: misanthropic::model::ModelInfo
+    /// [`Model`]: crate::model::ModelInfo
     pub async fn models(&self) -> Result<Models> {
         // `get` now reads the body, logs it, and surfaces non-JSON
         // error bodies as `Error::NonJsonResponse`, so we only have to
@@ -416,7 +416,7 @@ impl Client {
     ///
     /// [`Response`]: crate::Response
     /// [`Request`]: crate::prompt
-    /// [`Message`]: crate::Message
+    /// [`Message`]: crate::response::Message
     /// [`Stream`]: crate::Stream
     pub async fn request<P>(&self, prompt: P) -> Result<crate::Response>
     where
@@ -607,6 +607,8 @@ impl Client {
     /// Poll the status of a [`Pending`] batch request. This update the metadata
     /// with the latest status of the [`Batch`]. If the batch is ready, the
     /// results are downloaded and returned in a [`batch::Ready`] variant.
+    ///
+    /// [`Pending`]: crate::batch::Pending
     ///
     /// The prompt type `P` does not need to be [`Serialize`] — polling only
     /// downloads results, it never re-serializes prompts.
@@ -825,7 +827,7 @@ pub enum Error {
     /// as an [`AnthropicError`] — most commonly a proxy or edge layer
     /// (Cloudflare, gateway timeout) returning HTML or plaintext instead
     /// of the documented JSON error shape. The body is truncated to
-    /// [`NON_JSON_BODY_SNIPPET_LEN`] bytes so the error fits in a log
+    /// `NON_JSON_BODY_SNIPPET_LEN` bytes so the error fits in a log
     /// line.
     #[error("non-JSON error response (status {status}): {body}")]
     #[allow(missing_docs)]

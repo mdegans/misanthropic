@@ -448,7 +448,7 @@ impl crate::markdown::ToMarkdown for AssistantMessage {
     }
 }
 
-/// Error message when conversion to [`AgentMessage`] fails.
+/// Error message when conversion to [`AssistantMessage`] fails.
 #[derive(Debug, Serialize, Deserialize, thiserror::Error)]
 #[error("Message is not from the assistant.")]
 pub struct NotTheAssistant;
@@ -1287,7 +1287,7 @@ pub enum WebSearchToolResultContent {
 
 /// A single result in a [`Block::WebSearchToolResult`], cited on the model's
 /// response [`Text`](Block::Text) blocks via
-/// [`Citation::WebSearchResultLocation`](crate::prompt::Citation::WebSearchResultLocation).
+/// [`Citation::WebSearchResultLocation`].
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "web_search_result")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -1514,8 +1514,9 @@ impl Block {
     }
 
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
-    /// will return a [`ContentMismatch`] error. In the case of a [`ToolUse`]
-    /// block, the deltas, together, must form a complete json object.
+    /// will return a [`ContentMismatch`] error. In the case of a
+    /// [`ToolUse`](Block::ToolUse) block, the deltas, together, must form a
+    /// complete json object.
     pub fn merge_deltas<Ds>(&mut self, deltas: Ds) -> Result<(), DeltaError>
     where
         Ds: IntoIterator<Item = Delta>,
@@ -2334,7 +2335,7 @@ impl Image {
     }
 
     /// Returns the number of bytes in the image data (base64 encoded). Call
-    /// [`decode`] to get the actual image size.
+    /// [`decode`](Self::decode) to get the actual image size.
     #[allow(clippy::len_without_is_empty)]
     pub fn len(&self) -> usize {
         match self {

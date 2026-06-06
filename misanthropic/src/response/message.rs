@@ -40,7 +40,7 @@ pub struct Message {
     /// Inner [`prompt::message`].
     #[serde(flatten)]
     pub inner: prompt::AssistantMessage,
-    /// [`Model`] that generated the message.
+    /// [`crate::model::Model`] that generated the message.
     pub model: model::Model,
     /// The reason the model stopped generating tokens.
     pub stop_reason: Option<StopReason>,
@@ -54,7 +54,7 @@ pub struct Message {
     pub usage: Usage,
     /// The [code execution] container backing this turn, present when the
     /// request used the [`code_execution`] tool. Pass its
-    /// [`id`](Container::id) to [`Prompt::container`] to resume the *same*
+    /// `id` to [`Prompt::container`] to resume the *same*
     /// container — required when a [programmatic tool call] paused the turn and
     /// you are sending its [`tool::Result`](crate::tool::Result) back.
     ///

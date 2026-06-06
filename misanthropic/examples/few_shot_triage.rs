@@ -1,5 +1,5 @@
 //! Example: *few-shot* structured output. Triage a free-text bug report into a
-//! structured [`Triage`] using [`Prompt::with_examples`] for priming.
+//! structured `Triage` using [`Prompt::with_examples`] for priming.
 //!
 //! The win over zero-shot [`Prompt::structured_output`]: one or two
 //! schema-conformant exemplars in the history teach the model the *depth* of
@@ -10,7 +10,7 @@
 //!
 //! [`with_examples`] pulls double duty: each `(input, output)` pair becomes a
 //! [`Role::User`] turn followed by a [`Role::Assistant`] turn (the exemplar
-//! serialized to JSON), *and* the exemplar type [`Triage`] seeds the
+//! serialized to JSON), *and* the exemplar type `Triage` seeds the
 //! [`output_config`] schema — so there is no separate
 //! `structured_output::<Triage>()` call and the constraint can never drift
 //! from the examples.

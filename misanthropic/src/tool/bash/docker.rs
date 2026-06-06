@@ -6,10 +6,10 @@
 //! `commit`), **run** a session container (`--init`, resource caps, bashd's port
 //! published to `127.0.0.1`), and **launch** `bashd --http` (as the run user),
 //! polling `GET /` until the [`Ready`] handshake validates. `bashd` is **baked
-//! into the image** ([`DEFAULT_IMAGE`], `just build-bashd`), so there is no
+//! into the image** (`DEFAULT_IMAGE`, `just build-bashd`), so there is no
 //! runtime injection — a dev binary may be bind-mounted over it via
 //! [`bashd_path`](DockerSandbox::bashd_path). Each [`exec`](DockerSandbox::exec)
-//! POSTs a [`Command`](super::Command) and aggregates the SSE stream into an
+//! POSTs a [`Command`](crate::tool::bash::Command) and aggregates the SSE stream into an
 //! [`ExecResult`]. [`teardown`](DockerSandbox::teardown) (and a blocking
 //! [`Drop`] leak-guard) removes the container.
 //!
@@ -115,7 +115,7 @@ impl From<&str> for HomeFs {
     }
 }
 
-/// A [`BashSandbox`] that runs [`bashd`] inside a Docker/Podman container.
+/// A [`BashSandbox`] that runs `bashd` inside a Docker/Podman container.
 ///
 /// Build it fluently, then hand it to a
 /// [`BashTool`](super::BashTool)::[`new`](super::BashTool::new):
@@ -158,7 +158,7 @@ pub struct DockerSandbox {
 }
 
 impl Default for DockerSandbox {
-    /// The happy path: boot the baked [`DEFAULT_IMAGE`] (built by
+    /// The happy path: boot the baked `DEFAULT_IMAGE` (built by
     /// `just build-bashd`) as its pinned non-root `agent` user. `bashd` is
     /// already on the rootfs, so no setup, user creation, or
     /// [`bashd_path`](Self::bashd_path) is needed.
@@ -188,9 +188,9 @@ impl Default for DockerSandbox {
 
 impl DockerSandbox {
     /// A sandbox on a custom base `image` — which **must carry `bashd`** (build
-    /// it `FROM` the [`DEFAULT_IMAGE`], or supply a dev binary via
+    /// it `FROM` the `DEFAULT_IMAGE`, or supply a dev binary via
     /// [`bashd_path`](Self::bashd_path)). Inherits the rest of
-    /// [`Default`](Self::default) (the `agent` user, [`AGENT_HOME`] workdir).
+    /// [`Default`](Self::default) (the `agent` user, `AGENT_HOME` workdir).
     pub fn new(image: impl Into<String>) -> Self {
         let mut sandbox = Self::default();
         sandbox.base_image = image.into();
@@ -212,7 +212,7 @@ impl DockerSandbox {
         self
     }
 
-    /// The working directory commands start in (default [`AGENT_HOME`]).
+    /// The working directory commands start in (default `AGENT_HOME`).
     pub fn workdir(mut self, dir: impl Into<String>) -> Self {
         self.workdir = dir.into();
         self
@@ -235,7 +235,7 @@ impl DockerSandbox {
     }
 
     /// Give the agent a **persistent** `$HOME`: a named Docker volume keyed by
-    /// `id`, mounted at [`AGENT_HOME`] and surviving teardown — so a later
+    /// `id`, mounted at `AGENT_HOME` and surviving teardown — so a later
     /// session with the same `id` "boots the same computer back up", files
     /// intact. Without it, `$HOME` is ephemeral (see [`home_fs`](Self::home_fs)).
     /// Delete it with [`remove_home`](Self::remove_home). Mutually exclusive with
@@ -511,7 +511,7 @@ impl DockerSandbox {
         Ok(container)
     }
 
-    /// Fail early with an actionable message if the baked [`DEFAULT_IMAGE`] is
+    /// Fail early with an actionable message if the baked `DEFAULT_IMAGE` is
     /// not built locally. Custom images get docker's own not-found error.
     async fn ensure_default_image(&self) -> Result<(), BashError> {
         if self.base_image != DEFAULT_IMAGE {
@@ -1049,7 +1049,7 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// Whether the baked [`DEFAULT_IMAGE`] is built locally (via `just
+    /// Whether the baked `DEFAULT_IMAGE` is built locally (via `just
     /// build-bashd`). `false` → skip the live test.
     async fn default_image_built() -> bool {
         Command::new("docker")

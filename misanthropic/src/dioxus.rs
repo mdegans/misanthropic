@@ -23,9 +23,9 @@ pub struct Options {
     ///
     /// [`Thought`]: opts::Thought
     pub thought: opts::Thought,
-    /// [`tool::Use`] options.
+    /// [`crate::tool::Use`] options.
     pub tool_use: opts::ToolUse,
-    /// [`tool::Result`] options.
+    /// [`crate::tool::Result`] options.
     pub tool_result: opts::ToolResult,
     /// [`Image`] view options.
     ///
@@ -163,7 +163,7 @@ pub mod opts {
         },
     }
 
-    /// [`tool::Result`] options.
+    /// [`crate::tool::Result`] options.
     #[derive(Clone, Serialize, Deserialize)]
     pub enum ToolResult {
         /// Hide tool result.

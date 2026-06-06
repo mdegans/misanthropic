@@ -45,7 +45,7 @@ pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Prompt {
-    /// [`Model`] to use for inference.
+    /// [`Model`](model::Model) to use for inference.
     pub model: model::Model,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
@@ -287,7 +287,7 @@ static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 /// Error from [`Prompt::with_examples`]: an exemplar failed to serialize, or
 /// inserting the example pairs violated [turn order].
 ///
-/// Kept separate from the runtime [`crate::Error`] (reqwest, Anthropic, …)
+/// Kept separate from the runtime [`Error`](crate::client::Error) (reqwest, Anthropic, …)
 /// because both arms are pure prompt-construction faults the caller can fix
 /// before any request is sent.
 ///
@@ -427,6 +427,9 @@ impl Prompt {
     /// - If the turn order is incorrect.
     ///
     /// [`add_message`]: Prompt::add_message
+    /// [`messages`]: Prompt::messages
+    /// [`push_messages`]: Prompt::push_messages
+    /// [`add_messages`]: Prompt::add_messages
     pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
     where
         M: Into<Message>,
@@ -462,6 +465,7 @@ impl Prompt {
     ///
     /// [`messages`]: Prompt::messages
     /// [`push_messages`]: Prompt::push_messages
+    /// [`add_messages`]: Prompt::add_messages
     // So we don't break the API, but in version 1.0.0 this will be removed.
     #[deprecated(
         since = "0.6.0",
@@ -769,6 +773,7 @@ impl Prompt {
     /// For a fallible version, see [`try_tools`].
     ///
     /// [`tools`]: Prompt::tools
+    /// [`Model`]: crate::model::Model
     /// [`Tool`]: crate::Tool
     /// [`StopReason`]: crate::response::StopReason
     /// [`ToolUse`]: crate::response::StopReason::ToolUse
@@ -803,12 +808,13 @@ impl Prompt {
     /// [`tool_use_id`] to the [`tool::Use::id`].
     ///
     /// [`tools`]: Prompt::tools
+    /// [`Model`]: crate::model::Model
     /// [`Tool`]: crate::Tool
     /// [`StopReason`]: crate::response::StopReason
     /// [`ToolUse`]: crate::response::StopReason::ToolUse
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
     /// [`Block::ToolUse`]: message::Block::ToolUse
-    /// [`id`]: tool::use::id
+    /// [`id`]: crate::tool::Use::id
     /// [`Role`]: message::Role
     /// [`User`]: message::Role::User
     /// [`Block`]: message::Block
@@ -1037,8 +1043,9 @@ impl Prompt {
 
     /// Append schema-conformant few-shot examples for structured output.
     ///
-    /// Each `(input, output)` pair becomes a [`Role::User`] turn followed by a
-    /// [`Role::Assistant`] turn whose single text block is `output` serialized
+    /// Each `(input, output)` pair becomes a [`Role::User`](message::Role::User)
+    /// turn followed by a [`Role::Assistant`](message::Role::Assistant) turn
+    /// whose single text block is `output` serialized
     /// to JSON — exactly the form the model emits under [`output_config`]. One
     /// or two well-populated exemplars before the real prompt nudge the model
     /// toward the desired depth of field population.
@@ -1124,7 +1131,8 @@ impl Prompt {
         self.cache_with(crate::prompt::message::CacheControl::one_hour())
     }
 
-    /// Add a cache breakpoint with a caller-provided [`CacheControl`] on
+    /// Add a cache breakpoint with a caller-provided
+    /// [`CacheControl`](message::CacheControl) on
     /// the last cacheable block. Shared implementation for
     /// [`cache`](Prompt::cache) and [`cache_1h`](Prompt::cache_1h).
     pub fn cache_with(
@@ -1318,7 +1326,7 @@ impl Prompt {
         Ok(())
     }
 
-    /// Extend a prompt with an [`Extendable`] object. This also functions as a
+    /// Extend a prompt with an [`Extendable`](ExtendOntoPrompt) object. This also functions as a
     /// append. This is useful for streaming prompts. This is async because some
     /// of the extendables, like [`stream::FilterExt`], are async.
     ///
@@ -1353,8 +1361,8 @@ impl Prompt {
         }
     }
 
-    /// Initialize a [`Tool`] with this [`Prompt`] asynchronously.
-    /// This will call [`Tool::on_init`] to set up the tool's initial context.
+    /// Initialize a [`Tool`](crate::tool::Tool) with this [`Prompt`] asynchronously.
+    /// This will call [`Tool::on_init`](crate::tool::Tool::on_init) to set up the tool's initial context.
     pub async fn init_tool<T>(
         mut self,
         tool: &mut T,
@@ -1378,9 +1386,9 @@ impl Prompt {
         tool.on_turn(self).await
     }
 
-    /// Tear down a [`Tool`], releasing resources it acquired in
-    /// [`Tool::on_init`]. Call this when the conversation ends; it invokes
-    /// [`Tool::on_teardown`].
+    /// Tear down a [`Tool`](crate::tool::Tool), releasing resources it acquired in
+    /// [`Tool::on_init`](crate::tool::Tool::on_init). Call this when the conversation ends; it invokes
+    /// [`Tool::on_teardown`](crate::tool::Tool::on_teardown).
     pub async fn teardown_tool<T>(
         &mut self,
         tool: &mut T,
@@ -1465,7 +1473,7 @@ pub enum ApplyEventError {
     /// [`Ping`]: stream::Event::Ping
     #[error("This `Event` cannot be appended to a `Prompt`.")]
     Unsupported {
-        /// The unsupported [`Event`].
+        /// The unsupported [`Event`](stream::Event).
         event: stream::Event,
     },
     /// Turn Order is incorrect.
@@ -1475,14 +1483,14 @@ pub enum ApplyEventError {
         #[from]
         error: TurnOrderError,
     },
-    /// Expected the last message to be an [`Assistant`]. Similar to
+    /// Expected the last message to be an [`Assistant`](message::Role::Assistant). Similar to
     /// TurnOrderError but more specific and does not originate from
     /// `push_message` or `add_message`.
     #[error(
         "`Role::Assistant` must be the final message role in the prompt to apply this `Event`."
     )]
     ExpectedAssistant {
-        /// The [`Event`] that caused the error.
+        /// The [`Event`](stream::Event) that caused the error.
         event: stream::Event,
         /// The role of the last message.
         last: message::Role,
@@ -1494,7 +1502,7 @@ pub enum ApplyEventError {
     /// would be incorrect.
     #[error("Index {actual} is unexpected.")]
     UnexpectedIndex {
-        /// The [`Event`] that caused the error.
+        /// The [`Event`](stream::Event) that caused the error.
         event: stream::Event,
         /// The actual index.
         actual: usize,
@@ -1512,7 +1520,7 @@ pub enum ApplyEventError {
     /// Event cannot be applied to an empty prompt.
     #[error("The prompt is empty and cannot accept this `Event`.")]
     EmptyPrompt {
-        /// The [`Event`] that caused the error.
+        /// The [`Event`](stream::Event) that caused the error.
         event: stream::Event,
     },
 }

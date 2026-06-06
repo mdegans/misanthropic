@@ -1,4 +1,4 @@
-//! Batch [`Requests`] and [`Response`]s.
+//! Batch [`Prompts`] and [`Batch`] responses.
 //!
 //! Generic over the prompt type `P: Serialize` so callers can submit
 //! [`Prompt`], [`CachedPrompt`], or any other serializable prompt wrapper
@@ -48,8 +48,8 @@ impl<P> std::fmt::Debug for Prompts<P> {
 }
 
 impl<P> Prompts<P> {
-    /// Get a prompt by its [`Id`]. Use [`Prompts::keys`] to get all IDs or
-    /// [`Prompts::values`] to get all prompts.
+    /// Get a prompt by its [`Id`]. Use `.keys()` to get all IDs or
+    /// `.values()` to get all prompts.
     ///
     /// # Note:
     /// - A [`uuid::Uuid`] will also work here.
@@ -129,7 +129,7 @@ impl<'a, P> IntoIterator for &'a Prompts<P> {
 }
 
 impl<P: Serialize> Serialize for Prompts<P> {
-    /// Serialize the [`Prompts`] as a list of [`Request`]s, which is what the
+    /// Serialize the [`Prompts`] as a list of `Request`s, which is what the
     /// API expects. The data will not be [`Clone`]d.
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -292,7 +292,7 @@ pub struct Stats {
 // Anthropic should really add a webhook or something.
 #[derive(derive_more::IsVariant)]
 pub enum Batch<P> {
-    /// Needs more [`Client::batch_poll`]ing.
+    /// Needs more [`crate::Client::batch_poll`]ing.
     Pending(Pending<P>),
     /// Results are [`Ready`]. See [`Ready::get_result`] for getting individual
     /// prompt completions.

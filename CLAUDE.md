@@ -48,8 +48,12 @@ just install-hooks  # enable the pre-commit gate (once per clone)
 ```
 
 `just test` includes the `__skills` doc-tests, which compile the code blocks
-in `.claude/skills/*/SKILL.md` so the skill docs can't drift from the API. The
-gate is offline (free per commit); only `just test-ignored` hits the API.
+in `.claude/skills/*/SKILL.md` so the skill docs can't drift from the API. It
+also runs `just doc` (`RUSTDOCFLAGS="-D warnings" cargo doc … --no-deps
+--examples`), so a broken intra-doc link or any rustdoc warning fails the gate —
+keep doc links resolving (link to public items; for a private item use a plain
+`` `code span` `` rather than `[`a link`]`). The gate is offline (free per
+commit); only `just test-ignored` hits the API.
 
 For the exact commands each recipe runs, read the `justfile` — it's the single
 source of truth, so they aren't transcribed here where they'd drift. CI also

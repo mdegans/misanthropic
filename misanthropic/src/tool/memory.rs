@@ -4,7 +4,7 @@
 //! [`Memory::latest`], no schema of your own) but *client-executed*: the model
 //! emits an ordinary [`Use`] whose [`input`](Use::input) is one of a small set
 //! of file operations, and you run it against storage you control. This module
-//! provides the typed [`Command`] those inputs deserialize into and
+//! provides the typed [`Command`](crate::tool::memory::Command) those inputs deserialize into and
 //! [`FsMemoryBackend`], a filesystem-backed reference executor jailed to a
 //! single directory.
 //!
@@ -78,7 +78,7 @@ pub enum Command {
 pub enum Known {
     /// List a directory (up to two levels) or show a file's contents.
     View {
-        /// Path under [`MEMORY_ROOT`], e.g. `/memories/notes.md`.
+        /// Path under `MEMORY_ROOT`, e.g. `/memories/notes.md`.
         path: Cow<'static, str>,
         /// Optional inclusive 1-indexed `[start, end]` line range for files.
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,7 +86,7 @@ pub enum Known {
     },
     /// Create a new file (errors if it already exists).
     Create {
-        /// Destination path under [`MEMORY_ROOT`].
+        /// Destination path under `MEMORY_ROOT`.
         path: Cow<'static, str>,
         /// Full contents of the new file.
         file_text: Cow<'static, str>,
@@ -137,7 +137,7 @@ impl TryFrom<serde_json::Value> for Command {
 #[cfg(feature = "memory-fs")]
 #[derive(Debug)]
 pub enum MemoryError {
-    /// A path escaped [`MEMORY_ROOT`] (traversal / absolute / prefix).
+    /// A path escaped `MEMORY_ROOT` (traversal / absolute / prefix).
     Traversal(String),
     /// The path does not exist.
     NotFound(String),
@@ -271,7 +271,7 @@ impl From<std::io::Error> for MemoryError {
 /// special-casing. There is no per-conversation setup to defer to a lifecycle
 /// hook — the root directory is created eagerly in [`new`](Self::new).
 ///
-/// Every path the model sends is mapped from [`MEMORY_ROOT`] onto [`root`] and
+/// Every path the model sends is mapped from `MEMORY_ROOT` onto [`root`] and
 /// validated to stay within it (no `..`, absolute, or prefix escapes).
 ///
 /// [memory tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/memory-tool>
@@ -279,7 +279,7 @@ impl From<std::io::Error> for MemoryError {
 #[cfg(feature = "memory-fs")]
 #[derive(Clone, Debug)]
 pub struct FsMemoryBackend {
-    /// The real directory standing in for [`MEMORY_ROOT`].
+    /// The real directory standing in for `MEMORY_ROOT`.
     root: PathBuf,
     /// File extensions the model may create/keep (lowercased, no dot). Empty
     /// means "any".
@@ -314,14 +314,14 @@ impl FsMemoryBackend {
         self
     }
 
-    /// The real directory standing in for [`MEMORY_ROOT`].
+    /// The real directory standing in for `MEMORY_ROOT`.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
     /// Map a model-supplied path onto [`root`](Self::root), rejecting anything
     /// that would escape it. The memory tool addresses files under the virtual
-    /// [`MEMORY_ROOT`]; see [`fs::resolve_jailed`].
+    /// `MEMORY_ROOT`; see [`fs::resolve_jailed`].
     fn resolve(&self, path: &str) -> Result<PathBuf, MemoryError> {
         fs::resolve_jailed(&self.root, path, Some(MEMORY_ROOT))
             .ok_or_else(|| MemoryError::Traversal(path.to_string()))

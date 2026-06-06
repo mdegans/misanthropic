@@ -5,7 +5,7 @@
 //! prints the result as a conventional-commit-style message.
 //!
 //! Dogfoods the [`Prompt::structured_output`] / [`Message::json`] pair
-//! added in the `json-schema` feature: the [`CommitClassification`] struct
+//! added in the `json-schema` feature: the `CommitClassification` struct
 //! below is the same type the API sees (via [`schemars::JsonSchema`]) and
 //! the same type we deserialize the response into (via
 //! [`serde::Deserialize`]).
@@ -17,7 +17,7 @@
 //! order. That means field order *is* the generation order, which in
 //! turn acts as inline chain-of-thought for the model.
 //!
-//! [`summary`] is declared before [`category`] so the model describes
+//! `summary` is declared before `category` so the model describes
 //! what the diff does before committing to a conventional-commit
 //! category label — otherwise `category` gets picked first and the
 //! summary becomes post-hoc justification. The effect is most visible
@@ -39,8 +39,6 @@
 //!
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`Message::json`]: misanthropic::response::Message::json
-//! [`summary`]: CommitClassification::summary
-//! [`category`]: CommitClassification::category
 
 use std::io::{BufRead, Read, stdin};
 
@@ -88,13 +86,10 @@ enum Category {
 /// field into the JSON Schema's `description` slots, which the model
 /// uses as part of its constrained-decoding guidance.
 ///
-/// Field order is deliberate: the model generates [`summary`] first (a
-/// description of what the diff does), then [`category`] (a label
+/// Field order is deliberate: the model generates `summary` first (a
+/// description of what the diff does), then `category` (a label
 /// informed by that description), then the remaining fields. See the
 /// module-level docs for the reasoning.
-///
-/// [`summary`]: CommitClassification::summary
-/// [`category`]: CommitClassification::category
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommitClassification {
     /// Imperative one-line summary of the change, 70 characters or

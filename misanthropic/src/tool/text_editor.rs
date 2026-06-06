@@ -6,13 +6,14 @@
 //! model emits an ordinary [`Use`] (`name: "str_replace_based_edit_tool"`)
 //! whose [`input`](Use::input) is one of a small set of file operations
 //! (`view` / `create` / `str_replace` / `insert`), and you run it against a
-//! working tree you control. This module provides the typed [`Command`] those
+//! working tree you control. This module provides the typed
+//! [`Command`](crate::tool::text_editor::Command) those
 //! inputs deserialize into and [`FsEditorBackend`], a filesystem-backed
 //! reference executor jailed to a single directory.
 //!
-//! Like [`memory`](super::memory), it *defines* like a server tool and
+//! Like [`memory`](crate::tool::memory), it *defines* like a server tool and
 //! *executes* like a custom one — the two are siblings and share the path/text
-//! plumbing in [`fs`](super::fs).
+//! plumbing in `fs`.
 //!
 //! ```no_run
 //! # async fn f() -> Result<(), Box<dyn std::error::Error>> {

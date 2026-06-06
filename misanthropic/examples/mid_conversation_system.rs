@@ -30,7 +30,7 @@
 //! enforces it at construction time via [`TurnOrderError`]: a system turn may
 //! not open the conversation, must follow a user turn, and must either end the
 //! array or immediately precede an assistant turn. The
-//! [`demonstrate_guardrails`] function below exercises the rejected cases
+//! `demonstrate_guardrails` function below exercises the rejected cases
 //! without touching the network.
 //!
 //! **Security.** System content is operator-authoritative, so never place
@@ -53,7 +53,6 @@
 //! [`Prompt::system`]: misanthropic::Prompt::system
 //! [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
 //! [`tool::Result`]: misanthropic::tool::Result
-//! [`demonstrate_guardrails`]: fn@demonstrate_guardrails
 
 use std::io::{BufRead, stdin};
 

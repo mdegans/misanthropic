@@ -1,4 +1,4 @@
-//! [`Index`] and related types for addressing a [`CustomMethodDef`] or [`Content`]
+//! [`Index`] and related types for addressing a [`CustomMethodDef`] or [`Content`](crate::prompt::message::Content)
 //! [`Block`] inside a [`Prompt`].
 //!
 //! The motivating use is cache-breakpoint placement: [`Prompt::indices`] yields
@@ -10,7 +10,7 @@
 use super::{Prompt, message::Block, tool::CustomMethodDef};
 
 /// An index into a [`Prompt`]. Addresses either a [`CustomMethodDef`] in
-/// [`Prompt::tools`] or a [`Content`] [`Block`] in [`Prompt::system`] /
+/// [`Prompt::tools`] or a [`Content`](crate::prompt::message::Content) [`Block`] in [`Prompt::system`] /
 /// [`Prompt::messages`].
 ///
 /// The derived [`Ord`] matches Anthropic's cache-prefix order: every
@@ -33,7 +33,7 @@ use super::{Prompt, message::Block, tool::CustomMethodDef};
 pub enum Index {
     /// A [`CustomMethodDef`] in [`Prompt::tools`].
     Method(MethodIndex),
-    /// A [`Content`] [`Block`] in [`Prompt::system`] or [`Prompt::messages`].
+    /// A [`Content`](crate::prompt::message::Content) [`Block`] in [`Prompt::system`] or [`Prompt::messages`].
     Block(BlockIndex),
 }
 
@@ -53,7 +53,7 @@ pub enum Index {
 )]
 pub struct MethodIndex(pub usize);
 
-/// Index of a [`Content`] [`Block`] in a [`Prompt`].
+/// Index of a [`Content`](crate::prompt::message::Content) [`Block`] in a [`Prompt`].
 #[derive(
     Clone,
     Copy,
@@ -72,21 +72,21 @@ pub enum BlockIndex {
     Message((usize, usize)),
 }
 
-/// A shared reference to a [`CustomMethodDef`] or a [`Content`] [`Block`] in a
+/// A shared reference to a [`CustomMethodDef`] or a [`Content`](crate::prompt::message::Content) [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get`].
 pub enum IndexRef<'a> {
     /// Reference to a [`CustomMethodDef`] in [`Prompt::tools`].
     Method(&'a CustomMethodDef),
-    /// Reference to a [`Content`] [`Block`] in a [`Prompt`].
+    /// Reference to a [`Content`](crate::prompt::message::Content) [`Block`] in a [`Prompt`].
     Block(&'a Block),
 }
 
-/// A mutable reference to a [`CustomMethodDef`] or a [`Content`] [`Block`] in a
+/// A mutable reference to a [`CustomMethodDef`] or a [`Content`](crate::prompt::message::Content) [`Block`] in a
 /// [`Prompt`], as returned by [`Prompt::get_mut`].
 pub enum IndexMut<'a> {
     /// Mutable reference to a [`CustomMethodDef`] in [`Prompt::tools`].
     Method(&'a mut CustomMethodDef),
-    /// Mutable reference to a [`Content`] [`Block`] in a [`Prompt`].
+    /// Mutable reference to a [`Content`](crate::prompt::message::Content) [`Block`] in a [`Prompt`].
     Block(&'a mut Block),
 }
 

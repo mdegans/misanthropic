@@ -60,7 +60,7 @@ impl TryFrom<String> for Key {
 impl TryFrom<Vec<u8>> for Key {
     type Error = InvalidKeyLength;
 
-    /// Create a new key from a Vec<u8> securely. The Vec<u8> is zeroized after
+    /// Create a new key from a `Vec<u8>` securely. The `Vec<u8>` is zeroized after
     /// conversion.
     fn try_from(v: Vec<u8>) -> Result<Self, Self::Error> {
         let v = Zeroizing::new(v);

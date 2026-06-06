@@ -3,18 +3,22 @@
 //! The bash tool is *predefined* (you add it by versioned name via
 //! [`Bash::latest`], or as a richer custom def via [`Bash::rich`]) but
 //! *client-executed*: the model emits an ordinary [`Use`] (`name: "bash"`) whose
-//! [`input`](Use::input) is a [`Command`], and *you* run it — in a **sandbox**,
+//! [`input`](Use::input) is a [`Command`](crate::tool::bash::Command), and
+//! *you* run it — in a **sandbox**,
 //! not a filesystem jail. Because `docker exec` per command loses the working
 //! directory and environment, the sandbox runs a tiny **`bashd`** daemon inside
 //! the container that owns a persistent session and serves the HTTP/SSE protocol
 //! in this module, reached over a published `127.0.0.1` port.
 //!
-//! This module is sandbox-agnostic: it provides the typed [`Command`] vocabulary,
-//! the wire protocol the daemon and host share, the [`BashSandbox`] trait, and
-//! the [`BashTool`] adapter that drops into a [`ToolBox`](super::ToolBox). Enable
+//! This module is sandbox-agnostic: it provides the typed
+//! [`Command`](crate::tool::bash::Command) vocabulary,
+//! the wire protocol the daemon and host share, the
+//! [`BashSandbox`](crate::tool::bash::BashSandbox) trait, and
+//! the [`BashTool`](crate::tool::bash::BashTool) adapter that drops into a
+//! [`ToolBox`](crate::tool::ToolBox). Enable
 //! `bash-container` for the reference `DockerSandbox` executor.
 //!
-//! Like [`memory`](super::memory)/[`text_editor`](super::text_editor), it
+//! Like [`memory`](crate::tool::memory)/[`text_editor`](crate::tool::text_editor), it
 //! *defines* like a server tool and *executes* like a custom one.
 //!
 //! [bash tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool>
@@ -186,7 +190,7 @@ pub enum Stream {
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Chunk {
-    /// The [`Request::id`] this output belongs to.
+    /// The `Request::id` this output belongs to.
     pub id: u64,
     /// Which stream produced it (tagged at the source — the host merges for the
     /// model if it likes).
@@ -195,11 +199,11 @@ pub struct Chunk {
     pub data: String,
 }
 
-/// The terminal result of a [`Request`].
+/// The terminal result of a `Request`.
 #[derive(Clone, Debug, Default, Deserialize, Serialize, JsonSchema)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 pub struct Outcome {
-    /// The [`Request::id`] this is the outcome of.
+    /// The `Request::id` this is the outcome of.
     pub id: u64,
     /// The command's exit code, or `None` while a backgrounded job still runs.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -59,11 +59,9 @@ pub mod memory;
 pub mod text_editor;
 
 /// Client-side execution of the [`bash`](ServerMethodDef::Bash) tool: the typed
-/// [`Command`](bash::Command) vocabulary, the [`bashd`] daemon wire protocol,
+/// [`Command`](bash::Command) vocabulary, the `bashd` daemon wire protocol,
 /// the [`BashSandbox`](bash::BashSandbox) trait, and the [`BashTool`](bash::BashTool)
 /// adapter. Bring your own sandbox, or enable `bash-container` for `DockerSandbox`.
-///
-/// [`bashd`]: bash::Request
 #[cfg(feature = "bash")]
 pub mod bash;
 
@@ -364,7 +362,7 @@ impl ServerMethodDef {
 
     /// The bare wire `name` the model emits for this tool (e.g. `"memory"`,
     /// `"web_search"`) — *not* the versioned `type` tag. Used by
-    /// [`ToolBox`](crate::tool::ToolBox) to route client-executed predefined
+    /// [`ToolBox`] to route client-executed predefined
     /// tools (like [`memory`](Self::Memory)) by their fixed, un-namespaced name.
     pub fn name(&self) -> &'static str {
         match self {
@@ -667,7 +665,7 @@ impl From<TextEditor> for MethodDef {
 /// adds it by versioned name (`bash_20250124`, the model-trained narrow schema
 /// that only elicits `command`/`restart`); [`rich`](Self::rich) instead yields a
 /// [`Custom`](MethodDef::Custom) def whose schema is *derived* from
-/// [`bash::Known`](crate::tool::bash::Known), advertising the full
+/// [`bash::Known`], advertising the full
 /// run/restart/poll/kill vocabulary (background jobs, timeouts) to the model.
 /// Execute its [`Command`](crate::tool::bash::Command)s with a
 /// [`BashTool`](crate::tool::bash::BashTool) over some
@@ -702,7 +700,7 @@ impl Bash {
     }
 
     /// A [`Custom`](MethodDef::Custom) bash def whose input schema is *derived*
-    /// from [`bash::Known`](crate::tool::bash::Known) (via [`schemars`] +
+    /// from [`bash::Known`] (via [`schemars`] +
     /// [`sanitize_for_anthropic`], the same path the typed-tool layer uses), so
     /// the model sees the full run/restart/poll/kill vocabulary the predefined
     /// `bash_20250124` schema omits. Use this when you want the model to drive
@@ -870,7 +868,7 @@ pub enum MethodDef {
 impl MethodDef {
     /// The bare wire `name` this definition advertises — a custom tool's
     /// [`CustomMethodDef::name`] or a [`ServerMethodDef`]'s fixed name. This is the key a
-    /// [`ToolBox`](crate::tool::ToolBox) routes on (namespaced for custom
+    /// [`ToolBox`] routes on (namespaced for custom
     /// tools, left bare for server-declared ones).
     pub fn name(&self) -> &str {
         match self {
@@ -930,10 +928,10 @@ pub trait Tool: Send {
     /// The [`MethodDef`]s this [`Tool`] contributes to a [`Prompt`]'s tools
     /// array. Usually [`Custom`](MethodDef::Custom) method schemas you execute,
     /// but a client-executed *predefined* tool (e.g. the
-    /// [`memory`](crate::tool::memory) backend) instead contributes a
+    /// [`memory`] backend) instead contributes a
     /// [`Server`](MethodDef::Server) def — added by versioned name, routed by its
     /// fixed bare name rather than namespaced. See
-    /// [`ToolBox`](crate::tool::ToolBox).
+    /// [`ToolBox`].
     fn definitions(&self) -> Vec<MethodDef>;
     /// [`Use`] the [`Tool`], returning a [`tool::Result`].
     ///
@@ -954,7 +952,7 @@ pub trait Tool: Send {
     async fn save_json(&mut self) -> serde_json::Value {
         serde_json::Value::Null
     }
-    /// Deserialize state from json [`Value`] if possible.
+    /// Deserialize state from json [`Value`](serde_json::Value) if possible.
     ///
     /// For tools with external persistence, this should restore configuration
     /// and ensure the external state is accessible/initialized.
@@ -995,7 +993,8 @@ pub trait Tool: Send {
     }
 
     /// Called once when the tool is being torn down (e.g. at the end of a
-    /// conversation, via [`ToolBox::teardown`](crate::tool::ToolBox::teardown)
+    /// conversation, via
+    /// [`ToolBox::teardown_tools`](crate::tool::ToolBox::teardown_tools)
     /// or [`Prompt::teardown_tool`]). Use this to release external resources a
     /// tool acquired in [`on_init`](Self::on_init) — close a connection, stop a
     /// subprocess, tear down a sandbox container.
@@ -1251,7 +1250,7 @@ impl MethodBuilder {
     /// Set a cache breakpoint at this [`CustomMethodDef`] by setting [`cache_control`] to
     /// [`Ephemeral`] See [`Prompt::cache`] for more information.
     ///
-    /// [`cache_control`]: Spec::cache_control
+    /// [`cache_control`]: CustomMethodDef::cache_control
     /// [`Ephemeral`]: crate::prompt::message::CacheControl::Ephemeral
     /// [`Prompt::cache`]: crate::prompt::Prompt::cache
     pub fn cache(mut self) -> Self {
@@ -1923,8 +1922,10 @@ pub struct Result {
     /// Unique Id for this tool call.
     pub tool_use_id: Cow<'static, str>,
     /// Output of the tool. If this is an error message it should be written
-    /// with the [`Assistant`]'s perspective in mind. It should tell the
-    /// [`Assistant`] what went wrong and how they can try to fix it.
+    /// with the [`Assistant`](crate::prompt::message::Role::Assistant)'s
+    /// perspective in mind. It should tell the
+    /// [`Assistant`](crate::prompt::message::Role::Assistant) what went wrong
+    /// and how they can try to fix it.
     pub content: Content,
     /// Is the result an error message?
     pub is_error: bool,
@@ -1962,7 +1963,9 @@ impl Result {
     /// [`is_error`](Self::is_error) `true`. The shorthand for the common
     /// "a tool call failed, hand the error back to the model" path.
     ///
-    /// The error text reaches the [`Assistant`], so prefer errors whose
+    /// The error text reaches the
+    /// [`Assistant`](crate::prompt::message::Role::Assistant), so prefer
+    /// errors whose
     /// `Display` says what went wrong and how to recover.
     ///
     /// [`Display`]: std::fmt::Display

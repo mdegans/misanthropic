@@ -13,7 +13,6 @@ use crate::{
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
 /// is really necessary.
 ///
-/// [`functions`]: ToolBox::functions
 /// [`call`]: ToolBox::call
 pub struct ToolBox {
     /// Name of the [`ToolBox`].

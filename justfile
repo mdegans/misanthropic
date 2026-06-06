@@ -13,12 +13,20 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Offline gate run by the pre-commit hook: fmt, clippy, all-features + no-default tests.
+# Offline gate run by the pre-commit hook: fmt, clippy, doc, all-features +
+# no-default tests.
 test:
     cargo fmt --all -- --check
     cargo clippy --all-features --all-targets
+    RUSTDOCFLAGS="-D warnings" cargo doc -p misanthropic --all-features --no-deps --examples
     cargo test --all-features
     cargo test --all-features --no-default-features
+
+# Build the docs with broken intra-doc links (and any rustdoc warning) treated as
+# errors — the doc half of the gate. Covers the lib (incl. the `__skills` skill
+# files) and the examples. `--no-deps` so only our own docs are checked.
+doc:
+    RUSTDOCFLAGS="-D warnings" cargo doc -p misanthropic --all-features --no-deps --examples
 
 # Live-API #[ignore]d tests (needs misanthropic/api.key); not in the pre-commit hook.
 test-ignored:
