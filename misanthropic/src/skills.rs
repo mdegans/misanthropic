@@ -13,3 +13,6 @@ struct MemorySkill;
 
 #[doc = include_str!("../../.claude/skills/misan-messages-api/TEXT_EDITOR.md")]
 struct TextEditorSkill;
+
+#[doc = include_str!("../../.claude/skills/misan-messages-api/BASH.md")]
+struct BashSkill;

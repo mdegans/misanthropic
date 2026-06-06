@@ -315,8 +315,15 @@ derive = ["dep:misanthropic-derive"]
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),
 # `derive` (the `#[tool]` macro), and the client-executed file tools `memory-fs`
-# (memory + its backend) and `text-editor-fs` (text editor + its backend).
-__skills = ["client", "derive", "memory-fs", "text-editor-fs"]
+# (memory + its backend), `text-editor-fs` (text editor + its backend), and
+# `bash-container` (the `DockerSandbox` bash executor).
+__skills = [
+    "client",
+    "derive",
+    "memory-fs",
+    "text-editor-fs",
+    "bash-container",
+]
 
 [[example]]
 name = "strawberry"

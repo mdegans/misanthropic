@@ -408,11 +408,14 @@ custom one. Each has a focused guide; load the one you need:
   (`FsMemoryBackend`). See [MEMORY.md](MEMORY.md).
 - **text editor** (`str_replace_based_edit_tool`) — view/edit files in a
   working tree (`FsEditorBackend`). See [TEXT_EDITOR.md](TEXT_EDITOR.md).
+- **bash** — run shell commands in a torn-down-after sandbox, not a filesystem
+  jail (`BashTool` over a `DockerSandbox`). See [BASH.md](BASH.md).
 
-Both share the same shape: `add_tool(Memory::latest())` /
-`add_tool(TextEditor::latest())`, then drive a tool loop that executes each
-`tool_use` locally and feeds the `tool::Result` back. Their backends drop into a
-`ToolBox` and route by their fixed bare name with no special-casing.
+All three share the same shape: `add_tool(Memory::latest())` /
+`add_tool(TextEditor::latest())` (or wrap a sandbox in `BashTool`), then drive a
+tool loop that executes each `tool_use` locally and feeds the `tool::Result`
+back. Their backends drop into a `ToolBox` and route by their fixed bare name
+with no special-casing.
 
 ## Using `json!` instead of `Prompt`
 
@@ -578,6 +581,7 @@ your task — they're the most current, compiler-checked usage.
 | `programmatic_tool_calling.rs` | `code_execution` calling a `.programmatic()` custom tool from inside the container (PTC). |
 | `memory.rs` | The client-executed `memory` tool (`FsMemoryBackend`) — see [MEMORY.md](MEMORY.md). |
 | `text_editor.rs` | The client-executed `text_editor` tool (`FsEditorBackend`) — see [TEXT_EDITOR.md](TEXT_EDITOR.md). |
+| `bash.rs` | The client-executed `bash` tool (`BashTool` over a `DockerSandbox`) — see [BASH.md](BASH.md). |
 | `neologism.rs` | `Client::message` with a custom system prompt. |
 | `website_wizard.rs` | **Streaming** (`Client::stream`) — see the misan-streaming-api skill. |
 
