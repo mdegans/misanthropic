@@ -45,7 +45,7 @@
 use std::io::{BufRead, Read, stdin};
 
 use clap::Parser;
-use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Id, Prompt, prompt::message::Role};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -169,7 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         true if the public API is altered incompatibly.";
 
     let prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .structured_output::<CommitClassification>()
         .set_system(system)
         .add_message((

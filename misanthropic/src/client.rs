@@ -379,7 +379,7 @@ impl Client {
     /// Get all available [`Models`] from the API. [`Models`] is a thin wrapper
     /// around a `Vec` of [`Model`]s and derefs to it.
     ///
-    /// [`Model``]: misanthropic::model::Model
+    /// [`Model``]: misanthropic::model::ModelInfo
     pub async fn models(&self) -> Result<Models> {
         // `get` now reads the body, logs it, and surfaces non-JSON
         // error bodies as `Error::NonJsonResponse`, so we only have to
@@ -1512,7 +1512,7 @@ mod tests {
         // domain of whatever comes back is a deterministic invariant even
         // though search content is not.
         let mut prompt = Prompt::default()
-            .model(crate::AnthropicModel::Haiku45)
+            .model(crate::Id::Haiku45)
             .add_message((
                 Role::User,
                 "Search anthropic.com and name one product Anthropic makes. \
@@ -1631,7 +1631,7 @@ mod tests {
             .unwrap();
 
         let mut prompt = Prompt::default()
-            .model(crate::AnthropicModel::Sonnet46)
+            .model(crate::Id::Sonnet46)
             .add_tool(ServerMethodDef::code_execution())
             .add_tool(query_sales)
             .add_message((
@@ -1735,7 +1735,7 @@ mod tests {
         // not redirect cross-domain (which would trip `url_not_allowed`).
         const URL: &str = "https://www.rust-lang.org";
         let mut prompt = Prompt::default()
-            .model(crate::AnthropicModel::Haiku45)
+            .model(crate::Id::Haiku45)
             .add_message((
                 Role::User,
                 format!(
@@ -1827,7 +1827,7 @@ mod tests {
         // then sum its lines with bash. The sum (15) is the invariant. Needs a
         // model that supports `code_execution_20260120` (not Haiku).
         let mut prompt = Prompt::default()
-            .model(crate::AnthropicModel::Sonnet46)
+            .model(crate::Id::Sonnet46)
             .add_message((
                 Role::User,
                 "Using the code execution tool: first create the file \
@@ -1963,11 +1963,11 @@ mod tests {
             assert!(!model.display_name.is_empty());
 
             // `Display` (the hand-written `Id::name` match) and serde (the
-            // `#[serde(rename = ...)]` attributes on `AnthropicModel`) are
+            // `#[serde(rename = ...)]` attributes on `Id`) are
             // independent sources of truth for a model's wire id. Assert they
             // agree for every model the live API reports, so a typo or stale
             // entry in either can't slip in unnoticed — this is what lets us
-            // point the docs at `AnthropicModel` instead of hand-listing ids.
+            // point the docs at `Id` instead of hand-listing ids.
             let display = model.id.to_string();
             let serde = serde_json::to_value(&model.id).unwrap();
             let serde =
@@ -1978,11 +1978,11 @@ mod tests {
                 model.id
             );
 
-            // A model the API offers but the `AnthropicModel` enum lacks falls
+            // A model the API offers but the `Id` enum lacks falls
             // through to `Id::Custom`. Not a failure — we deliberately skip
             // some (e.g. Opus 4.7) — but surface it so the gap is visible.
-            if let crate::model::Id::Custom(name) = &model.id {
-                eprintln!("note: API model not in AnthropicModel: {name}");
+            if let crate::model::Model::Custom(name) = &model.id {
+                eprintln!("note: API model not in Id: {name}");
             }
         }
     }

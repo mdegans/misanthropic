@@ -78,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Access fields:
     //   message.inner          — the prompt::AssistantMessage
     //   message.inner.content  — Content (Display, iterable over Blocks)
-    //   message.model          — model::Id
+    //   message.model          — model::Model
     //   message.stop_reason    — Option<StopReason>
     //   message.usage          — Usage { input_tokens, output_tokens, .. }
 
@@ -94,12 +94,12 @@ methods are convenience helpers that return `Self`.
 
 ```rust
 use std::num::NonZeroU32;
-use misanthropic::{AnthropicModel, Prompt, prompt::message::Role};
+use misanthropic::{Id, Prompt, prompt::message::Role};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
 let prompt = Prompt::default()
-    // Set model — accepts AnthropicModel, model::Id, or any string.
-    .model(AnthropicModel::Sonnet46)
+    // Set model — accepts Id, model::Model, or any string.
+    .model(Id::Sonnet46)
     // System prompt — accepts &str, String, or Content.
     .set_system("You are a helpful assistant.")
     // Append to the system prompt.
@@ -116,19 +116,19 @@ let prompt = Prompt::default()
 # }
 ```
 
-### Available models (`AnthropicModel` enum)
+### Available models (`Id` enum)
 
-`.model(...)` takes an `AnthropicModel`, a `model::Id`, or any string. The
-`AnthropicModel` enum tracks current and historical models (each variant
+`.model(...)` takes an `Id`, a `model::Model`, or any string. The
+`Id` enum tracks current and historical models (each variant
 serializes to its wire ID, e.g. `Sonnet46` → `claude-sonnet-4-6`), with both
 "latest"-style and pinned/dated variants. The **default** is `Haiku45`
 (`claude-haiku-4-5`).
 
 Rather than reproduce the list here (it drifts as models ship), see the
-[`AnthropicModel` docs](https://docs.rs/misanthropic/latest/misanthropic/model/enum.AnthropicModel.html)
+[`Id` docs](https://docs.rs/misanthropic/latest/misanthropic/model/enum.Id.html)
 for the authoritative set — the variant↔wire-ID mapping is verified against the
 live `/v1/models` endpoint by `test_client_models`. For a model not in the enum
-yet, pass `model::Id::Custom("your-model-id".into())` or just the string.
+yet, pass `model::Model::Custom("your-model-id".into())` or just the string.
 
 ### Messages — generic conversions
 
@@ -166,13 +166,13 @@ let prompt = Prompt::default().set_messages([
 ### Multi-turn conversation
 
 ```no_run
-use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role};
+use misanthropic::{Id, Client, Prompt, prompt::message::Role};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 
 let mut chat = Prompt::default()
-    .model(AnthropicModel::Sonnet46)
+    .model(Id::Sonnet46)
     .set_system("You are a helpful assistant.")
     .add_message((Role::User, "What is Rust?"))?;
 
@@ -237,7 +237,7 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 let mut weather = Weather;
 
 let mut chat = Prompt::default()
-    .model(misanthropic::AnthropicModel::Sonnet46)
+    .model(misanthropic::Id::Sonnet46)
     .set_system("Use tools when appropriate.")
     .add_message((Role::User, "What's the weather in Paris?"))?;
 
@@ -298,7 +298,7 @@ use misanthropic::{
 let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 
 let mut chat = Prompt::default()
-    .model(misanthropic::AnthropicModel::Sonnet46)
+    .model(misanthropic::Id::Sonnet46)
     .add_tool(CustomMethodDef {
         name: "get_weather".into(),
         description: "Get the weather for a city.".into(),
@@ -531,7 +531,7 @@ response::Message
 │   └── inner: prompt::Message
 │       ├── role: Role::Assistant
 │       └── content: Content  — Display, iterable over Blocks
-├── model: model::Id
+├── model: model::Model
 ├── stop_reason: Option<StopReason>
 │   └── EndTurn | MaxTokens | StopSequence | ToolUse | PauseTurn | Refusal
 ├── stop_sequence: Option<Cow<str>>

@@ -53,12 +53,12 @@ pub const PROTOCOL_VERSION: u32 = 1;
 /// A typed bash command, deserialized from a bash [`Use`]'s [`input`](Use::input)
 /// — and the JSON body the host `POST`s to `bashd`'s `/run`.
 ///
-/// A known/unknown union (à la [`model::Id`]/[`Caller`]): commands this crate
+/// A known/unknown union (à la [`model::Model`]/[`Caller`]): commands this crate
 /// types land in [`Known`]; anything else round-trips through
 /// [`Unknown`](Command::Unknown) rather than failing to deserialize a live
 /// response.
 ///
-/// [`model::Id`]: crate::model::Id
+/// [`model::Model`]: crate::model::Model
 /// [`Caller`]: crate::tool::Caller
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]

@@ -38,7 +38,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::message::Role,
     response::StopReason,
     tool::{ServerMethodDef, WebSearch},
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add the web_search server tool. The model decides whether and how often
     // to search (capped by `max_uses`); we never run anything ourselves.
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .add_message((Role::User, question))?
         .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(5),

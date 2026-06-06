@@ -12,15 +12,15 @@ use crate::prompt::Effort;
 #[serde(rename_all = "snake_case")]
 pub struct Models {
     /// List of available models.
-    data: Vec<Model>,
+    data: Vec<ModelInfo>,
 }
 
 /// Model information, as returned by [`Client::models`](crate::Client::models).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct Model {
+pub struct ModelInfo {
     /// Model ID.
-    pub id: Id,
+    pub id: Model,
     /// Human-readable display name, e.g. `"Claude Opus 4.6"`.
     pub display_name: Cow<'static, str>,
     /// What the model supports — see [`Capabilities`].
@@ -39,7 +39,7 @@ pub struct Model {
     pub created_at: DateTime<Utc>,
 }
 
-/// Object-type discriminator on a [`Model`]. Always [`Kind::Model`] for the
+/// Object-type discriminator on a [`ModelInfo`]. Always [`Kind::Model`] for the
 /// `/v1/models` endpoint.
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
@@ -89,12 +89,12 @@ impl PartialEq<Capability> for bool {
     }
 }
 
-/// What a [`Model`] supports, from the `capabilities` field of the
+/// What a [`ModelInfo`] supports, from the `capabilities` field of the
 /// `/v1/models` response.
 ///
 /// Every field defaults to unsupported when absent, and unknown future
 /// capabilities are ignored on deserialization — mirroring the forward-compat
-/// stance of [`Id::Custom`].
+/// stance of [`Model::Custom`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Capabilities {
     /// [Message Batches](crate::Client::batch) support.
@@ -170,69 +170,62 @@ pub struct ThinkingSupport {
     pub types: BTreeMap<String, Capability>,
 }
 
-/// Model ID.
+/// The model to use for inference — a known Anthropic [`Id`], or a custom id
+/// string for a model this crate doesn't enumerate.
 #[derive(
     Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(rename_all = "snake_case", untagged)]
-pub enum Id {
+pub enum Model {
     /// Anthropic model.
-    Anthropic(AnthropicModel),
+    Anthropic(Id),
     /// Custom model id.
     Custom(Cow<'static, str>),
 }
 
-impl Id {
+impl Model {
     /// Get the name of the model.
     pub fn name(&self) -> &str {
         match self {
-            Id::Anthropic(model) => match model {
-                AnthropicModel::Sonnet37 => "claude-3-7-sonnet-latest",
-                AnthropicModel::Sonnet37_20250219 => {
-                    "claude-3-7-sonnet-20250219"
-                }
-                AnthropicModel::Sonnet35 => "claude-3-5-sonnet-latest",
-                AnthropicModel::Sonnet35_20240620 => {
-                    "claude-3-5-sonnet-20240620"
-                }
-                AnthropicModel::Sonnet35_20241022 => {
-                    "claude-3-5-sonnet-20241022"
-                }
-                AnthropicModel::Opus30 => "claude-3-opus-latest",
-                AnthropicModel::Opus30_20240229 => "claude-3-opus-20240229",
-                AnthropicModel::Haiku35 => "claude-3-5-haiku-latest",
-                AnthropicModel::Haiku35_20241022 => "claude-3-5-haiku-20241022",
-                AnthropicModel::Haiku30 => "claude-3-haiku-20240307",
-                AnthropicModel::Opus40_20250514 => "claude-opus-4-20250514",
-                AnthropicModel::Opus40 => "claude-opus-4-0",
-                AnthropicModel::Sonnet40_20250514 => "claude-sonnet-4-20250514",
-                AnthropicModel::Sonnet40 => "claude-sonnet-4-0",
-                AnthropicModel::Opus41_20250805 => "claude-opus-4-1-20250805",
-                AnthropicModel::Opus41 => "claude-opus-4-1",
-                AnthropicModel::Haiku45_20251001 => "claude-haiku-4-5-20251001",
-                AnthropicModel::Haiku45 => "claude-haiku-4-5",
-                AnthropicModel::Sonnet45_20250929 => {
-                    "claude-sonnet-4-5-20250929"
-                }
-                AnthropicModel::Sonnet45 => "claude-sonnet-4-5",
-                AnthropicModel::Opus45_20251101 => "claude-opus-4-5-20251101",
-                AnthropicModel::Opus45 => "claude-opus-4-5",
-                AnthropicModel::Sonnet46 => "claude-sonnet-4-6",
-                AnthropicModel::Opus46 => "claude-opus-4-6",
-                AnthropicModel::Opus48 => "claude-opus-4-8",
+            Model::Anthropic(model) => match model {
+                Id::Sonnet37 => "claude-3-7-sonnet-latest",
+                Id::Sonnet37_20250219 => "claude-3-7-sonnet-20250219",
+                Id::Sonnet35 => "claude-3-5-sonnet-latest",
+                Id::Sonnet35_20240620 => "claude-3-5-sonnet-20240620",
+                Id::Sonnet35_20241022 => "claude-3-5-sonnet-20241022",
+                Id::Opus30 => "claude-3-opus-latest",
+                Id::Opus30_20240229 => "claude-3-opus-20240229",
+                Id::Haiku35 => "claude-3-5-haiku-latest",
+                Id::Haiku35_20241022 => "claude-3-5-haiku-20241022",
+                Id::Haiku30 => "claude-3-haiku-20240307",
+                Id::Opus40_20250514 => "claude-opus-4-20250514",
+                Id::Opus40 => "claude-opus-4-0",
+                Id::Sonnet40_20250514 => "claude-sonnet-4-20250514",
+                Id::Sonnet40 => "claude-sonnet-4-0",
+                Id::Opus41_20250805 => "claude-opus-4-1-20250805",
+                Id::Opus41 => "claude-opus-4-1",
+                Id::Haiku45_20251001 => "claude-haiku-4-5-20251001",
+                Id::Haiku45 => "claude-haiku-4-5",
+                Id::Sonnet45_20250929 => "claude-sonnet-4-5-20250929",
+                Id::Sonnet45 => "claude-sonnet-4-5",
+                Id::Opus45_20251101 => "claude-opus-4-5-20251101",
+                Id::Opus45 => "claude-opus-4-5",
+                Id::Sonnet46 => "claude-sonnet-4-6",
+                Id::Opus46 => "claude-opus-4-6",
+                Id::Opus48 => "claude-opus-4-8",
             },
-            Id::Custom(name) => name,
+            Model::Custom(name) => name,
         }
     }
 }
 
-impl std::fmt::Display for Id {
+impl std::fmt::Display for Model {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         f.write_str(self.name())
     }
 }
 
-impl<T> From<T> for Id
+impl<T> From<T> for Model
 where
     T: Into<Cow<'static, str>>,
 {
@@ -242,40 +235,41 @@ where
     }
 }
 
-impl From<AnthropicModel> for Id {
-    fn from(value: AnthropicModel) -> Self {
-        Id::Anthropic(value)
+impl From<Id> for Model {
+    fn from(value: Id) -> Self {
+        Model::Anthropic(value)
     }
 }
 
-impl PartialEq<AnthropicModel> for Id {
-    fn eq(&self, other: &AnthropicModel) -> bool {
+impl PartialEq<Id> for Model {
+    fn eq(&self, other: &Id) -> bool {
         match self {
-            Id::Anthropic(model) => model == other,
-            Id::Custom(s) => s.as_ref() == other.name(),
+            Model::Anthropic(model) => model == other,
+            Model::Custom(s) => s.as_ref() == other.name(),
         }
     }
 }
 
-impl<S> PartialEq<S> for Id
+impl<S> PartialEq<S> for Model
 where
     S: AsRef<str>,
 {
     fn eq(&self, other: &S) -> bool {
         match self {
-            Id::Anthropic(model) => model.name() == other.as_ref(),
-            Id::Custom(s) => s.as_ref() == other.as_ref(),
+            Model::Anthropic(model) => model.name() == other.as_ref(),
+            Model::Custom(s) => s.as_ref() == other.as_ref(),
         }
     }
 }
 
-impl Default for Id {
+impl Default for Model {
     fn default() -> Self {
-        Id::Anthropic(AnthropicModel::default())
+        Model::Anthropic(Id::default())
     }
 }
 
-/// Choice of Anthropic models.
+/// A known Anthropic model id — the canonical wire id strings (e.g.
+/// `claude-opus-4-8`). The [`Anthropic`](Model::Anthropic) arm of [`Model`].
 #[derive(
     Clone,
     Copy,
@@ -290,7 +284,7 @@ impl Default for Id {
     Serialize,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum AnthropicModel {
+pub enum Id {
     // ── Claude 3.x ───────────────────────────────────────────────────────
     /// Sonnet 3.7 (latest)
     #[serde(rename = "claude-3-7-sonnet-latest")]
@@ -376,64 +370,64 @@ pub enum AnthropicModel {
     Opus48,
 }
 
-impl AnthropicModel {
+impl Id {
     /// All available models.
-    pub const ALL: &'static [AnthropicModel] = &[
-        AnthropicModel::Haiku30,
-        AnthropicModel::Haiku35_20241022,
-        AnthropicModel::Haiku35,
-        AnthropicModel::Opus30_20240229,
-        AnthropicModel::Opus30,
-        AnthropicModel::Sonnet35_20240620,
-        AnthropicModel::Sonnet35_20241022,
-        AnthropicModel::Sonnet35,
-        AnthropicModel::Sonnet37_20250219,
-        AnthropicModel::Sonnet37,
-        AnthropicModel::Opus40_20250514,
-        AnthropicModel::Opus40,
-        AnthropicModel::Sonnet40_20250514,
-        AnthropicModel::Sonnet40,
-        AnthropicModel::Opus41_20250805,
-        AnthropicModel::Opus41,
-        AnthropicModel::Haiku45_20251001,
-        AnthropicModel::Haiku45,
-        AnthropicModel::Sonnet45_20250929,
-        AnthropicModel::Sonnet45,
-        AnthropicModel::Opus45_20251101,
-        AnthropicModel::Opus45,
-        AnthropicModel::Sonnet46,
-        AnthropicModel::Opus46,
-        AnthropicModel::Opus48,
+    pub const ALL: &'static [Id] = &[
+        Id::Haiku30,
+        Id::Haiku35_20241022,
+        Id::Haiku35,
+        Id::Opus30_20240229,
+        Id::Opus30,
+        Id::Sonnet35_20240620,
+        Id::Sonnet35_20241022,
+        Id::Sonnet35,
+        Id::Sonnet37_20250219,
+        Id::Sonnet37,
+        Id::Opus40_20250514,
+        Id::Opus40,
+        Id::Sonnet40_20250514,
+        Id::Sonnet40,
+        Id::Opus41_20250805,
+        Id::Opus41,
+        Id::Haiku45_20251001,
+        Id::Haiku45,
+        Id::Sonnet45_20250929,
+        Id::Sonnet45,
+        Id::Opus45_20251101,
+        Id::Opus45,
+        Id::Sonnet46,
+        Id::Opus46,
+        Id::Opus48,
     ];
 
     /// Get the display name of the model.
     pub fn name(self) -> &'static str {
         match self {
-            AnthropicModel::Haiku30 => "haiku-3.0-20240307",
-            AnthropicModel::Haiku35 => "haiku-3.5-latest",
-            AnthropicModel::Haiku35_20241022 => "haiku-3.5-20241022",
-            AnthropicModel::Opus30 => "opus-3.0-latest",
-            AnthropicModel::Opus30_20240229 => "opus-3.0-20240229",
-            AnthropicModel::Sonnet35 => "sonnet-3.5-latest",
-            AnthropicModel::Sonnet35_20240620 => "sonnet-3.5-20240620",
-            AnthropicModel::Sonnet35_20241022 => "sonnet-3.5-20241022",
-            AnthropicModel::Sonnet37 => "sonnet-3.7-latest",
-            AnthropicModel::Sonnet37_20250219 => "sonnet-3.7-20250219",
-            AnthropicModel::Opus40_20250514 => "opus-4.0-20250514",
-            AnthropicModel::Opus40 => "opus-4.0-latest",
-            AnthropicModel::Sonnet40_20250514 => "sonnet-4.0-20250514",
-            AnthropicModel::Sonnet40 => "sonnet-4.0-latest",
-            AnthropicModel::Opus41_20250805 => "opus-4.1-20250805",
-            AnthropicModel::Opus41 => "opus-4.1-latest",
-            AnthropicModel::Haiku45_20251001 => "haiku-4.5-20251001",
-            AnthropicModel::Haiku45 => "haiku-4.5-latest",
-            AnthropicModel::Sonnet45_20250929 => "sonnet-4.5-20250929",
-            AnthropicModel::Sonnet45 => "sonnet-4.5-latest",
-            AnthropicModel::Opus45_20251101 => "opus-4.5-20251101",
-            AnthropicModel::Opus45 => "opus-4.5-latest",
-            AnthropicModel::Sonnet46 => "sonnet-4.6",
-            AnthropicModel::Opus46 => "opus-4.6",
-            AnthropicModel::Opus48 => "opus-4.8",
+            Id::Haiku30 => "haiku-3.0-20240307",
+            Id::Haiku35 => "haiku-3.5-latest",
+            Id::Haiku35_20241022 => "haiku-3.5-20241022",
+            Id::Opus30 => "opus-3.0-latest",
+            Id::Opus30_20240229 => "opus-3.0-20240229",
+            Id::Sonnet35 => "sonnet-3.5-latest",
+            Id::Sonnet35_20240620 => "sonnet-3.5-20240620",
+            Id::Sonnet35_20241022 => "sonnet-3.5-20241022",
+            Id::Sonnet37 => "sonnet-3.7-latest",
+            Id::Sonnet37_20250219 => "sonnet-3.7-20250219",
+            Id::Opus40_20250514 => "opus-4.0-20250514",
+            Id::Opus40 => "opus-4.0-latest",
+            Id::Sonnet40_20250514 => "sonnet-4.0-20250514",
+            Id::Sonnet40 => "sonnet-4.0-latest",
+            Id::Opus41_20250805 => "opus-4.1-20250805",
+            Id::Opus41 => "opus-4.1-latest",
+            Id::Haiku45_20251001 => "haiku-4.5-20251001",
+            Id::Haiku45 => "haiku-4.5-latest",
+            Id::Sonnet45_20250929 => "sonnet-4.5-20250929",
+            Id::Sonnet45 => "sonnet-4.5-latest",
+            Id::Opus45_20251101 => "opus-4.5-20251101",
+            Id::Opus45 => "opus-4.5-latest",
+            Id::Sonnet46 => "sonnet-4.6",
+            Id::Opus46 => "opus-4.6",
+            Id::Opus48 => "opus-4.8",
         }
     }
 }
@@ -511,8 +505,8 @@ mod tests {
           "type": "model"
         }"#;
 
-        let model: Model = serde_json::from_str(JSON).unwrap();
-        assert_eq!(model.id, AnthropicModel::Opus46);
+        let model: ModelInfo = serde_json::from_str(JSON).unwrap();
+        assert_eq!(model.id, Id::Opus46);
         assert_eq!(model.display_name, "Claude Opus 4.6");
         assert_eq!(model.max_input_tokens, 200000);
         assert_eq!(model.max_tokens, 64000);
@@ -550,7 +544,7 @@ mod tests {
 
         // Round-trips: re-serializing and parsing yields the same value.
         let json = serde_json::to_string(&model).unwrap();
-        let round: Model = serde_json::from_str(&json).unwrap();
+        let round: ModelInfo = serde_json::from_str(&json).unwrap();
         assert_eq!(round.capabilities, model.capabilities);
         assert_eq!(round.kind, Kind::Model);
     }
@@ -566,7 +560,7 @@ mod tests {
           "created_at": "2024-10-22T00:00:00Z"
         }"#;
 
-        let model: Model = serde_json::from_str(JSON).unwrap();
+        let model: ModelInfo = serde_json::from_str(JSON).unwrap();
         assert_eq!(model.capabilities, Capabilities::default());
         assert_eq!(model.max_tokens, 0);
         assert!(!model.capabilities.thinking.supported);
@@ -576,50 +570,32 @@ mod tests {
     #[test]
     fn test_id_name() {
         // Claude 3.x
-        assert_eq!(AnthropicModel::Sonnet35.name(), "sonnet-3.5-latest");
-        assert_eq!(
-            AnthropicModel::Sonnet35_20240620.name(),
-            "sonnet-3.5-20240620"
-        );
-        assert_eq!(
-            AnthropicModel::Sonnet35_20241022.name(),
-            "sonnet-3.5-20241022"
-        );
-        assert_eq!(AnthropicModel::Opus30.name(), "opus-3.0-latest");
-        assert_eq!(AnthropicModel::Opus30_20240229.name(), "opus-3.0-20240229");
-        assert_eq!(AnthropicModel::Haiku35.name(), "haiku-3.5-latest");
-        assert_eq!(
-            AnthropicModel::Haiku35_20241022.name(),
-            "haiku-3.5-20241022"
-        );
-        assert_eq!(AnthropicModel::Haiku30.name(), "haiku-3.0-20240307");
+        assert_eq!(Id::Sonnet35.name(), "sonnet-3.5-latest");
+        assert_eq!(Id::Sonnet35_20240620.name(), "sonnet-3.5-20240620");
+        assert_eq!(Id::Sonnet35_20241022.name(), "sonnet-3.5-20241022");
+        assert_eq!(Id::Opus30.name(), "opus-3.0-latest");
+        assert_eq!(Id::Opus30_20240229.name(), "opus-3.0-20240229");
+        assert_eq!(Id::Haiku35.name(), "haiku-3.5-latest");
+        assert_eq!(Id::Haiku35_20241022.name(), "haiku-3.5-20241022");
+        assert_eq!(Id::Haiku30.name(), "haiku-3.0-20240307");
 
         // Claude 4.x
-        assert_eq!(AnthropicModel::Opus40_20250514.name(), "opus-4.0-20250514");
-        assert_eq!(AnthropicModel::Opus40.name(), "opus-4.0-latest");
-        assert_eq!(
-            AnthropicModel::Sonnet40_20250514.name(),
-            "sonnet-4.0-20250514"
-        );
-        assert_eq!(AnthropicModel::Sonnet40.name(), "sonnet-4.0-latest");
-        assert_eq!(AnthropicModel::Opus41_20250805.name(), "opus-4.1-20250805");
-        assert_eq!(AnthropicModel::Opus41.name(), "opus-4.1-latest");
-        assert_eq!(
-            AnthropicModel::Haiku45_20251001.name(),
-            "haiku-4.5-20251001"
-        );
-        assert_eq!(AnthropicModel::Haiku45.name(), "haiku-4.5-latest");
-        assert_eq!(
-            AnthropicModel::Sonnet45_20250929.name(),
-            "sonnet-4.5-20250929"
-        );
-        assert_eq!(AnthropicModel::Sonnet45.name(), "sonnet-4.5-latest");
-        assert_eq!(AnthropicModel::Opus45_20251101.name(), "opus-4.5-20251101");
-        assert_eq!(AnthropicModel::Opus45.name(), "opus-4.5-latest");
-        assert_eq!(AnthropicModel::Sonnet46.name(), "sonnet-4.6");
-        assert_eq!(AnthropicModel::Opus46.name(), "opus-4.6");
+        assert_eq!(Id::Opus40_20250514.name(), "opus-4.0-20250514");
+        assert_eq!(Id::Opus40.name(), "opus-4.0-latest");
+        assert_eq!(Id::Sonnet40_20250514.name(), "sonnet-4.0-20250514");
+        assert_eq!(Id::Sonnet40.name(), "sonnet-4.0-latest");
+        assert_eq!(Id::Opus41_20250805.name(), "opus-4.1-20250805");
+        assert_eq!(Id::Opus41.name(), "opus-4.1-latest");
+        assert_eq!(Id::Haiku45_20251001.name(), "haiku-4.5-20251001");
+        assert_eq!(Id::Haiku45.name(), "haiku-4.5-latest");
+        assert_eq!(Id::Sonnet45_20250929.name(), "sonnet-4.5-20250929");
+        assert_eq!(Id::Sonnet45.name(), "sonnet-4.5-latest");
+        assert_eq!(Id::Opus45_20251101.name(), "opus-4.5-20251101");
+        assert_eq!(Id::Opus45.name(), "opus-4.5-latest");
+        assert_eq!(Id::Sonnet46.name(), "sonnet-4.6");
+        assert_eq!(Id::Opus46.name(), "opus-4.6");
 
-        let model: Id = "custom_model".into();
+        let model: Model = "custom_model".into();
         assert_eq!(model.name(), "custom_model");
         assert_eq!(model, "custom_model");
     }
@@ -628,37 +604,37 @@ mod tests {
 
     #[test]
     fn test_id_from_str() {
-        let model: Id = "custom_model".into();
+        let model: Model = "custom_model".into();
         assert_eq!(model, "custom_model");
     }
 
     #[test]
     fn test_id_conversion_from_anthropic_model() {
-        let model: Id = AnthropicModel::Sonnet35.into();
-        assert_eq!(model, AnthropicModel::Sonnet35);
+        let model: Model = Id::Sonnet35.into();
+        assert_eq!(model, Id::Sonnet35);
     }
 
     #[test]
     fn test_id_conversion_from_str() {
         // custom model
-        let model: Id = "custom_model".into();
+        let model: Model = "custom_model".into();
         assert_eq!(model, "custom_model");
 
         // known model
-        let model: Id = "claude-3-5-sonnet-latest".into();
-        assert_eq!(model, AnthropicModel::Sonnet35);
+        let model: Model = "claude-3-5-sonnet-latest".into();
+        assert_eq!(model, Id::Sonnet35);
 
         // Claude 4
-        let model: Id = "claude-opus-4-6".into();
-        assert_eq!(model, AnthropicModel::Opus46);
-        let model: Id = "claude-haiku-4-5".into();
-        assert_eq!(model, AnthropicModel::Haiku45);
+        let model: Model = "claude-opus-4-6".into();
+        assert_eq!(model, Id::Opus46);
+        let model: Model = "claude-haiku-4-5".into();
+        assert_eq!(model, Id::Haiku45);
     }
 
     #[test]
     fn test_default_model() {
-        assert_eq!(AnthropicModel::default(), AnthropicModel::Haiku45);
-        assert_eq!(Id::default(), AnthropicModel::Haiku45);
+        assert_eq!(Id::default(), Id::Haiku45);
+        assert_eq!(Model::default(), Id::Haiku45);
     }
 
     #[cfg(feature = "client")]
@@ -672,7 +648,7 @@ mod tests {
             .add_message((Role::User, "Emit just the \"🙏\" emoji, please."))
             .unwrap();
 
-        for &model in AnthropicModel::ALL {
+        for &model in Id::ALL {
             prompt.model = model.into();
 
             // If this fails (because a new model was added), it should be:

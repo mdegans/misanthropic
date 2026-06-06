@@ -814,10 +814,7 @@ impl From<BatchResult> for Result<response::Message, client::AnthropicError> {
 mod tests {
     use uuid::Uuid;
 
-    use crate::{
-        AnthropicModel, Prompt, model, prompt::message::Content,
-        response::Usage,
-    };
+    use crate::{Prompt, model, prompt::message::Content, response::Usage};
 
     use super::*;
     #[test]
@@ -1070,7 +1067,7 @@ mod tests {
             BatchResult::Ok(response::Message {
                 id: PENDING_ID.into(),
                 inner: Content::from("Hello roboto!").into(),
-                model: model::Id::Anthropic(AnthropicModel::Haiku30),
+                model: model::Model::Anthropic(model::Id::Haiku30),
                 stop_reason: None,
                 stop_sequence: Some("potato".into()),
                 usage: Usage::default(),
@@ -1258,7 +1255,7 @@ mod tests {
         let ok = Result::from(BatchResult::Ok(response::Message {
             id: PENDING_ID.into(),
             inner: Content::from("Hello roboto!").into(),
-            model: model::Id::Anthropic(AnthropicModel::Haiku30),
+            model: model::Model::Anthropic(model::Id::Haiku30),
             stop_reason: None,
             stop_sequence: Some("potato".into()),
             usage: Usage::default(),

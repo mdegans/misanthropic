@@ -85,7 +85,7 @@ mod fs;
 pub enum Choice {
     /// [`Model`] chooses whether and which [`CustomMethodDef`] of a [`Tool`] to use.
     ///
-    /// [`Model`]: crate::model::Model
+    /// [`Model`]: crate::model::ModelInfo
     Auto {
         /// If `true`, the model uses at most one tool (no parallel calls).
         #[serde(default, skip_serializing_if = "is_false")]
@@ -127,7 +127,7 @@ impl Default for Choice {
 impl Choice {
     /// [`Model`] chooses whether and which tool to use (the default).
     ///
-    /// [`Model`]: crate::model::Model
+    /// [`Model`]: crate::model::ModelInfo
     pub fn auto() -> Self {
         Self::default()
     }
@@ -1025,7 +1025,7 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 /// completing a [`prompt::Message`].
 ///
 /// [`prompt::Message`]: crate::prompt::Message
-/// [`Model`]: crate::model::Model
+/// [`Model`]: crate::model::ModelInfo
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder")]
@@ -1636,7 +1636,7 @@ impl TryFrom<serde_json::Value> for CustomMethodDef {
 /// the tool itself; a code-execution variant means a code-execution container
 /// called it on the model's behalf, carrying the `srvtoolu_` id of that call.
 ///
-/// Modeled like [`model::Id`](crate::model::Id): recognized shapes are typed in
+/// Modeled like [`model::Model`](crate::model::Model): recognized shapes are typed in
 /// [`KnownCaller`], and anything else is preserved verbatim in [`Self::Other`]
 /// so an unrecognized future caller type still round-trips rather than failing
 /// to deserialize a real response.
@@ -1711,7 +1711,7 @@ impl Caller {
 /// call a tool and carries the `srvtoolu_` id), this is the bare *kind* a tool
 /// definition permits — no id.
 ///
-/// Modeled like [`Caller`]/[`model::Id`](crate::model::Id): recognized kinds
+/// Modeled like [`Caller`]/[`model::Model`](crate::model::Model): recognized kinds
 /// are typed in [`KnownAllowedCaller`], and anything else is preserved verbatim
 /// in [`Self::Other`] so a future, API-versioned caller token still round-trips.
 ///

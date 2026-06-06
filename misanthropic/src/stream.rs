@@ -721,7 +721,7 @@ pub(crate) mod tests {
 
     #[allow(unused_imports)] // because conditional compilation.
     use crate::{
-        AnthropicModel, Prompt,
+        Id, Prompt,
         prompt::{Message, message::Role},
     };
 
@@ -1207,7 +1207,7 @@ pub(crate) mod tests {
         let client = crate::Client::new(api_key).unwrap();
         let prompt = Prompt::default()
             // Only sonnet 3.7 and newer will respond to the trigger.
-            .model(AnthropicModel::Sonnet37)
+            .model(Id::Sonnet37)
             // Sonnet 3.7 still accepts the deprecated fixed-budget mode.
             .thinking(prompt::Thinking::enabled(1024.try_into().unwrap()))
             .add_message(Message {

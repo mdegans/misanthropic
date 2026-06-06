@@ -43,7 +43,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt, json,
+    Client, Id, Prompt, json,
     prompt::message::{Block, Role},
     response::StopReason,
     tool::{self, Caller, CustomMethodDef, KnownCaller, ServerMethodDef},
@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build()?;
 
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Sonnet46)
+        .model(Id::Sonnet46)
         .add_tool(ServerMethodDef::code_execution())
         .add_tool(query_sales_tool)
         .add_message((

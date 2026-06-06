@@ -45,13 +45,13 @@ use super::{MethodDef, ServerMethodDef, Tool, Use, fs};
 /// A typed text-editor command, deserialized from an editor [`Use`]'s
 /// [`input`](Use::input).
 ///
-/// A known/unknown union (à la [`model::Id`]/[`Caller`]): commands this crate
+/// A known/unknown union (à la [`model::Model`]/[`Caller`]): commands this crate
 /// has typed support for land in [`Known`]; anything else (e.g. the `undo_edit`
 /// of an older tool version, dropped from `text_editor_20250728`) round-trips
 /// through [`Unknown`](Command::Unknown) rather than failing to deserialize a
 /// live response.
 ///
-/// [`model::Id`]: crate::model::Id
+/// [`model::Model`]: crate::model::Model
 /// [`Caller`]: crate::tool::Caller
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -699,7 +699,7 @@ mod tests {
         // `FsEditorBackend` (jailed to a tempdir), and assert the file on disk
         // is actually repaired. The editor is a Claude-4 tool, supported on
         // Haiku 4.5 (the cheapest model).
-        use crate::{AnthropicModel, Client, Prompt, prompt::message::Role};
+        use crate::{Client, Id, Prompt, prompt::message::Role};
 
         const BUGGY: &str = "\
 def get_primes(limit):
@@ -720,7 +720,7 @@ def get_primes(limit):
         let mut editor = FsEditorBackend::new(dir.path()).await.unwrap();
 
         let mut chat = Prompt::default()
-            .model(AnthropicModel::Haiku45)
+            .model(Id::Haiku45)
             .add_tool(crate::tool::TextEditor::latest())
             .add_message((
                 Role::User,

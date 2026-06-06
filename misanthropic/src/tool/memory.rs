@@ -44,12 +44,12 @@ const MEMORY_ROOT: &str = "/memories";
 /// A typed memory-tool command, deserialized from a memory [`Use`]'s
 /// [`input`](Use::input).
 ///
-/// A known/unknown union (à la [`model::Id`]/[`Caller`]): commands this crate
+/// A known/unknown union (à la [`model::Model`]/[`Caller`]): commands this crate
 /// has typed support for land in [`Known`]; anything else (e.g. a newer
 /// memory-tool version) round-trips through [`Unknown`](Command::Unknown)
 /// rather than failing to deserialize a live response.
 ///
-/// [`model::Id`]: crate::model::Id
+/// [`model::Model`]: crate::model::Model
 /// [`Caller`]: crate::tool::Caller
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
@@ -892,7 +892,7 @@ mod tests {
         // through `FsMemoryBackend` (rooted at a tempdir), and assert a markdown
         // file actually lands on disk carrying that fact. Memory is supported on
         // Haiku (the cheapest model), unlike PTC.
-        use crate::{AnthropicModel, Client, Prompt, prompt::message::Role};
+        use crate::{Client, Id, Prompt, prompt::message::Role};
 
         let key = crate::utils::load_api_key().await;
         let client = Client::new(key).unwrap();
@@ -901,7 +901,7 @@ mod tests {
         let mut memory = FsMemoryBackend::new(dir.path()).await.unwrap();
 
         let mut chat = Prompt::default()
-            .model(AnthropicModel::Haiku45)
+            .model(Id::Haiku45)
             .add_tool(crate::tool::Memory::latest())
             .add_message((
                 Role::User,

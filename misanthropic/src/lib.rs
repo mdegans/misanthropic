@@ -32,7 +32,7 @@ pub mod dioxus;
 pub mod batch;
 
 pub mod model;
-pub use model::{AnthropicModel, Model};
+pub use model::{Id, Model, ModelInfo};
 
 pub mod prompt;
 pub use prompt::{CachedPrompt, Prompt};

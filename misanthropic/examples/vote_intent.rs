@@ -44,7 +44,7 @@
 use std::io::{BufRead, Read, stdin};
 
 use clap::Parser;
-use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Id, Prompt, prompt::message::Role};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
@@ -147,7 +147,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Don't default to Approve. Keep the rationale short and concrete.";
 
     let prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .structured_output::<VoteIntent>()
         .set_system(system)
         .add_message((Role::User, format!("POST:\n\n{post}")))?;

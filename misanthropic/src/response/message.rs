@@ -41,7 +41,7 @@ pub struct Message {
     #[serde(flatten)]
     pub inner: prompt::AssistantMessage,
     /// [`Model`] that generated the message.
-    pub model: model::Id,
+    pub model: model::Model,
     /// The reason the model stopped generating tokens.
     pub stop_reason: Option<StopReason>,
     /// If the [`StopReason`] was [`StopSequence`], this is the sequence that
@@ -334,7 +334,7 @@ mod tests {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
         assert_eq!(message.inner.content.len(), 1); // single block
         assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(message.model, crate::AnthropicModel::Sonnet35_20240620);
+        assert_eq!(message.model, crate::Id::Sonnet35_20240620);
         assert!(matches!(message.stop_reason, Some(StopReason::EndTurn)));
         assert_eq!(message.stop_sequence, None);
     }
@@ -373,10 +373,7 @@ mod tests {
             serde_json::from_str(RESPONSE_JSON).unwrap();
 
         assert_eq!(static_message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
-        assert_eq!(
-            static_message.model,
-            crate::AnthropicModel::Sonnet35_20240620
-        );
+        assert_eq!(static_message.model, crate::Id::Sonnet35_20240620);
         assert!(matches!(
             static_message.stop_reason,
             Some(StopReason::EndTurn)
@@ -412,7 +409,7 @@ mod tests {
                     content,
                 },
             },
-            model: crate::AnthropicModel::Sonnet35.into(),
+            model: crate::Id::Sonnet35.into(),
             stop_reason,
             stop_sequence: None,
             usage: Usage::default(),
@@ -522,7 +519,7 @@ mod tests {
                     ),
                 },
             },
-            model: crate::AnthropicModel::Sonnet35.into(),
+            model: crate::Id::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
             usage: Usage {

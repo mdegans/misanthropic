@@ -71,7 +71,7 @@ pub enum Effort {
     /// Absolute maximum capability, no constraint on token spend.
     Max,
     /// A level this crate doesn't know — e.g. one Anthropic adds after this
-    /// release. Like [`Id::Custom`](crate::model::Id::Custom), it round-trips
+    /// release. Like [`Id::Custom`](crate::model::Model::Custom), it round-trips
     /// over the wire, so a level read from a model's
     /// [`capabilities`](crate::model::Capabilities) can be sent right back on
     /// a request.
@@ -540,7 +540,7 @@ mod tests {
     #[ignore = "live — requires API key at misanthropic/api.key"]
     async fn live_structured_output_roundtrip() {
         use crate::prompt::message::{Content, Role};
-        use crate::{AnthropicModel, Client, Prompt};
+        use crate::{Client, Id, Prompt};
 
         #[derive(schemars::JsonSchema, serde::Deserialize, Debug)]
         #[allow(dead_code)]
@@ -554,7 +554,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let prompt = Prompt::default()
-            .model(AnthropicModel::Haiku45)
+            .model(Id::Haiku45)
             .structured_output::<CapitalFact>()
             .add_message((
                 Role::User,

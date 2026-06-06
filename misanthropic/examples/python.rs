@@ -14,7 +14,7 @@ use clap::Parser;
 use subprocess::{Exec, Redirection};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt, json,
+    Client, Id, Prompt, json,
     markdown::ToMarkdown,
     prompt::{
         Message,
@@ -164,9 +164,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // but this shows the traditional approach still works.
     let mut chat = Prompt::default()
         .model(if args.sonnet {
-            AnthropicModel::Sonnet35
+            Id::Sonnet35
         } else {
-            AnthropicModel::Haiku30
+            Id::Haiku30
         })
         .add_tool(
             CustomMethodDef::builder("python")

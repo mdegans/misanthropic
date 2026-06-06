@@ -31,7 +31,7 @@ use std::io::BufRead;
 
 use clap::{Parser, ValueEnum};
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::{
         Effort, Thinking,
         message::{Block, Content, Role},
@@ -143,7 +143,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut chat = Prompt::default()
         // Sonnet 4.6 is the cheapest model with adaptive + interleaved support.
-        .model(AnthropicModel::Sonnet46)
+        .model(Id::Sonnet46)
         // Adaptive: the model decides how much to think, and interleaves
         // thinking with tool use automatically. No `budget_tokens` to set.
         .thinking(Thinking::adaptive())

@@ -116,9 +116,9 @@ fn make_prompt() -> Prompt {
             Message,
         },
         tool::{self, CustomMethodDef},
-        AnthropicModel,
+        Id,
     };
-    use AnthropicModel::*;
+    use Id::*;
 
     Prompt::default()
         .model(Sonnet35)

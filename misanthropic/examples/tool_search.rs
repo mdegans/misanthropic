@@ -47,7 +47,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::message::{Block, Content, Role, ToolSearchToolResultContent},
     response::StopReason,
     tool::{ServerMethodDef, Tool, tool},
@@ -226,7 +226,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // rest. (Per-method `#[method(defer_loading)]` is the alternative when you
     // want only *some* methods deferred.)
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .set_system(system)
         .add_message((Role::User, question))?;
     for definition in toolkit.definitions() {

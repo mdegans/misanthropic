@@ -48,7 +48,7 @@
 //! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [Project Vend]: <https://www.anthropic.com/research/project-vend-1>
-//! [Opus 4.8]: misanthropic::model::AnthropicModel::Opus48
+//! [Opus 4.8]: misanthropic::model::Id::Opus48
 //! [`Role::System`]: misanthropic::prompt::message::Role::System
 //! [`Prompt::system`]: misanthropic::Prompt::system
 //! [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
@@ -58,7 +58,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::{TurnOrderError, message::Role},
 };
 
@@ -85,7 +85,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // *policy* is deliberately NOT here — it arrives mid-conversation, on the
     // system channel, once the user starts pushing.
     let prompt = Prompt::default()
-        .model(AnthropicModel::Opus48)
+        .model(Id::Opus48)
         .set_system(
             "You are a support agent for Acme Corp. Be concise and friendly, \
              and help customers resolve order issues.",

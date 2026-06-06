@@ -35,7 +35,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::message::{
         BashCodeExecutionResultContent as Bash, Block, Role,
         TextEditorCodeExecutionResultContent as Edit,
@@ -70,7 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // container (and both sub-tools) come for free. It needs a model that
     // supports `code_execution_20260120` (Opus/Sonnet 4.5+).
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Sonnet46)
+        .model(Id::Sonnet46)
         .add_message((Role::User, task))?
         .add_tool(ServerMethodDef::code_execution());
 

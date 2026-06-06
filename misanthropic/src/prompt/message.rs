@@ -43,7 +43,7 @@ pub enum Role {
     /// after the cached prefix — does not bust the prompt cache.
     ///
     /// Placement is constrained; see [turn order]. Available on
-    /// [Opus 4.8](crate::model::AnthropicModel::Opus48) and later.
+    /// [Opus 4.8](crate::model::Id::Opus48) and later.
     ///
     /// Never place untrusted content (raw tool output, retrieved documents,
     /// web content) in a system turn — keep it in [`tool::Result`] blocks.
@@ -3071,7 +3071,7 @@ mod tests {
             .try_into()
             .unwrap(),
             id: "msg_123".into(),
-            model: crate::AnthropicModel::Sonnet35.into(),
+            model: crate::Id::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
             usage: Default::default(),

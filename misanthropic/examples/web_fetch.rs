@@ -36,7 +36,7 @@
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Client, Id, Prompt,
     prompt::message::{CitationsConfig, Role},
     response::StopReason,
     tool::{ServerMethodDef, WebFetch, WebSearch},
@@ -67,7 +67,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Add both server tools: `web_search` to locate pages and `web_fetch` to
     // read them. Citations are off by default for `web_fetch`, so opt in.
     let mut prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .add_message((Role::User, question))?
         .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(3),

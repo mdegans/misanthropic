@@ -37,7 +37,7 @@ futures = "0.3"  # needed for TryStreamExt, StreamExt
 ```no_run
 use futures::TryStreamExt;
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Id, Client, Prompt,
     prompt::message::Role,
     stream::FilterExt,
 };
@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let stream = client
         .stream(
             Prompt::default()
-                .model(AnthropicModel::Sonnet46)
+                .model(Id::Sonnet46)
                 .set_system("You are a helpful assistant.")
                 .add_message((Role::User, "Write a haiku about Rust."))?,
         )
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 ```no_run
 use futures::TryStreamExt;
-use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role, stream::FilterExt};
+use misanthropic::{Id, Client, Prompt, prompt::message::Role, stream::FilterExt};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
@@ -85,7 +85,7 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 let stream = client
     .stream(
         Prompt::default()
-            .model(AnthropicModel::Sonnet46)
+            .model(Id::Sonnet46)
             .add_message((Role::User, "Tell me a joke."))?,
     )
     .await?
@@ -247,7 +247,7 @@ through; the runnable example is `misanthropic/examples/strawberry.rs`.
 ```no_run
 use futures::TryStreamExt;
 use misanthropic::{
-    AnthropicModel, Client, Prompt,
+    Id, Client, Prompt,
     prompt::message::{Content, Role},
     stream::{Event, FilterExt},
     tool::{Tool, tool},
@@ -282,7 +282,7 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 let mut calculator = Calculator;
 
 let mut chat = Prompt::default()
-    .model(AnthropicModel::Sonnet46)
+    .model(Id::Sonnet46)
     .add_message((Role::User, "What is 123 * 456?"))?;
 
 for definition in calculator.definitions() {

@@ -32,7 +32,7 @@
 
 use std::io::{BufRead, stdin};
 
-use misanthropic::{AnthropicModel, Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Id, Prompt, prompt::message::Role};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -101,7 +101,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // is taken from `Triage` by `with_examples`, so no separate
     // `structured_output::<Triage>()` is needed.
     let prompt = Prompt::default()
-        .model(AnthropicModel::Haiku45)
+        .model(Id::Haiku45)
         .set_system(
             "You triage incoming bug reports into a structured form. Infer \
              concrete reproduction steps and whether the issue is a regression \

@@ -133,7 +133,7 @@ mod tests {
                         content: CONTENT.into(),
                     },
                 },
-                model: crate::AnthropicModel::Sonnet35.into(),
+                model: crate::Id::Sonnet35.into(),
                 stop_reason: None,
                 stop_sequence: None,
                 usage: Usage {

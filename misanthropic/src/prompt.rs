@@ -46,7 +46,7 @@ pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 #[serde(default)]
 pub struct Prompt {
     /// [`Model`] to use for inference.
-    pub model: model::Id,
+    pub model: model::Model,
     /// Input [`prompt::message`]s. If this ends with an [`Assistant`]
     /// [`Message`], the completion will be constrained by that last message.
     /// Otherwise a new [`Assistant`] [`Message`] will be generated.
@@ -333,7 +333,7 @@ impl Prompt {
     /// [`model`]: Prompt::model
     pub fn model<M>(mut self, model: M) -> Self
     where
-        M: Into<model::Id>,
+        M: Into<model::Model>,
     {
         self.model = model.into();
         self
@@ -1107,9 +1107,9 @@ impl Prompt {
     /// [`tools`]: Prompt::tools
     /// [`system`]: Prompt::system
     /// [`messages`]: Prompt::messages
-    /// [`Sonnet35`]: crate::Model::Sonnet35
-    /// [`Opus30`]: crate::Model::Opus30
-    /// [`Haiku30`]: crate::Model::Haiku30
+    /// [`Sonnet35`]: crate::Id::Sonnet35
+    /// [`Opus30`]: crate::Id::Opus30
+    /// [`Haiku30`]: crate::Id::Haiku30
     pub fn cache(self) -> Self {
         self.cache_with(crate::prompt::message::CacheControl::ephemeral())
     }
@@ -1583,7 +1583,7 @@ mod tests {
     use serde_json::json;
     use std::num::{NonZeroU16, NonZeroU32};
 
-    use crate::{AnthropicModel, prompt::message::Role};
+    use crate::{Id, prompt::message::Role};
 
     const STOP_SEQUENCES: [&str; 2] = ["stop1", "stop2"];
 
@@ -1698,7 +1698,7 @@ mod tests {
     #[test]
     fn test_default_request() {
         let request = Prompt::default();
-        assert_eq!(request.model, crate::model::Id::default());
+        assert_eq!(request.model, crate::model::Model::default());
         assert!(request.messages.is_empty());
         assert_eq!(request.max_tokens, NonZeroU32::new(4096).unwrap());
         assert!(request.metadata.is_empty());
@@ -1733,9 +1733,9 @@ mod tests {
 
     #[test]
     fn test_set_model() {
-        let model = AnthropicModel::default();
-        let request = Prompt::default().model(model); // AnthropicModel is Copy
-        assert_eq!(request.model, crate::model::Id::default());
+        let model = Id::default();
+        let request = Prompt::default().model(model); // Id is Copy
+        assert_eq!(request.model, crate::model::Model::default());
     }
 
     fn create_test_messages() -> [Message; 2] {

@@ -151,7 +151,7 @@ that omits `citations`, `tool_search_requests` absent from the wire entirely
   `#[serde(deny_unknown_fields)]`**, so an undocumented/renamed/mis-tagged field
   is silently dropped on deserialize. Re-serializing and comparing to the
   captured bytes is the only offline guard that fails loudly when the wire
-  drifts. Prefer a known/unknown `untagged` enum (à la `model::Id`,
+  drifts. Prefer a known/unknown `untagged` enum (à la `model::Model`,
   `tool::Caller`) for API-sourced unions so a future variant round-trips instead
   of failing to deserialize a live response.
 
