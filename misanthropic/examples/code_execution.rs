@@ -95,7 +95,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     stdout,
                     stderr,
                     return_code,
-                    ..
+                    content: files,
                 } => {
                     println!("$ (exit {return_code})");
                     if !stdout.is_empty() {
@@ -103,6 +103,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if !stderr.is_empty() {
                         eprint!("{stderr}");
+                    }
+                    // Files written to `$OUTPUT_DIR` come back as `file_id`s;
+                    // fetch their bytes via the Files API (#32).
+                    for file in files {
+                        println!("[emitted file {}]", file.file_id);
                     }
                 }
                 Bash::Error { error_code, .. } => {

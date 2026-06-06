@@ -1179,11 +1179,13 @@ pub enum BashCodeExecutionResultContent {
         stderr: Cow<'static, str>,
         /// Process exit code — `0` on success.
         return_code: i64,
-        /// Rich outputs the command produced (e.g. created files). Empty for
-        /// plain `stdout`/`stderr` runs; left as raw JSON pending a captured
-        /// file-output shape (the Files API, #32).
+        /// Files the command wrote to the sandbox's `$OUTPUT_DIR`, each a
+        /// [`file_id`](BashCodeExecutionOutput::file_id) to fetch via the Files
+        /// API (#32). Empty for plain `stdout`/`stderr` runs — a file only
+        /// surfaces here when the command places it in `$OUTPUT_DIR` (writing
+        /// to `/tmp` or the cwd does *not* register it).
         #[serde(default)]
-        content: Vec<serde_json::Value>,
+        content: Vec<BashCodeExecutionOutput>,
     },
     /// The sub-tool itself failed before (or instead of) running the command.
     #[serde(rename = "bash_code_execution_tool_result_error")]
@@ -1196,6 +1198,20 @@ pub enum BashCodeExecutionResultContent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error_message: Option<Cow<'static, str>>,
     },
+}
+
+/// A file a `bash_code_execution` command emitted into the sandbox's
+/// `$OUTPUT_DIR` (the `bash_code_execution_output` object), referenced by
+/// [`file_id`](Self::file_id). Fetch its bytes via the Files API (#32).
+///
+/// The container only registers a file here when the command writes it under
+/// `$OUTPUT_DIR`; files left in `/tmp` or the working directory do not appear.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type", rename = "bash_code_execution_output")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct BashCodeExecutionOutput {
+    /// The Files API id (`file_…`) of the emitted file.
+    pub file_id: Cow<'static, str>,
 }
 
 /// The `content` of a [`Block::TextEditorCodeExecutionToolResult`]: the outcome
@@ -2712,6 +2728,27 @@ mod tests {
         };
         assert_eq!(*return_code, 0);
         assert!(stdout.contains("hello"));
+    }
+
+    #[test]
+    fn bash_code_execution_file_output_roundtrip() {
+        // A command that wrote a file to `$OUTPUT_DIR`: the result `content`
+        // carries a `bash_code_execution_output` block with the Files API
+        // `file_id`. Live, Sonnet 4.6 (captured via the `$OUTPUT_DIR` route;
+        // files in `/tmp`/cwd never surface). See #32.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/bash_code_execution_file_output.json"
+        ));
+        let Block::BashCodeExecutionToolResult { content, .. } = &block else {
+            panic!("expected BashCodeExecutionToolResult");
+        };
+        let BashCodeExecutionResultContent::Result { content: files, .. } =
+            content
+        else {
+            panic!("expected a ran command");
+        };
+        assert_eq!(files.len(), 1);
+        assert!(files[0].file_id.starts_with("file_"));
     }
 
     #[test]
