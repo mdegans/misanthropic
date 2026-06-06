@@ -113,6 +113,10 @@ pub struct DockerSandbox {
     bashd_path: Option<PathBuf>,
     // Runtime state, populated by `start`.
     container: Option<String>,
+    /// A `misan-bashd-img-*` image we committed during provisioning, to `rmi` on
+    /// teardown (so they don't accumulate). `None` when we ran a base image
+    /// directly.
+    provisioned: Option<String>,
     http: Option<Http>,
     /// Per-background-job read cursor (byte offset) for `poll`/`wait`.
     cursors: HashMap<u64, u64>,
@@ -137,6 +141,7 @@ impl Default for DockerSandbox {
             runtime: "docker".to_string(),
             bashd_path: None,
             container: None,
+            provisioned: None,
             http: None,
             cursors: HashMap::new(),
         }
@@ -233,7 +238,13 @@ impl DockerSandbox {
 
     /// Resolve (provisioning if needed) the image the session runs from.
     async fn provision(&self) -> Result<String, BashError> {
-        let creates_user = self.user.as_deref().is_some_and(|u| u != "root");
+        // The baked `agent` exists in the default image, so don't provision just
+        // to "create" it — that's the common path, and provisioning would commit
+        // (and leak) an image needlessly. A custom base still gets the user.
+        let agent_baked = self.base_image == DEFAULT_IMAGE
+            && self.user.as_deref() == Some("agent");
+        let creates_user =
+            !agent_baked && self.user.as_deref().is_some_and(|u| u != "root");
         if self.setup.is_none() && !creates_user {
             return Ok(self.base_image.clone());
         }
@@ -576,6 +587,11 @@ impl DockerSandbox {
             let _ = http.exec.start_kill();
             let _ = http.exec.wait().await;
         }
+        // Drop the image we committed during provisioning (the container is gone
+        // now, so nothing holds it). A named home volume, if any, survives.
+        if let Some(image) = self.provisioned.take() {
+            let _ = capture(&self.runtime, ["rmi", "-f", &image]).await;
+        }
     }
 }
 
@@ -589,6 +605,10 @@ impl BashSandbox for DockerSandbox {
         }
         self.ensure_default_image().await?;
         let image = self.provision().await?;
+        // A committed image (not the base) must be `rmi`'d at teardown.
+        if image != self.base_image {
+            self.provisioned = Some(image.clone());
+        }
         let container = self.run_container(&image).await?;
         // From here on a failure must remove the container, not leak it. bashd
         // is baked into the rootfs (or bind-mounted via `bashd_path`), so there
@@ -694,6 +714,14 @@ impl Drop for DockerSandbox {
         if let Some(container) = self.container.take() {
             let _ = std::process::Command::new(&self.runtime)
                 .args(["rm", "-fv", &container])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status();
+        }
+        // Container gone — drop the provisioned image too (best-effort).
+        if let Some(image) = self.provisioned.take() {
+            let _ = std::process::Command::new(&self.runtime)
+                .args(["rmi", "-f", &image])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
@@ -958,8 +986,10 @@ mod tests {
         );
 
         // The tmpfs /tmp is hard-capped: writing past it fails with ENOSPC.
+        // Free it again afterwards (bashd's job spool lives on /tmp).
         let out = sandbox
-            .exec(run("dd if=/dev/zero of=/tmp/big bs=1M count=2048 2>&1"))
+            .exec(run("dd if=/dev/zero of=/tmp/big bs=1M count=2048 2>&1; \
+                 rm -f /tmp/big"))
             .await
             .unwrap();
         assert!(
@@ -1013,5 +1043,44 @@ mod tests {
         sandbox.restart().await.expect("restart");
         sandbox.teardown().await.expect("teardown");
         assert!(sandbox.container().is_none());
+    }
+
+    /// Count locally-built `misan-bashd-img-*` images (the provisioned ones).
+    async fn provisioned_image_count() -> usize {
+        let out = Command::new("docker")
+            .args(["images", "--format", "{{.Repository}}"])
+            .output()
+            .await
+            .expect("docker images");
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|r| r.starts_with("misan-bashd-img-"))
+            .count()
+    }
+
+    /// A `setup` script forces provisioning (a committed image); teardown must
+    /// `rmi` it, so the count is unchanged. Guards the #85 image leak.
+    #[tokio::test]
+    #[ignore = "requires Docker running and the misan-bashd image (just build-bashd)"]
+    async fn live_provisioned_image_is_cleaned() {
+        if !docker_available().await || !default_image_built().await {
+            eprintln!("skipping: docker / misan-bashd image unavailable");
+            return;
+        }
+        let before = provisioned_image_count().await;
+
+        let mut sandbox = DockerSandbox::default().setup("true");
+        sandbox.start().await.expect("start");
+        // It really did provision (committed an image to clean up later).
+        assert!(sandbox.provisioned.is_some(), "setup should provision");
+        let out = sandbox.exec(run("echo ok")).await.unwrap();
+        assert!(out.stdout.contains("ok"));
+        sandbox.teardown().await.expect("teardown");
+
+        assert_eq!(
+            provisioned_image_count().await,
+            before,
+            "the provisioned image must be rmi'd at teardown"
+        );
     }
 }
