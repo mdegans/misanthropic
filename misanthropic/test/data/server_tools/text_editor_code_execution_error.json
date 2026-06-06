@@ -1,0 +1,9 @@
+{
+  "type": "text_editor_code_execution_tool_result",
+  "tool_use_id": "srvtoolu_01CBUjvTZJmPAsiq339fMeBU",
+  "content": {
+    "type": "text_editor_code_execution_tool_result_error",
+    "error_code": "unavailable",
+    "error_message": "Tool response parsing error for view: Failed to parse tool response as JSON: unexpected character: line 1 column 1 (char 0)"
+  }
+}

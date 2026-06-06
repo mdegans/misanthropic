@@ -64,6 +64,11 @@ the win; fix the types, then commit the real bytes.
 | `server_tools/server_tool_use.json` | live (`web_search`, Haiku 4.5) | captured |
 | `server_tools/ptc_tool_use.json` | live (programmatic tool calling, Sonnet 4.6) | captured (`caller` of `code_execution_20260120` verified; PTC is unavailable on Haiku) |
 | `server_tools/code_execution_result.json` | live (programmatic tool calling, Sonnet 4.6) | captured (undocumented `abort_reason: null` verified; PTC completion block) |
+| `server_tools/bash_code_execution_result.json` | live (`code_execution`, Haiku 4.5) | captured (`bash_code_execution` stdout/exit; in-band failure via `return_code`) |
+| `server_tools/text_editor_code_execution_create_result.json` | live (`code_execution`, Haiku 4.5) | captured (`create` → `is_file_update`) |
+| `server_tools/text_editor_code_execution_view_result.json` | live (`code_execution`, Haiku 4.5) | captured (snake_case `num_lines`/`start_line`/`total_lines`, **not** the docs' camelCase) |
+| `server_tools/text_editor_code_execution_str_replace_result.json` | live (`code_execution`, Haiku 4.5) | captured (snake_case `old_start`… diff hunk, **not** the docs' camelCase) |
+| `server_tools/text_editor_code_execution_error.json` | live (`code_execution`, Haiku 4.5) | captured (undocumented `error_message`; bash error shape is the parallel `*_tool_result_error`) |
 | `server_tools/memory_tool_use.json` | live (`memory`, Haiku 4.5) | captured (client-executed → plain `tool_use` not `server_tool_use`; `caller: direct` verified in both non-streaming and SSE) |
 
 "pending live capture" fixtures are our best current guess from the docs and

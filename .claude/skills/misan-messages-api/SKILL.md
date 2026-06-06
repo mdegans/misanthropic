@@ -360,6 +360,45 @@ the response (you never call anything) — e.g. `web_search` (see
 `examples/web_search.rs`), `web_fetch`, `code_execution`, the tool-search
 tools.
 
+`code_execution` is the richest of these: enabling it gives the model a
+sandboxed container with two sub-tools, whose outcomes come back as
+`BashCodeExecutionToolResult` and `TextEditorCodeExecutionToolResult` blocks
+(a *failed* bash command is still a `Result` with a non-zero `return_code`; the
+`Error` variants are for the sub-tool itself failing):
+
+```no_run
+use misanthropic::{Prompt, prompt::message::{
+    Block, BashCodeExecutionResultContent as Bash,
+    TextEditorCodeExecutionResultContent as Edit, Role,
+}, tool::ServerMethodDef};
+
+# fn f(response: misanthropic::response::Message) -> Result<(), Box<dyn std::error::Error>> {
+let _prompt = Prompt::default()
+    .add_message((Role::User, "Sum 1..5 in a file with bash."))?
+    .add_tool(ServerMethodDef::code_execution());
+
+// Read the result blocks the container produced (in a response).
+for block in response.inner.content.iter() {
+    match block {
+        Block::BashCodeExecutionToolResult { content, .. } => match content {
+            Bash::Result { stdout, return_code, .. } => {
+                println!("exit {return_code}: {stdout}");
+            }
+            Bash::Error { error_code, .. } => eprintln!("bash: {error_code}"),
+        },
+        Block::TextEditorCodeExecutionToolResult { content, .. } => match content {
+            Edit::Create { is_file_update } => println!("created (update={is_file_update})"),
+            Edit::View { content, .. } => println!("viewed: {content}"),
+            Edit::StrReplace { lines, .. } => println!("edited: {} diff lines", lines.len()),
+            Edit::Error { error_code, .. } => eprintln!("editor: {error_code}"),
+        },
+        _ => {}
+    }
+}
+# Ok(())
+# }
+```
+
 A few are **client-executed**: Anthropic defines the schema, but the model
 emits an ordinary `tool_use` that *you* run against storage you control, just
 like a custom tool — so they *define* like a server tool and *execute* like a
@@ -534,6 +573,9 @@ your task — they're the most current, compiler-checked usage.
 | `interleaved_thinking.rs` | Adaptive extended thinking with interleaved thinking. |
 | `tool_search.rs` | The tool-search server tool over a large, `defer_loading` tool set. |
 | `web_search.rs` | The `web_search` server tool. |
+| `web_fetch.rs` | The `web_fetch` server tool, paired with `web_search`. |
+| `code_execution.rs` | The `code_execution` server tool — bash + file editing in a sandbox container. |
+| `programmatic_tool_calling.rs` | `code_execution` calling a `.programmatic()` custom tool from inside the container (PTC). |
 | `memory.rs` | The client-executed `memory` tool (`FsMemoryBackend`) — see [MEMORY.md](MEMORY.md). |
 | `text_editor.rs` | The client-executed `text_editor` tool (`FsEditorBackend`) — see [TEXT_EDITOR.md](TEXT_EDITOR.md). |
 | `neologism.rs` | `Client::message` with a custom system prompt. |

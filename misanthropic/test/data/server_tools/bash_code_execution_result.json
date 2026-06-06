@@ -1,0 +1,11 @@
+{
+  "type": "bash_code_execution_tool_result",
+  "tool_use_id": "srvtoolu_012y7QhiNCXcE9KJuvwSgXDM",
+  "content": {
+    "type": "bash_code_execution_result",
+    "stdout": "hello\ntotal 12\ndrwxrwxrwt  3 root   root   4096 Mar 31 20:12 .\ndrwxr-xr-x 21 claude claude 4096 Jun  6 10:41 ..\n",
+    "stderr": "",
+    "return_code": 0,
+    "content": []
+  }
+}

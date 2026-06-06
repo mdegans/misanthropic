@@ -1806,6 +1806,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "This test requires a real API key."]
+    async fn test_code_execution_server_tool() {
+        use crate::prompt::message::{
+            BashCodeExecutionResultContent, Block,
+            TextEditorCodeExecutionResultContent,
+        };
+        use crate::response::StopReason;
+        use crate::tool::ServerMethodDef;
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        // Drive both sub-tools deterministically: create a file with the editor,
+        // then sum its lines with bash. The sum (15) is the invariant. Needs a
+        // model that supports `code_execution_20260120` (not Haiku).
+        let mut prompt = Prompt::default()
+            .model(crate::AnthropicModel::Sonnet46)
+            .add_message((
+                Role::User,
+                "Using the code execution tool: first create the file \
+                 /tmp/nums.txt with the numbers 1, 2, 3, 4, 5 one per line, \
+                 then run a bash command that sums those numbers and prints \
+                 only the total.",
+            ))
+            .unwrap()
+            .add_tool(ServerMethodDef::code_execution());
+
+        let mut saw_create = false;
+        let mut saw_bash = false;
+        let mut pauses = 0u32;
+        loop {
+            let response = client.message(&prompt).await.unwrap();
+
+            for block in response.inner.content.iter() {
+                match block {
+                    Block::TextEditorCodeExecutionToolResult {
+                        content:
+                            TextEditorCodeExecutionResultContent::Create { .. },
+                        ..
+                    } => saw_create = true,
+                    Block::BashCodeExecutionToolResult {
+                        content:
+                            BashCodeExecutionResultContent::Result {
+                                stdout, ..
+                            },
+                        ..
+                    } if stdout.contains("15") => saw_bash = true,
+                    _ => {}
+                }
+            }
+
+            if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
+                pauses += 1;
+                assert!(pauses <= 5, "runaway pause_turn loop: {pauses}");
+                prompt.push_message(response).unwrap();
+                continue;
+            }
+            break;
+        }
+
+        assert!(saw_create, "expected a text_editor create result");
+        assert!(saw_bash, "expected a bash result whose stdout sums to 15");
+    }
+
     #[test]
     #[cfg(feature = "client")]
     fn test_with_base_url() {

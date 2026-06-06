@@ -1,0 +1,12 @@
+{
+  "type": "text_editor_code_execution_tool_result",
+  "tool_use_id": "srvtoolu_01LPXi2Yw2N6yF7fp7ius8vh",
+  "content": {
+    "type": "text_editor_code_execution_view_result",
+    "file_type": "text",
+    "content": "alpha\nbeta\ngamma",
+    "num_lines": 3,
+    "start_line": 1,
+    "total_lines": 3
+  }
+}

@@ -1089,6 +1089,50 @@ pub enum Block {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         caller: Option<tool::Caller>,
     },
+    /// Result of the `bash_code_execution` sub-tool
+    /// (`bash_code_execution_tool_result`) — the captured `stdout`/`stderr`/exit
+    /// code of a shell command run inside a [code execution] container, or a
+    /// tool-level [error](BashCodeExecutionResultContent::Error). Unlocked
+    /// alongside [`TextEditorCodeExecutionToolResult`](Self::TextEditorCodeExecutionToolResult)
+    /// whenever the [code execution] tool is enabled; appears in the assistant
+    /// turn after its `server_tool_use` block.
+    ///
+    /// [code execution]: crate::tool::ServerMethodDef::code_execution
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    BashCodeExecutionToolResult {
+        /// The [`id`](tool::Use::id) of the `bash_code_execution`
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'static, str>,
+        /// The command output, or a tool-level error.
+        content: BashCodeExecutionResultContent,
+        /// Who invoked the execution — set by the API on responses, omitted on
+        /// the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
+    },
+    /// Result of the `text_editor_code_execution` sub-tool
+    /// (`text_editor_code_execution_tool_result`) — a
+    /// [view](TextEditorCodeExecutionResultContent::View),
+    /// [create](TextEditorCodeExecutionResultContent::Create), or
+    /// [str_replace](TextEditorCodeExecutionResultContent::StrReplace) outcome
+    /// from a [code execution] container, or a tool-level
+    /// [error](TextEditorCodeExecutionResultContent::Error). Unlocked alongside
+    /// [`BashCodeExecutionToolResult`](Self::BashCodeExecutionToolResult)
+    /// whenever the [code execution] tool is enabled.
+    ///
+    /// [code execution]: crate::tool::ServerMethodDef::code_execution
+    #[cfg_attr(not(feature = "markdown"), display(""))]
+    TextEditorCodeExecutionToolResult {
+        /// The [`id`](tool::Use::id) of the `text_editor_code_execution`
+        /// [`ServerToolUse`](Block::ServerToolUse) this answers.
+        tool_use_id: Cow<'static, str>,
+        /// The file operation outcome, or a tool-level error.
+        content: TextEditorCodeExecutionResultContent,
+        /// Who invoked the execution — set by the API on responses, omitted on
+        /// the input side.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        caller: Option<tool::Caller>,
+    },
 }
 
 /// The `content` of a [`Block::CodeExecutionToolResult`]: the captured output
@@ -1114,6 +1158,103 @@ pub struct CodeExecutionResult {
     /// even when [`None`] to round-trip the captured bytes.
     #[serde(default)]
     pub abort_reason: Option<Cow<'static, str>>,
+}
+
+/// The `content` of a [`Block::BashCodeExecutionToolResult`]: the captured
+/// output of a `bash_code_execution` command, or a tool-level error. A command
+/// that *ran* but exited non-zero is still a [`Result`](Self::Result) with the
+/// failure reported in-band via [`return_code`](Self::Result::return_code) /
+/// `stderr`; the [`Error`](Self::Error) variant is for the sub-tool itself
+/// failing (e.g. `unavailable`, `output_file_too_large`).
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum BashCodeExecutionResultContent {
+    /// The command ran (its own exit code is in [`return_code`](Self::Result::return_code)).
+    #[serde(rename = "bash_code_execution_result")]
+    Result {
+        /// Captured standard output.
+        stdout: Cow<'static, str>,
+        /// Captured standard error.
+        stderr: Cow<'static, str>,
+        /// Process exit code — `0` on success.
+        return_code: i64,
+        /// Rich outputs the command produced (e.g. created files). Empty for
+        /// plain `stdout`/`stderr` runs; left as raw JSON pending a captured
+        /// file-output shape (the Files API, #32).
+        #[serde(default)]
+        content: Vec<serde_json::Value>,
+    },
+    /// The sub-tool itself failed before (or instead of) running the command.
+    #[serde(rename = "bash_code_execution_tool_result_error")]
+    Error {
+        /// The error code (e.g. `unavailable`, `execution_time_exceeded`,
+        /// `output_file_too_large`, `too_many_requests`, `container_expired`).
+        error_code: Cow<'static, str>,
+        /// A human-readable message. Undocumented but present on the wire when
+        /// the sandbox has one to give.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_message: Option<Cow<'static, str>>,
+    },
+}
+
+/// The `content` of a [`Block::TextEditorCodeExecutionToolResult`]: the outcome
+/// of a `text_editor_code_execution` operation. The wire `type` discriminates
+/// per command — a [`View`](Self::View), [`Create`](Self::Create), or
+/// [`StrReplace`](Self::StrReplace) success, or an [`Error`](Self::Error).
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[serde(tag = "type")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub enum TextEditorCodeExecutionResultContent {
+    /// A `view` of a file's contents.
+    #[serde(rename = "text_editor_code_execution_view_result")]
+    View {
+        /// The kind of file viewed (e.g. `text`).
+        file_type: Cow<'static, str>,
+        /// The file contents shown.
+        content: Cow<'static, str>,
+        /// Number of lines returned.
+        num_lines: i64,
+        /// The 1-based line the view starts at.
+        start_line: i64,
+        /// Total number of lines in the file.
+        total_lines: i64,
+    },
+    /// A `create` outcome.
+    #[serde(rename = "text_editor_code_execution_create_result")]
+    Create {
+        /// Whether the file already existed (an overwrite rather than a new
+        /// file).
+        is_file_update: bool,
+    },
+    /// A `str_replace` outcome — the unified-diff hunk of the edit. Field names
+    /// are the wire's snake_case (`old_start` …), *not* the camelCase the docs
+    /// show.
+    #[serde(rename = "text_editor_code_execution_str_replace_result")]
+    StrReplace {
+        /// The 1-based start line of the replaced region.
+        old_start: i64,
+        /// The number of lines replaced.
+        old_lines: i64,
+        /// The 1-based start line of the new region.
+        new_start: i64,
+        /// The number of new lines.
+        new_lines: i64,
+        /// The diff lines (`-`/`+` prefixed, plus `\ No newline …` markers).
+        #[serde(default)]
+        lines: Vec<Cow<'static, str>>,
+    },
+    /// The sub-tool failed (e.g. `file_not_found`, `string_not_found`).
+    #[serde(rename = "text_editor_code_execution_tool_result_error")]
+    Error {
+        /// The error code (e.g. `file_not_found`, `string_not_found`,
+        /// `unavailable`).
+        error_code: Cow<'static, str>,
+        /// A human-readable message. Undocumented but present on the wire when
+        /// the sandbox has one to give.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error_message: Option<Cow<'static, str>>,
+    },
 }
 
 /// The `content` of a [`Block::WebSearchToolResult`]: either the search results
@@ -1507,6 +1648,12 @@ impl Block {
                     Block::CodeExecutionToolResult { .. } => {
                         stringify!(Block::CodeExecutionToolResult)
                     }
+                    Block::BashCodeExecutionToolResult { .. } => {
+                        stringify!(Block::BashCodeExecutionToolResult)
+                    }
+                    Block::TextEditorCodeExecutionToolResult { .. } => {
+                        stringify!(Block::TextEditorCodeExecutionToolResult)
+                    }
                     Block::ToolReference { .. } => {
                         stringify!(Block::ToolReference)
                     }
@@ -1578,6 +1725,8 @@ impl Block {
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1610,6 +1759,8 @@ impl Block {
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1637,6 +1788,8 @@ impl Block {
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => false,
         }
     }
@@ -1669,6 +1822,8 @@ impl Block {
             | Self::WebFetchToolResult { .. }
             | Self::ToolSearchToolResult { .. }
             | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
             | Self::ToolReference { .. } => 0,
         }
     }
@@ -1731,7 +1886,9 @@ impl crate::markdown::ToMarkdown for Block {
             | Block::WebSearchToolResult { .. }
             | Block::WebFetchToolResult { .. }
             | Block::ToolSearchToolResult { .. }
-            | Block::CodeExecutionToolResult { .. } => {
+            | Block::CodeExecutionToolResult { .. }
+            | Block::BashCodeExecutionToolResult { .. }
+            | Block::TextEditorCodeExecutionToolResult { .. } => {
                 if options.tool_results {
                     Box::new(
                         [
@@ -2534,6 +2691,111 @@ mod tests {
         assert_eq!(content.return_code, 0);
         assert!(content.abort_reason.is_none());
         assert!(content.stdout.contains("Highest: West"));
+    }
+
+    #[test]
+    fn bash_code_execution_result_block_roundtrip() {
+        // A `bash_code_execution` command's captured output. Live, Haiku 4.5.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/bash_code_execution_result.json"
+        ));
+        let Block::BashCodeExecutionToolResult { content, .. } = &block else {
+            panic!("expected BashCodeExecutionToolResult");
+        };
+        let BashCodeExecutionResultContent::Result {
+            stdout,
+            return_code,
+            ..
+        } = content
+        else {
+            panic!("expected a ran command, not a tool error");
+        };
+        assert_eq!(*return_code, 0);
+        assert!(stdout.contains("hello"));
+    }
+
+    #[test]
+    fn text_editor_code_execution_create_result_roundtrip() {
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/text_editor_code_execution_create_result.json"
+        ));
+        let Block::TextEditorCodeExecutionToolResult { content, .. } = &block
+        else {
+            panic!("expected TextEditorCodeExecutionToolResult");
+        };
+        assert!(matches!(
+            content,
+            TextEditorCodeExecutionResultContent::Create {
+                is_file_update: false
+            }
+        ));
+    }
+
+    #[test]
+    fn text_editor_code_execution_view_result_roundtrip() {
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/text_editor_code_execution_view_result.json"
+        ));
+        let Block::TextEditorCodeExecutionToolResult { content, .. } = &block
+        else {
+            panic!("expected TextEditorCodeExecutionToolResult");
+        };
+        // `num_lines`/`start_line`/`total_lines` are the wire's snake_case, not
+        // the docs' camelCase — the round-trip catches that drift.
+        let TextEditorCodeExecutionResultContent::View {
+            file_type,
+            total_lines,
+            ..
+        } = content
+        else {
+            panic!("expected a view result");
+        };
+        assert_eq!(file_type, "text");
+        assert_eq!(*total_lines, 3);
+    }
+
+    #[test]
+    fn text_editor_code_execution_str_replace_result_roundtrip() {
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/text_editor_code_execution_str_replace_result.json"
+        ));
+        let Block::TextEditorCodeExecutionToolResult { content, .. } = &block
+        else {
+            panic!("expected TextEditorCodeExecutionToolResult");
+        };
+        let TextEditorCodeExecutionResultContent::StrReplace {
+            old_start,
+            lines,
+            ..
+        } = content
+        else {
+            panic!("expected a str_replace result");
+        };
+        assert_eq!(*old_start, 1);
+        assert!(lines.iter().any(|l| l.contains("debug")));
+    }
+
+    #[test]
+    fn text_editor_code_execution_error_roundtrip() {
+        // The error shape (`{error_code, error_message}`) — `error_message` is
+        // undocumented (the docs show `error_code` alone) so the round-trip
+        // would drop it if unmodeled. Live, Haiku 4.5.
+        let block: Block = crate::utils::roundtrip(include_str!(
+            "../../test/data/server_tools/text_editor_code_execution_error.json"
+        ));
+        let Block::TextEditorCodeExecutionToolResult { content, .. } = &block
+        else {
+            panic!("expected TextEditorCodeExecutionToolResult");
+        };
+        let TextEditorCodeExecutionResultContent::Error {
+            error_code,
+            error_message,
+        } = content
+        else {
+            panic!("expected a tool error");
+        };
+        assert_eq!(error_code, "unavailable");
+        assert!(error_message.is_some());
     }
 
     #[test]

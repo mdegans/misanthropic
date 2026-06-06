@@ -1398,4 +1398,54 @@ pub(crate) mod tests {
 
         assert!(seen, "web_fetch_tool_result did not survive with_tool_use");
     }
+
+    // A real `bash_code_execution` result, streamed (captured from the live API
+    // via `curl`): the whole result block arrives inline in a single
+    // `content_block_start` with no deltas, exactly like the other server-tool
+    // result blocks. `with_tool_use` must pass it through untouched.
+    const BASH_CODE_EXECUTION_RESULT_STREAM: &str = concat!(
+        "event: content_block_start\n",
+        "data: {\"type\":\"content_block_start\",\"index\":1,\"content_block\":{\"type\":\"bash_code_execution_tool_result\",\"tool_use_id\":\"srvtoolu_01V2pLZmnVF7hwGxJQQb1uD1\",\"content\":{\"type\":\"bash_code_execution_result\",\"stdout\":\"streaming-test\\n\",\"stderr\":\"\",\"return_code\":0,\"content\":[]}}}\n",
+        "\n",
+        "event: content_block_stop\n",
+        "data: {\"type\":\"content_block_stop\",\"index\":1}\n",
+        "\n",
+    );
+
+    #[tokio::test]
+    async fn test_stream_bash_code_execution_result_passes_through() {
+        use crate::prompt::message::{BashCodeExecutionResultContent, Block};
+
+        let stream =
+            mock_stream(BASH_CODE_EXECUTION_RESULT_STREAM).with_tool_use();
+        let mut seen = false;
+
+        pin_mut!(stream);
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::ContentBlockStart {
+                content_block:
+                    Block::BashCodeExecutionToolResult {
+                        tool_use_id,
+                        content,
+                        ..
+                    },
+                ..
+            }) = event
+            {
+                assert_eq!(tool_use_id, "srvtoolu_01V2pLZmnVF7hwGxJQQb1uD1");
+                let BashCodeExecutionResultContent::Result { stdout, .. } =
+                    content
+                else {
+                    panic!("expected a ran command");
+                };
+                assert_eq!(stdout, "streaming-test\n");
+                seen = true;
+            }
+        }
+
+        assert!(
+            seen,
+            "bash_code_execution_tool_result did not survive with_tool_use"
+        );
+    }
 }

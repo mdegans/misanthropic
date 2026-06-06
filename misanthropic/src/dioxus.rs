@@ -548,6 +548,74 @@ impl IntoElement for &Block {
                     }
                 }
             }
+            Block::BashCodeExecutionToolResult { content, .. } => {
+                // Failure is in-band (non-zero exit) or a tool-level error.
+                let is_error = match content {
+                    message::BashCodeExecutionResultContent::Result {
+                        return_code,
+                        ..
+                    } => *return_code != 0,
+                    message::BashCodeExecutionResultContent::Error {
+                        ..
+                    } => true,
+                };
+                match &opts.tool_result {
+                    opts::ToolResult::Hidden => rsx!(),
+                    opts::ToolResult::Placeholder { error, ok } => {
+                        rsx!(div {
+                            title: if is_error { "Error" } else { "Ok" },
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                        })
+                    }
+                    opts::ToolResult::Show { error, ok } => {
+                        rsx!(code {
+                            title: if is_error { "Error" } else { "Ok" },
+                            lang: "json",
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                            {serde_json::to_string_pretty(content).unwrap()}
+                        })
+                    }
+                }
+            }
+            Block::TextEditorCodeExecutionToolResult { content, .. } => {
+                let is_error = matches!(
+                    content,
+                    message::TextEditorCodeExecutionResultContent::Error { .. }
+                );
+                match &opts.tool_result {
+                    opts::ToolResult::Hidden => rsx!(),
+                    opts::ToolResult::Placeholder { error, ok } => {
+                        rsx!(div {
+                            title: if is_error { "Error" } else { "Ok" },
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                        })
+                    }
+                    opts::ToolResult::Show { error, ok } => {
+                        rsx!(code {
+                            title: if is_error { "Error" } else { "Ok" },
+                            lang: "json",
+                            class: if is_error {
+                                error.as_ref()
+                            } else {
+                                ok.as_ref()
+                            },
+                            {serde_json::to_string_pretty(content).unwrap()}
+                        })
+                    }
+                }
+            }
             // A `tool_reference` is tool-search plumbing, not user content.
             Block::ToolReference { .. } => rsx!(),
         }

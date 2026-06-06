@@ -611,6 +611,8 @@ fn message_to_chat_messages(msg: &Message) -> Vec<ChatMessage> {
             | Block::WebFetchToolResult { .. }
             | Block::ToolSearchToolResult { .. }
             | Block::CodeExecutionToolResult { .. }
+            | Block::BashCodeExecutionToolResult { .. }
+            | Block::TextEditorCodeExecutionToolResult { .. }
             | Block::ToolReference { .. } => {}
         }
     }

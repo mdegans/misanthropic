@@ -1,0 +1,17 @@
+{
+  "type": "text_editor_code_execution_tool_result",
+  "tool_use_id": "srvtoolu_019XBVfbfR6Tgf6isXDpM1B5",
+  "content": {
+    "type": "text_editor_code_execution_str_replace_result",
+    "old_start": 1,
+    "old_lines": 1,
+    "new_start": 1,
+    "new_lines": 1,
+    "lines": [
+      "-{\"debug\": true}",
+      "\\ No newline at end of file",
+      "+{\"debug\": false}",
+      "\\ No newline at end of file"
+    ]
+  }
+}
