@@ -4,15 +4,17 @@
 //! Lifecycle ([`start`](DockerSandbox::start)): optionally **provision** a custom
 //! image (run a `setup` script *with* network, plus create the run user, then
 //! `commit`), **run** a session container (`--init`, resource caps, bashd's port
-//! published to `127.0.0.1`), **inject** the `bashd` binary (`docker cp`), and
-//! **launch** `bashd --http` (detached, as the run user), polling `GET /` until
-//! the [`Ready`] handshake validates. Each [`exec`](DockerSandbox::exec) POSTs a
-//! [`Command`](super::Command) and aggregates the SSE stream into an
+//! published to `127.0.0.1`), and **launch** `bashd --http` (as the run user),
+//! polling `GET /` until the [`Ready`] handshake validates. `bashd` is **baked
+//! into the image** ([`DEFAULT_IMAGE`], `just build-bashd`), so there is no
+//! runtime injection — a dev binary may be bind-mounted over it via
+//! [`bashd_path`](DockerSandbox::bashd_path). Each [`exec`](DockerSandbox::exec)
+//! POSTs a [`Command`](super::Command) and aggregates the SSE stream into an
 //! [`ExecResult`]. [`teardown`](DockerSandbox::teardown) (and a blocking
 //! [`Drop`] leak-guard) removes the container.
 //!
-//! Egress isolation (an internal network + a trusted `bashd relay` sidecar) and
-//! home backup/restore are follow-ups.
+//! Egress isolation (an internal network + a trusted `bashd relay` sidecar) is a
+//! follow-up.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -35,6 +37,15 @@ use super::{
 /// The container port `bashd --http` binds; published to an ephemeral
 /// `127.0.0.1` host port the host then discovers via `docker port`.
 const BASHD_PORT: u16 = 9099;
+
+/// The sandbox image [`DockerSandbox::default`] boots: `bashd` baked into an
+/// immutable rootfs with a pinned non-root `agent` user. Built (and the binary
+/// extracted) by `just build-bashd`; must match `bashd_image` in the `justfile`.
+const DEFAULT_IMAGE: &str = "misan-bashd:dev";
+
+/// The home directory of the baked `agent` user — the default workdir and the
+/// mount point for the `$HOME` volume.
+const AGENT_HOME: &str = "/home/agent";
 
 /// The live HTTPS connection to `bashd`: a pinned mutual-TLS client and the host
 /// base URL it reaches the published port at (e.g. `https://127.0.0.1:54321`),
@@ -82,12 +93,9 @@ pub enum Network {
 /// # fn f() {
 /// use misanthropic::tool::bash::{BashTool, DockerSandbox};
 ///
-/// let tool = BashTool::new(
-///     DockerSandbox::alpine()
-///         .setup("apk add --no-cache bash coreutils")
-///         .user("agent")
-///         .workdir("/work"),
-/// );
+/// // The default boots the baked `misan-bashd` image (`just build-bashd`):
+/// // bashd is already on an immutable rootfs, as a non-root `agent` user.
+/// let tool = BashTool::new(DockerSandbox::default());
 /// # let _ = tool;
 /// # }
 /// ```
@@ -110,14 +118,17 @@ pub struct DockerSandbox {
     cursors: HashMap<u64, u64>,
 }
 
-impl DockerSandbox {
-    /// A sandbox on a base `image` (e.g. `"alpine:3"`, `"debian:stable-slim"`).
-    pub fn new(image: impl Into<String>) -> Self {
+impl Default for DockerSandbox {
+    /// The happy path: boot the baked [`DEFAULT_IMAGE`] (built by
+    /// `just build-bashd`) as its pinned non-root `agent` user. `bashd` is
+    /// already on the rootfs, so no setup, user creation, or
+    /// [`bashd_path`](Self::bashd_path) is needed.
+    fn default() -> Self {
         Self {
-            base_image: image.into(),
+            base_image: DEFAULT_IMAGE.to_string(),
             setup: None,
-            user: None,
-            workdir: "/".to_string(),
+            user: Some("agent".to_string()),
+            workdir: AGENT_HOME.to_string(),
             persist_cwd: false,
             storage_limit: Some(10 << 30), // 10 GiB default (best-effort)
             memory_limit: None,
@@ -130,10 +141,17 @@ impl DockerSandbox {
             cursors: HashMap::new(),
         }
     }
+}
 
-    /// A sandbox on the latest Alpine image.
-    pub fn alpine() -> Self {
-        Self::new("alpine:3")
+impl DockerSandbox {
+    /// A sandbox on a custom base `image` — which **must carry `bashd`** (build
+    /// it `FROM` the [`DEFAULT_IMAGE`], or supply a dev binary via
+    /// [`bashd_path`](Self::bashd_path)). Inherits the rest of
+    /// [`Default`](Self::default) (the `agent` user, [`AGENT_HOME`] workdir).
+    pub fn new(image: impl Into<String>) -> Self {
+        let mut sandbox = Self::default();
+        sandbox.base_image = image.into();
+        sandbox
     }
 
     /// A provisioning script run **with network** in a build phase, then
@@ -151,7 +169,7 @@ impl DockerSandbox {
         self
     }
 
-    /// The working directory commands start in (default `/`).
+    /// The working directory commands start in (default [`AGENT_HOME`]).
     pub fn workdir(mut self, dir: impl Into<String>) -> Self {
         self.workdir = dir.into();
         self
@@ -199,10 +217,11 @@ impl DockerSandbox {
         self
     }
 
-    /// Path to a `bashd` binary built for the **container's** OS/arch (a static
-    /// linux-musl binary). The dev escape hatch — CI publishes these per arch;
-    /// without one (and with no download configured), [`start`](Self::start)
-    /// errors. It is `docker cp`'d into the container at start.
+    /// **Dev escape hatch:** bind-mount a freshly-built `bashd` (a static
+    /// linux-musl binary, e.g. `target-linux/release/bashd` from
+    /// `just build-bashd`) read-only over the one baked into the image, so you
+    /// can iterate on the daemon without rebuilding the image. Unset (the
+    /// default), the image's baked `bashd` is used.
     pub fn bashd_path(mut self, path: impl Into<PathBuf>) -> Self {
         self.bashd_path = Some(path.into());
         self
@@ -343,6 +362,15 @@ impl DockerSandbox {
                 );
             }
         }
+        // Dev escape hatch: bind-mount a freshly-built bashd read-only over the
+        // baked one (the mount point exists on the image's rootfs).
+        if let Some(path) = &self.bashd_path {
+            let abs = std::fs::canonicalize(path).map_err(|e| {
+                BashError::Backend(format!("bashd_path {path:?}: {e}"))
+            })?;
+            args.push("-v".into());
+            args.push(format!("{}:/usr/local/bin/bashd:ro", abs.display()));
+        }
         args.push(image.to_string());
         // Keep the container alive; we exec bashd into it separately.
         args.extend(["tail", "-f", "/dev/null"].map(String::from));
@@ -357,34 +385,26 @@ impl DockerSandbox {
         Ok(container)
     }
 
-    /// `docker cp` the bashd binary into `container` and make it executable.
-    async fn inject_bashd(&self, container: &str) -> Result<(), BashError> {
-        let bashd = self.bashd_path.as_ref().ok_or_else(|| {
-            BashError::Backend(
-                "no bashd binary: set DockerSandbox::bashd_path(...) to a \
-                 linux bashd built for the container's arch"
-                    .to_string(),
-            )
-        })?;
-        let dest = format!("{container}:/usr/local/bin/bashd");
-        let cp = Command::new(&self.runtime)
-            .arg("cp")
-            .arg(bashd)
-            .arg(&dest)
-            .output()
-            .await?;
-        if !cp.status.success() {
-            return Err(BashError::Backend(format!(
-                "docker cp bashd failed: {}",
-                String::from_utf8_lossy(&cp.stderr).trim()
-            )));
+    /// Fail early with an actionable message if the baked [`DEFAULT_IMAGE`] is
+    /// not built locally. Custom images get docker's own not-found error.
+    async fn ensure_default_image(&self) -> Result<(), BashError> {
+        if self.base_image != DEFAULT_IMAGE {
+            return Ok(());
         }
-        let _ = capture(
-            &self.runtime,
-            ["exec", container, "chmod", "+x", "/usr/local/bin/bashd"],
-        )
-        .await?;
-        Ok(())
+        let ok = Command::new(&self.runtime)
+            .args(["image", "inspect", DEFAULT_IMAGE])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
+            .unwrap_or(false);
+        ok.then_some(()).ok_or_else(|| {
+            BashError::Backend(format!(
+                "default sandbox image `{DEFAULT_IMAGE}` is not built — \
+                 run `just build-bashd`"
+            ))
+        })
     }
 
     /// Launch `bashd --http` (attached, as the run user) over an ephemeral
@@ -555,14 +575,13 @@ impl BashSandbox for DockerSandbox {
                 "sandbox already started".to_string(),
             ));
         }
+        self.ensure_default_image().await?;
         let image = self.provision().await?;
         let container = self.run_container(&image).await?;
-        // From here on a failure must remove the container, not leak it.
+        // From here on a failure must remove the container, not leak it. bashd
+        // is baked into the rootfs (or bind-mounted via `bashd_path`), so there
+        // is nothing to inject — launch reaches it directly.
         self.container = Some(container.clone());
-        if let Err(e) = self.inject_bashd(&container).await {
-            self.remove_container().await;
-            return Err(e);
-        }
         match self.launch(&container).await {
             Ok((http, ready)) => {
                 self.http = Some(http);
@@ -762,8 +781,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn defaults_boot_the_baked_image() {
+        let s = DockerSandbox::default();
+        assert_eq!(s.base_image, DEFAULT_IMAGE);
+        assert_eq!(s.user.as_deref(), Some("agent"));
+        assert_eq!(s.workdir, AGENT_HOME);
+        assert!(matches!(s.network, Network::Bridge));
+        assert!(s.bashd_path.is_none());
+    }
+
+    #[test]
     fn builders_set_fields() {
-        let s = DockerSandbox::alpine()
+        let s = DockerSandbox::new("custom:tag")
             .setup("apk add bash")
             .user("agent")
             .workdir("/work")
@@ -773,10 +802,8 @@ mod tests {
             .network(Network::Named("my-net".into()))
             .runtime("podman")
             .bashd_path("/tmp/bashd");
-        assert_eq!(s.base_image, "alpine:3");
+        assert_eq!(s.base_image, "custom:tag");
         assert!(matches!(&s.network, Network::Named(n) if n == "my-net"));
-        // The default is a published bridge.
-        assert!(matches!(DockerSandbox::alpine().network, Network::Bridge));
         assert_eq!(s.setup.as_deref(), Some("apk add bash"));
         assert_eq!(s.user.as_deref(), Some("agent"));
         assert_eq!(s.workdir, "/work");
@@ -796,18 +823,13 @@ mod tests {
         assert_ne!(unique(), unique());
     }
 
-    /// A `bashd` binary built for the container's arch, from `BASHD_PATH` or the
-    /// workspace's `target-linux/release/bashd`. `None` → skip the live test.
-    fn bashd_binary() -> Option<PathBuf> {
-        if let Ok(p) = std::env::var("BASHD_PATH") {
-            let p = PathBuf::from(p);
-            return p.exists().then_some(p);
-        }
-        let p = PathBuf::from(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../target-linux/release/bashd"
-        ));
-        p.exists().then_some(p)
+    /// An optional dev `bashd` to bind-mount over the baked one, from
+    /// `BASHD_PATH` (exercises the override path). `None` → use the baked binary.
+    fn bashd_override() -> Option<PathBuf> {
+        std::env::var("BASHD_PATH")
+            .ok()
+            .map(PathBuf::from)
+            .filter(|p| p.exists())
     }
 
     async fn docker_available() -> bool {
@@ -816,6 +838,19 @@ mod tests {
             .output()
             .await
             .map(|o| o.status.success())
+            .unwrap_or(false)
+    }
+
+    /// Whether the baked [`DEFAULT_IMAGE`] is built locally (via `just
+    /// build-bashd`). `false` → skip the live test.
+    async fn default_image_built() -> bool {
+        Command::new("docker")
+            .args(["image", "inspect", DEFAULT_IMAGE])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .map(|s| s.success())
             .unwrap_or(false)
     }
 
@@ -835,36 +870,38 @@ mod tests {
         })
     }
 
-    /// End-to-end: provision an Alpine image with a non-root user, run the
-    /// network-isolated container, inject + exec bashd, run real commands, and
-    /// tear it all down. Deterministic (no model). Skips if Docker or a linux
-    /// bashd binary is unavailable.
+    /// End-to-end: boot the baked default image, run real commands as the
+    /// non-root agent, and tear it down. Deterministic (no model). Skips if
+    /// Docker or the `misan-bashd` image (`just build-bashd`) is unavailable.
+    /// Set `BASHD_PATH` to also exercise the dev bind-mount override.
     #[tokio::test]
-    #[ignore = "requires Docker running and a linux bashd (BASHD_PATH)"]
+    #[ignore = "requires Docker running and the misan-bashd image (just build-bashd)"]
     async fn live_docker_sandbox_runs_commands() {
-        let Some(bashd) = bashd_binary() else {
-            eprintln!("skipping: no linux bashd binary (set BASHD_PATH)");
-            return;
-        };
         if !docker_available().await {
             eprintln!("skipping: docker not available");
             return;
         }
+        if !default_image_built().await {
+            eprintln!(
+                "skipping: misan-bashd image not built (just build-bashd)"
+            );
+            return;
+        }
 
-        let mut sandbox = DockerSandbox::alpine()
-            .setup("apk add --no-cache bash coreutils")
-            .user("agent")
-            .workdir("/work")
-            .bashd_path(bashd);
+        // The happy path: the baked image, no setup/user/workdir/bashd needed.
+        let mut sandbox = DockerSandbox::default();
+        if let Some(bashd) = bashd_override() {
+            sandbox = sandbox.bashd_path(bashd);
+        }
 
         let ready = sandbox.start().await.expect("start sandbox");
         assert_eq!(ready.protocol, crate::tool::bash::PROTOCOL_VERSION);
         assert!(sandbox.container().is_some());
 
-        // Commands run in the workdir, as the non-root agent.
+        // Commands run in the agent's home, as the non-root agent.
         let out = sandbox.exec(run("echo hello && pwd")).await.unwrap();
         assert!(out.stdout.contains("hello"), "stdout: {:?}", out.stdout);
-        assert!(out.stdout.contains("/work"), "pwd: {:?}", out.stdout);
+        assert!(out.stdout.contains(AGENT_HOME), "pwd: {:?}", out.stdout);
         assert_eq!(out.exit, Some(0));
 
         let out = sandbox.exec(run("whoami")).await.unwrap();

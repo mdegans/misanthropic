@@ -5,25 +5,21 @@
 //! Anthropic defines the schema (you add it by versioned name via
 //! [`Bash::latest`]), the model emits a [`tool_use`] carrying a typed
 //! [`bash::Command`], and *you* execute it — here in a container, via
-//! [`BashTool`] over a [`DockerSandbox`]. The sandbox provisions an image *with*
-//! network (so `apk add` works), then runs the session with `--network none` as
-//! a non-root user, and is torn down (its container removed) at the end.
+//! [`BashTool`] over a [`DockerSandbox`]. The default sandbox boots the baked
+//! `misan-bashd` image (`bashd` on an immutable read-only rootfs) as a non-root
+//! user, and is torn down (its container removed) at the end.
 //!
 //! The drive loop is **bounded** — an autonomous one-shot must terminate.
 //!
 //! # Usage
 //!
 //! ```sh
-//! # Needs Docker running and a linux bashd built for the container's arch
-//! # (build-base + linux-headers build bashd's rustls/aws-lc-rs backend):
-//! docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/w/target-linux \
-//!     rust:alpine sh -c 'apk add --no-cache build-base linux-headers && cargo build -p bashd --release'
-//! BASHD_PATH=target-linux/release/bashd \
-//!     cargo run --features "client bash-container" --example bash
+//! just build-bashd   # build the misan-bashd sandbox image (once; needs Docker)
+//! cargo run --features "client bash-container" --example bash
 //! ```
 //!
-//! Expects `ANTHROPIC_API_KEY` in the environment, and `BASHD_PATH` pointing at a
-//! `bashd` binary built for the container (defaults to `target-linux/release/bashd`).
+//! Expects `ANTHROPIC_API_KEY` in the environment and the `misan-bashd` image
+//! built (`just build-bashd`).
 //!
 //! [`Bash`]: misanthropic::tool::Bash
 //! [`Bash::latest`]: misanthropic::tool::Bash::latest
@@ -50,19 +46,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
-    let bashd = std::env::var("BASHD_PATH")
-        .unwrap_or_else(|_| "target-linux/release/bashd".to_string());
 
-    // Provisioned WITH network (apk), then run with `--network none`, non-root,
-    // and torn down at the end. The sandbox is explicit: `BashTool` wraps it.
-    let mut tools = ToolBox::new().add(BashTool::new(
-        DockerSandbox::alpine()
-            .setup("apk add --no-cache bash coreutils")
-            .user("agent")
-            .workdir("/work")
-            .persist_cwd(false)
-            .bashd_path(bashd),
-    ));
+    // The default sandbox: the baked `misan-bashd` image (read-only rootfs,
+    // bashd already inside) booted as the non-root `agent`, torn down at the
+    // end. The sandbox is explicit: `BashTool` wraps it.
+    let mut tools = ToolBox::new().add(BashTool::new(DockerSandbox::default()));
 
     let mut chat = Prompt::default().add_message((
         Role::User,
@@ -70,9 +58,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
          Report the number it prints.",
     ))?;
 
-    // `prepare` installs the bash def and runs `on_init` — which provisions the
-    // image and launches the container + bashd.
-    println!("Starting sandbox (provisioning image, launching bashd)...");
+    // `prepare` installs the bash def and runs `on_init` — which boots the
+    // container and launches bashd inside it.
+    println!("Starting sandbox (booting container, launching bashd)...");
     tools.prepare(&mut chat).await?;
 
     // Drive the tool loop, bounded. Each bash `tool_use` runs in the container.
