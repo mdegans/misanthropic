@@ -1,4 +1,5 @@
 /target
+/target-linux
 Cargo.lock
 .vscode
 cobertura.xml

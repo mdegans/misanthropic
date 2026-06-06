@@ -24,13 +24,20 @@ test:
 test-ignored:
     cargo test -p misanthropic --all-features -- --ignored
 
-# Cross-build the static linux-musl `bashd` into target-linux/ (via a container, no host musl toolchain needed).
-# build-base (C/C++ compiler) + linux-headers are for bashd's rustls backend
-# (aws-lc-rs): it compiles libcrypto from source and #includes <linux/random.h>.
+# The sandbox image tag the DockerSandbox boots by default. Must match
+# DEFAULT_IMAGE in misanthropic/src/tool/bash/docker.rs.
+bashd_image := "misan-bashd:dev"
+
+# Build the sandbox image (bashd baked into an immutable rootfs) and extract the
+# static linux-musl binary to target-linux/ for the dev bind-mount path + live
+# tests. See Dockerfile for the two-stage build.
 build-bashd:
-    docker run --rm -v "$PWD":/w -w /w -e CARGO_TARGET_DIR=/w/target-linux \
-        rust:alpine sh -c 'apk add --no-cache build-base linux-headers && cargo build -p bashd --release'
-    @echo "built: target-linux/release/bashd  — use it via BASHD_PATH=$PWD/target-linux/release/bashd"
+    docker build -t {{bashd_image}} -f Dockerfile .
+    mkdir -p target-linux/release
+    id=$(docker create {{bashd_image}}); \
+        docker cp "$id:/usr/local/bin/bashd" target-linux/release/bashd; \
+        docker rm "$id" >/dev/null
+    @echo "built image {{bashd_image}}  +  target-linux/release/bashd"
 
 # Enable the pre-commit gate by pointing git at hooks/ (run once per clone).
 install-hooks:
