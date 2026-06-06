@@ -105,7 +105,7 @@ pub struct DockerSandbox {
     user: Option<String>,
     workdir: String,
     persist_cwd: bool,
-    storage_limit: Option<u64>,
+    tmp_limit: u64,
     memory_limit: Option<String>,
     pids_limit: Option<u64>,
     network: Network,
@@ -130,7 +130,7 @@ impl Default for DockerSandbox {
             user: Some("agent".to_string()),
             workdir: AGENT_HOME.to_string(),
             persist_cwd: false,
-            storage_limit: Some(10 << 30), // 10 GiB default (best-effort)
+            tmp_limit: 1 << 30, // 1 GiB tmpfs /tmp (hard-enforced)
             memory_limit: None,
             pids_limit: None,
             network: Network::default(),
@@ -182,13 +182,12 @@ impl DockerSandbox {
         self
     }
 
-    /// Cap the container's writable storage, in bytes (default 10 GiB).
-    ///
-    /// **Best-effort:** `--storage-opt size=` only works on storage drivers that
-    /// support quotas (btrfs/zfs/devicemapper, or overlay2 on xfs+pquota). On
-    /// other drivers the cap is skipped with a `log::warn!` rather than failing.
-    pub fn storage_limit(mut self, bytes: u64) -> Self {
-        self.storage_limit = Some(bytes);
+    /// Size of the writable tmpfs `/tmp`, in bytes (default 1 GiB). The rootfs is
+    /// read-only, so `/tmp` is the container's scratch — `bashd`'s job spool
+    /// lives here too. Hard-enforced on every storage driver (it's a tmpfs), but
+    /// **counts against `--memory`** (it's RAM-backed).
+    pub fn tmp_limit(mut self, bytes: u64) -> Self {
+        self.tmp_limit = bytes;
         self
     }
 
@@ -299,20 +298,13 @@ impl DockerSandbox {
         Ok(image)
     }
 
-    /// Whether the runtime's storage driver supports `--storage-opt size=`.
-    async fn storage_quota_supported(&self) -> bool {
-        let Ok(out) =
-            capture(&self.runtime, ["info", "--format", "{{.Driver}}"]).await
-        else {
-            return false;
-        };
-        let driver = String::from_utf8_lossy(&out.stdout);
-        matches!(driver.trim(), "btrfs" | "zfs" | "devicemapper")
-    }
-
-    /// `docker run -d` the session container (networked per [`Network`]).
+    /// `docker run -d` the locked-down session container (networked per
+    /// [`Network`]): an immutable read-only rootfs, all capabilities dropped, no
+    /// privilege escalation, a writable tmpfs `/tmp`, and an ephemeral `$HOME`
+    /// volume. The only writable paths are `$HOME` (the volume) and `/tmp`.
     async fn run_container(&self, image: &str) -> Result<String, BashError> {
         let container = format!("misan-bashd-{}", unique());
+        let pids = self.pids_limit.unwrap_or(512);
         let mut args: Vec<String> = vec![
             "run".into(),
             "-d".into(),
@@ -320,6 +312,23 @@ impl DockerSandbox {
             "--init".into(),
             "--name".into(),
             container.clone(),
+            // Hardening: immutable rootfs, no caps, no setuid escalation.
+            "--read-only".into(),
+            "--cap-drop".into(),
+            "ALL".into(),
+            "--security-opt".into(),
+            "no-new-privileges".into(),
+            // Writable scratch (bashd's job spool lives here); RAM-backed, so it
+            // counts against --memory. nosuid/nodev: no setuid bins, no devices.
+            "--tmpfs".into(),
+            format!("/tmp:size={},mode=1777,nosuid,nodev", self.tmp_limit),
+            // Writable $HOME. An anonymous volume (disk-backed, seeded from the
+            // image so dotfiles + ownership carry over); reaped by `rm -fv` at
+            // teardown. A persistent named volume is opt-in (see `home_id`).
+            "--mount".into(),
+            format!("type=volume,target={AGENT_HOME}"),
+            "--pids-limit".into(),
+            pids.to_string(),
         ];
         // Networking. None of these isolate the agent's egress (see `Network`);
         // they differ only in how the host reaches bashd's port.
@@ -344,23 +353,6 @@ impl DockerSandbox {
         if let Some(mem) = &self.memory_limit {
             args.push("--memory".into());
             args.push(mem.clone());
-        }
-        if let Some(pids) = self.pids_limit {
-            args.push("--pids-limit".into());
-            args.push(pids.to_string());
-        }
-        if let Some(bytes) = self.storage_limit {
-            if self.storage_quota_supported().await {
-                args.push("--storage-opt".into());
-                args.push(format!("size={bytes}"));
-            } else {
-                #[cfg(feature = "log")]
-                log::warn!(
-                    "bash sandbox: storage limit ({bytes} bytes) not enforced \
-                     — this runtime's storage driver does not support \
-                     `--storage-opt size`"
-                );
-            }
         }
         // Dev escape hatch: bind-mount a freshly-built bashd read-only over the
         // baked one (the mount point exists on the image's rootfs).
@@ -450,9 +442,12 @@ impl DockerSandbox {
         }
         let mut exec = Command::new(&self.runtime)
             .args(&args)
+            // Keep stderr so a startup failure (e.g. bashd can't write its
+            // scratch dir on a misconfigured rootfs) surfaces instead of an
+            // opaque readiness timeout.
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
+            .stderr(Stdio::piped())
             .spawn()?;
 
         // Hand bashd its TLS material over stdin (never argv/env/disk), then
@@ -518,7 +513,22 @@ impl DockerSandbox {
             .build()
             .map_err(|e| BashError::Backend(e.to_string()))?;
 
-        let ready = await_ready(&client, &base).await?;
+        let ready = match await_ready(&client, &base).await {
+            Ok(ready) => ready,
+            Err(e) => {
+                // bashd never answered — append whatever it logged, then reap it.
+                let logs = drain_stderr(&mut exec).await;
+                let _ = exec.start_kill();
+                let _ = exec.wait().await;
+                return Err(match e {
+                    _ if logs.is_empty() => e,
+                    BashError::Handshake(m) => {
+                        BashError::Handshake(format!("{m}; bashd: {logs}"))
+                    }
+                    other => other,
+                });
+            }
+        };
         if ready.protocol != PROTOCOL_VERSION {
             return Err(BashError::Handshake(format!(
                 "protocol mismatch: daemon speaks {}, host speaks {}",
@@ -556,7 +566,9 @@ impl DockerSandbox {
         // Drop the HTTP client; bashd dies with the container removed below.
         let http = self.http.take();
         if let Some(container) = self.container.take() {
-            let _ = capture(&self.runtime, ["rm", "-f", &container]).await;
+            // `-v` reaps the anonymous $HOME volume; a named (persistent) one is
+            // spared (only anonymous/attached volumes are removed).
+            let _ = capture(&self.runtime, ["rm", "-fv", &container]).await;
         }
         // Reap the attached `docker exec` process now that bashd (and the
         // container) is gone, so it doesn't linger as a zombie.
@@ -676,11 +688,12 @@ impl BashSandbox for DockerSandbox {
 
 impl Drop for DockerSandbox {
     /// Leak guard: if the container was never [`teardown`](BashSandbox::teardown)
-    /// (e.g. a panic), remove it with a *blocking* `docker rm -f` (best-effort).
+    /// (e.g. a panic), remove it with a *blocking* `docker rm -fv` (best-effort;
+    /// `-v` reaps the anonymous $HOME volume, spares a named one).
     fn drop(&mut self) {
         if let Some(container) = self.container.take() {
             let _ = std::process::Command::new(&self.runtime)
-                .args(["rm", "-f", &container])
+                .args(["rm", "-fv", &container])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .status();
@@ -743,6 +756,23 @@ async fn await_ready(
         tokio::time::sleep(delay).await;
         delay = (delay * 2).min(Duration::from_millis(500));
     }
+}
+
+/// Drain a failed `bashd`'s stderr (briefly) for its diagnostic. A crashed bashd
+/// has closed stderr so the read returns at once; the timeout only guards the
+/// (unexpected) case of a live-but-unreachable daemon so teardown can't hang.
+async fn drain_stderr(child: &mut tokio::process::Child) -> String {
+    use tokio::io::AsyncReadExt;
+    let Some(mut err) = child.stderr.take() else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    let _ = tokio::time::timeout(
+        Duration::from_millis(300),
+        err.read_to_end(&mut buf),
+    )
+    .await;
+    String::from_utf8_lossy(&buf).trim().to_string()
 }
 
 /// Run `runtime args...`, capturing output and forwarding any stderr to
@@ -906,6 +936,37 @@ mod tests {
 
         let out = sandbox.exec(run("whoami")).await.unwrap();
         assert!(out.stdout.contains("agent"), "whoami: {:?}", out.stdout);
+        let out = sandbox.exec(run("id -u")).await.unwrap();
+        assert_eq!(out.stdout.trim(), "1000", "uid: {:?}", out.stdout);
+
+        // Hardening: rootfs is immutable, but $HOME and /tmp are writable.
+        let out = sandbox.exec(run("touch /etc/x 2>&1")).await.unwrap();
+        assert_ne!(out.exit, Some(0), "rootfs should be read-only");
+        assert!(
+            out.stdout.to_lowercase().contains("read-only"),
+            "expected read-only error, got: {:?}",
+            out.stdout
+        );
+        let out = sandbox
+            .exec(run("echo hi > ~/state.txt && echo hi > /tmp/x && echo ok"))
+            .await
+            .unwrap();
+        assert!(
+            out.stdout.contains("ok"),
+            "home/tmp write: {:?}",
+            out.stdout
+        );
+
+        // The tmpfs /tmp is hard-capped: writing past it fails with ENOSPC.
+        let out = sandbox
+            .exec(run("dd if=/dev/zero of=/tmp/big bs=1M count=2048 2>&1"))
+            .await
+            .unwrap();
+        assert!(
+            out.stdout.to_lowercase().contains("no space"),
+            "tmpfs cap (1 GiB) should stop a 2 GiB write: {:?}",
+            out.stdout
+        );
 
         // Exit codes are OS-authoritative.
         let out = sandbox.exec(run("exit 7")).await.unwrap();
