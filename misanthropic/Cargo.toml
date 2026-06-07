@@ -212,7 +212,7 @@ clap = { version = "4", features = ["derive"] }
 env_logger = "0.11"
 # The async runtime. `misanthropic` itself is async runtime agnostic. Except
 # wasm. Wasm is a special snowflake.
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 # for the strawberry example
 itertools = "0.13"
 # for the python example
@@ -408,6 +408,11 @@ doc-scrape-examples = true
 [[example]]
 name = "bash"
 required-features = ["client", "bash-container"]
+doc-scrape-examples = true
+
+[[example]]
+name = "reminder"
+required-features = ["client", "derive"]
 doc-scrape-examples = true
 
 # See also the `chat` example in the root of the repository.
