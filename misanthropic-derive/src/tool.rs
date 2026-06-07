@@ -9,7 +9,9 @@
 //!   description from its doc comment);
 //! - one `impl Methods` collecting the wrappers and delegating any tagged
 //!   lifecycle hooks
-//!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`).
+//!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`),
+//!   plus a `#[connect]` fn spliced straight onto `impl Tool` (it's sync and not
+//!   a `Methods` method).
 //!
 //! Generated code names everything by absolute `::misanthropic::…` path.
 
@@ -25,6 +27,7 @@ use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
 /// Marker attributes recognized (and stripped) inside a `#[tool]` impl.
 const MARKERS: &[&str] = &[
     "method",
+    "connect",
     "on_init",
     "on_turn",
     "on_teardown",
@@ -140,6 +143,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
     }
 
     let lifecycle_methods = lifecycle.delegations();
+    let connect_method = lifecycle.tool_connect();
     // `#[async_trait]` is only needed on the `Methods` impl when it overrides
     // an async lifecycle method; `methods()`/`NAME` alone aren't async.
     let methods_async = if lifecycle_methods.is_empty() {
@@ -186,6 +190,8 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         #[automatically_derived]
         #[::misanthropic::__derive::async_trait::async_trait]
         impl #ig ::misanthropic::tool::Tool for #self_ty #wc {
+            #connect_method
+
             fn name(&self) -> &str {
                 <Self as ::misanthropic::tool::Methods>::NAME
             }
@@ -336,6 +342,8 @@ fn method_arg_type(sig: &Signature) -> syn::Result<Type> {
 /// Lifecycle hooks discovered in the impl, each delegating to a tagged fn.
 #[derive(Default)]
 struct Lifecycle {
+    /// `#[connect]` — sync, on `Tool` directly (not routed through `Methods`).
+    connect: Option<Ident>,
     on_init: Option<Ident>,
     on_turn: Option<Ident>,
     on_teardown: Option<Ident>,
@@ -346,6 +354,7 @@ struct Lifecycle {
 impl Lifecycle {
     fn set(&mut self, kind: &str, fn_ident: &Ident) -> syn::Result<()> {
         let slot = match kind {
+            "connect" => &mut self.connect,
             "on_init" => &mut self.on_init,
             "on_turn" => &mut self.on_turn,
             "on_teardown" => &mut self.on_teardown,
@@ -422,6 +431,22 @@ impl Lifecycle {
             });
         }
         out
+    }
+
+    /// The `Tool::connect` override, when a `#[connect]` fn is present. Unlike
+    /// the async hooks, `connect` is sync and lives on `Tool` directly, so it's
+    /// spliced into the `impl Tool` block rather than the `Methods` impl.
+    fn tool_connect(&self) -> Option<TokenStream> {
+        self.connect.as_ref().map(|f| {
+            quote! {
+                fn connect(
+                    &mut self,
+                    mailbox: ::misanthropic::tool::Mailbox,
+                ) {
+                    self.#f(mailbox)
+                }
+            }
+        })
     }
 }
 
