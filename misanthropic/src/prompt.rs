@@ -339,6 +339,32 @@ impl Prompt {
         self
     }
 
+    /// Pick the first of `preferred` [`Role`]s the current [`model`] supports,
+    /// for seating a pushed [`Notification`](crate::tool::Notification). Only
+    /// [`Role::System`] is capability-gated (see
+    /// [`supports_in_message_system`]); [`User`] and [`Assistant`] are always
+    /// available. An empty list (or one whose every entry is unsupported) falls
+    /// back to [`User`].
+    ///
+    /// [`supports_in_message_system`]: crate::model::Model::supports_in_message_system
+    ///
+    /// [`model`]: Prompt::model
+    /// [`Role`]: message::Role
+    /// [`Role::System`]: message::Role::System
+    /// [`User`]: message::Role::User
+    /// [`Assistant`]: message::Role::Assistant
+    pub fn resolve_role(&self, preferred: &[message::Role]) -> message::Role {
+        use message::Role;
+        preferred
+            .iter()
+            .copied()
+            .find(|role| match role {
+                Role::User | Role::Assistant => true,
+                Role::System => self.model.supports_in_message_system(),
+            })
+            .unwrap_or(Role::User)
+    }
+
     /// Set the [`messages`] from an iterable of [`Message`]s.
     ///
     /// # Errors

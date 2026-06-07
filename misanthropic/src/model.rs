@@ -217,6 +217,23 @@ impl Model {
             Model::Custom(name) => name,
         }
     }
+
+    /// Whether this model accepts a mid-conversation [`System`] turn — a
+    /// [`Role::System`] message *within* the `messages` array, distinct from the
+    /// top-level [`Prompt::system`] field. Hard-gated to [`Opus48`](Id::Opus48)
+    /// and later; a [`Custom`](Self::Custom) model is treated conservatively as
+    /// unsupported.
+    ///
+    /// Used by [`Prompt::resolve_role`](crate::Prompt::resolve_role) to seat a
+    /// pushed [`Notification`](crate::tool::Notification) at a role the model
+    /// understands.
+    ///
+    /// [`System`]: crate::prompt::message::Role::System
+    /// [`Role::System`]: crate::prompt::message::Role::System
+    /// [`Prompt::system`]: crate::Prompt::system
+    pub fn supports_in_message_system(&self) -> bool {
+        matches!(self, Model::Anthropic(Id::Opus48))
+    }
 }
 
 impl std::fmt::Display for Model {
