@@ -10,6 +10,9 @@ use crate::prompt::message::Content;
 mod toolbox;
 pub use toolbox::ToolBox;
 
+mod mailbox;
+pub use mailbox::{Mailbox, MailboxClosed, Notification, Notifications};
+
 mod typed;
 pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
 
@@ -963,6 +966,17 @@ pub trait Tool: Send {
     ) -> std::result::Result<(), String> {
         Ok(())
     }
+
+    /// Hand this [`Tool`] its [`Mailbox`] — the outbox it pushes
+    /// [`Notification`]s through. The [`ToolBox`] calls this on `add`, minting a
+    /// mailbox stamped with the tool's (namespaced) name, *before*
+    /// [`on_init`](Self::on_init). A *pusher* stores it (typically in a field, or
+    /// via the `#[connect]` macro marker); a tool that never pushes keeps this
+    /// default no-op and emits nothing.
+    ///
+    /// Sync and infallible on purpose: it only stashes a handle. Any spawning or
+    /// I/O belongs in [`on_init`](Self::on_init), which runs later.
+    fn connect(&mut self, _mailbox: Mailbox) {}
 
     /// Called once when the tool is first added to a prompt or toolbox.
     /// Use this to set up initial context, instructions, or static content.

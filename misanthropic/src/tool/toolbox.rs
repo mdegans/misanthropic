@@ -3,11 +3,15 @@ use std::{
     collections::{BTreeMap, HashMap},
 };
 
+use futures::channel::mpsc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
-    tool::{self, MethodDef, Methods, Tool, Typed, Use},
+    tool::{
+        self, Mailbox, MethodDef, Methods, Notification, Notifications, Tool,
+        Typed, Use,
+    },
 };
 
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
@@ -23,14 +27,30 @@ pub struct ToolBox {
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
     /// Map of tool names to [`Tool`]s.
     pub(crate) tool_name_to_tool: HashMap<String, Box<dyn Tool + Send>>,
+    /// Sender side of the single push channel, cloned into each tool's
+    /// [`Mailbox`] on [`connect`](Tool::connect). `None` after
+    /// [`teardown_tools`](Self::teardown_tools) drops it. A nested [`ToolBox`]
+    /// adopts its parent's sender (see [`ToolBox`]'s [`Tool::connect`]).
+    tx: Option<mpsc::UnboundedSender<Notification>>,
+    /// Consumer side, taken once by [`subscribe`](Self::subscribe). `None`
+    /// afterwards, or once this box is nested (its outbox flows to the parent).
+    rx: Option<mpsc::UnboundedReceiver<Notification>>,
+    /// Source-path prefix for stamping child mailboxes. `None` at the root (a
+    /// source is the bare tool name); `Some("root/child")` once nested, so
+    /// sources compose `parent/child/leaf`.
+    source_prefix: Option<String>,
 }
 
 impl Default for ToolBox {
     fn default() -> Self {
+        let (tx, rx) = mpsc::unbounded();
         Self {
             name: "toolbox".into(), // module syntax, snake case
             method_to_tool_name: BTreeMap::new(),
             tool_name_to_tool: HashMap::new(),
+            tx: Some(tx),
+            rx: Some(rx),
+            source_prefix: None,
         }
     }
 }
@@ -74,9 +94,10 @@ impl ToolBox {
     /// Add a [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
-    ///   the `warn` level. This does not remove the original [`Tool`]. If you
-    ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
+    /// - A duplicate [`MethodDef`] (by name) overwrites the earlier route, and a
+    ///   [`Tool`] whose name already exists overwrites the earlier tool. Stale
+    ///   routes from a differing method set are not pruned, so treat tool names
+    ///   as unique.
     // Deliberate builder-style name (mirrors `add_boxed`); not `ops::Add::add`.
     #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, tool: impl Tool + 'static) -> Self {
@@ -87,9 +108,10 @@ impl ToolBox {
     /// Add a boxed [`Tool`] to the [`ToolBox`].
     ///
     /// # Note:
-    /// - Duplicate [`MethodDef`]s (by name), will be replaced. This is logged at
-    ///   the `warn` level. This does not remove the original [`Tool`]. If you
-    ///   are trying to replace a [`Tool`], use [`ToolBox::replace`] instead.
+    /// - A duplicate [`MethodDef`] (by name) overwrites the earlier route, and a
+    ///   [`Tool`] whose name already exists overwrites the earlier tool. Stale
+    ///   routes from a differing method set are not pruned, so treat tool names
+    ///   as unique.
     pub fn add_boxed(mut self, tool: Box<dyn Tool + Send>) -> Self {
         self.push_boxed(tool);
         self
@@ -114,7 +136,7 @@ impl ToolBox {
     }
 
     /// Push a boxed [`Tool`] to the [`ToolBox`].
-    pub fn push_boxed(&mut self, tool: Box<dyn Tool + Send>) {
+    pub fn push_boxed(&mut self, mut tool: Box<dyn Tool + Send>) {
         // Build a route per definition. Custom methods are namespaced under
         // this box (`box__tool__method`); a server-declared def (e.g. the
         // client-executed `memory` tool) keeps its fixed bare wire name — the
@@ -130,6 +152,17 @@ impl ToolBox {
             };
             self.method_to_tool_name
                 .insert(route.into(), tool.name().to_string());
+        }
+
+        // Hand the tool its outbox, stamped with its (namespaced) source, so it
+        // can push [`Notification`]s. Skipped once the box has been torn down
+        // (no sender). A nested box composes the source under its prefix.
+        if let Some(tx) = &self.tx {
+            let source = match &self.source_prefix {
+                Some(prefix) => format!("{prefix}/{}", tool.name()),
+                None => tool.name().to_string(),
+            };
+            tool.connect(Mailbox::new(source, tx.clone()));
         }
 
         #[allow(unused_variables)] // because of the `log` feature
@@ -151,30 +184,25 @@ impl ToolBox {
         self.method_to_tool_name.keys().map(|name| name.as_ref())
     }
 
-    /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`MethodDef`]s.
-    pub fn replace(&mut self, tool: impl Tool + 'static) {
-        self.replace_boxed(Box::new(tool));
+    /// Take the single consumer end of this box's outbox — the
+    /// [`Notification`]s its tools push via their [`Mailbox`]es. Call **once**;
+    /// a second call (or a call on a nested box, whose outbox flows to its
+    /// parent) panics. See [`try_subscribe`](Self::try_subscribe) for the
+    /// fallible form.
+    ///
+    /// `recv()` on the returned [`Notifications`] yields `None` only once every
+    /// sender has dropped — which includes this box's own sender, dropped in
+    /// [`teardown_tools`](Self::teardown_tools).
+    pub fn subscribe(&mut self) -> Notifications {
+        self.try_subscribe().expect(
+            "ToolBox::subscribe called more than once (or on a nested box)",
+        )
     }
 
-    /// Replace a [`Tool`] in the [`ToolBox`] by name along with all its
-    /// [`MethodDef`]s.
-    ///
-    /// If no [`Tool`] of the same name is present this is equivalent to
-    /// [`Self::push_boxed`].
-    pub fn replace_boxed(&mut self, tool: Box<dyn Tool + Send>) {
-        let tool_name = tool.name().to_string();
-
-        // Drop every route belonging to the tool we're replacing, so a
-        // replacement exposing a *different* set of methods leaves no stale
-        // entries behind.
-        self.method_to_tool_name
-            .retain(|_, routed| routed != &tool_name);
-
-        // Re-add via `push_boxed` so the `box__tool__method` key shape has a
-        // single source of truth; its insert overwrites the old same-named
-        // tool in `tool_name_to_tool`.
-        self.push_boxed(tool);
+    /// [`subscribe`](Self::subscribe) without the panic: `None` if the consumer
+    /// end has already been taken, or this box is nested.
+    pub fn try_subscribe(&mut self) -> Option<Notifications> {
+        self.rx.take().map(Notifications::new)
     }
 
     /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
@@ -291,6 +319,10 @@ impl ToolBox {
                 errors.push(e);
             }
         }
+
+        // Drop our own sender so a `recv()`-driven consumer can see the stream
+        // close once the tools (which hold the other senders) also drop theirs.
+        self.tx = None;
 
         if errors.is_empty() {
             Ok(())
@@ -490,6 +522,22 @@ impl Tool for ToolBox {
         serde_json::to_value(state).unwrap()
     }
 
+    fn connect(&mut self, mailbox: Mailbox) {
+        // Nested: adopt the parent's channel and re-stamp our whole subtree's
+        // sources under the path that reaches us. Children were connected to our
+        // *own* channel when they were added, so re-connect them onto the
+        // parent's now; nested child boxes recurse through this same method.
+        let (tx, prefix) = mailbox.into_parts();
+        let prefix = prefix.to_string();
+        for (name, tool) in self.tool_name_to_tool.iter_mut() {
+            tool.connect(Mailbox::new(format!("{prefix}/{name}"), tx.clone()));
+        }
+        self.source_prefix = Some(prefix);
+        self.tx = Some(tx);
+        // Our own consumer end is orphaned — pushes now flow to the parent.
+        self.rx = None;
+    }
+
     async fn on_init(
         &mut self,
         prompt: &mut Prompt,
@@ -630,59 +678,6 @@ mod tests {
         assert!(names.contains(&"toolbox__potato__TestTool__test"));
     }
 
-    /// A second tool that shares [`TestTool`]'s name but exposes a *different*
-    /// method, so [`test_replace_tool`] can tell the two apart after a replace.
-    struct ReplacementTool;
-
-    #[async_trait::async_trait]
-    impl Tool for ReplacementTool {
-        fn name(&self) -> &str {
-            "TestTool"
-        }
-
-        fn definitions(&self) -> Vec<MethodDef> {
-            vec![MethodDef::Custom(CustomMethodDef {
-                name: "TestTool__replaced".into(),
-                description: "Replacement Tool".into(),
-                schema: serde_json::json!({ "type": "object" }),
-                cache_control: None,
-                strict: None,
-                defer_loading: None,
-                allowed_callers: None,
-            })]
-        }
-
-        async fn call(&mut self, call: Use) -> Result {
-            Result::new(call.id, "Replaced tool called")
-        }
-    }
-
-    #[tokio::test]
-    async fn test_replace_tool() {
-        let mut toolbox = ToolBox::new().add(TestTool { calls: Vec::new() });
-
-        // Replace it with a same-named tool exposing a different method.
-        toolbox.replace(ReplacementTool);
-
-        let names: Vec<&str> = toolbox.method_names().collect();
-        // The old tool's route is gone...
-        assert!(!names.contains(&"toolbox__TestTool__test"));
-        // ...and the replacement is keyed under its advertised name.
-        assert!(names.contains(&"toolbox__TestTool__replaced"));
-        // The old tool was evicted, not merely shadowed.
-        assert_eq!(toolbox.tool_names().count(), 1);
-
-        // A call to the advertised name routes to the replacement.
-        let result = toolbox
-            .call(
-                Use::new("toolbox__TestTool__replaced", serde_json::json!({}))
-                    .with_id("id"),
-            )
-            .await;
-        assert!(!result.is_error);
-        assert_eq!(result.content, "Replaced tool called".into());
-    }
-
     #[test]
     fn test_name() {
         let mut named = ToolBox::new();
@@ -742,6 +737,61 @@ mod tests {
             .await;
         assert!(!result.is_error, "nested call did not route: {result:?}");
         assert_eq!(result.content, "Tool called".into());
+    }
+
+    /// A push-only leaf: stores its [`Mailbox`] on connect and emits one
+    /// [`Notification`] from `on_init`, to prove nested sources compose.
+    #[derive(Default)]
+    struct Pusher {
+        mailbox: Option<Mailbox>,
+    }
+
+    #[async_trait::async_trait]
+    impl Tool for Pusher {
+        fn name(&self) -> &str {
+            "leaf"
+        }
+        fn definitions(&self) -> Vec<MethodDef> {
+            Vec::new()
+        }
+        async fn call(&mut self, call: Use) -> Result {
+            Result::new(call.id, "noop")
+        }
+        fn connect(&mut self, mailbox: Mailbox) {
+            self.mailbox = Some(mailbox);
+        }
+        async fn on_init(
+            &mut self,
+            _prompt: &mut Prompt,
+        ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>>
+        {
+            if let Some(mailbox) = &self.mailbox {
+                let _ = mailbox.send(
+                    crate::prompt::message::Content::text("ping"),
+                    vec![crate::prompt::message::Role::User],
+                );
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_nested_mailbox_source_composes() {
+        // root -> "mid" -> "inner" -> leaf. The leaf's push must reach the
+        // root's subscriber, stamped with the full path (the root's own name is
+        // implicit and omitted), proving each nesting re-stamps and re-wires the
+        // subtree onto the parent's channel.
+        let inner = ToolBox::named("inner").unwrap().add(Pusher::default());
+        let mid = ToolBox::named("mid").unwrap().add_boxed(Box::new(inner));
+        let mut root = ToolBox::new().add_boxed(Box::new(mid));
+
+        let mut notes = root.subscribe();
+        let mut prompt = Prompt::default();
+        root.prepare(&mut prompt).await.unwrap();
+
+        let note = notes.try_recv().expect("leaf push reached the root");
+        assert_eq!(&*note.source, "mid/inner/leaf");
+        assert!(notes.try_recv().is_none(), "exactly one push");
     }
 
     #[tokio::test]
