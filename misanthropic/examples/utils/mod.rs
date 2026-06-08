@@ -5,6 +5,14 @@
 //! example with `mod utils;` and call e.g. [`spawn_readline_loop`].
 #![allow(dead_code)]
 
+// The chat driver needs a `Client`, so it rides the same feature.
+#[cfg(feature = "client")]
+mod chat;
+// `BoxError` is part of the helper's API but not every example names it.
+#[cfg(feature = "client")]
+#[allow(unused_imports)]
+pub use chat::{BoxError, Chat};
+
 use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use tokio::sync::mpsc;
 

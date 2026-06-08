@@ -29,7 +29,7 @@
 //! # Usage
 //!
 //! ```sh
-//! cargo run --features "client memory" --example memory
+//! cargo run --features "client memory-fs" --example memory
 //! ```
 //!
 //! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin. Your
@@ -42,14 +42,15 @@
 //! [`FsMemoryBackend`]: misanthropic::tool::memory::FsMemoryBackend
 //! [`memory::Command`]: misanthropic::tool::memory::Command
 
+mod utils;
+
 use std::io::{BufRead, stdin};
 
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
-    tool::{Tool, ToolBox, memory::FsMemoryBackend},
+    tool::{ToolBox, memory::FsMemoryBackend},
 };
-use rustyline::{DefaultEditor, error::ReadlineError};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -72,61 +73,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // path-traversal attempts (`../`, absolute escapes) are rejected. It drops
     // into a `ToolBox` like any other tool — the box installs its predefined
     // definition and routes the bare `"memory"` `tool_use` back to it. Add a
-    // custom tool here and the same `tools.call(..)` below dispatches both.
-    let mut tools =
-        ToolBox::new().add(FsMemoryBackend::new("./memories").await?);
+    // custom tool here and the same driver dispatches both.
+    let toolbox = ToolBox::new().add(FsMemoryBackend::new("./memories").await?);
 
     // The memory *protocol* ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
     // injected server-side when the tool is enabled, so we don't repeat it.
-    let mut chat = Prompt::default().set_system(
+    let prompt = Prompt::default().set_system(
         "You are a helpful assistant with a persistent memory. Record \
              durable facts, decisions, and progress so you can resume in a \
              later session, and keep your notes tidy — prune what's stale.",
     );
 
-    // Install the toolbox: writes the memory def onto `chat.methods` and runs
-    // each tool's `on_init`. One call, and every tool the box owns is wired.
-    tools.prepare(&mut chat).await?;
+    let (mut lines, mut printer) = utils::spawn_readline_loop("you ▸ ")?;
+    printer.line("Memory chat — notes persist in ./memories across runs.");
+    printer.line(
+        "Talk, then Ctrl-D to quit and run again to watch it remember.\n",
+    );
 
-    println!("Memory chat — notes persist in ./memories across runs.");
-    println!("Talk, then Ctrl-D to quit and run again to watch it remember.\n");
-
-    let mut rl = DefaultEditor::new()?;
-    loop {
-        let line = match rl.readline("you ▸ ") {
-            Ok(line) if line.trim().is_empty() => continue,
-            Ok(line) => line,
-            Err(ReadlineError::Interrupted) => continue, // Ctrl-C: ignore
-            Err(ReadlineError::Eof) => break,            // Ctrl-D: quit
-            Err(e) => return Err(e.into()),
-        };
-        rl.add_history_entry(&line).ok();
-        chat.push_message((Role::User, line))?;
-
-        // Drive the tool loop. Before answering, the model may `view` its
-        // memory, then `create`/`str_replace`/`insert`/… across several turns.
-        // Each memory `tool_use` is executed locally and fed back, until a turn
-        // arrives with no tool call — that one is the answer.
-        let answer = loop {
-            let message = client.message(&chat).await?;
-            let Some(call) = message.tool_use() else {
-                break message;
-            };
-            // Own the call so we can append the assistant turn first.
-            let call = call.clone();
-            chat.push_message(message)?;
-            // Every `tool_use` routes through the one box — here the bare
-            // `"memory"` call, dispatched to the backend, which executes the
-            // typed `memory::Command` against `./memories` and hands the
-            // canonical (line-numbered, etc.) string back to the model. No
-            // per-tool special-casing.
-            let result = tools.call(call).await;
-            chat.push_message(result)?;
-        };
-
-        println!("\nclaude ▸ {}\n", answer.inner.content);
-        chat.push_message(answer)?;
-    }
+    // `Chat` runs the model to quiescence: before answering, the model may
+    // `view` its memory, then `create`/`str_replace`/`insert`/… across several
+    // turns. Each memory `tool_use` is routed through the one box — the bare
+    // `"memory"` call, dispatched to the backend, which runs the typed
+    // `memory::Command` against `./memories` and feeds the canonical result
+    // back — until a turn arrives with no tool call. We print only that final,
+    // tool-free answer (the `on_assistant` hook fires on every turn).
+    utils::Chat::new(client, prompt, toolbox)
+        .on_assistant(move |_state: &mut (), msg| {
+            if msg.tool_use().is_none() {
+                printer.line(format!("\nclaude ▸ {}\n", msg.content));
+            }
+        })
+        .run((), async move |_state: &mut ()| {
+            Ok(lines
+                .recv()
+                .await
+                .map(|line| vec![(Role::User, line).into()]))
+        })
+        .await?;
 
     println!("\nbye — your memory is saved in ./memories");
     Ok(())
