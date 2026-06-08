@@ -20,9 +20,6 @@ categories = [
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
 
-[lints.rust]
-unsafe_code = "forbid"
-
 [dependencies]
 # For base64 encoding/decoding, obvs.
 base64 = "0.22"
@@ -322,13 +319,7 @@ derive = ["dep:misanthropic-derive"]
 # `derive` (the `#[tool]` macro), and the client-executed file tools `memory-fs`
 # (memory + its backend), `text-editor-fs` (text editor + its backend), and
 # `bash-container` (the `DockerSandbox` bash executor).
-__skills = [
-    "client",
-    "derive",
-    "memory-fs",
-    "text-editor-fs",
-    "bash-container",
-]
+__skills = ["client", "derive", "memory-fs", "text-editor-fs", "bash-container"]
 
 [[example]]
 name = "strawberry"

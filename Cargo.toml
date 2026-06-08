@@ -19,6 +19,10 @@ homepage = "https://github.com/mdegans/misanthropic"
 repository = "https://github.com/mdegans/misanthropic"
 license = "MIT"
 
+[workspace.lints]
+rust.unsafe_code = "forbid"
+rust.missing_docs = "deny"
+
 # Shared dependency declarations. The inter-crate version/path is defined once
 # here; members use `misanthropic-derive = { workspace = true }`.
 [workspace.dependencies]
