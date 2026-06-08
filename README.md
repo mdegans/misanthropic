@@ -23,4 +23,4 @@ just install-hooks   # runs `just test` before every commit
 - `just test-ignored` — the `#[ignore]`d tests that hit the live API (needs an
   API key in `misanthropic/api.key`).
 
-Bypass the gate for a work-in-progress commit with `git commit --no-verify`.
+Please do not bypass the gate with --no-verify.
