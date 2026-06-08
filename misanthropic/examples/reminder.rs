@@ -17,28 +17,18 @@
 //! mandatory — so here we drive a lone [`Tool`] directly: `subscribe`, then call
 //! its lifecycle hooks (`on_init`/`on_turn`/`on_teardown`) by hand.
 //!
-//! ## Blocking input under `select!` — the cancel-safety trick
+//! The terminal handling — a blocking `rustyline` prompt on its own thread, with
+//! async output printed *through* an `ExternalPrinter` so it never collides with
+//! what the user is typing — lives in `utils::spawn_readline_loop`; see its docs
+//! for the cancel-safety reasoning.
 //!
-//! `rustyline` is blocking and has no async mode. Putting
-//! `spawn_blocking(|| rl.readline())` *inside* a `select!` branch would be a bug:
-//! when the other branch wins, `select!` drops that future, but dropping a
-//! `spawn_blocking` handle does **not** cancel the blocking thread — the typed
-//! line is lost and the next iteration spawns a *second* `readline` racing the
-//! first on the tty. Instead we keep the blocking call **out of the future
-//! tree**: one long-lived [`std::thread`] owns stdin and forwards finished lines
-//! over a [`tokio::mpsc`] channel. `select!` then only ever polls `mpsc` `recv()`
-//! and [`Notifications::recv`], both **cancel-safe** — a buffered item survives a
-//! lost branch.
-//!
-//! ## Role is a *preference*, resolved by the driver
+//! # Role is a *preference*, resolved by the driver
 //!
 //! [`Notification::preferred_roles`] is a `Vec<Role>`, not a baked role: a
 //! reminder wants [`System`] where the model supports in-message system turns and
 //! [`User`] where it doesn't. The driver picks the first the current model
 //! supports — [`Prompt::resolve_role`]. Under the default model (Haiku) this
 //! lands as a **user** turn; on Opus 4.8+ it would be a **system** turn.
-//!
-//! [`tokio::mpsc`]: https://docs.rs/tokio/latest/tokio/sync/mpsc/index.html
 //!
 //! # Usage
 //!
@@ -51,7 +41,6 @@
 //!
 //! [`Mailbox`]: misanthropic::tool::Mailbox
 //! [`Notification::preferred_roles`]: misanthropic::tool::Notification::preferred_roles
-//! [`Notifications::recv`]: misanthropic::tool::Notifications::recv
 //! [`Prompt::resolve_role`]: misanthropic::Prompt::resolve_role
 //! [`Tool`]: misanthropic::tool::Tool
 //! [`Tool::subscribe`]: misanthropic::tool::Tool::subscribe
@@ -62,6 +51,8 @@
 //! [`User`]: misanthropic::prompt::message::Role::User
 //! [`System`]: misanthropic::prompt::message::Role::System
 
+mod utils;
+
 use std::io::BufRead;
 
 use misanthropic::{
@@ -69,7 +60,6 @@ use misanthropic::{
     prompt::message::{Content, Role},
     tool::{Mailbox, Notifications, Tool, tool},
 };
-use rustyline::{DefaultEditor, error::ReadlineError};
 
 /// Demo cap on total turns — the chat ends after this many exchanges, some
 /// driven by the human, some by the reminder tool.
@@ -151,7 +141,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    // Get API key from stdin.
+    // Get the API key from stdin *before* the rustyline thread takes over stdin.
     println!("Enter your API key:");
     let key = std::io::stdin().lock().lines().next().unwrap()?;
     let client = Client::new(key)?;
@@ -163,33 +153,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut notifications = reminder.subscribe().expect("the reminder pushes");
     reminder.on_init(&mut chat).await?;
 
-    // A dedicated blocking thread owns stdin for the program's life and forwards
-    // finished lines over a cancel-safe channel — see the module docs.
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(16);
-    std::thread::spawn(move || {
-        let Ok(mut rl) = DefaultEditor::new() else {
-            return;
-        };
-        loop {
-            match rl.readline("you ▸ ") {
-                Ok(line) if line.trim().is_empty() => continue,
-                Ok(line) => {
-                    rl.add_history_entry(&line).ok();
-                    // Receiver gone (driver exited): stop reading.
-                    if line_tx.blocking_send(line).is_err() {
-                        break;
-                    }
-                }
-                Err(ReadlineError::Interrupted) => continue, // Ctrl-C
-                Err(ReadlineError::Eof) => break,            // Ctrl-D
-                Err(_) => break,
-            }
-        }
-        // Dropping `line_tx` here signals EOF to the driver's `select!`.
-    });
-
-    println!(
-        "Chat with the model; a reminder lands every 3rd turn. Ctrl-D quits.\n"
+    // The blocking prompt runs on its own thread; `printer` writes model output
+    // above the live prompt without clobbering what the user is typing.
+    let (mut line_rx, mut printer) = utils::spawn_readline_loop("you ▸ ")?;
+    printer.line(
+        "Chat with the model; a reminder lands every 3rd turn. Ctrl-D quits.\n",
     );
 
     // The conversation is a bounded alternation of user and assistant turns —
@@ -199,7 +167,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `tool_use` to dispatch: each turn is just "seat a beat, answer it".
     for _ in 0..MAX_TURNS {
         // The next user-side beat: the human, or the tool waking us. Both
-        // branches await cancel-safe `recv()`; see the module docs.
+        // branches await cancel-safe `recv()`; see `utils`.
         tokio::select! {
             line = line_rx.recv() => match line {
                 None => break, // reader thread ended (Ctrl-D)
@@ -209,7 +177,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 // Seat the push at the role the current model supports. On Haiku
                 // this resolves to User; on Opus 4.8+ it would be System.
                 let role = chat.resolve_role(&note.preferred_roles);
-                println!("⏰ [{}] delivered as {role}", note.source);
+                printer.line(format!(
+                    "⏰ [{}] delivered as {role}",
+                    note.source
+                ));
                 chat.push_message((role, note.content))?;
             }
         }
@@ -219,11 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         reminder.on_turn(&mut chat).await?;
 
         let message = client.message(&chat).await?;
-        println!("claude ▸ {}\n", message.inner.content);
+        printer.line(format!("claude ▸ {}\n", message.inner.content));
         chat.push_message(message)?;
     }
 
     reminder.on_teardown(&mut chat).await?;
-    println!("bye");
+    printer.line("bye");
     Ok(())
 }
