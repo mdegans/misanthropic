@@ -321,6 +321,16 @@ derive = ["dep:misanthropic-derive"]
 # `bash-container` (the `DockerSandbox` bash executor).
 __skills = ["client", "derive", "memory-fs", "text-editor-fs", "bash-container"]
 
+# Integration tests link the lib as an *external* crate, so `cfg(test)` does not
+# reach it — the `test`-gated `derive(PartialEq)` on API types (e.g.
+# `AllowedCaller`) is absent there. `tool_attr` asserts `AllowedCaller` equality,
+# so it needs the `partial-eq` feature (and `derive` for `#[tool]`). Declaring it
+# here makes a bare `cargo test` skip it cleanly instead of failing to compile;
+# the gate runs `--all-features`, so it still executes there.
+[[test]]
+name = "tool_attr"
+required-features = ["derive", "partial-eq"]
+
 [[example]]
 name = "strawberry"
 required-features = ["client", "markdown", "derive"]
