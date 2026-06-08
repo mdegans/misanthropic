@@ -234,6 +234,34 @@ impl Model {
     pub fn supports_in_message_system(&self) -> bool {
         matches!(self, Model::Anthropic(Id::Opus48))
     }
+
+    /// Pick the first of `preferred` [`Role`]s this model supports, for seating
+    /// a pushed [`Notification`](crate::tool::Notification). Only
+    /// [`Role::System`] is capability-gated (see
+    /// [`supports_in_message_system`](Self::supports_in_message_system));
+    /// [`User`] and [`Assistant`] are always available. An empty list (or one
+    /// whose every entry is unsupported) falls back to [`User`].
+    ///
+    /// [`Prompt::resolve_role`](crate::Prompt::resolve_role) delegates here.
+    ///
+    /// [`Role`]: crate::prompt::message::Role
+    /// [`Role::System`]: crate::prompt::message::Role::System
+    /// [`User`]: crate::prompt::message::Role::User
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    pub fn resolve_role(
+        &self,
+        preferred: &[crate::prompt::message::Role],
+    ) -> crate::prompt::message::Role {
+        use crate::prompt::message::Role;
+        preferred
+            .iter()
+            .copied()
+            .find(|role| match role {
+                Role::User | Role::Assistant => true,
+                Role::System => self.supports_in_message_system(),
+            })
+            .unwrap_or(Role::User)
+    }
 }
 
 impl std::fmt::Display for Model {

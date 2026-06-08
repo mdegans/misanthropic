@@ -354,15 +354,7 @@ impl Prompt {
     /// [`User`]: message::Role::User
     /// [`Assistant`]: message::Role::Assistant
     pub fn resolve_role(&self, preferred: &[message::Role]) -> message::Role {
-        use message::Role;
-        preferred
-            .iter()
-            .copied()
-            .find(|role| match role {
-                Role::User | Role::Assistant => true,
-                Role::System => self.model.supports_in_message_system(),
-            })
-            .unwrap_or(Role::User)
+        self.model.resolve_role(preferred)
     }
 
     /// Set the [`messages`] from an iterable of [`Message`]s.
