@@ -62,6 +62,8 @@
 //! [`User`]: misanthropic::prompt::message::Role::User
 //! [`System`]: misanthropic::prompt::message::Role::System
 
+use std::io::BufRead;
+
 use misanthropic::{
     Client, Prompt,
     prompt::message::{Content, Role},
@@ -149,7 +151,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    // Get API key from stdin.
+    println!("Enter your API key:");
+    let key = std::io::stdin().lock().lines().next().unwrap()?;
+    let client = Client::new(key)?;
 
     // No ToolBox — a single Tool, driven directly. Take its push stream and run
     // its setup; `subscribe`/`on_init` are Tool-trait methods.
