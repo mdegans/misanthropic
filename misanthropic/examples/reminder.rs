@@ -1,32 +1,27 @@
 //! Example: tool *callbacks* via a [`Mailbox`], shown as a small CLI chat where
-//! a single tool — **no [`ToolBox`] in sight** — drops a conversational reminder
-//! into the conversation every few turns. This is the draft of the agent reactor
-//! we'll eventually encapsulate.
+//! a single tool — **no [`ToolBox`] in sight** — drops a conversational
+//! reminder into the conversation every few turns.
 //!
 //! # The idea
 //!
-//! Tool use is a *pair*: a [`tool_use`] is answered by exactly one
-//! [`tool::Result`] in the next message. That covers request/response, but not a
-//! tool that wants to drop free-standing [`Content`] into the chat without being
-//! called — a backgrounded job reporting in, or (here) a periodic nudge. Those
-//! are **pushes**, not replies.
+//! Tool use is a *pair*: a [`tool::Use`] is answered by exactly one
+//! [`tool::Result`] in the next message. That covers request/response, but not
+//! a tool that wants to drop free-standing [`Content`] into the chat without
+//! being called — a backgrounded job reporting in, or (here) a periodic nudge.
+//! Those are **pushes**, not replies.
 //!
-//! A [`Tool`] owns a [`Mailbox`], `send`s through it, and hands out the consumer
-//! end via [`Tool::subscribe`]. The driver drains that stream and seats each
-//! beat. A [`ToolBox`] is only needed to *group and aggregate* tools — it isn't
-//! mandatory — so here we drive a lone [`Tool`] directly: `subscribe`, then call
-//! its lifecycle hooks (`on_init`/`on_turn`/`on_teardown`) by hand.
-//!
-//! The terminal handling — a blocking `rustyline` prompt on its own thread, with
-//! async output printed *through* an `ExternalPrinter` so it never collides with
-//! what the user is typing — lives in `utils::spawn_readline_loop`; see its docs
-//! for the cancel-safety reasoning.
+//! A [`Tool`] owns a [`Mailbox`] (channel pair), `send`s through it, and hands
+//! out [`Notifications`] via [`Tool::subscribe`]. The driver drains that
+//! [`Stream`] and seats each beat. A [`ToolBox`] is only needed to *group and
+//! aggregate* tools — it isn't mandatory — so here we drive a lone [`Tool`]
+//! directly: `subscribe`, then call its lifecycle hooks
+//! (`on_init`/`on_turn`/`on_teardown`) by hand.
 //!
 //! # Role is a *preference*, resolved by the driver
 //!
 //! [`Notification::preferred_roles`] is a `Vec<Role>`, not a baked role: a
-//! reminder wants [`System`] where the model supports in-message system turns and
-//! [`User`] where it doesn't. The driver picks the first the current model
+//! reminder wants [`System`] where the model supports in-message system turns
+//! and [`User`] where it doesn't. The driver picks the first the current model
 //! supports — [`Prompt::resolve_role`]. Under the default model (Haiku) this
 //! lands as a **user** turn; on Opus 4.8+ it would be a **system** turn.
 //!
@@ -39,17 +34,18 @@
 //! Chat at the prompt; every third turn a reminder lands as its own turn and the
 //! model takes it into account. `Ctrl-D` quits.
 //!
+//! [`Content`]: misanthropic::prompt::message::Content
 //! [`Mailbox`]: misanthropic::tool::Mailbox
 //! [`Notification::preferred_roles`]: misanthropic::tool::Notification::preferred_roles
 //! [`Prompt::resolve_role`]: misanthropic::Prompt::resolve_role
-//! [`Tool`]: misanthropic::tool::Tool
-//! [`Tool::subscribe`]: misanthropic::tool::Tool::subscribe
-//! [`ToolBox`]: misanthropic::tool::ToolBox
-//! [`Content`]: misanthropic::prompt::message::Content
-//! [`tool_use`]: misanthropic::tool::Use
-//! [`tool::Result`]: misanthropic::tool::Result
-//! [`User`]: misanthropic::prompt::message::Role::User
+//! [`Stream`]: futures::Stream
 //! [`System`]: misanthropic::prompt::message::Role::System
+//! [`tool::Result`]: misanthropic::tool::Result
+//! [`Tool::subscribe`]: misanthropic::tool::Tool::subscribe
+//! [`tool::Use`]: misanthropic::tool::Use
+//! [`Tool`]: misanthropic::tool::Tool
+//! [`ToolBox`]: misanthropic::tool::ToolBox
+//! [`User`]: misanthropic::prompt::message::Role::User
 
 mod utils;
 
@@ -57,13 +53,23 @@ use std::io::BufRead;
 
 use misanthropic::{
     Client, Prompt,
-    prompt::message::{Content, Role},
+    prompt::{
+        UserMessage,
+        message::{Content, Role},
+    },
     tool::{Mailbox, Notifications, Tool, tool},
 };
 
 /// Demo cap on total turns — the chat ends after this many exchanges, some
 /// driven by the human, some by the reminder tool.
 const MAX_TURNS: usize = 20;
+
+/// In a real chat you should probably instruct the Assistant not to mention the
+/// reminder and arrange for it to be joined with the User's message or appended
+/// after as a System message.
+const REMINDER_INSTRUCTIONS: &str = r#"<reminder_instructions>
+Ever few turns you will get a [reminder] message from the runtime. This reminder does not come from the user.
+</reminder_instructions>"#;
 
 /// A **push-only** tool: it exposes no callable method (the `#[tool]` impl below
 /// has no `#[method]`), so the model never sees it in the tools array and can't
@@ -76,11 +82,7 @@ struct Reminder {
     every: u32,
     /// Turns seen so far (counted in `#[on_turn]`).
     turns: u32,
-    /// Owns its own channel when standalone (as here); a [`ToolBox`] swaps in a
-    /// send-only handle via `#[connect]` when this tool is boxed for
-    /// aggregation.
-    ///
-    /// [`ToolBox`]: misanthropic::tool::ToolBox
+    /// Our channel pair wrapper
     mailbox: Mailbox,
 }
 
@@ -117,6 +119,29 @@ impl Reminder {
         self.mailbox.subscribe()
     }
 
+    /// Inject Reminder instructions into the system prompt.
+    ///
+    /// ## Note
+    /// - Production tools should generally not overwrite the system prompt.
+    ///   This is for brevity. Tools, on_init, should append and be idempotent.
+    #[on_init]
+    async fn set_system(
+        &mut self,
+        prompt: &mut Prompt,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        // Content collects from an iterable of T where T: Into<Block>
+        let system: Content = [
+            "This is an example from the `misanthropic` Rust client crate.",
+            REMINDER_INSTRUCTIONS,
+        ]
+        .into_iter()
+        .collect();
+
+        prompt.system = Some(system);
+
+        Ok(())
+    }
+
     /// Count the turn and, every `every`, push a reminder. The `send` stamps the
     /// source (`"reminder"`) — we can't fake it — and we ignore the result: a
     /// dropped reminder is fine (a dropped *job completion* would not be).
@@ -128,7 +153,10 @@ impl Reminder {
         self.turns += 1;
         if self.turns.is_multiple_of(self.every) {
             let _ = self.mailbox.send(
-                Content::text("[reminder] Keep answers concise and on-task."),
+                // Content to send (impl Into<Content>)
+                "[reminder] Keep answers concise and on-task.",
+                // Preferred roles for the message (System role is another
+                // option but requires more careful handling of turn order.)
                 vec![Role::System, Role::User],
             );
         }
@@ -146,48 +174,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let key = std::io::stdin().lock().lines().next().unwrap()?;
     let client = Client::new(key)?;
 
-    // No ToolBox — a single Tool, driven directly. Take its push stream and run
-    // its setup; `subscribe`/`on_init` are Tool-trait methods.
     let mut reminder = Reminder::new(3);
     let mut chat = Prompt::default();
     let mut notifications = reminder.subscribe().expect("the reminder pushes");
+
+    // A reminder has no #[method]s so no method definitions need to be set in
+    // Prompt::methods.
+    assert!(reminder.definitions().is_empty());
+
+    // Calls `set_system` above, adding the tool's instructions.
     reminder.on_init(&mut chat).await?;
 
-    // The blocking prompt runs on its own thread; `printer` writes model output
-    // above the live prompt without clobbering what the user is typing.
+    // Stdin/stdout handling helper
     let (mut line_rx, mut printer) = utils::spawn_readline_loop("you ▸ ")?;
     printer.line(
         "Chat with the model; a reminder lands every 3rd turn. Ctrl-D quits.\n",
     );
 
-    // The conversation is a bounded alternation of user and assistant turns —
+    // The conversation is a strict alternation of user and assistant turns —
     // except the "user" beat sometimes comes from the reminder tool instead of
-    // the human. The reminder has a null schema (it adds nothing to
-    // `Prompt::tools`), so the model has no tool to call and there is never a
-    // `tool_use` to dispatch: each turn is just "seat a beat, answer it".
+    // the human. Note that the official Anthropic API no longer requires this
+    // strict alternation but many third party implementations do.
     for _ in 0..MAX_TURNS {
-        // The next user-side beat: the human, or the tool waking us. Both
-        // branches await cancel-safe `recv()`; see `utils`.
+        reminder.on_turn(&mut chat).await?;
+
+        // It is the User's turn
         tokio::select! {
             line = line_rx.recv() => match line {
                 None => break, // reader thread ended (Ctrl-D)
                 Some(line) => chat.push_message((Role::User, line))?,
             },
             Some(note) = notifications.recv() => {
-                // Seat the push at the role the current model supports. On Haiku
-                // this resolves to User; on Opus 4.8+ it would be System.
-                let role = chat.resolve_role(&note.preferred_roles);
-                printer.line(format!(
-                    "⏰ [{}] delivered as {role}",
-                    note.source
-                ));
-                chat.push_message((role, note.content))?;
+                chat.push_message(
+                    // For brevity, we always use User role since System role
+                    // requires Opus 4.8 as of writing and more careful handing
+                    // of turn order. In real code use Prompt::resolve_role to
+                    // find the preferred role, but this may require message
+                    // reordering.
+                    UserMessage::from(note.content)
+                )?;
             }
         }
-
-        // `on_turn`: the reminder counts this turn and, every third, enqueues a
-        // nudge the next `select!` pass will seat.
-        reminder.on_turn(&mut chat).await?;
+        // It is the Assistant's turn
 
         let message = client.message(&chat).await?;
         printer.line(format!("claude ▸ {}\n", message.inner.content));
