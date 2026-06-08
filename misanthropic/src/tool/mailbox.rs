@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use futures::{StreamExt, channel::mpsc};
+use futures::{StreamExt, channel::mpsc, pin_mut, stream::FusedStream};
 
 use crate::prompt::message::{Content, Role};
 
@@ -135,7 +135,43 @@ impl Notifications {
     }
 
     /// The next already-queued push, if any — never blocks.
-    pub fn try_recv(&mut self) -> Option<Notification> {
-        self.rx.try_recv().ok()
+    pub fn try_recv(&mut self) -> Result<Notification, TryRecvError> {
+        self.rx.try_recv().map_err(Into::into)
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum TryRecvError {
+    #[error("No notifications ready.")]
+    Empty,
+    #[error("Notifications channel closed. Drop it.")]
+    Closed,
+}
+
+impl From<futures::channel::mpsc::TryRecvError> for TryRecvError {
+    fn from(value: futures::channel::mpsc::TryRecvError) -> Self {
+        match value {
+            mpsc::TryRecvError::Empty => Self::Empty,
+            mpsc::TryRecvError::Closed => Self::Closed,
+        }
+    }
+}
+
+impl futures::Stream for Notifications {
+    type Item = Notification;
+
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        let this = self;
+        pin_mut!(this);
+        this.poll_next(cx)
+    }
+}
+
+impl FusedStream for Notifications {
+    fn is_terminated(&self) -> bool {
+        self.rx.is_terminated()
     }
 }

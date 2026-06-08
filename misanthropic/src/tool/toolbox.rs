@@ -791,7 +791,7 @@ mod tests {
 
         let note = notes.try_recv().expect("leaf push reached the root");
         assert_eq!(&*note.source, "mid/inner/leaf");
-        assert!(notes.try_recv().is_none(), "exactly one push");
+        assert!(notes.try_recv().is_err(), "exactly one push");
     }
 
     #[tokio::test]
