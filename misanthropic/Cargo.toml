@@ -272,8 +272,9 @@ dioxus = ["dep:dioxus"]
 # derive macros, so it requires `derive`.
 notepad = ["derive"]
 # Optional tokio dependency, pulled in by `memory-fs`. A bare feature so other
-# tokio-backed pieces can share it later.
-tokio = ["dep:tokio"]
+# tokio-backed pieces can share it later. Includes `rt` for the bash background
+# completion-watcher's `tokio::spawn` (the runtime itself comes from the caller).
+tokio = ["dep:tokio", "tokio/rt"]
 # Typed client-side `memory` tool support: the `Command` vocabulary and the
 # `Memory` definition. Runtime-agnostic — bring your own executor, or enable
 # `memory-fs` for the filesystem one.
@@ -409,6 +410,11 @@ doc-scrape-examples = true
 [[example]]
 name = "bash"
 required-features = ["client", "bash-container"]
+doc-scrape-examples = true
+
+[[example]]
+name = "bash_background"
+required-features = ["client", "bash-container", "derive"]
 doc-scrape-examples = true
 
 [[example]]

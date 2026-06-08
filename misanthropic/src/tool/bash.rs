@@ -1,10 +1,9 @@
 //! Client-side execution of the [bash tool] ([`ServerMethodDef::Bash`]).
 //!
 //! The bash tool is *predefined* (you add it by versioned name via
-//! [`Bash::latest`], or as a richer custom def via [`Bash::rich`]) but
-//! *client-executed*: the model emits an ordinary [`Use`] (`name: "bash"`) whose
-//! [`input`](Use::input) is a [`Command`](crate::tool::bash::Command), and
-//! *you* run it — in a **sandbox**,
+//! [`Bash::latest`]) but *client-executed*: the model emits an ordinary [`Use`]
+//! (`name: "bash"`) whose [`input`](Use::input) is a
+//! [`Command`](crate::tool::bash::Command), and *you* run it — in a **sandbox**,
 //! not a filesystem jail. Because `docker exec` per command loses the working
 //! directory and environment, the sandbox runs a tiny **`bashd`** daemon inside
 //! the container that owns a persistent session and serves the HTTP/SSE protocol
@@ -18,13 +17,17 @@
 //! [`ToolBox`](crate::tool::ToolBox). Enable
 //! `bash-container` for the reference `DockerSandbox` executor.
 //!
+//! For a richer surface, [`RichBash`](crate::tool::bash::RichBash) re-expresses
+//! the same sandbox as a *typed, multi-method* tool
+//! (`run`/`restart`/`check_output`/`kill`) with background-job completion
+//! callbacks.
+//!
 //! Like [`memory`](crate::tool::memory)/[`text_editor`](crate::tool::text_editor), it
 //! *defines* like a server tool and *executes* like a custom one.
 //!
 //! [bash tool]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/bash-tool>
 //! [`ServerMethodDef::Bash`]: crate::tool::ServerMethodDef::Bash
 //! [`Bash::latest`]: crate::tool::Bash::latest
-//! [`Bash::rich`]: crate::tool::Bash::rich
 //! [`Use`]: crate::tool::Use
 
 use std::borrow::Cow;
@@ -49,6 +52,14 @@ pub use uuid::Uuid;
 /// Ephemeral per-container PKI for the [`DockerSandbox`] ↔ `bashd` mTLS channel.
 #[cfg(all(feature = "bash-container", not(target_arch = "wasm32")))]
 mod pki;
+
+/// [`RichBash`] — the bash tool as a typed, multi-method tool (the `#[tool]`
+/// macro) with background-completion callbacks. Needs `derive` (the macro) and
+/// `tokio` (the watcher's `spawn`).
+#[cfg(all(feature = "derive", feature = "tokio"))]
+pub mod rich;
+#[cfg(all(feature = "derive", feature = "tokio"))]
+pub use rich::RichBash;
 
 /// The `bashd` wire-protocol version. Bumped on a breaking change; the host
 /// refuses a daemon whose [`Ready::protocol`] does not match.
@@ -85,11 +96,11 @@ pub enum Command {
 /// `Run` never shadows them.
 ///
 /// The predefined `bash_20250124` schema ([`Bash::latest`]) only ever elicits
-/// `Run`/`Restart`; the derived [`Bash::rich`] schema additionally advertises
-/// `background`/`timeout_secs` and `Poll`/`Kill`.
+/// `Run`/`Restart`; the typed [`RichBash`] tool additionally drives
+/// `background`/`timeout_secs` and `Poll`/`Kill` (its per-method args map onto
+/// these same wire variants).
 ///
 /// [`Bash::latest`]: crate::tool::Bash::latest
-/// [`Bash::rich`]: crate::tool::Bash::rich
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(untagged)]
@@ -445,6 +456,22 @@ pub trait BashSandbox: Send {
     /// Snapshot the home backup, then tear the sandbox down. Runs host-side, so
     /// it happens regardless of the daemon's state.
     async fn teardown(&mut self) -> Result<(), BashError>;
+
+    /// A future that resolves when background `job` finishes, over an
+    /// **independent** connection — so a completion-watcher can await it without
+    /// holding a `&mut self` borrow. This is what turns a backgrounded job into
+    /// a *push*: [`RichBash`] spawns the returned future and sends the result
+    /// through its [`Mailbox`](crate::tool::Mailbox) when it completes. `None`
+    /// (the default) means the sandbox can't watch out-of-band, so its
+    /// background jobs stay `check_output`-only.
+    fn watch(
+        &self,
+        _job: u64,
+    ) -> Option<
+        futures::future::BoxFuture<'static, Result<ExecResult, BashError>>,
+    > {
+        None
+    }
 }
 
 /// The [`Tool`] adapter: wraps a [`BashSandbox`] and drives it from the
@@ -467,16 +494,6 @@ impl<S: BashSandbox> BashTool<S> {
         Self {
             sandbox,
             def: crate::tool::Bash::latest().into(),
-        }
-    }
-
-    /// A bash tool over `sandbox`, advertising the richer derived schema
-    /// ([`Bash::rich`](crate::tool::Bash::rich)) so the model can drive
-    /// background jobs and `poll`/`kill` them.
-    pub fn rich(sandbox: S) -> Self {
-        Self {
-            sandbox,
-            def: crate::tool::Bash::rich().into(),
         }
     }
 
@@ -884,18 +901,5 @@ mod tests {
             serde_json::to_value(&def).unwrap(),
             serde_json::json!({ "type": "bash_20250124", "name": "bash" }),
         );
-    }
-
-    #[test]
-    fn bash_rich_schema_is_derived_and_sanitized() {
-        let def = crate::tool::Bash::rich();
-        assert_eq!(def.name, "bash");
-        // The derived schema advertises the run/poll/kill vocabulary.
-        let schema = serde_json::to_string(&def.schema).unwrap();
-        assert!(schema.contains("command"), "{schema}");
-        assert!(schema.contains("poll"), "{schema}");
-        assert!(schema.contains("kill"), "{schema}");
-        // `From<CustomMethodDef> for MethodDef` makes it addable.
-        let _def: MethodDef = def.into();
     }
 }

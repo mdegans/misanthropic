@@ -668,10 +668,10 @@ impl From<TextEditor> for MethodDef {
 /// Front-door for the [bash tool] ([`ServerMethodDef::Bash`]) — a *client-side*
 /// predefined tool, like [`Memory`]/[`TextEditor`]. [`latest`](Self::latest)
 /// adds it by versioned name (`bash_20250124`, the model-trained narrow schema
-/// that only elicits `command`/`restart`); [`rich`](Self::rich) instead yields a
-/// [`Custom`](MethodDef::Custom) def whose schema is *derived* from
-/// [`bash::Known`], advertising the full
-/// run/restart/poll/kill vocabulary (background jobs, timeouts) to the model.
+/// that only elicits `command`/`restart`). For the full
+/// run/restart/check_output/kill vocabulary (background jobs, timeouts) plus
+/// completion callbacks, use the typed
+/// [`RichBash`](crate::tool::bash::RichBash) tool instead.
 /// Execute its [`Command`](crate::tool::bash::Command)s with a
 /// [`BashTool`](crate::tool::bash::BashTool) over some
 /// [`BashSandbox`](crate::tool::bash::BashSandbox).
@@ -702,32 +702,6 @@ impl Bash {
     /// this points at it.
     pub fn latest() -> Self {
         Self::default()
-    }
-
-    /// A [`Custom`](MethodDef::Custom) bash def whose input schema is *derived*
-    /// from [`bash::Known`] (via [`schemars`] +
-    /// [`sanitize_for_anthropic`], the same path the typed-tool layer uses), so
-    /// the model sees the full run/restart/poll/kill vocabulary the predefined
-    /// `bash_20250124` schema omits. Use this when you want the model to drive
-    /// background jobs (`background`/`timeout_secs`) and `poll`/`kill` them.
-    ///
-    /// [`sanitize_for_anthropic`]: crate::prompt::output::sanitize_for_anthropic
-    pub fn rich() -> CustomMethodDef {
-        let mut schema = serde_json::to_value(schemars::schema_for!(
-            crate::tool::bash::Known
-        ))
-        .expect("schemars Schema always serializes");
-        crate::prompt::output::sanitize_for_anthropic(&mut schema);
-        CustomMethodDef::builder("bash")
-            .description(
-                "Run shell commands in a persistent sandbox session. Provide \
-                 `command` to run (optionally `background: true` and \
-                 `timeout_secs`), `restart: true` to reset the session, \
-                 `poll: <job>` to check a background job, or `kill: <job>` to \
-                 stop one.",
-            )
-            .schema(schema)
-            .build_unchecked()
     }
 }
 

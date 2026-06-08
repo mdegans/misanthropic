@@ -66,11 +66,14 @@ union so a newer command still round-trips. The known variants are `Run`
 (`command`, optionally `background`/`timeout_secs`), `Restart` (`{"restart":
 true}` — a fresh shell), and, for background jobs, `Poll` and `Kill` by job id.
 `Bash::latest()` advertises the predefined `bash_20250124` schema, which only
-elicits `Run`/`Restart`; `BashTool::rich(sandbox)` swaps in the derived
-`Bash::rich()` schema that *also* exposes `background`/`timeout_secs` and the
-`poll`/`kill` ops, so the model can launch a long job, poll it, and stop it.
-`BashTool` routes each command: `restart` resets the session (and may drop a
-borked home), `poll`/`kill` hit a background job, everything else runs.
+elicits `Run`/`Restart`; `BashTool` routes each: `restart` resets the session
+(and may drop a borked home), everything else runs. For a richer surface, the
+typed `RichBash` tool (the `#[tool]` Tool/Method split, `derive` + `tokio`)
+exposes `bash__run` (with `background`/`timeout_secs`), `bash__restart`,
+`bash__check_output`, and `bash__kill` as separate flat-schema methods — and a
+backgrounded `run` *calls back*, pushing the result as a `User` notification via
+its `Mailbox` when the job finishes (no polling). See
+`misanthropic/examples/bash_background.rs`.
 
 Implement `BashSandbox` yourself to back bash with a different isolation
 mechanism — it's the extension point; `DockerSandbox` is one impl. The trait's

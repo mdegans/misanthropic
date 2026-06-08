@@ -828,6 +828,18 @@ impl BashSandbox for DockerSandbox {
         self.remove_container().await;
         Ok(())
     }
+
+    fn watch(
+        &self,
+        job: u64,
+    ) -> Option<
+        futures::future::BoxFuture<'static, Result<ExecResult, BashError>>,
+    > {
+        // Clone the connection so the watcher outlives this `&self` borrow and
+        // can run as an independent task.
+        let (client, base) = self.endpoint().ok()?;
+        Some(Box::pin(DaemonHandle { client, base }.wait_for(job)))
+    }
 }
 
 impl Drop for DockerSandbox {
@@ -884,6 +896,39 @@ async fn aggregate(resp: reqwest::Response) -> Result<ExecResult, BashError> {
         }
     }
     Ok(result)
+}
+
+/// A cloned, stateless handle to `bashd` for an out-of-band completion-watcher:
+/// it follows a background job to completion over its own connection, so it
+/// needn't hold the `&mut DockerSandbox` borrow that the cursor updates require.
+/// See [`DockerSandbox::watch`].
+#[derive(Clone)]
+struct DaemonHandle {
+    client: reqwest::Client,
+    base: String,
+}
+
+impl DaemonHandle {
+    /// Follow `job` to completion (looping over the daemon's soft-`timeout`
+    /// `wait`), returning its final [`ExecResult`]. Reads from cursor 0 each
+    /// call, so the result carries the job's full output.
+    async fn wait_for(self, job: u64) -> Result<ExecResult, BashError> {
+        loop {
+            let resp = self
+                .client
+                .get(format!(
+                    "{}/jobs/{job}/wait?cursor=0&timeout=300",
+                    self.base
+                ))
+                .send()
+                .await
+                .map_err(|e| BashError::Backend(e.to_string()))?;
+            let result = aggregate(resp).await?;
+            if !result.running {
+                return Ok(result);
+            }
+        }
+    }
 }
 
 /// Poll `GET /` with bounded backoff until `bashd` answers a valid handshake —
