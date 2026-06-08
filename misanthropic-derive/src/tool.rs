@@ -10,8 +10,8 @@
 //! - one `impl Methods` collecting the wrappers and delegating any tagged
 //!   lifecycle hooks
 //!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`),
-//!   plus a `#[connect]` fn spliced straight onto `impl Tool` (it's sync and not
-//!   a `Methods` method).
+//!   plus `#[connect]` / `#[subscribe]` fns spliced straight onto `impl Tool`
+//!   (they're sync and not `Methods` methods).
 //!
 //! Generated code names everything by absolute `::misanthropic::…` path.
 
@@ -28,6 +28,7 @@ use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
 const MARKERS: &[&str] = &[
     "method",
     "connect",
+    "subscribe",
     "on_init",
     "on_turn",
     "on_teardown",
@@ -144,6 +145,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 
     let lifecycle_methods = lifecycle.delegations();
     let connect_method = lifecycle.tool_connect();
+    let subscribe_method = lifecycle.tool_subscribe();
     // `#[async_trait]` is only needed on the `Methods` impl when it overrides
     // an async lifecycle method; `methods()`/`NAME` alone aren't async.
     let methods_async = if lifecycle_methods.is_empty() {
@@ -191,6 +193,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         #[::misanthropic::__derive::async_trait::async_trait]
         impl #ig ::misanthropic::tool::Tool for #self_ty #wc {
             #connect_method
+            #subscribe_method
 
             fn name(&self) -> &str {
                 <Self as ::misanthropic::tool::Methods>::NAME
@@ -344,6 +347,8 @@ fn method_arg_type(sig: &Signature) -> syn::Result<Type> {
 struct Lifecycle {
     /// `#[connect]` — sync, on `Tool` directly (not routed through `Methods`).
     connect: Option<Ident>,
+    /// `#[subscribe]` — sync, on `Tool` directly (not routed through `Methods`).
+    subscribe: Option<Ident>,
     on_init: Option<Ident>,
     on_turn: Option<Ident>,
     on_teardown: Option<Ident>,
@@ -355,6 +360,7 @@ impl Lifecycle {
     fn set(&mut self, kind: &str, fn_ident: &Ident) -> syn::Result<()> {
         let slot = match kind {
             "connect" => &mut self.connect,
+            "subscribe" => &mut self.subscribe,
             "on_init" => &mut self.on_init,
             "on_turn" => &mut self.on_turn,
             "on_teardown" => &mut self.on_teardown,
@@ -444,6 +450,23 @@ impl Lifecycle {
                     mailbox: ::misanthropic::tool::Mailbox,
                 ) {
                     self.#f(mailbox)
+                }
+            }
+        })
+    }
+
+    /// The `Tool::subscribe` override, when a `#[subscribe]` fn is present. Like
+    /// `#[connect]`, it's sync and on `Tool` directly, so it's spliced into the
+    /// `impl Tool` block.
+    fn tool_subscribe(&self) -> Option<TokenStream> {
+        self.subscribe.as_ref().map(|f| {
+            quote! {
+                fn subscribe(
+                    &mut self,
+                ) -> ::core::option::Option<
+                    ::misanthropic::tool::Notifications,
+                > {
+                    self.#f()
                 }
             }
         })
