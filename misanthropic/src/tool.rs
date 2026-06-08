@@ -11,7 +11,9 @@ mod toolbox;
 pub use toolbox::ToolBox;
 
 mod mailbox;
-pub use mailbox::{Mailbox, MailboxClosed, Notification, Notifications};
+pub use mailbox::{
+    Mailbox, MailboxClosed, Notification, Notifications, TryRecvError,
+};
 
 mod typed;
 pub use typed::{ErasedMethod, Method, Methods, ToolArgs, Typed};
@@ -1027,6 +1029,21 @@ pub trait Tool: Send {
         _prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         Ok(())
+    }
+
+    /// Take this tool's [`Notifications`] stream, if it pushes. A tool that
+    /// emits [`Content`] on its own schedule — a backgrounded job reporting in,
+    /// a periodic reminder — returns its consumer end here; the driver drains it
+    /// and seats each [`Notification`] at the first of its
+    /// [`preferred_roles`](Notification::preferred_roles) the model supports
+    /// (via [`Prompt::resolve_role`]).
+    ///
+    /// [`None`] (the default) means the tool does not push — or its consumer end
+    /// has already been taken, since an `mpsc` channel has exactly one receiver.
+    ///
+    /// [`Prompt::resolve_role`]: crate::Prompt::resolve_role
+    fn subscribe(&mut self) -> Option<Notifications> {
+        None
     }
 }
 

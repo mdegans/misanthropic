@@ -3,14 +3,12 @@ use std::{
     collections::{BTreeMap, HashMap},
 };
 
-use futures::channel::mpsc;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     Prompt,
     tool::{
-        self, Mailbox, MethodDef, Methods, Notification, Notifications, Tool,
-        Typed, Use,
+        self, Mailbox, MethodDef, Methods, Notifications, Tool, Typed, Use,
     },
 };
 
@@ -27,14 +25,13 @@ pub struct ToolBox {
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
     /// Map of tool names to [`Tool`]s.
     pub(crate) tool_name_to_tool: HashMap<String, Box<dyn Tool + Send>>,
-    /// Sender side of the single push channel, cloned into each tool's
-    /// [`Mailbox`] on [`connect`](Tool::connect). `None` after
-    /// [`teardown_tools`](Self::teardown_tools) drops it. A nested [`ToolBox`]
-    /// adopts its parent's sender (see [`ToolBox`]'s [`Tool::connect`]).
-    tx: Option<mpsc::UnboundedSender<Notification>>,
-    /// Consumer side, taken once by [`subscribe`](Self::subscribe). `None`
-    /// afterwards, or once this box is nested (its outbox flows to the parent).
-    rx: Option<mpsc::UnboundedReceiver<Notification>>,
+    /// This box's outbox — owns the aggregate channel. Each tool gets a
+    /// send-only [`derive`](Mailbox::derive)d handle on it; the box's own
+    /// receiver is taken by [`Tool::subscribe`]. `None` after
+    /// [`teardown_tools`](Self::teardown_tools) drops it; a nested [`ToolBox`]
+    /// adopts its parent's (send-only) handle here (see [`ToolBox`]'s
+    /// [`Tool::connect`]).
+    mailbox: Option<Mailbox>,
     /// Source-path prefix for stamping child mailboxes. `None` at the root (a
     /// source is the bare tool name); `Some("root/child")` once nested, so
     /// sources compose `parent/child/leaf`.
@@ -43,13 +40,11 @@ pub struct ToolBox {
 
 impl Default for ToolBox {
     fn default() -> Self {
-        let (tx, rx) = mpsc::unbounded();
         Self {
             name: "toolbox".into(), // module syntax, snake case
             method_to_tool_name: BTreeMap::new(),
             tool_name_to_tool: HashMap::new(),
-            tx: Some(tx),
-            rx: Some(rx),
+            mailbox: Some(Mailbox::new("toolbox")),
             source_prefix: None,
         }
     }
@@ -154,15 +149,15 @@ impl ToolBox {
                 .insert(route.into(), tool.name().to_string());
         }
 
-        // Hand the tool its outbox, stamped with its (namespaced) source, so it
-        // can push [`Notification`]s. Skipped once the box has been torn down
-        // (no sender). A nested box composes the source under its prefix.
-        if let Some(tx) = &self.tx {
+        // Hand the tool a send-only handle on this box's channel, stamped with
+        // its (namespaced) source, so it can push [`Notification`]s. Skipped once
+        // the box has been torn down (no mailbox).
+        if let Some(mailbox) = &self.mailbox {
             let source = match &self.source_prefix {
                 Some(prefix) => format!("{prefix}/{}", tool.name()),
                 None => tool.name().to_string(),
             };
-            tool.connect(Mailbox::new(source, tx.clone()));
+            tool.connect(mailbox.derive(source));
         }
 
         #[allow(unused_variables)] // because of the `log` feature
@@ -182,27 +177,6 @@ impl ToolBox {
     /// Names of all the [`MethodDef`]s in the [`ToolBox`].
     pub fn method_names(&self) -> impl ExactSizeIterator<Item = &str> {
         self.method_to_tool_name.keys().map(|name| name.as_ref())
-    }
-
-    /// Take the single consumer end of this box's outbox — the
-    /// [`Notification`]s its tools push via their [`Mailbox`]es. Call **once**;
-    /// a second call (or a call on a nested box, whose outbox flows to its
-    /// parent) panics. See [`try_subscribe`](Self::try_subscribe) for the
-    /// fallible form.
-    ///
-    /// `recv()` on the returned [`Notifications`] yields `None` only once every
-    /// sender has dropped — which includes this box's own sender, dropped in
-    /// [`teardown_tools`](Self::teardown_tools).
-    pub fn subscribe(&mut self) -> Notifications {
-        self.try_subscribe().expect(
-            "ToolBox::subscribe called more than once (or on a nested box)",
-        )
-    }
-
-    /// [`subscribe`](Self::subscribe) without the panic: `None` if the consumer
-    /// end has already been taken, or this box is nested.
-    pub fn try_subscribe(&mut self) -> Option<Notifications> {
-        self.rx.take().map(Notifications::new)
     }
 
     /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
@@ -320,9 +294,9 @@ impl ToolBox {
             }
         }
 
-        // Drop our own sender so a `recv()`-driven consumer can see the stream
+        // Drop our own outbox so a `recv()`-driven consumer can see the stream
         // close once the tools (which hold the other senders) also drop theirs.
-        self.tx = None;
+        self.mailbox = None;
 
         if errors.is_empty() {
             Ok(())
@@ -523,19 +497,22 @@ impl Tool for ToolBox {
     }
 
     fn connect(&mut self, mailbox: Mailbox) {
-        // Nested: adopt the parent's channel and re-stamp our whole subtree's
-        // sources under the path that reaches us. Children were connected to our
-        // *own* channel when they were added, so re-connect them onto the
-        // parent's now; nested child boxes recurse through this same method.
-        let (tx, prefix) = mailbox.into_parts();
-        let prefix = prefix.to_string();
+        // Nested: adopt the parent's (send-only) handle and re-stamp our whole
+        // subtree's sources under the path that reaches us. Children were
+        // connected to our *own* channel when they were added, so re-connect
+        // them onto the parent's now; nested child boxes recurse through this
+        // same method. The adopted handle has no receiver, so our own
+        // `subscribe` now yields `None` — pushes flow to the parent.
+        let prefix = mailbox.source().to_string();
         for (name, tool) in self.tool_name_to_tool.iter_mut() {
-            tool.connect(Mailbox::new(format!("{prefix}/{name}"), tx.clone()));
+            tool.connect(mailbox.derive(format!("{prefix}/{name}")));
         }
         self.source_prefix = Some(prefix);
-        self.tx = Some(tx);
-        // Our own consumer end is orphaned — pushes now flow to the parent.
-        self.rx = None;
+        self.mailbox = Some(mailbox);
+    }
+
+    fn subscribe(&mut self) -> Option<Notifications> {
+        self.mailbox.as_mut().and_then(Mailbox::subscribe)
     }
 
     async fn on_init(
@@ -785,7 +762,7 @@ mod tests {
         let mid = ToolBox::named("mid").unwrap().add_boxed(Box::new(inner));
         let mut root = ToolBox::new().add_boxed(Box::new(mid));
 
-        let mut notes = root.subscribe();
+        let mut notes = root.subscribe().expect("root box has an outbox");
         let mut prompt = Prompt::default();
         root.prepare(&mut prompt).await.unwrap();
 
