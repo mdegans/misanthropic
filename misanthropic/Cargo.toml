@@ -203,6 +203,8 @@ time = { version = "0.3", default-features = false, features = [
 ], optional = true }
 
 [dev-dependencies]
+# clipboard scrub in the examples' shared `api_key()` helper
+arboard = "3"
 # for all examples
 clap = { version = "4", features = ["derive"] }
 # for all examples

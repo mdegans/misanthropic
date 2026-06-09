@@ -2,7 +2,8 @@
 //!
 //! This is **not** an example target — it lives in a subdirectory with no
 //! `main.rs`, so Cargo's example auto-discovery ignores it. Pull it into an
-//! example with `mod utils;` and call e.g. [`spawn_readline_loop`].
+//! example with `mod utils;` and call e.g. [`spawn_readline_loop`], or call
+//! [`api_key`] / flatten [`CommonArgs`].
 #![allow(dead_code)]
 
 // The chat driver needs a `Client`, so it rides the same feature.
@@ -12,6 +13,17 @@ mod chat;
 #[cfg(feature = "client")]
 #[allow(unused_imports)]
 pub use chat::{BoxError, Chat};
+
+// API-key acquisition; uses `BoxError`, so it rides the `client` feature too.
+#[cfg(feature = "client")]
+mod key;
+#[cfg(feature = "client")]
+pub use key::api_key;
+
+// Shared CLI flags — pure data + `Prompt` mapping, no client needed.
+mod args;
+#[allow(unused_imports)]
+pub use args::{Args, ChatArgs, CommonArgs};
 
 use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use tokio::sync::mpsc;

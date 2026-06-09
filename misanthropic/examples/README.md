@@ -33,6 +33,31 @@ Pass `-- --help` to see an example's own arguments, e.g.
 | `neologism` | A non-streaming `Client::message` call with a custom system prompt. | `client` |
 | `website_wizard` | **Streaming** with `Client::stream` — collects a generated HTML page. | `client` |
 
+## Shared helpers (`utils/`)
+
+`examples/utils/` is a module pulled into each example with `mod utils;`. It
+is not an example target (no `main.rs`) but its helpers are copy-pasteable into
+real projects.
+
+- **`api_key()`** (requires `client` feature) — acquires the Anthropic API key:
+  tries `ANTHROPIC_API_KEY` first (with a privacy warning), then prompts and
+  reads one line from stdin, then best-effort clears the key from the system
+  clipboard if it looks like one (`sk-ant…`). Call this *before*
+  `spawn_readline_loop` hands stdin to the line editor.
+
+- **`Chat<State>` event loop + `spawn_readline_loop` / `Printer`** (requires
+  `client` feature) — `Chat` drives the model to quiescence on each user beat,
+  dispatches tool calls, and races tool-pushed notifications against user input.
+  `spawn_readline_loop` runs `rustyline` on a dedicated thread so async output
+  can print *above* the live prompt via the returned `Printer`.
+
+- **`CommonArgs` / `ChatArgs` / `Args`** — shared clap flag groups. Flatten
+  `CommonArgs` into an example's `Parser` and call `common.configure(prompt)` to
+  apply `--model`, `--max-tokens`, and `--system` overrides while keeping the
+  example's own defaults. `ChatArgs` adds `--max-tool-calls` and wires into
+  `Chat` via `chat.configure(Chat::new(…))`. `Args` bundles both plus `--prompt`
+  for examples that need nothing more.
+
 For prose walkthroughs of the message and streaming APIs, see the agent skills
 under [`.claude/skills/`](../../.claude/skills/), which are doc-tested so they
 stay in sync with the crate.
