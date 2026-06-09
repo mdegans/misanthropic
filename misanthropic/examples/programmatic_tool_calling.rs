@@ -42,12 +42,21 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt, json,
     prompt::message::{Block, Role},
     response::StopReason,
     tool::{self, Caller, CustomMethodDef, KnownCaller, ServerMethodDef},
 };
+
+/// Run a sales-query task using programmatic tool calling from code execution.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+}
 
 /// Stand-in for a real data source: revenue per region. A real tool would hit a
 /// database; the point is that this runs on *your* side, called from the
@@ -66,7 +75,8 @@ fn query_sales(region: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
     // A custom tool the model may call *only* from code execution.
@@ -85,8 +95,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .programmatic()
         .build()?;
 
-    let mut prompt = Prompt::default()
-        .model(Id::Sonnet46)
+    let mut prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Sonnet46))
         .add_tool(ServerMethodDef::code_execution())
         .add_tool(query_sales_tool)
         .add_message((

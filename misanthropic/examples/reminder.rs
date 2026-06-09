@@ -51,11 +51,22 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     prompt::message::{Content, Role},
     tool::{Mailbox, Notifications, ToolBox, tool},
 };
+
+/// Interactive chat with periodic push-only reminders from a background tool.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+    #[command(flatten)]
+    chat: utils::ChatArgs,
+}
 
 /// In a real chat you should probably instruct the Assistant not to mention the
 /// reminder and arrange for it to be joined with the User's message or appended
@@ -159,7 +170,8 @@ impl Reminder {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
     let client = Client::new(utils::api_key()?)?;
@@ -179,7 +191,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Chat with the model; a reminder lands every 3rd turn. Ctrl-D quits.\n",
     );
 
-    utils::Chat::new(client, Prompt::default(), toolbox)
+    cli.chat
+        .configure(utils::Chat::new(
+            client,
+            cli.common.configure(Prompt::default()),
+            toolbox,
+        ))
         .on_assistant(move |_state: &mut (), msg| {
             printer.line(format!("claude ▸ {}\n", msg.content))
         })

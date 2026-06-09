@@ -56,14 +56,24 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt,
     prompt::{TurnOrderError, message::Role},
 };
 
+/// Demonstrate mid-conversation system turns and their authority over users.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
 
     // First, prove the SDK rejects misplaced system turns — no key needed.
     demonstrate_guardrails();
@@ -73,8 +83,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // The top-level system prompt sets the agent up from the start. The refund
     // *policy* is deliberately NOT here — it arrives mid-conversation, on the
     // system channel, once the user starts pushing.
-    let prompt = Prompt::default()
-        .model(Id::Opus48)
+    let prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Opus48))
         .set_system(
             "You are a support agent for Acme Corp. Be concise and friendly, \
              and help customers resolve order issues.",

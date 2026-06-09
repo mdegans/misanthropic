@@ -44,15 +44,27 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
     tool::{ToolBox, memory::FsMemoryBackend},
 };
 
+/// Persistent memory chat: notes survive across sessions in ./memories.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+    #[command(flatten)]
+    chat: utils::ChatArgs,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
     let client = Client::new(utils::api_key()?)?;
@@ -67,11 +79,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // The memory *protocol* ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
     // injected server-side when the tool is enabled, so we don't repeat it.
-    let prompt = Prompt::default().set_system(
+    let prompt = cli.common.configure(Prompt::default().set_system(
         "You are a helpful assistant with a persistent memory. Record \
              durable facts, decisions, and progress so you can resume in a \
              later session, and keep your notes tidy — prune what's stale.",
-    );
+    ));
 
     let (mut lines, mut printer) = utils::spawn_readline_loop("you ▸ ")?;
     printer.line("Memory chat — notes persist in ./memories across runs.");
@@ -86,7 +98,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // `memory::Command` against `./memories` and feeds the canonical result
     // back — until a turn arrives with no tool call. We print only that final,
     // tool-free answer (the `on_assistant` hook fires on every turn).
-    utils::Chat::new(client, prompt, toolbox)
+    cli.chat
+        .configure(utils::Chat::new(client, prompt, toolbox))
         .on_assistant(move |_state: &mut (), msg| {
             if msg.tool_use().is_none() {
                 printer.line(format!("\nclaude ▸ {}\n", msg.content));

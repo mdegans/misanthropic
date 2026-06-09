@@ -35,11 +35,20 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
     tool::{Tool, ToolBox, text_editor::FsEditorBackend},
 };
+
+/// Drive the text editor tool to fix a syntax error in a temp workspace.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+}
 
 /// A `primes.py` missing the colon on its `for` loop — the exact bug from the
 /// text-editor tool documentation.
@@ -58,7 +67,8 @@ const MAX_TURNS: usize = 8;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
     // A workspace the backend is jailed to: the model only ever sees paths
@@ -73,7 +83,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // here and the same `tools.call(..)` below would dispatch both.
     let mut tools = ToolBox::new().add(FsEditorBackend::new(dir.path()).await?);
 
-    let mut chat = Prompt::default().add_message((
+    let mut chat = cli.common.configure(Prompt::default()).add_message((
         Role::User,
         "There's a syntax error in primes.py. Please fix it.",
     ))?;

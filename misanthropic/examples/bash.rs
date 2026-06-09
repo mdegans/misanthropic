@@ -30,6 +30,7 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -39,12 +40,21 @@ use misanthropic::{
     },
 };
 
+/// Run a bounded autonomous bash session in a Docker sandbox.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+}
+
 /// Cap on autonomous turns so a confused model can't loop forever.
 const MAX_TURNS: usize = 10;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
     // The default sandbox: the baked `misan-bashd` image (read-only rootfs,
@@ -52,7 +62,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // end. The sandbox is explicit: `BashTool` wraps it.
     let mut tools = ToolBox::new().add(BashTool::new(DockerSandbox::default()));
 
-    let mut chat = Prompt::default().add_message((
+    let mut chat = cli.common.configure(Prompt::default()).add_message((
         Role::User,
         "Write a shell script that prints the 10th prime number, then run it. \
          Report the number it prints.",

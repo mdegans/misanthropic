@@ -36,6 +36,7 @@
 
 mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -45,9 +46,20 @@ use misanthropic::{
     },
 };
 
+/// Chat with background bash jobs that push completion notifications.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+    #[command(flatten)]
+    chat: utils::ChatArgs,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    utils::log_init(false);
+    let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
     let client = Client::new(utils::api_key()?)?;
@@ -57,12 +69,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // background-completion pushes flow into the driver's `select!`.
     let toolbox = ToolBox::new().add(RichBash::new(DockerSandbox::default()));
 
-    let prompt = Prompt::default().set_system(
+    let prompt = cli.common.configure(Prompt::default().set_system(
         "You are a helpful assistant with a sandboxed bash tool. For anything \
          long-running, start it in the background (`background: true`) — you \
          will be notified when it finishes, so do not poll. Keep chatting or \
          working while jobs run.",
-    );
+    ));
 
     println!("Starting sandbox (booting container, launching bashd)...");
 
@@ -71,7 +83,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Bash chat — background jobs call back when done. Ctrl-D quits.\n",
     );
 
-    utils::Chat::new(client, prompt, toolbox)
+    cli.chat
+        .configure(utils::Chat::new(client, prompt, toolbox))
         .on_assistant(move |_state: &mut (), msg| {
             if msg.tool_use().is_none() {
                 printer.line(format!("\nclaude ▸ {}\n", msg.content));
