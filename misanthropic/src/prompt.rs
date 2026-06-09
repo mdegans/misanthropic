@@ -341,12 +341,11 @@ impl Prompt {
 
     /// Pick the first of `preferred` [`Role`]s the current [`model`] supports,
     /// for seating a pushed [`Notification`](crate::tool::Notification). Only
-    /// [`Role::System`] is capability-gated (see
-    /// [`supports_in_message_system`]); [`User`] and [`Assistant`] are always
-    /// available. An empty list (or one whose every entry is unsupported) falls
-    /// back to [`User`].
+    /// [`Role::System`] is capability-gated (see [`supports_system_role`]);
+    /// [`User`] and [`Assistant`] are always available. An empty list (or one
+    /// whose every entry is unsupported) falls back to [`User`].
     ///
-    /// [`supports_in_message_system`]: crate::model::Model::supports_in_message_system
+    /// [`supports_system_role`]: crate::model::Model::supports_system_role
     ///
     /// [`model`]: Prompt::model
     /// [`Role`]: message::Role

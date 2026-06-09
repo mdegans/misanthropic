@@ -231,16 +231,16 @@ impl Model {
     /// [`System`]: crate::prompt::message::Role::System
     /// [`Role::System`]: crate::prompt::message::Role::System
     /// [`Prompt::system`]: crate::Prompt::system
-    pub fn supports_in_message_system(&self) -> bool {
+    pub fn supports_system_role(&self) -> bool {
         matches!(self, Model::Anthropic(Id::Opus48))
     }
 
     /// Pick the first of `preferred` [`Role`]s this model supports, for seating
     /// a pushed [`Notification`](crate::tool::Notification). Only
     /// [`Role::System`] is capability-gated (see
-    /// [`supports_in_message_system`](Self::supports_in_message_system));
-    /// [`User`] and [`Assistant`] are always available. An empty list (or one
-    /// whose every entry is unsupported) falls back to [`User`].
+    /// [`supports_system_role`](Self::supports_system_role)); [`User`] and
+    /// [`Assistant`] are always available. An empty list (or one whose every
+    /// entry is unsupported) falls back to [`User`].
     ///
     /// [`Prompt::resolve_role`](crate::Prompt::resolve_role) delegates here.
     ///
@@ -258,7 +258,7 @@ impl Model {
             .copied()
             .find(|role| match role {
                 Role::User | Role::Assistant => true,
-                Role::System => self.supports_in_message_system(),
+                Role::System => self.supports_system_role(),
             })
             .unwrap_or(Role::User)
     }
