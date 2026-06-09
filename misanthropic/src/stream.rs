@@ -98,7 +98,42 @@ enum ApiResult {
         event: Event,
     },
     /// Error Event.
-    Error { error: AnthropicError },
+    Error(ErrorEvent),
+}
+
+/// A wire `error` event — the `data:` payload `{"type":"error","error":{…}}`.
+/// Surfaced as [`Error::Anthropic`]; also the typed `Err` arm of the wrapped
+/// `*.sse.stream.jsonl` fixtures (see `test/data/README.md`), so captured
+/// error frames round-trip through the real error types, not a `Value`.
+#[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
+pub(crate) struct ErrorEvent {
+    /// The literal `"type": "error"` tag.
+    #[serde(rename = "type")]
+    tag: ErrorTag,
+    /// The API error.
+    pub(crate) error: AnthropicError,
+}
+
+impl From<AnthropicError> for ErrorEvent {
+    fn from(error: AnthropicError) -> Self {
+        Self {
+            tag: ErrorTag::Error,
+            error,
+        }
+    }
+}
+
+/// The literal `"error"` tag on an [`ErrorEvent`]. Requiring it on
+/// deserialization keeps [`ApiResult`] strict — a payload is only an API error
+/// if it says so, not merely because an `error` key appears somewhere.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
+#[serde(rename_all = "snake_case")]
+enum ErrorTag {
+    /// `"error"`.
+    #[default]
+    Error,
 }
 
 /// [`Text`] or [`Json`] to be applied to a [`Block::Text`] or
@@ -111,8 +146,12 @@ enum ApiResult {
 pub enum Delta {
     /// Text delta for a [`Text`] [`Content`] [`Block`].
     ///
+    /// Serializes as the wire's `text_delta` (the `text` alias is accepted
+    /// for backward compatibility), so captured `content_block_delta` frames
+    /// round-trip exactly — see `test/data/README.md`.
+    ///
     /// [`Text`]: Block::Text
-    #[serde(alias = "text_delta")]
+    #[serde(rename = "text_delta", alias = "text")]
     Text {
         /// The text content.
         text: Cow<'static, str>,
@@ -439,7 +478,7 @@ impl Stream {
 
                     match serde_json::from_str::<ApiResult>(&event.data) {
                         Ok(ApiResult::Event { event }) => Ok(event),
-                        Ok(ApiResult::Error { error }) => {
+                        Ok(ApiResult::Error(ErrorEvent { error, .. })) => {
                             Err(Error::Anthropic { error, event })
                         }
                         Err(error) => Err(Error::Parse { error, event }),
@@ -891,28 +930,32 @@ pub(crate) mod tests {
         Stream::new(inner)
     }
 
+    /// Replay a wrapped `*.sse.stream.jsonl` fixture — one
+    /// `{"Ok": <event>}` / `{"Err": <error event>}` per line (see
+    /// `test/data/README.md`) — as a stream. `Err` lines surface as the real
+    /// typed [`Error::Anthropic`], exactly as the live stream would, so error
+    /// frames get parse coverage rather than a placeholder.
     #[allow(clippy::result_large_err)] // see `Stream::new`: `Event` dominates.
     pub fn mock_stream_jsonl(
         text: &'static str,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         futures::stream::iter(text.lines().map(|line| {
-            let res: Result<Event, serde_json::Value> =
+            let res: Result<Event, ErrorEvent> =
                 serde_json::from_str(line).unwrap();
             match res {
                 Ok(event) => Ok(event),
-                Err(_) => Err(Error::Anthropic {
-                    error: AnthropicError::Unknown {
-                        code: Some(123.try_into().unwrap()),
-                        // every line in the file is Ok, so this is impossible.
-                        message: "impossible".into(),
-                    },
-                    event: eventsource_stream::Event {
-                        event: "impossible".into(),
-                        data: "impossible".into(),
-                        id: "impossible".into(),
-                        retry: None,
-                    },
-                }),
+                Err(error_event) => {
+                    let data = serde_json::to_string(&error_event).unwrap();
+                    Err(Error::Anthropic {
+                        error: error_event.error,
+                        event: eventsource_stream::Event {
+                            event: "error".into(),
+                            data,
+                            id: "".into(),
+                            retry: None,
+                        },
+                    })
+                }
             }
         }))
     }

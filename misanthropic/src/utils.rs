@@ -51,15 +51,21 @@ where
     Ok(parsed)
 }
 
-/// One line of an SSE-JSONL fixture, round-tripped. The streaming analogue of a
-/// single [`roundtrip`] call; collected (never panicked) so [`SseFixture`] can
-/// report *every* bad line at once rather than dying on the first.
+/// One line of a wrapped SSE-JSONL fixture (`{"Ok": <event>}` /
+/// `{"Err": <error event>}`, see `test/data/README.md`), round-tripped. The
+/// streaming analogue of a single [`roundtrip`] call; collected (never
+/// panicked) so [`SseFixture`] can report *every* bad line at once rather than
+/// dying on the first.
 #[cfg(test)]
 pub(crate) struct SseLine {
     /// 1-based line number, for the failure report.
     pub line: usize,
-    /// The parsed [`Event`](crate::stream::Event), or the deserialize error.
-    pub parsed: Result<crate::stream::Event, String>,
+    /// The parsed line — an `Ok` [`Event`](crate::stream::Event) or an `Err`
+    /// [`ErrorEvent`](crate::stream::ErrorEvent) (both arms are *typed*, so
+    /// captured error frames get real parse coverage) — or the deserialize
+    /// error.
+    pub parsed:
+        Result<Result<crate::stream::Event, crate::stream::ErrorEvent>, String>,
     /// Whether the re-serialized event is value-equal to the captured line.
     /// This is the **gate** — a `false` means a field was dropped, renamed, or
     /// mis-tagged (the same drift [`roundtrip`] guards against, per line).
@@ -112,15 +118,24 @@ impl SseFixture {
         self
     }
 
-    /// Consume into the parsed events, in order, for assembly assertions (feed
-    /// them through the `stream` combinators, or assemble manually). `Event`
-    /// isn't `Clone`, so this consumes the fixture. Panics if any line failed to
-    /// parse — call [`assert_round_trips`](Self::assert_round_trips) first.
-    pub fn into_events(self) -> Vec<crate::stream::Event> {
+    /// Consume into the parsed `Ok`/`Err` lines, in order, for assembly
+    /// assertions (feed them through the `stream` combinators, or assemble
+    /// manually). `Event` isn't `Clone`, so this consumes the fixture. Panics
+    /// if any line failed to parse — call
+    /// [`assert_round_trips`](Self::assert_round_trips) first.
+    pub fn into_results(
+        self,
+    ) -> Vec<Result<crate::stream::Event, crate::stream::ErrorEvent>> {
         self.lines
             .into_iter()
             .map(|l| l.parsed.expect("line parsed (call assert first)"))
             .collect()
+    }
+
+    /// [`into_results`](Self::into_results), keeping only the `Ok` events —
+    /// the common case for assembly when a fixture has no error frames.
+    pub fn into_events(self) -> Vec<crate::stream::Event> {
+        self.into_results().into_iter().flatten().collect()
     }
 
     /// How many lines re-serialized byte-identically — the informational
@@ -130,14 +145,17 @@ impl SseFixture {
     }
 }
 
-/// Round-trip every event in a captured SSE-JSONL fixture (one JSON
-/// [`Event`](crate::stream::Event) per line), returning the per-line results.
-/// The streaming twin of [`roundtrip`]: same load-bearing re-serialize-and-
-/// compare guard, applied per line, but collected rather than asserted so the
-/// caller (via [`SseFixture::assert_round_trips`]) can report all failures at
-/// once. Blank lines are skipped.
+/// Round-trip every line of a captured, **wrapped** SSE-JSONL fixture — one
+/// `{"Ok": <event>}` / `{"Err": <error event>}` per line, raw wire bytes
+/// inside the wrapper (see `test/data/README.md`) — returning the per-line
+/// results. The streaming twin of [`roundtrip`]: same load-bearing
+/// re-serialize-and-compare guard, applied per line, but collected rather than
+/// asserted so the caller (via [`SseFixture::assert_round_trips`]) can report
+/// all failures at once. Blank lines are skipped.
 #[cfg(test)]
 pub(crate) fn roundtrip_sse(fixture: &str) -> SseFixture {
+    type Parsed = Result<crate::stream::Event, crate::stream::ErrorEvent>;
+
     let lines = fixture
         .lines()
         .enumerate()
@@ -146,19 +164,17 @@ pub(crate) fn roundtrip_sse(fixture: &str) -> SseFixture {
             let line = i + 1;
             let captured: serde_json::Value = serde_json::from_str(raw)
                 .expect("SSE-JSONL line is valid JSON");
-            match serde_json::from_value::<crate::stream::Event>(
-                captured.clone(),
-            ) {
-                Ok(event) => {
-                    let reser = serde_json::to_value(&event)
-                        .expect("event re-serializes to JSON");
+            match serde_json::from_value::<Parsed>(captured.clone()) {
+                Ok(parsed) => {
+                    let reser = serde_json::to_value(&parsed)
+                        .expect("line re-serializes to JSON");
                     let value_equal = reser == captured;
-                    let byte_stable = serde_json::to_string(&event)
+                    let byte_stable = serde_json::to_string(&parsed)
                         .map(|s| s == raw.trim())
                         .unwrap_or(false);
                     SseLine {
                         line,
-                        parsed: Ok(event),
+                        parsed: Ok(parsed),
                         value_equal,
                         byte_stable,
                     }

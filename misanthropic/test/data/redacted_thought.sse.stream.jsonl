@@ -33,17 +33,17 @@
 {"Ok":{"type":"content_block_start","index":15,"content_block":{"type":"redacted_thinking","data":"ErEBCkYIARgCKkDPCekol7ZTFOJtU9luYWMxElqLenO32pRBKK2ASGvHSD0gOS7i6rttKutyR6nAmVfsga5yQq/ihaKDJgeyTVRpEgzqp9uej1u4U1qba/YaDPJ6ETpDlzYsUn7UMyIwKbgxRnsqWxkK+oixpujZLb0/tuJw3oaVQK/nMF3vx0MfMxbjH2+edTl4l8qs+nymKhnwi28gRsK6TAa7IMhro/w3USbi06jAnMfA"}}}
 {"Ok":{"type":"content_block_stop","index":15}}
 {"Ok":{"type":"content_block_start","index":16,"content_block":{"type":"text","text":""}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":"I notice that you've included what"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" appears to be a trigger phrase"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" or command. I'm designed to communicate"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" transparently and directly with you without"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" any special backdoor commands or hidden modes"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":".\n\nI'm here to have a helpful conversation!"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" Could you let me know what you'"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":"d actually like assistance with today? I'm"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" happy to help with information,"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" answer questions, brainstorm ideas, or"}}}
-{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text","text":" discuss various topics within my guidelines."}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"I notice that you've included what"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" appears to be a trigger phrase"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" or command. I'm designed to communicate"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" transparently and directly with you without"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" any special backdoor commands or hidden modes"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":".\n\nI'm here to have a helpful conversation!"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" Could you let me know what you'"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":"d actually like assistance with today? I'm"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" happy to help with information,"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" answer questions, brainstorm ideas, or"}}}
+{"Ok":{"type":"content_block_delta","index":16,"delta":{"type":"text_delta","text":" discuss various topics within my guidelines."}}}
 {"Ok":{"type":"content_block_stop","index":16}}
 {"Ok":{"type":"message_delta","delta":{"stop_reason":"end_turn"}}}
 {"Ok":{"type":"message_stop"}}

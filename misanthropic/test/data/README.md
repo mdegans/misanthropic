@@ -19,7 +19,10 @@ checklist that fails loudly in the offline gate (`just test`).
 1. **Capture** the real shape from the live API (see below), once.
 2. **Save** it here under a descriptive name. Non-streaming blocks → `*.json`.
    Streaming → `*.sse.stream.txt` (raw SSE, with `event:`/`data:` framing) or
-   `*.sse.stream.jsonl` (one JSON value per line). See *fixture formats* below.
+   `*.sse.stream.jsonl` (wrapped: one `{"Ok": <event>}` / `{"Err": <error
+   event>}` per line, **raw wire bytes inside the wrapper** — never
+   re-serialized through our types, which would hide dropped fields). See
+   *fixture formats* below.
 3. **Replay offline** and assert an **exact** round-trip:
    - non-streaming: `crate::utils::roundtrip::<T>(include_str!(…))` —
      deserialize, re-serialize, assert value-equal to the captured bytes. Use
@@ -35,19 +38,21 @@ checklist that fails loudly in the offline gate (`just test`).
 | --- | --- | --- | --- |
 | `*.json` | one response `Block` | `roundtrip` / `roundtrip_checked` | block (de)serialization, exact |
 | `*.sse.stream.txt` | raw SSE bytes (`event:`/`data:` framing) | `mock_stream` | the SSE **parser** (framing → events) |
-| `*.sse.stream.jsonl` | one value per line | `roundtrip_sse` / `mock_stream_jsonl` | event (de)serialization / assembly |
+| `*.sse.stream.jsonl` | one `{"Ok": <event>}` / `{"Err": <error event>}` per line | `roundtrip_sse` / `mock_stream_jsonl` | event **and error** (de)serialization / assembly, exact |
 
-**On streaming round-trip:** it is exact only for events the crate models 1:1
-with the wire (`ping`, `content_block_stop`, `message_stop`, …). It is *not*
-exact for **delta** events — a `content_block_delta` of `text_delta`
-deserializes into `Block::Text` (via its `text_delta` alias) and re-serializes
-as `text`, because the crate models streaming deltas as their *assembled* block.
-And **error** events (`{"type":"error",…}`) are the `Err` arm of the stream's
-`Result<Event, _>`, not an `Event` variant — which is why the older
-`*.sse.stream.jsonl` capture (`redacted_thought…`) is `{"Ok": …}`-wrapped.
-So full-stream wire verification is an *assemble-and-compare* job (see #78), not
-a byte round-trip; `roundtrip_sse` is for the faithful events and for per-event
-checks within #78.
+**The wrapped jsonl format:** an SSE stream is `Result<Event, Error>` to
+callers — **error** events (`{"type":"error",…}`) are the `Err` arm, not an
+`Event` variant. The wrapper captures both arms in one file: `Ok` lines
+round-trip as `Event`, `Err` lines as the typed wire error
+(`stream::ErrorEvent`, requiring the `"type":"error"` tag). Errors are
+captured errors-and-all on purpose — rate-limit/overloaded are intermittent
+and hard to reproduce, so a stream that died mid-capture is *more* valuable,
+not less. The round-trip is **exact for every wire event including deltas**
+(`Delta::Text` serializes as the wire's `text_delta`; the bare `text` tag is
+a legacy alias). Exactness here is the *drift detector*, not a functional
+need — what we re-submit to the API is assembled blocks, which the `*.json`
+round-trip already guards — so if a future wire shape can't round-trip without
+contorting the types, prefer exempting it and asserting assembly instead.
 
 ## The coverage gate
 
@@ -64,8 +69,12 @@ list) and:
   fails the test until a fixture exists. **You cannot add a server tool without
   capturing it.**
 
-Streaming twins (a `.sse.stream.jsonl` per block fixture) are reported as a
-pending list today and hard-gated once the streaming captures land.
+Streaming coverage is **content-based**: every wire-sourced `BlockKind` must
+arrive in the `content_block_start` of at least one captured stream fixture
+(`streaming_block_coverage`). One captured stream covers every block it
+contains — a single web_search stream covers both `ServerToolUse` and
+`WebSearchToolResult` — so there is no file-per-block convention. Reported as
+a pending list today; hard-gated once the #78 captures land.
 
 The round-trip assertion is load-bearing: **no response type uses
 `#[serde(deny_unknown_fields)]`**, so an undocumented, renamed, or mis-tagged
@@ -91,7 +100,7 @@ the win; fix the types, then commit the real bytes.
 
 | fixture | source | status |
 | --- | --- | --- |
-| `redacted_thought.sse.stream.jsonl` | live | captured |
+| `redacted_thought.sse.stream.jsonl` | live | captured (text-delta tags restored to the wire's `text_delta` — the original capture had been normalized through the crate's own types to the legacy `text`; the lines are otherwise the captured bytes) |
 | `thinking.sse.stream.txt` | live | captured |
 | `sse.stream.txt` | live | captured |
 | `server_tools/web_fetch_result.json` | live (`web_fetch`, Haiku 4.5) | captured (`caller` verified; no-citations doc shape; text data truncated) |

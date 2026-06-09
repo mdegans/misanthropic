@@ -27,6 +27,10 @@ use crate::utils::{roundtrip_checked, roundtrip_sse};
 const DIR: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/test/data/server_tools");
 
+/// The data root — older streaming captures (e.g.
+/// `redacted_thought.sse.stream.jsonl`) live here, predating `server_tools/`.
+const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/data");
+
 /// Whether a [`Block`] variant is a wire-sourced server-tool / caller-bearing
 /// block that must have a captured fixture under `test/data/server_tools/`.
 ///
@@ -72,20 +76,30 @@ fn caller_needs_fixture(kind: KnownCallerKind) -> bool {
 /// `(file_name, contents)` for every non-streaming block fixture (`*.json`,
 /// excluding the streaming `*.sse.stream.jsonl`), sorted for stable reports.
 fn block_fixtures() -> Vec<(String, String)> {
-    read_fixtures(|name| {
+    read_fixtures(DIR, |name| {
         name.ends_with(".json") && !name.ends_with(".sse.stream.jsonl")
     })
 }
 
-/// `(file_name, contents)` for every streaming fixture (`*.sse.stream.jsonl`).
+/// `(file_name, contents)` for every streaming fixture (`*.sse.stream.jsonl`),
+/// from `server_tools/` and the data root (legacy captures).
 fn stream_fixtures() -> Vec<(String, String)> {
-    read_fixtures(|name| name.ends_with(".sse.stream.jsonl"))
+    let mut out = read_fixtures(DIR, |n| n.ends_with(".sse.stream.jsonl"));
+    out.extend(read_fixtures(DATA_DIR, |n| {
+        n.ends_with(".sse.stream.jsonl")
+    }));
+    out.sort();
+    out
 }
 
-fn read_fixtures(want: impl Fn(&str) -> bool) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = fs::read_dir(DIR)
-        .expect("server_tools fixture dir exists")
+fn read_fixtures(
+    dir: &str,
+    want: impl Fn(&str) -> bool,
+) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = fs::read_dir(dir)
+        .expect("fixture dir exists")
         .map(|e| e.expect("readable dir entry").path())
+        .filter(|p| p.is_file())
         .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(&want))
         .map(|p| {
             let name = p.file_name().unwrap().to_str().unwrap().to_string();
@@ -148,13 +162,24 @@ fn every_wire_block_variant_has_a_fixture() {
 }
 
 /// Every known [`Caller`] shape is exercised by at least one fixture. Callers
-/// are pulled from the fixtures' JSON wherever a `caller` appears.
+/// are pulled from the fixtures' JSON wherever a `caller` appears — block
+/// fixtures whole, stream fixtures per line — so streaming captures count
+/// toward caller coverage too.
 #[test]
 fn every_known_caller_has_a_fixture() {
+    let values = block_fixtures()
+        .into_iter()
+        .map(|(_, json)| serde_json::from_str(&json).expect("fixture is JSON"));
+    let stream_values = stream_fixtures().into_iter().flat_map(|(_, jsonl)| {
+        jsonl
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str(l).expect("fixture line is JSON"))
+            .collect::<Vec<serde_json::Value>>()
+    });
+
     let mut seen: HashSet<KnownCallerKind> = HashSet::new();
-    for (_, json) in block_fixtures() {
-        let value: serde_json::Value =
-            serde_json::from_str(&json).expect("fixture is JSON");
+    for value in values.chain(stream_values) {
         let mut callers = Vec::new();
         collect_callers(&value, &mut callers);
         for c in callers {
@@ -178,7 +203,8 @@ fn every_known_caller_has_a_fixture() {
 }
 
 /// Every streaming fixture round-trips per line (one report for all bad lines).
-/// Vacuous until streaming fixtures are captured (see [`streaming_twins`]).
+/// Vacuous until streaming fixtures are captured (see
+/// [`streaming_block_coverage`]).
 #[test]
 fn stream_fixtures_round_trip() {
     let fixtures = stream_fixtures();
@@ -199,51 +225,73 @@ fn stream_fixtures_round_trip() {
     }
 }
 
-/// **Informational, never fails.** Lists block fixtures still lacking a
-/// streaming `.sse.stream.jsonl` twin. The streaming captures are deferred to
-/// #78; when they land, this flips to a hard assertion (the "force the capture"
-/// gate).
+/// **Informational, never fails (yet).** The streaming coverage gate,
+/// content-based: every wire-sourced [`BlockKind`] must arrive in the
+/// `content_block_start` of at least one captured stream fixture. One captured
+/// stream covers every block it contains (a single web_search stream covers
+/// both `ServerToolUse` and `WebSearchToolResult`), so this needs far fewer
+/// captures than a file-per-block convention — and it checks the block
+/// actually *streams*, not that a file merely exists. Flips to a hard
+/// assertion when the #78 captures land (the "force the capture" gate).
 #[test]
-fn streaming_twins() {
-    let have_stream: HashSet<String> = stream_fixtures()
-        .into_iter()
-        .map(|(n, _)| n.trim_end_matches(".sse.stream.jsonl").to_string())
+fn streaming_block_coverage() {
+    let seen: HashSet<BlockKind> = stream_fixtures()
+        .iter()
+        .flat_map(|(_, jsonl)| {
+            let f = roundtrip_sse(jsonl);
+            f.assert_round_trips();
+            f.into_events()
+        })
+        .filter_map(|event| match event {
+            crate::stream::Event::ContentBlockStart {
+                content_block, ..
+            } => Some(BlockKind::from(&content_block)),
+            _ => None,
+        })
         .collect();
-    let missing: Vec<String> = block_fixtures()
-        .into_iter()
-        .map(|(n, _)| n.trim_end_matches(".json").to_string())
-        .filter(|stem| !have_stream.contains(stem))
+
+    let missing: Vec<String> = BlockKind::iter()
+        .filter(|k| needs_fixture(*k))
+        .filter(|k| !seen.contains(k))
+        .map(|k| format!("  Block::{k:?}"))
         .collect();
     if !missing.is_empty() {
         eprintln!(
-            "wire_coverage: {} block fixture(s) still lack a streaming twin \
-             (deferred capture):",
+            "wire_coverage: {} wire-sourced Block variant(s) not yet covered \
+             by any captured stream fixture (deferred to #78):",
             missing.len(),
         );
-        for stem in &missing {
-            eprintln!("  {stem}.sse.stream.jsonl");
+        for kind in &missing {
+            eprintln!("{kind}");
         }
     }
 }
 
-/// [`roundtrip_sse`] on faithful events — the ones the crate models 1:1 with
-/// the wire (`ping`/`content_block_stop`/`message_stop`), so an exact per-line
-/// round-trip is meaningful and `into_events` assembles them.
-///
-/// Note: *delta* events (`content_block_delta`) are deliberately **not**
-/// round-trip-faithful — a `text_delta` deserializes into [`Block::Text`] (via
-/// its `text_delta` alias) and re-serializes as `text`, because the crate
-/// models streaming deltas as their assembled block. So full-stream exact
-/// verification is an assemble-and-compare job (#78), not a round-trip; this
-/// fixes the helper itself on the events where round-trip *is* the right check.
+/// [`roundtrip_sse`] on the wrapped `{"Ok": …}` / `{"Err": …}` jsonl format —
+/// both arms are typed, so error frames (hard to capture on purpose:
+/// rate-limit and overloaded are intermittent) get real parse coverage. Delta
+/// events round-trip exactly too since `Delta::Text` serializes as the wire's
+/// `text_delta`.
 #[test]
-fn roundtrip_sse_on_faithful_events() {
-    let jsonl = "{\"type\":\"ping\"}\n\
-                 {\"type\":\"content_block_stop\",\"index\":0}\n\
-                 {\"type\":\"message_stop\"}\n";
+fn roundtrip_sse_wrapped_arms() {
+    let jsonl = r#"{"Ok":{"type":"ping"}}
+{"Ok":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}}
+{"Ok":{"type":"content_block_stop","index":0}}
+{"Err":{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}}
+{"Ok":{"type":"message_stop"}}
+"#;
     let f = roundtrip_sse(jsonl);
     f.assert_round_trips();
-    assert_eq!(f.into_events().len(), 3, "every event line parsed");
+    let results = f.into_results();
+    assert_eq!(results.len(), 5, "every line parsed");
+    assert_eq!(results.iter().filter(|r| r.is_err()).count(), 1);
+    assert!(matches!(
+        &results[3],
+        Err(e) if matches!(
+            e.error,
+            crate::client::AnthropicError::Overloaded { .. }
+        )
+    ));
 }
 
 /// Recursively collect every non-null value found under a `"caller"` key.
