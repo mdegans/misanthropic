@@ -1,36 +1,16 @@
-//! Example: the **tool-search tool** ([`ServerMethodDef::tool_search_regex`]) over a
-//! catalog of [`defer_loading`] tools.
-//!
-//! When you have many tools, loading every schema into the prompt up front
-//! bloats the cached prefix and hurts tool-selection accuracy. Instead you mark
-//! the tools [`defer_loading`] (here, in bulk with [`Prompt::defer_tools`]) and
-//! add a *tool-search* server tool. The model then sees only the search tool,
-//! searches your catalog by name/description/argument when it needs something,
-//! and the API expands the matching [`tool_reference`] into a full definition on
-//! demand — keeping context small while the catalog can grow to thousands.
-//!
-//! The catalog here is a single [`tool`]-macro toolkit with several
-//! pure-function methods (like the [`strawberry`] example, but many methods).
-//! Each generated [`CustomMethodDef`] is its own deferred tool the search can find.
-//!
-//! ## The loop
-//!
-//! Two kinds of model action drive the loop:
-//! - The **tool-search tool is server-side**: the model searches and the API
-//!   runs it internally, sometimes yielding [`StopReason::PauseTurn`] mid-turn.
-//!   We resume by sending the paused turn back (see the [`web_search`] example).
-//! - The **discovered tools are custom**: once the model calls one, we execute
-//!   it ourselves via [`Tool::call`] and return a [`tool::Result`], exactly as
-//!   in [`strawberry`].
-//!
-//! # Usage
+//! Example: the **tool-search tool** ([`ServerMethodDef::tool_search_regex`])
+//! over a catalog of [`defer_loading`] tools. Mark tools deferred (here in
+//! bulk via [`Prompt::defer_tools`]); the model sees only the search tool,
+//! searches by name/description/argument, and the API expands the matching
+//! [`tool_reference`] on demand — context stays small as the catalog grows.
+//! The search is server-side (yields [`StopReason::PauseTurn`]; resume like
+//! [`web_search`]); discovered [`CustomMethodDef`]s are client-side (execute
+//! via [`Tool::call`] / [`tool::Result`], like [`strawberry`]).
 //!
 //! ```sh
 //! cargo run --features client,derive --example tool_search -- \
 //!     "What is 2024 in Roman numerals?"
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [`ServerMethodDef::tool_search_regex`]: misanthropic::tool::ServerMethodDef::tool_search_regex
 //! [`defer_loading`]: misanthropic::tool::CustomMethodDef::defer_loading
@@ -60,12 +40,9 @@ use serde::Deserialize;
 /// model-facing error; [`Content`] is `Into`-constructed from a `&str`/`String`.
 type MethodResult = Result<Content, Content>;
 
-/// A grab-bag of small, deterministic utilities. The [`tool`] macro turns each
-/// `#[method]` into a deferred-able [`CustomMethodDef`](misanthropic::tool::CustomMethodDef)
-/// the search tool can discover by its name, description, and argument names —
-/// so write those to read like the questions a user would ask.
-///
-/// [`tool`]: misanthropic::tool::tool
+/// A grab-bag of small, deterministic utilities. Each `#[method]` becomes a
+/// [`CustomMethodDef`](misanthropic::tool::CustomMethodDef) the search tool can
+/// discover by name, description, and argument names.
 struct Toolkit;
 
 /// Arguments for [`Toolkit::roman_numeral`].
@@ -143,7 +120,6 @@ impl Toolkit {
         &mut self,
         args: ConvertTemperature,
     ) -> MethodResult {
-        // Normalize to Celsius, then to the target unit.
         let celsius = match args.from.to_ascii_uppercase() {
             'C' => args.value,
             'F' => (args.value - 32.0) * 5.0 / 9.0,
@@ -213,20 +189,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut toolkit = Toolkit;
 
-    // Nudge the model to reach for tools rather than computing by hand — like
-    // the `strawberry` example, but here the tools are deferred, so it must
-    // *search* the catalog to find them first.
     let system = "You are a careful assistant with a set of exact computation \
         tools. You cannot reliably compute things like large primes, Roman \
         numerals, or temperature conversions in your head, so you must search \
         for and use the appropriate tool. Do not guess.";
 
-    // Register every method as a custom tool, then `defer_tools()` flips them
-    // all to `defer_loading: true` so none of their schemas sit in the prompt
-    // prefix. The regex tool-search tool stays non-deferred (server tools never
-    // defer) — it is the one tool the model sees up front, and how it finds the
-    // rest. (Per-method `#[method(defer_loading)]` is the alternative when you
-    // want only *some* methods deferred.)
+    // `defer_tools()` flips all custom methods to `defer_loading: true` so
+    // none of their schemas sit in the prompt prefix. The regex search tool
+    // stays non-deferred (server tools never defer) — it is the only tool the
+    // model sees up front. Use per-method `#[method(defer_loading)]` to defer
+    // only some methods.
     let mut prompt = cli
         .common
         .configure(Prompt::default().model(Id::Haiku45).set_system(system))
@@ -238,16 +210,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .add_tool(ServerMethodDef::tool_search_regex())
         .defer_tools();
 
-    // Drive the conversation: resume on `pause_turn` (a server-side search in
-    // progress), execute any custom tool the model discovered and called, and
-    // stop once it answers in plain text.
     let mut searches = 0;
     let answer = loop {
         let response = client.message(&prompt).await?;
 
-        // Report each tool-search the model ran and what it turned up — these
-        // `ToolSearchToolResult` blocks come back in the assistant turn, and
-        // the API has already expanded the references into full definitions.
         for block in response.inner.content.iter() {
             if let Block::ToolSearchToolResult { content, .. } = block {
                 searches += 1;
@@ -265,14 +231,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         match response.stop_reason {
-            // The server paused mid-turn while searching; send the partial
-            // assistant turn back so it can continue.
+            // Server paused mid-search; resume.
             Some(StopReason::PauseTurn) => {
                 prompt.push_message(response)?;
                 continue;
             }
-            // The model called one or more discovered tools. Run each and
-            // return the results in a single user turn.
+            // Model called a discovered custom tool; execute and return results.
             Some(StopReason::ToolUse) => {
                 let calls: Vec<_> = response
                     .inner
@@ -296,7 +260,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 prompt.push_message((Role::User, results))?;
                 continue;
             }
-            // Done — the model answered in text.
             _ => break response,
         }
     };

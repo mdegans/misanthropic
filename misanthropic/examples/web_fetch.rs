@@ -1,30 +1,15 @@
-//! Example: the **`web_fetch` server tool** ([`ServerMethodDef::WebFetch`]).
-//!
-//! Like [`web_search`], `web_fetch` is run by Anthropic: you add it to the
-//! prompt and the model fetches a URL itself, receiving the page (or PDF) as a
-//! [`WebFetchToolResult`] block *in the response*. With
-//! [`citations`](WebFetch::citations) enabled the model cites passages from the
-//! fetched document on its response [`Text`] blocks.
-//!
-//! For security the model may only fetch a URL that already appeared in the
-//! conversation. Pass one in your message — or pair `web_fetch` with
-//! [`web_search`] so the model can *find* a page and then fetch it, which is
-//! what this example does.
-//!
-//! ## `pause_turn`
-//!
-//! A fetch (or search) can make the API yield mid-turn with
-//! [`StopReason::PauseTurn`]; send the paused assistant turn back to continue.
-//! See the [`web_search`] example for the same loop.
-//!
-//! # Usage
+//! Example: the **`web_fetch` server tool** ([`ServerMethodDef::WebFetch`])
+//! paired with [`web_search`]. Anthropic fetches the URL for the model, which
+//! receives the page as a [`WebFetchToolResult`] block; with
+//! [`WebFetch::citations`] enabled the model cites passages on its [`Text`]
+//! blocks. The model may only fetch a URL already in the conversation — pair
+//! with `web_search` so it can find one first. A fetch can yield
+//! [`StopReason::PauseTurn`] mid-turn; send the paused turn back to continue.
 //!
 //! ```sh
 //! cargo run --features client --example web_fetch -- \
 //!     "https://www.rust-lang.org and summarize what Rust is"
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [`ServerMethodDef::WebFetch`]: misanthropic::tool::ServerMethodDef::WebFetch
 //! [`WebFetch::citations`]: misanthropic::tool::WebFetch::citations
@@ -66,8 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .to_string()
     });
 
-    // Add both server tools: `web_search` to locate pages and `web_fetch` to
-    // read them. Citations are off by default for `web_fetch`, so opt in.
+    // Citations are off by default for `web_fetch` — opt in explicitly.
     let mut prompt = cli
         .common
         .configure(Prompt::default().model(Id::Haiku45))
@@ -82,7 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ..Default::default()
         }));
 
-    // Drive the server-side loop to completion, resuming on `pause_turn`.
+    // Resume on `pause_turn`; otherwise the turn is done.
     let answer = loop {
         let response = client.message(&prompt).await?;
 
@@ -94,7 +78,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         break response;
     };
 
-    // The model's answer, with citations rendered inline by `Display`.
     println!("{}", answer.inner.content);
 
     if let Some(usage) = answer.usage.server_tool_use {

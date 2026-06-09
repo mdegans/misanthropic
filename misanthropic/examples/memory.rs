@@ -1,39 +1,16 @@
-//! Example: the **`memory` tool** ([`Memory`]) — a *client-side* predefined
-//! tool, driven as a tiny multi-session REPL.
-//!
-//! Three flavours of tool live in this crate, and memory is the third:
-//!
-//! - A **custom tool** (see `strawberry`) — *you* define the schema and *you*
-//!   execute it via [`Tool::call`].
-//! - A **server tool** (see `web_search`) — Anthropic defines *and* executes
-//!   it; the call and result come back in the response and you never run a
-//!   thing.
-//! - A **client-side predefined tool** (memory, here) — Anthropic *defines* the
-//!   schema (you add it by versioned name, no schema of your own), but the
-//!   model emits an ordinary [`tool_use`] that *you* execute and answer with a
-//!   [`tool::Result`], exactly like a custom tool.
-//!
-//! So memory *defines* like a server tool and *executes* like a custom one.
-//! [`FsMemoryBackend`] is the executor: it deserializes each call's input into
-//! a typed [`memory::Command`] and runs it against a directory on disk —
-//! jailed to `./memories` and, by default, to markdown files.
-//!
-//! ## Why a REPL?
-//!
-//! Persistence *across sessions* is the whole point of the tool, and a process
-//! you can quit and restart is the most honest way to show it: hold a
-//! conversation, `Ctrl-D` to quit, run it again, and the model `view`s
-//! `./memories` and picks up where it left off. (Browser/localStorage demos
-//! fight this; a CLI writing real files does not.)
-//!
-//! # Usage
+//! Example: the **`memory` tool** ([`Memory`]) — a *client-side predefined*
+//! tool driven as a multi-session REPL. Anthropic defines the schema (add by
+//! versioned name, no schema of your own); the model emits a [`tool_use`] that
+//! *you* execute with a [`tool::Result`] — defines like a server tool, executes
+//! like a custom one. [`FsMemoryBackend`] deserializes each call into a typed
+//! [`memory::Command`] and runs it against a disk directory jailed to
+//! `./memories`. Quit and rerun to see persistence across sessions.
 //!
 //! ```sh
 //! cargo run --features "client memory-fs" --example memory
 //! ```
 //!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin. Your
-//! notes accumulate in `./memories` between runs — delete it to start fresh.
+//! Notes accumulate in `./memories` between runs — delete it to start fresh.
 //!
 //! [`Memory`]: misanthropic::tool::Memory
 //! [`Tool::call`]: misanthropic::tool::Tool::call
@@ -69,16 +46,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
     let client = Client::new(utils::api_key()?)?;
 
-    // The client-side executor. Every memory operation is confined to
-    // `./memories` (created if missing) and, by default, to `.md` files;
-    // path-traversal attempts (`../`, absolute escapes) are rejected. It drops
-    // into a `ToolBox` like any other tool — the box installs its predefined
-    // definition and routes the bare `"memory"` `tool_use` back to it. Add a
-    // custom tool here and the same driver dispatches both.
+    // Path-traversal attempts (`../`, absolute paths) are rejected by the
+    // backend. The box installs the predefined definition and routes the bare
+    // `"memory"` tool_use back to it.
     let toolbox = ToolBox::new().add(FsMemoryBackend::new("./memories").await?);
 
-    // The memory *protocol* ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
-    // injected server-side when the tool is enabled, so we don't repeat it.
+    // The memory protocol ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
+    // injected server-side when the tool is enabled.
     let prompt = cli.common.configure(Prompt::default().set_system(
         "You are a helpful assistant with a persistent memory. Record \
              durable facts, decisions, and progress so you can resume in a \
@@ -91,13 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "Talk, then Ctrl-D to quit and run again to watch it remember.\n",
     );
 
-    // `Chat` runs the model to quiescence: before answering, the model may
-    // `view` its memory, then `create`/`str_replace`/`insert`/… across several
-    // turns. Each memory `tool_use` is routed through the one box — the bare
-    // `"memory"` call, dispatched to the backend, which runs the typed
-    // `memory::Command` against `./memories` and feeds the canonical result
-    // back — until a turn arrives with no tool call. We print only that final,
-    // tool-free answer (the `on_assistant` hook fires on every turn).
+    // The hook fires on every turn; print only the tool-free final answer.
     cli.chat
         .configure(utils::Chat::new(client, prompt, toolbox))
         .on_assistant(move |_state: &mut (), msg| {

@@ -1,30 +1,16 @@
 //! Example: the **`code_execution` server tool**
-//! ([`ServerMethodDef::code_execution`]).
-//!
-//! Anthropic runs this one: you add it to the prompt and the model gets a
-//! sandboxed Linux container with two sub-tools — `bash_code_execution` (run
-//! shell commands) and `text_editor_code_execution` (view / create / edit
-//! files). Their results come back *in the response* as
-//! [`BashCodeExecutionToolResult`] and [`TextEditorCodeExecutionToolResult`]
-//! blocks; this example walks them and prints what the container did.
-//!
-//! For *programmatic* tool calling — letting the container call your own tools
-//! from inside the sandbox — see the [`programmatic_tool_calling`] example.
-//!
-//! ## `pause_turn`
-//!
-//! A long container run can make the API yield mid-turn with
-//! [`StopReason::PauseTurn`]; send the paused assistant turn straight back to
-//! let it continue. The loop below does exactly that.
-//!
-//! # Usage
+//! ([`ServerMethodDef::code_execution`]) — Anthropic runs a sandboxed Linux
+//! container with `bash` and `text_editor` sub-tools and returns
+//! [`BashCodeExecutionToolResult`] / [`TextEditorCodeExecutionToolResult`]
+//! blocks, which the loop below walks. A long run can pause the turn
+//! ([`StopReason::PauseTurn`]); we resume by sending it back. To let the
+//! container call *your own* tools, see the [`programmatic_tool_calling`]
+//! example.
 //!
 //! ```sh
 //! cargo run --features client --example code_execution -- \
 //!     "Write a CSV of three rows to /tmp/d.csv, then sum the second column."
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [`ServerMethodDef::code_execution`]: misanthropic::tool::ServerMethodDef::code_execution
 //! [`BashCodeExecutionToolResult`]: misanthropic::prompt::message::Block::BashCodeExecutionToolResult
@@ -68,16 +54,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .to_string()
     });
 
-    // `code_execution` is a pure declaration — no `call()` to write. The
-    // container (and both sub-tools) come for free. It needs a model that
-    // supports `code_execution_20260120` (Opus/Sonnet 4.5+).
+    // No `call()` to write — Anthropic runs it; needs a model with
+    // `code_execution` support (Opus / Sonnet 4.5+).
     let mut prompt = cli
         .common
         .configure(Prompt::default().model(Id::Sonnet46))
         .add_message((Role::User, task))?
         .add_tool(ServerMethodDef::code_execution());
 
-    // Drive the server-side loop to completion, resuming on `pause_turn`.
+    // Resume on `pause_turn`; otherwise the turn is done.
     let answer = loop {
         let response = client.message(&prompt).await?;
 
@@ -89,7 +74,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         break response;
     };
 
-    // Walk the result blocks the container produced, in order.
     for block in answer.inner.content.iter() {
         match block {
             Block::BashCodeExecutionToolResult { content, .. } => match content
@@ -107,8 +91,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     if !stderr.is_empty() {
                         eprint!("{stderr}");
                     }
-                    // Files written to `$OUTPUT_DIR` come back as `file_id`s;
-                    // fetch their bytes via the Files API (#32).
+                    // Files land in `$OUTPUT_DIR` as `file_id`s — fetch bytes
+                    // via the Files API (#32).
                     for file in files {
                         println!("[emitted file {}]", file.file_id);
                     }
@@ -141,14 +125,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     }
                 }
             }
-            // The model's own narration; everything else is skipped here.
             Block::Text { text, .. } => println!("\n{text}"),
             _ => {}
         }
     }
 
-    // The container persists for reuse: feed `answer.container` (its id) back
-    // via `Prompt::container` on a later request to keep the same workspace.
+    // The container id is reusable — pass it via `Prompt::container` later.
     if let Some(container) = &answer.container {
         eprintln!("\n[container {} — reusable]", container.id);
     }

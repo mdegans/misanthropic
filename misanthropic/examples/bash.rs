@@ -1,25 +1,16 @@
 //! Example: the **bash tool** ([`Bash`]) — Anthropic's predefined
-//! `bash_20250124`, executed in a locked-down Docker sandbox.
-//!
-//! Like `memory`/`text_editor`, bash is a *client-side predefined* tool:
-//! Anthropic defines the schema (you add it by versioned name via
-//! [`Bash::latest`]), the model emits a [`tool_use`] carrying a typed
-//! [`bash::Command`], and *you* execute it — here in a container, via
+//! `bash_20250124` executed in a locked-down Docker sandbox. Anthropic defines
+//! the schema (add by versioned name via [`Bash::latest`]); the model emits a
+//! [`tool_use`] carrying a typed [`bash::Command`]; you execute it via
 //! [`BashTool`] over a [`DockerSandbox`]. The default sandbox boots the baked
-//! `misan-bashd` image (`bashd` on an immutable read-only rootfs) as a non-root
-//! user, and is torn down (its container removed) at the end.
-//!
-//! The drive loop is **bounded** — an autonomous one-shot must terminate.
-//!
-//! # Usage
+//! `misan-bashd` image (immutable read-only rootfs, non-root user) and tears
+//! it down at the end. The drive loop is **bounded** — an autonomous one-shot
+//! must terminate.
 //!
 //! ```sh
 //! just build-bashd   # build the misan-bashd sandbox image (once; needs Docker)
 //! cargo run --features "client bash-container" --example bash
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment and the `misan-bashd` image
-//! built (`just build-bashd`).
 //!
 //! [`Bash`]: misanthropic::tool::Bash
 //! [`Bash::latest`]: misanthropic::tool::Bash::latest
@@ -57,9 +48,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
-    // The default sandbox: the baked `misan-bashd` image (read-only rootfs,
-    // bashd already inside) booted as the non-root `agent`, torn down at the
-    // end. The sandbox is explicit: `BashTool` wraps it.
     let mut tools = ToolBox::new().add(BashTool::new(DockerSandbox::default()));
 
     let mut chat = cli.common.configure(Prompt::default()).add_message((
@@ -68,12 +56,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
          Report the number it prints.",
     ))?;
 
-    // `prepare` installs the bash def and runs `on_init` — which boots the
-    // container and launches bashd inside it.
+    // `prepare` installs the bash def and boots the container via `on_init`.
     println!("Starting sandbox (booting container, launching bashd)...");
     tools.prepare(&mut chat).await?;
 
-    // Drive the tool loop, bounded. Each bash `tool_use` runs in the container.
     let mut answer = None;
     for _ in 0..MAX_TURNS {
         let message = client.message(&chat).await?;
@@ -92,8 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    // Tear down every tool — `on_teardown` removes the container. Best-effort,
-    // and the `DockerSandbox` also has a blocking `Drop` guard as a backstop.
+    // `DockerSandbox` also has a blocking `Drop` guard as a backstop.
     tools.teardown_tools(&mut chat).await?;
 
     let answer = answer.ok_or("bash loop did not converge in time")?;

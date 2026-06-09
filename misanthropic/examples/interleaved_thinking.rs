@@ -1,24 +1,15 @@
-//! An example of *adaptive* extended thinking with *interleaved* thinking
-//! around client-side tool use.
+//! Example: *adaptive* extended thinking with *interleaved* thinking around
+//! client-side tool use ([`Thinking::adaptive`], [`Block::Thought`],
+//! [`Prompt`]). Adaptive thinking is the recommended mode on Claude 4 and the
+//! only mode Opus 4.7+ accepts; with it the model thinks *between* tool calls
+//! automatically. Thought blocks carry signatures and must round-trip back
+//! unmodified — pushing the whole assistant message into [`Prompt`] handles
+//! this. Pass `--effort` to control thinking depth. Requires Sonnet 4.6+ or
+//! Opus 4.6+.
 //!
-//! [`Thinking::adaptive`] lets the model decide how much to reason per request
-//! — the recommended mode on Claude 4 and the only mode Opus 4.7+ accept. With
-//! adaptive thinking the model also thinks *between* tool calls automatically:
-//! it reasons, calls a tool, sees the result, reasons again about that result,
-//! then calls the next tool — instead of planning everything blind up front.
-//!
-//! For *client-side* tools (like the calculator below) the tool result returns
-//! in a new user message, so the interleaving plays out across turns: each new
-//! assistant turn opens with a fresh [`Block::Thought`]. Those thought blocks
-//! carry signatures and must round-trip back unmodified, which is exactly what
-//! pushing the whole assistant message back into the [`Prompt`] does.
-//!
-//! Pass `--effort low|medium|high|xhigh|max` to control how hard the model
-//! works (text, tool calls, *and* thinking depth) — the recommended
-//! thinking-depth knob when paired with adaptive thinking.
-//!
-//! Adaptive + interleaved thinking requires Sonnet 4.6 or an Opus 4.6+ model;
-//! this example uses Sonnet 4.6 as the cheapest option.
+//! ```sh
+//! cargo run --features client,derive --example interleaved_thinking
+//! ```
 //!
 //! [`Thinking::adaptive`]: misanthropic::prompt::Thinking::adaptive
 //! [`Block::Thought`]: misanthropic::prompt::message::Block::Thought
@@ -65,8 +56,7 @@ struct Args {
     max_turns: usize,
 }
 
-/// CLI mirror of [`Effort`] — the library type isn't a `clap::ValueEnum`, so
-/// we map across at the boundary.
+/// CLI mirror of [`Effort`] — [`Effort`] isn't a `clap::ValueEnum`.
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum EffortArg {
     Low,
@@ -88,8 +78,6 @@ impl From<EffortArg> for Effort {
     }
 }
 
-/// Arguments for the `compute` method. The field docs become the schema
-/// property descriptions the model sees (via `schemars`).
 #[derive(Debug, Deserialize, JsonSchema)]
 struct Compute {
     /// Left operand.
@@ -100,8 +88,8 @@ struct Compute {
     b: f64,
 }
 
-/// A stateless calculator that does *one* binary operation per call — forcing
-/// the model to chain calls and reason about each intermediate result.
+/// One binary operation per call — forces the model to chain and reason
+/// about each intermediate result.
 struct Calculator;
 
 #[tool]
@@ -134,11 +122,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .common
         .configure(
             Prompt::default()
-                // Sonnet 4.6 is the cheapest model with adaptive + interleaved
-                // support.
                 .model(Id::Sonnet46)
-                // Adaptive: the model decides how much to think, and interleaves
-                // thinking with tool use automatically. No `budget_tokens` to set.
+                // Adaptive: model decides depth; interleaves with tool use
+                // automatically. No `budget_tokens` to set.
                 .thinking(Thinking::adaptive())
                 .set_system(
                     "You are a careful calculator's assistant. You cannot do \
@@ -149,21 +135,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         )
         .add_message((Role::User, args.prompt))?;
 
-    // Register the tool's generated definition(s). The method is namespaced by
-    // the tool's name, e.g. `Calculator__compute`.
+    // Method is namespaced: `Calculator__compute`.
     for definition in calc.definitions() {
         chat = chat.add_tool(definition);
     }
 
-    // Effort composes with structured output and thinking — set it here and
-    // any output_config the prompt already carries is preserved.
     if let Some(effort) = args.effort {
         chat = chat.effort(effort.into());
     }
 
-    // Agentic loop: think -> tool_use -> (tool result) -> think -> ... -> text.
-    // Each iteration is one assistant turn; on Sonnet 4.6 the default `display`
-    // is summarized, so the thought we print is the model's own summary.
+    // On Sonnet 4.6 the default `display` is summarized, so the thought we
+    // print is the model's own summary.
     for _ in 0..args.max_turns {
         let message = client.message(&chat).await?;
 
@@ -180,9 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
 
         match message.tool_use() {
-            // The model wants to compute. Own the call, append the assistant
-            // turn (thoughts included, so signatures round-trip), then push the
-            // typed-dispatched result back as the next user message.
+            // Append the whole turn (thoughts included) so signatures round-trip.
             Some(call) => {
                 let call = call.clone();
                 chat.push_message(message)?;
@@ -192,7 +172,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 }
                 chat.push_message(result)?;
             }
-            // No tool call: this turn is the final answer.
             None => {
                 println!("\n✅ {}", message.inner.content);
                 return Ok(());

@@ -1,29 +1,8 @@
-//! Example: classify a unified diff into a structured commit message.
-//!
-//! Reads a diff from `--diff PATH` (or stdin if omitted), sends it to
-//! Claude with [`Prompt::structured_output::<CommitClassification>()`], and
-//! prints the result as a conventional-commit-style message.
-//!
-//! Dogfoods the [`Prompt::structured_output`] / [`Message::json`] pair
-//! added in the `json-schema` feature: the `CommitClassification` struct
-//! below is the same type the API sees (via [`schemars::JsonSchema`]) and
-//! the same type we deserialize the response into (via
-//! [`serde::Deserialize`]).
-//!
-//! # Field order and chain-of-thought
-//!
-//! schemars preserves source-code order for struct fields, and
-//! Anthropic's constrained decoding emits required fields in schema
-//! order. That means field order *is* the generation order, which in
-//! turn acts as inline chain-of-thought for the model.
-//!
-//! `summary` is declared before `category` so the model describes
-//! what the diff does before committing to a conventional-commit
-//! category label — otherwise `category` gets picked first and the
-//! summary becomes post-hoc justification. The effect is most visible
-//! on smaller models.
-//!
-//! # Usage
+//! Example: classify a unified diff into a structured commit message using
+//! [`Prompt::structured_output`] / [`Message::json`]. Field order is generation
+//! order (schemars preserves source order): `summary` precedes `category` so
+//! the model describes the diff before labeling it — otherwise `category` is
+//! picked first and `summary` becomes post-hoc justification.
 //!
 //! ```sh
 //! # Against the last commit
@@ -34,8 +13,6 @@
 //! cargo run --features json-schema --example structured_commit_classifier \
 //!     -- --diff changes.patch
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`Message::json`]: misanthropic::response::Message::json
@@ -50,10 +27,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// Conventional-commit category for a diff.
-///
-/// Renamed to `snake_case` on the wire — Anthropic's schema subset
-/// supports string enums, which schemars emits as an `anyOf` of `const`
-/// variants once [`OutputConfig::for_type`] sanitizes the schema.
+/// Schemars emits string enums as `anyOf` of `const` variants after
+/// [`OutputConfig::for_type`] sanitizes the schema.
 ///
 /// [`OutputConfig::for_type`]: misanthropic::prompt::OutputConfig::for_type
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -83,15 +58,7 @@ enum Category {
 }
 
 /// Structured classification of a diff into commit-message components.
-///
-/// `#[derive(JsonSchema)]` propagates the `///` doc comments above each
-/// field into the JSON Schema's `description` slots, which the model
-/// uses as part of its constrained-decoding guidance.
-///
-/// Field order is deliberate: the model generates `summary` first (a
-/// description of what the diff does), then `category` (a label
-/// informed by that description), then the remaining fields. See the
-/// module-level docs for the reasoning.
+/// Field order is generation order — `summary` before `category`.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommitClassification {
     /// Imperative one-line summary of the change, 70 characters or
@@ -171,7 +138,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response = client.message(&prompt).await?;
     let classification: CommitClassification = response.json()?;
 
-    // Render as a conventional-commit message.
     let prefix = match classification.category {
         Category::Feat => "feat",
         Category::Fix => "fix",

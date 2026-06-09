@@ -1,29 +1,16 @@
 //! Example: the **`web_search` server tool** ([`ServerMethodDef::WebSearch`]).
-//!
-//! Unlike a custom tool (which you execute via [`Tool::call`]), a *server tool*
-//! is run by Anthropic. You add it to the prompt and the model issues search
-//! queries internally; the [`ServerToolUse`] call and its
-//! [`WebSearchToolResult`] come back *in the response*, and the model cites its
-//! sources on the response [`Text`] blocks. You never handle execution and
-//! never return a [`tool::Result`].
-//!
-//! ## `pause_turn`
-//!
-//! A long-running search can make the API yield mid-turn with
-//! [`StopReason::PauseTurn`]. To continue, you send the paused assistant turn
-//! back — keeping the same tools — and the model picks up where it left off.
-//! Across *several* pauses this produces consecutive assistant turns;
-//! [`push_message`] accepts them because the paused turn carries a
-//! [`ServerToolUse`] block (see [`TurnOrderError`]).
-//!
-//! # Usage
+//! Anthropic runs the search; the [`ServerToolUse`] call and its
+//! [`WebSearchToolResult`] come back in the response, and citations appear on
+//! the response [`Text`] blocks — you never call [`Tool::call`] or return a
+//! [`tool::Result`]. A long search can yield [`StopReason::PauseTurn`]
+//! mid-turn; send the paused assistant turn back (it carries a server-tool-use
+//! block, so [`push_message`] / [`TurnOrderError`] accept it) and the model
+//! continues.
 //!
 //! ```sh
 //! cargo run --features client --example web_search -- \
 //!     "What did Anthropic announce most recently?"
 //! ```
-//!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
 //!
 //! [`ServerMethodDef::WebSearch`]: misanthropic::tool::ServerMethodDef::WebSearch
 //! [`Tool::call`]: misanthropic::tool::Tool::call
@@ -66,8 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         "What did Anthropic announce most recently, and when?".to_string()
     });
 
-    // Add the web_search server tool. The model decides whether and how often
-    // to search (capped by `max_uses`); we never run anything ourselves.
+    // The model decides whether to search (capped by `max_uses`).
     let mut prompt = cli
         .common
         .configure(Prompt::default().model(Id::Haiku45))
@@ -77,15 +63,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             ..Default::default()
         }));
 
-    // Drive the server-side loop to completion, resuming on `pause_turn`.
+    // Resume on `pause_turn`; otherwise the turn is done.
     let answer = loop {
         let response = client.message(&prompt).await?;
 
         if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
-            // Paused mid-turn after a search; append the partial assistant turn
-            // and resend so the model can continue. `push_message` accepts the
-            // adjacent assistant turn because it carries a server-tool-use
-            // block.
             prompt.push_message(response)?;
             continue;
         }
@@ -93,7 +75,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         break response;
     };
 
-    // The model's answer, with citations rendered inline by `Display`.
     println!("{}", answer.inner.content);
 
     if let Some(usage) = answer.usage.server_tool_use {

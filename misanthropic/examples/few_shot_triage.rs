@@ -1,32 +1,17 @@
-//! Example: *few-shot* structured output. Triage a free-text bug report into a
-//! structured `Triage` using [`Prompt::with_examples`] for priming.
-//!
-//! The win over zero-shot [`Prompt::structured_output`]: one or two
-//! schema-conformant exemplars in the history teach the model the *depth* of
-//! field population you want — here, that `repro_steps` should be concrete and
-//! non-empty, and `is_regression` should be inferred from phrasing like
-//! "started after the last release". Without exemplars, smaller models tend to
-//! return a single vague repro step or leave `is_regression` at its default.
-//!
-//! [`with_examples`] pulls double duty: each `(input, output)` pair becomes a
-//! [`Role::User`] turn followed by a [`Role::Assistant`] turn (the exemplar
-//! serialized to JSON), *and* the exemplar type `Triage` seeds the
-//! [`output_config`] schema — so there is no separate
-//! `structured_output::<Triage>()` call and the constraint can never drift
-//! from the examples.
-//!
-//! # Usage
+//! Example: *few-shot* structured output via [`Prompt::with_examples`]. Each
+//! `(input, output)` pair becomes a user/assistant exchange *and* seeds the
+//! [`output_config`] schema — no separate [`Prompt::structured_output`] call
+//! needed, and the constraint can't drift from the examples. Exemplars teach
+//! the model the depth of field population you want (`repro_steps` concrete and
+//! non-empty; `is_regression` inferred from phrasing), which zero-shot misses
+//! on smaller models.
 //!
 //! ```sh
 //! cargo run --features client --example few_shot_triage -- \
 //!     "Search returns no results for any query since this morning."
 //! ```
 //!
-//! With no argument a sample report is triaged. Expects `ANTHROPIC_API_KEY` in
-//! the environment, or prompts on stdin.
-//!
 //! [`Prompt::with_examples`]: misanthropic::Prompt::with_examples
-//! [`with_examples`]: misanthropic::Prompt::with_examples
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`output_config`]: misanthropic::Prompt::output_config
 
@@ -53,11 +38,7 @@ enum Severity {
 }
 
 /// Structured triage of a free-text bug report.
-///
-/// Derives both [`Serialize`] (to render exemplars into assistant turns) and
-/// [`Deserialize`] (to parse the model's response), plus [`JsonSchema`] for the
-/// output constraint. Field order is the generation order, so each field is
-/// available as context for the next.
+/// Field order is generation order — each field is context for the next.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct Triage {
     /// One-line, imperative summary of the underlying problem.
@@ -91,17 +72,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
-    // The report to triage: CLI arg, or a default.
     let report = cli.report.unwrap_or_else(|| {
         "Checkout total shows $0.00 even though the cart has items. Only \
          happens on mobile Safari. A few customers reported it today."
             .to_string()
     });
 
-    // Two fully-populated exemplars prime the *depth* of the output: rich
-    // `repro_steps` and a correctly-inferred `is_regression`. The output schema
-    // is taken from `Triage` by `with_examples`, so no separate
-    // `structured_output::<Triage>()` is needed.
     let base =
         cli.common
             .configure(Prompt::default().model(Id::Haiku45).set_system(

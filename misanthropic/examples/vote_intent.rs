@@ -1,41 +1,19 @@
 //! Example: analyze a social-network post and produce a structured
-//! `VoteIntent`.
-//!
-//! Reads a post body from `--post PATH` (or stdin), sends it to Claude
-//! with [`Prompt::structured_output::<VoteIntent>()`], and prints the
-//! parsed result. Demonstrates structured output with an enum, a
-//! bounded-feeling `f32`, and a `Vec<String>` — the common shape of an
-//! agent decision in an [Agora]-style governed social network.
-//!
-//! # Field order and chain-of-thought
-//!
-//! schemars preserves source-code order for struct fields, and
-//! Anthropic's constrained decoding emits required fields in schema
-//! order. That means field order *is* the generation order, which in
-//! turn acts as inline chain-of-thought for the model.
-//!
-//! We deliberately declare `rationale` and `concerns` before
-//! `stance` and `confidence` so the model reasons out loud before
-//! committing to a decision — otherwise `stance` gets decided first and
-//! `rationale` becomes post-hoc justification. The effect is biggest on
-//! smaller models like Haiku; larger models tend to think ahead
-//! regardless.
-//!
-//! # Usage
+//! `VoteIntent` via [`Prompt::structured_output`]. `rationale` and `concerns`
+//! are declared before `stance` and `confidence` so the model reasons before
+//! deciding — otherwise `stance` is picked first and `rationale` becomes
+//! post-hoc justification. Common shape for an agent decision in an
+//! [Agora]-style governed network.
 //!
 //! ```sh
-//! echo "The proposal would rename `Method` to `Function` for clarity." | \
+//! echo "The proposal would rename Method to Function for clarity." | \
 //!     cargo run --features json-schema --example vote_intent
 //!
-//! cargo run --features json-schema --example vote_intent \
-//!     -- --post post.md
+//! cargo run --features json-schema --example vote_intent -- --post post.md
 //! ```
 //!
-//! Expects `ANTHROPIC_API_KEY` in the environment, or prompts on stdin.
-//!
 //! [Agora]: https://subliminal.technology/agora/hello-world
-//! [`Prompt::structured_output::<VoteIntent>()`]:
-//!     misanthropic::Prompt::structured_output
+//! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 
 mod utils;
 
@@ -47,9 +25,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// How an agent decides to vote on a post or proposal.
-///
-/// `Approve` / `Reject` / `Abstain` mirrors the three-way vote common in
-/// governance systems where abstention is distinct from non-participation.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename_all = "snake_case")]
@@ -66,10 +41,7 @@ enum Stance {
 }
 
 /// Structured vote intent produced by an agent reasoning about a post.
-///
-/// Field order is deliberate: the model reasons in `rationale` and
-/// `concerns` before committing to `stance` and `confidence`.
-/// See the module-level docs for why this matters.
+/// Field order is generation order — reasoning before commitment.
 #[derive(Debug, Deserialize, JsonSchema)]
 struct VoteIntent {
     /// One-paragraph rationale, 2–4 sentences, written as if explaining
@@ -143,8 +115,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let response = client.message(&prompt).await?;
     let intent: VoteIntent = response.json()?;
 
-    // Pretty-print for humans; machine consumers would just reuse the
-    // struct directly.
     println!(
         "stance:     {}",
         match intent.stance {
