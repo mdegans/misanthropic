@@ -328,6 +328,7 @@ impl Default for Model {
     PartialOrd,
     Serialize,
 )]
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum Id {
     // ── Claude 3.x ───────────────────────────────────────────────────────
@@ -416,35 +417,6 @@ pub enum Id {
 }
 
 impl Id {
-    /// All available models.
-    pub const ALL: &'static [Id] = &[
-        Id::Haiku30,
-        Id::Haiku35_20241022,
-        Id::Haiku35,
-        Id::Opus30_20240229,
-        Id::Opus30,
-        Id::Sonnet35_20240620,
-        Id::Sonnet35_20241022,
-        Id::Sonnet35,
-        Id::Sonnet37_20250219,
-        Id::Sonnet37,
-        Id::Opus40_20250514,
-        Id::Opus40,
-        Id::Sonnet40_20250514,
-        Id::Sonnet40,
-        Id::Opus41_20250805,
-        Id::Opus41,
-        Id::Haiku45_20251001,
-        Id::Haiku45,
-        Id::Sonnet45_20250929,
-        Id::Sonnet45,
-        Id::Opus45_20251101,
-        Id::Opus45,
-        Id::Sonnet46,
-        Id::Opus46,
-        Id::Opus48,
-    ];
-
     /// Get the display name of the model.
     pub fn name(self) -> &'static str {
         match self {
@@ -484,6 +456,8 @@ mod tests {
     use crate::Client;
     #[cfg(feature = "client")]
     use crate::{Prompt, prompt::message::Role};
+    #[cfg(feature = "client")]
+    use strum::IntoEnumIterator;
 
     #[cfg(feature = "client")]
     const CRATE_ROOT: &str = env!("CARGO_MANIFEST_DIR");
@@ -693,7 +667,7 @@ mod tests {
             .add_message((Role::User, "Emit just the \"🙏\" emoji, please."))
             .unwrap();
 
-        for &model in Id::ALL {
+        for model in Id::iter() {
             prompt.model = model.into();
 
             // If this fails (because a new model was added), it should be:
