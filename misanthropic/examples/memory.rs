@@ -44,8 +44,6 @@
 
 mod utils;
 
-use std::io::{BufRead, stdin};
-
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -57,16 +55,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    // Get the API key from stdin *before* the rustyline thread takes over stdin.
+    let client = Client::new(utils::api_key()?)?;
 
     // The client-side executor. Every memory operation is confined to
     // `./memories` (created if missing) and, by default, to `.md` files;

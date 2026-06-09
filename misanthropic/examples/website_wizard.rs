@@ -5,18 +5,22 @@
 // `read_to_string`, `stdin().lock()`, and `write`. In a real application, these
 // should usually be replaced with async alternatives.
 
+mod utils;
+
+use std::path::PathBuf;
+
 use clap::Parser;
 use futures::TryStreamExt;
 use misanthropic::{Client, json, prompt::message::Role, stream::FilterExt};
-use std::{
-    io::{BufRead, stdin},
-    path::PathBuf,
-};
 
 /// Generate a one-page website based on the given specifications. This is
 /// adapted from the "Prompt library" example:
 ///
 /// https://docs.anthropic.com/en/prompt-library/website-wizard
+//
+// This streaming example builds a raw `json!` request rather than a `Prompt`,
+// so it keeps its own `--max-tokens` / `--system` flags instead of flattening
+// `utils::CommonArgs` (whose `--model` would have nowhere to apply here).
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
@@ -38,7 +42,7 @@ struct Args {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
@@ -48,12 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Read the specification text.
     let specs = std::fs::read_to_string(args.specs)?;
 
-    // Get API key from stdin.
-    println!("Enter your API key:");
-    let key = stdin().lock().lines().next().unwrap()?;
-
-    // Create a client. `key` will be consumed and zeroized.
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // Request a streaming completion. `json!` can be used, the concrete type,
     // `Request` or a combination of strings and other serializable types.

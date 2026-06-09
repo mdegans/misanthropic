@@ -33,8 +33,9 @@
 //! [`Text`]: misanthropic::prompt::message::Block::Text
 //! [`StopReason::PauseTurn`]: misanthropic::response::StopReason::PauseTurn
 
-use std::io::{BufRead, stdin};
+mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt,
     prompt::message::{CitationsConfig, Role},
@@ -42,23 +43,26 @@ use misanthropic::{
     tool::{ServerMethodDef, WebFetch, WebSearch},
 };
 
+/// Demonstrate the `web_fetch` server tool paired with `web_search`.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
+    /// The question / URL to fetch and summarize.
+    question: Option<String>,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let cli = Cli::parse();
+    let client = Client::new(utils::api_key()?)?;
 
-    let question = std::env::args().nth(1).unwrap_or_else(|| {
+    let question = cli.question.unwrap_or_else(|| {
         "Fetch https://www.rust-lang.org and summarize what Rust is, \
          with citations."
             .to_string()
@@ -66,8 +70,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Add both server tools: `web_search` to locate pages and `web_fetch` to
     // read them. Citations are off by default for `web_fetch`, so opt in.
-    let mut prompt = Prompt::default()
-        .model(Id::Haiku45)
+    let mut prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Haiku45))
         .add_message((Role::User, question))?
         .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(3),

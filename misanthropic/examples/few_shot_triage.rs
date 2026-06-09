@@ -30,8 +30,9 @@
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`output_config`]: misanthropic::Prompt::output_config
 
-use std::io::{BufRead, stdin};
+mod utils;
 
+use clap::Parser;
 use misanthropic::{Client, Id, Prompt, prompt::message::Role};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -73,24 +74,27 @@ struct Triage {
     is_regression: bool,
 }
 
+/// Triage a free-text bug report into a structured form.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
+    /// The bug report to triage. A default report is used if omitted.
+    report: Option<String>,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let cli = Cli::parse();
+    let client = Client::new(utils::api_key()?)?;
 
-    // The report to triage: positional arg, or a default.
-    let report = std::env::args().nth(1).unwrap_or_else(|| {
+    // The report to triage: CLI arg, or a default.
+    let report = cli.report.unwrap_or_else(|| {
         "Checkout total shows $0.00 even though the cart has items. Only \
          happens on mobile Safari. A few customers reported it today."
             .to_string()
@@ -100,13 +104,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `repro_steps` and a correctly-inferred `is_regression`. The output schema
     // is taken from `Triage` by `with_examples`, so no separate
     // `structured_output::<Triage>()` is needed.
-    let prompt = Prompt::default()
-        .model(Id::Haiku45)
-        .set_system(
-            "You triage incoming bug reports into a structured form. Infer \
-             concrete reproduction steps and whether the issue is a regression \
-             from the wording of the report.",
-        )
+    let base =
+        cli.common
+            .configure(Prompt::default().model(Id::Haiku45).set_system(
+                "You triage incoming bug reports into a structured form. \
+                 Infer concrete reproduction steps and whether the issue is \
+                 a regression from the wording of the report.",
+            ));
+    let prompt = base
         .with_examples([
             (
                 "Safari users say the login button does nothing when clicked. \

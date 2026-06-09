@@ -37,7 +37,9 @@
 //! [`Prompt::structured_output::<VoteIntent>()`]:
 //!     misanthropic::Prompt::structured_output
 
-use std::io::{BufRead, Read, stdin};
+mod utils;
+
+use std::io::Read;
 
 use clap::Parser;
 use misanthropic::{Client, Id, Prompt, prompt::message::Role};
@@ -92,13 +94,16 @@ struct VoteIntent {
     about = "Analyze a post and produce a structured VoteIntent using Claude."
 )]
 struct Args {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
     /// Path to a post body. If omitted, reads from stdin.
     #[arg(short, long)]
     post: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
@@ -108,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => std::fs::read_to_string(&path)?,
         None => {
             let mut buf = String::new();
-            stdin().read_to_string(&mut buf)?;
+            std::io::stdin().read_to_string(&mut buf)?;
             buf
         }
     };
@@ -119,17 +124,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     let system = "You are a thoughtful agent participating in a governed \
         social network. Read the user-provided post and produce a \
@@ -137,10 +132,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         harmful; be willing to Abstain if you genuinely can't tell. \
         Don't default to Approve. Keep the rationale short and concrete.";
 
-    let prompt = Prompt::default()
-        .model(Id::Haiku45)
-        .structured_output::<VoteIntent>()
-        .set_system(system)
+    let prompt = args
+        .common
+        .configure(
+            Prompt::default()
+                .model(Id::Haiku45)
+                .structured_output::<VoteIntent>()
+                .set_system(system),
+        )
         .add_message((Role::User, format!("POST:\n\n{post}")))?;
 
     let response = client.message(&prompt).await?;

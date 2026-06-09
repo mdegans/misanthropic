@@ -32,8 +32,9 @@
 //! [`StopReason::PauseTurn`]: misanthropic::response::StopReason::PauseTurn
 //! [`programmatic_tool_calling`]: https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/programmatic_tool_calling.rs
 
-use std::io::{BufRead, stdin};
+mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt,
     prompt::message::{
@@ -44,23 +45,26 @@ use misanthropic::{
     tool::ServerMethodDef,
 };
 
+/// Demonstrate the `code_execution` server tool.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
+    /// The task for the model to accomplish with code execution.
+    task: Option<String>,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let cli = Cli::parse();
+    let client = Client::new(utils::api_key()?)?;
 
-    let task = std::env::args().nth(1).unwrap_or_else(|| {
+    let task = cli.task.unwrap_or_else(|| {
         "Create /tmp/nums.txt with the numbers 1 through 5, one per line, \
          then use bash to sum them."
             .to_string()
@@ -69,8 +73,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // `code_execution` is a pure declaration — no `call()` to write. The
     // container (and both sub-tools) come for free. It needs a model that
     // supports `code_execution_20260120` (Opus/Sonnet 4.5+).
-    let mut prompt = Prompt::default()
-        .model(Id::Sonnet46)
+    let mut prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Sonnet46))
         .add_message((Role::User, task))?
         .add_tool(ServerMethodDef::code_execution());
 

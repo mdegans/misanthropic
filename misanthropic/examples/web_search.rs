@@ -35,8 +35,9 @@
 //! [`push_message`]: misanthropic::Prompt::push_message
 //! [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
 
-use std::io::{BufRead, stdin};
+mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt,
     prompt::message::Role,
@@ -44,30 +45,34 @@ use misanthropic::{
     tool::{ServerMethodDef, WebSearch},
 };
 
+/// Demonstrate the `web_search` server tool.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
+    /// The question to answer via web search.
+    question: Option<String>,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let cli = Cli::parse();
+    let client = Client::new(utils::api_key()?)?;
 
-    let question = std::env::args().nth(1).unwrap_or_else(|| {
+    let question = cli.question.unwrap_or_else(|| {
         "What did Anthropic announce most recently, and when?".to_string()
     });
 
     // Add the web_search server tool. The model decides whether and how often
     // to search (capped by `max_uses`); we never run anything ourselves.
-    let mut prompt = Prompt::default()
-        .model(Id::Haiku45)
+    let mut prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Haiku45))
         .add_message((Role::User, question))?
         .add_tool(ServerMethodDef::web_search(WebSearch {
             max_uses: Some(5),

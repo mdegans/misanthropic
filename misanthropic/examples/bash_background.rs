@@ -36,8 +36,6 @@
 
 mod utils;
 
-use std::io::BufRead;
-
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -53,9 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
-    println!("Enter your API key:");
-    let key = std::io::stdin().lock().lines().next().unwrap()?;
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // The typed multi-method bash tool over the default Docker sandbox. It owns
     // a `Mailbox`; the box aggregates it and `Chat` subscribes to it for us, so

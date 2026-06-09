@@ -24,10 +24,7 @@
 //! [`Block::Thought`]: misanthropic::prompt::message::Block::Thought
 //! [`Prompt`]: misanthropic::Prompt
 
-// Note: This example uses blocking calls for simplicity such as `println!()`
-// and `stdin().lock()`. In a real application, these should *usually* be
-// replaced with async alternatives.
-use std::io::BufRead;
+mod utils;
 
 use clap::{Parser, ValueEnum};
 use misanthropic::{
@@ -46,6 +43,9 @@ use serde::Deserialize;
 #[derive(Parser, Debug)]
 #[command(version, about)]
 struct Args {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
     /// User prompt. The default needs several chained operations, so the model
     /// has to think, compute, then think about the intermediate result before
     /// the next step.
@@ -55,9 +55,6 @@ struct Args {
         default_value = "Compute (12 + 30) * 7 - 100, one operation at a time."
     )]
     prompt: String,
-    /// Show each tool call and its result, not just the thinking.
-    #[arg(long)]
-    verbose: bool,
     /// How hard the model works — text, tool calls, and thinking depth. The
     /// recommended thinking-depth control when paired with adaptive thinking.
     /// Omit to use the API default (`high`).
@@ -126,32 +123,31 @@ impl Calculator {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
     let args = Args::parse();
-
-    // Get API key from stdin.
-    println!("Enter your API key:");
-    let key = std::io::stdin().lock().lines().next().unwrap()?;
-
-    // Create a client. `key` will be consumed and zeroized.
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     let mut calc = Calculator;
 
-    let mut chat = Prompt::default()
-        // Sonnet 4.6 is the cheapest model with adaptive + interleaved support.
-        .model(Id::Sonnet46)
-        // Adaptive: the model decides how much to think, and interleaves
-        // thinking with tool use automatically. No `budget_tokens` to set.
-        .thinking(Thinking::adaptive())
-        .set_system(
-            "You are a careful calculator's assistant. You cannot do \
-             arithmetic reliably in your head, so use the `compute` tool for \
-             every operation, one operation per call, and reason about each \
-             intermediate result before the next step.",
+    let mut chat = args
+        .common
+        .configure(
+            Prompt::default()
+                // Sonnet 4.6 is the cheapest model with adaptive + interleaved
+                // support.
+                .model(Id::Sonnet46)
+                // Adaptive: the model decides how much to think, and interleaves
+                // thinking with tool use automatically. No `budget_tokens` to set.
+                .thinking(Thinking::adaptive())
+                .set_system(
+                    "You are a careful calculator's assistant. You cannot do \
+                 arithmetic reliably in your head, so use the `compute` tool \
+                 for every operation, one operation per call, and reason about \
+                 each intermediate result before the next step.",
+                ),
         )
         .add_message((Role::User, args.prompt))?;
 
@@ -178,7 +174,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Block::Thought { thought, .. } => {
                     println!("\n🧠 {thought}");
                 }
-                Block::ToolUse { call } if args.verbose => {
+                Block::ToolUse { call } if args.common.verbose => {
                     println!("🔧 {}({})", call.name, call.input);
                 }
                 _ => {}
@@ -193,7 +189,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let call = call.clone();
                 chat.push_message(message)?;
                 let result = calc.call(call).await;
-                if args.verbose {
+                if args.common.verbose {
                     println!("   = {}", result.content);
                 }
                 chat.push_message(result)?;

@@ -28,6 +28,8 @@
 //! [`DockerSandbox`]: misanthropic::tool::bash::DockerSandbox
 //! [`bash::Command`]: misanthropic::tool::bash::Command
 
+mod utils;
+
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -45,7 +47,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // The default sandbox: the baked `misan-bashd` image (read-only rootfs,
     // bashd already inside) booted as the non-root `agent`, torn down at the

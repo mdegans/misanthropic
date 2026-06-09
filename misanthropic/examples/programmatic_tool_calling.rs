@@ -40,7 +40,7 @@
 //! [`response.container`]: misanthropic::response::Message::container
 //! [`Prompt::container`]: misanthropic::Prompt::container
 
-use std::io::{BufRead, stdin};
+mod utils;
 
 use misanthropic::{
     Client, Id, Prompt, json,
@@ -65,20 +65,11 @@ fn query_sales(region: &str) -> String {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // A custom tool the model may call *only* from code execution.
     let query_sales_tool = CustomMethodDef::builder("query_sales")

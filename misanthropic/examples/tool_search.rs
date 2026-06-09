@@ -44,8 +44,9 @@
 //! [`Tool::call`]: misanthropic::tool::Tool::call
 //! [`tool::Result`]: misanthropic::tool::Result
 
-use std::io::{BufRead, stdin};
+mod utils;
 
+use clap::Parser;
 use misanthropic::{
     Client, Id, Prompt,
     prompt::message::{Block, Content, Role, ToolSearchToolResultContent},
@@ -189,24 +190,27 @@ impl Toolkit {
     }
 }
 
+/// Demonstrate the tool-search server tool over a deferred catalog.
+#[derive(Parser, Debug)]
+#[command(version, about)]
+struct Cli {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
+    /// The question to answer using the deferred tool catalog.
+    question: Option<String>,
+}
+
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let cli = Cli::parse();
+    let client = Client::new(utils::api_key()?)?;
 
-    let question = std::env::args()
-        .nth(1)
+    let question = cli
+        .question
         .unwrap_or_else(|| "What is the 100th prime number?".to_string());
 
     let mut toolkit = Toolkit;
@@ -225,9 +229,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // defer) — it is the one tool the model sees up front, and how it finds the
     // rest. (Per-method `#[method(defer_loading)]` is the alternative when you
     // want only *some* methods deferred.)
-    let mut prompt = Prompt::default()
-        .model(Id::Haiku45)
-        .set_system(system)
+    let mut prompt = cli
+        .common
+        .configure(Prompt::default().model(Id::Haiku45).set_system(system))
         .add_message((Role::User, question))?;
     for definition in toolkit.definitions() {
         prompt = prompt.add_tool(definition);

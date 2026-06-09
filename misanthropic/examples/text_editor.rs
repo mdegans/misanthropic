@@ -33,6 +33,8 @@
 //! [`FsEditorBackend`]: misanthropic::tool::text_editor::FsEditorBackend
 //! [`text_editor::Command`]: misanthropic::tool::text_editor::Command
 
+mod utils;
+
 use misanthropic::{
     Client, Prompt,
     prompt::message::Role,
@@ -59,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // A workspace the backend is jailed to: the model only ever sees paths
     // under it, and `../`/absolute escapes are rejected.

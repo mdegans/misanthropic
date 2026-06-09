@@ -51,8 +51,6 @@
 
 mod utils;
 
-use std::io::BufRead;
-
 use misanthropic::{
     Client, Prompt,
     prompt::message::{Content, Role},
@@ -165,9 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     env_logger::init();
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
-    println!("Enter your API key:");
-    let key = std::io::stdin().lock().lines().next().unwrap()?;
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // The lone push-only tool, grouped in a `ToolBox` so the driver can own its
     // lifecycle *and* its notifications: the box aggregates the tool's mailbox,

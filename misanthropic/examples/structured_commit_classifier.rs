@@ -40,7 +40,9 @@
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`Message::json`]: misanthropic::response::Message::json
 
-use std::io::{BufRead, Read, stdin};
+mod utils;
+
+use std::io::Read;
 
 use clap::Parser;
 use misanthropic::{Client, Id, Prompt, prompt::message::Role};
@@ -112,16 +114,20 @@ struct CommitClassification {
 #[derive(Parser, Debug)]
 #[command(
     version,
-    about = "Classify a unified diff into a structured commit message using Claude."
+    about = "Classify a unified diff into a structured commit message using \
+             Claude."
 )]
 struct Args {
+    #[command(flatten)]
+    common: utils::CommonArgs,
+
     /// Path to a diff file. If omitted, reads the diff from stdin.
     #[arg(short, long)]
     diff: Option<std::path::PathBuf>,
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
@@ -131,7 +137,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Some(path) => std::fs::read_to_string(&path)?,
         None => {
             let mut buf = String::new();
-            stdin().read_to_string(&mut buf)?;
+            std::io::stdin().read_to_string(&mut buf)?;
             buf
         }
     };
@@ -143,19 +149,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
     }
 
-    // API key: env var first, then prompt. Matches the other examples'
-    // posture of not assuming a particular secret store.
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     let system = "You are an experienced code reviewer classifying a diff \
         into a conventional-commit-style message. Base the category on \
@@ -163,10 +157,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         summary short, imperative, and specific. Only mark `breaking` \
         true if the public API is altered incompatibly.";
 
-    let prompt = Prompt::default()
-        .model(Id::Haiku45)
-        .structured_output::<CommitClassification>()
-        .set_system(system)
+    let prompt = args
+        .common
+        .configure(
+            Prompt::default()
+                .model(Id::Haiku45)
+                .structured_output::<CommitClassification>()
+                .set_system(system),
+        )
         .add_message((
             Role::User,
             format!("Classify this diff:\n\n```diff\n{diff}\n```"),

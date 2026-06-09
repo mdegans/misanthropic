@@ -54,7 +54,7 @@
 //! [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
 //! [`tool::Result`]: misanthropic::tool::Result
 
-use std::io::{BufRead, stdin};
+mod utils;
 
 use misanthropic::{
     Client, Id, Prompt,
@@ -62,23 +62,14 @@ use misanthropic::{
 };
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "log")]
     env_logger::init();
 
     // First, prove the SDK rejects misplaced system turns — no key needed.
     demonstrate_guardrails();
 
-    let key = std::env::var("ANTHROPIC_API_KEY").or_else(|_| {
-        eprintln!("ANTHROPIC_API_KEY not set. Enter your API key:");
-        stdin()
-            .lock()
-            .lines()
-            .next()
-            .ok_or("no input")?
-            .map_err(|e| e.to_string())
-    })?;
-    let client = Client::new(key)?;
+    let client = Client::new(utils::api_key()?)?;
 
     // The top-level system prompt sets the agent up from the start. The refund
     // *policy* is deliberately NOT here — it arrives mid-conversation, on the
