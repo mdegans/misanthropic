@@ -210,8 +210,10 @@ pub struct Usage {
     /// Number of input tokens used.
     pub input_tokens: u64,
     /// Number of input tokens used to create the cache entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
     /// Number of input tokens read from the cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
@@ -502,6 +504,18 @@ mod tests {
         );
         let err = message.json::<VoteIntent>().unwrap_err();
         assert!(matches!(err, JsonError::Json(_)));
+    }
+
+    #[test]
+    fn usage_roundtrips_without_cache_fields() {
+        // The wire omits the cache-token fields when no caching is involved
+        // (e.g. a plain `message_start` usage). Re-serializing must not invent
+        // explicit `null`s for them. See issue #93.
+        let usage: Usage = crate::utils::roundtrip(
+            r#"{"input_tokens":472,"output_tokens":2}"#,
+        );
+        assert_eq!(usage.cache_creation_input_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, None);
     }
 
     #[test]
