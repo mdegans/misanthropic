@@ -5,13 +5,19 @@
 use derive_more::derive::IsVariant;
 
 pub(crate) mod message;
-pub use message::{JsonError, Message, StopReason, Usage};
+pub use message::{
+    CacheCreation, JsonError, Kind, Message, StopDetails, StopReason, Usage,
+};
 
 use crate::prompt;
 
 /// Sucessful API response from the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
+// `Message` is the hot payload — boxing it to flatter the `Stream` handle
+// would tax every non-streaming response. Permanent allow, not a deferral
+// (see the same reasoning at `Stream::new`).
+#[allow(clippy::large_enum_variant)]
 #[derive(IsVariant)]
 pub enum Response {
     /// Single [`response::Message`] from the API.
@@ -127,6 +133,7 @@ mod tests {
         Response::Message {
             message: Message {
                 id: TEST_ID.into(),
+                kind: None,
                 inner: prompt::AssistantMessage {
                     inner: prompt::Message {
                         role: prompt::message::Role::Assistant,
@@ -136,12 +143,13 @@ mod tests {
                 model: crate::Id::Sonnet35.into(),
                 stop_reason: None,
                 stop_sequence: None,
+                stop_details: None,
                 usage: Usage {
                     input_tokens: 1,
                     cache_creation_input_tokens: Some(2),
                     cache_read_input_tokens: Some(3),
                     output_tokens: 4,
-                    server_tool_use: None,
+                    ..Default::default()
                 },
                 container: None,
             },
@@ -346,6 +354,7 @@ mod tests {
                 web_fetch_requests: 100,
                 tool_search_requests: 10,
             }),
+            ..Default::default()
         };
 
         let b = Usage {
@@ -358,6 +367,7 @@ mod tests {
                 web_fetch_requests: 200,
                 tool_search_requests: 20,
             }),
+            ..Default::default()
         };
 
         a += b;

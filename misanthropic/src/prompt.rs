@@ -1425,12 +1425,19 @@ impl Prompt {
 pub enum ExtendError {
     /// Turn Order is incorrect.
     TurnOrder(#[from] TurnOrderError),
-    /// Error when applying a stream event to a prompt.
-    ApplyEvent(#[from] ApplyEventError),
+    /// Error when applying a stream event to a prompt. Boxed to keep the
+    /// error enum small ([`ApplyEventError`] carries a whole event).
+    ApplyEvent(Box<ApplyEventError>),
     /// Stream error.
     Stream(#[from] stream::Error),
     /// Other error.
     Other(Box<dyn std::error::Error + Send + Sync>),
+}
+
+impl From<ApplyEventError> for ExtendError {
+    fn from(error: ApplyEventError) -> Self {
+        Self::ApplyEvent(Box::new(error))
+    }
 }
 
 /// Object that can be appended to a [`Prompt`].

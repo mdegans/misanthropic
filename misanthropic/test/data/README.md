@@ -87,10 +87,14 @@ makes the comparison fail.
 Live capture is the source of truth. Use Haiku (`claude-haiku-4-5`) to keep it
 cheap; server-tool shapes are model-independent. Either:
 
-- `curl` the Messages API directly with the matching `anthropic-beta` header
-  and dump the JSON, or
-- run an `#[ignore]`d capture test under `just test-ignored` (needs
-  `misanthropic/api.key`) and copy the block out of the response.
+- **streaming:** `./capture.sh requests/foo.json [beta,beta…] > foo.sse.stream.jsonl`
+  — curls the API with `stream: true` and emits the wrapped jsonl by pure text
+  transform (raw bytes preserved, never parsed through our types). Keep the
+  request body under `requests/` so the capture is reproducible.
+- **non-streaming:** `curl` the Messages API directly with the matching
+  `anthropic-beta` header and dump the JSON, or run an `#[ignore]`d capture
+  test under `just test-ignored` (needs `misanthropic/api.key`) and copy the
+  block out of the response.
 
 When you replace a doc-derived fixture with a real capture, the round-trip test
 will fail loudly if the wire disagrees with what we assumed — that failure *is*
@@ -100,6 +104,7 @@ the win; fix the types, then commit the real bytes.
 
 | fixture | source | status |
 | --- | --- | --- |
+| `text.sse.stream.jsonl` | live (plain text turn, Haiku 4.5, `capture.sh`, 2026-06-09) | captured (baseline message envelope: `message.type`, `stop_details: null`, `usage.cache_creation`/`service_tier`/`inference_geo`, SSE whitespace padding; request in `requests/text.json`) |
 | `redacted_thought.sse.stream.jsonl` | live | captured (text-delta tags restored to the wire's `text_delta` — the original capture had been normalized through the crate's own types to the legacy `text`; the lines are otherwise the captured bytes) |
 | `thinking.sse.stream.txt` | live | captured |
 | `sse.stream.txt` | live | captured |

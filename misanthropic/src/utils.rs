@@ -43,12 +43,43 @@ where
     })?;
     let reserialized = serde_json::to_value(&parsed)
         .map_err(|e| format!("re-serialize: {e}"))?;
-    if reserialized != captured {
+    if !value_equal_modulo_nulls(&reserialized, &captured) {
         return Err("wire round-trip mismatch: a field was dropped, renamed, \
                     added, or mis-tagged"
             .to_string());
     }
     Ok(parsed)
+}
+
+/// Value equality that treats an *explicit `null`* and an *absent key* as the
+/// same thing (recursively).
+///
+/// The wire sends some fields as explicit `null` (`stop_details`, `page_age`)
+/// while older API versions omit them; modeling that faithfully would force a
+/// double-`Option` on every such field for zero information gain — dropping a
+/// `null` loses nothing. So fixture comparisons strip null-valued keys from
+/// both sides first. The guard still fires the moment the API populates the
+/// field with a real value our types drop.
+#[cfg(test)]
+pub(crate) fn value_equal_modulo_nulls(
+    a: &serde_json::Value,
+    b: &serde_json::Value,
+) -> bool {
+    fn strip(v: &serde_json::Value) -> serde_json::Value {
+        match v {
+            serde_json::Value::Object(map) => serde_json::Value::Object(
+                map.iter()
+                    .filter(|(_, v)| !v.is_null())
+                    .map(|(k, v)| (k.clone(), strip(v)))
+                    .collect(),
+            ),
+            serde_json::Value::Array(arr) => {
+                serde_json::Value::Array(arr.iter().map(strip).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    strip(a) == strip(b)
 }
 
 /// One line of a wrapped SSE-JSONL fixture (`{"Ok": <event>}` /
@@ -168,7 +199,8 @@ pub(crate) fn roundtrip_sse(fixture: &str) -> SseFixture {
                 Ok(parsed) => {
                     let reser = serde_json::to_value(&parsed)
                         .expect("line re-serializes to JSON");
-                    let value_equal = reser == captured;
+                    let value_equal =
+                        value_equal_modulo_nulls(&reser, &captured);
                     let byte_stable = serde_json::to_string(&parsed)
                         .map(|s| s == raw.trim())
                         .unwrap_or(false);

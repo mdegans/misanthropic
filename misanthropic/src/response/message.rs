@@ -37,6 +37,11 @@ pub enum JsonError {
 pub struct Message {
     /// Unique `id` for the message.
     pub id: Cow<'static, str>,
+    /// Object-type discriminator the wire sends inside `message_start` (and
+    /// non-streaming responses): always `"message"`. Absent on older API
+    /// versions, so optional and skipped when `None`.
+    #[serde(rename = "type", default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<Kind>,
     /// Inner [`prompt::message`].
     #[serde(flatten)]
     pub inner: prompt::AssistantMessage,
@@ -49,6 +54,14 @@ pub struct Message {
     ///
     /// [`StopSequence`]: StopReason::StopSequence
     pub stop_sequence: Option<Cow<'static, str>>,
+    /// Structured detail about why the model stopped — populated on
+    /// [`Refusal`](StopReason::Refusal), explicitly `null` otherwise. See
+    /// [`StopDetails`].
+    ///
+    /// Boxed because it is absent on the vast majority of turns (only
+    /// refusals populate it), keeping [`Message`] small.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<Box<StopDetails>>,
     /// Usage statistics for the message.
     #[serde(default)]
     pub usage: Usage,
@@ -94,6 +107,9 @@ impl Message {
         }
         if let Some(stop_sequence) = delta.stop_sequence {
             self.stop_sequence = Some(stop_sequence);
+        }
+        if let Some(stop_details) = delta.stop_details {
+            self.stop_details = Some(stop_details);
         }
     }
 
@@ -201,9 +217,37 @@ pub enum StopReason {
     Refusal,
 }
 
+/// Object-type discriminator on a response [`Message`]. Always
+/// [`Kind::Message`].
+#[derive(
+    Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq,
+)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Kind {
+    /// A message.
+    #[default]
+    Message,
+}
+
+/// Structured detail about why a [`Message`] stopped — the `stop_details`
+/// field, populated when [`Message::stop_reason`] is
+/// [`Refusal`](StopReason::Refusal).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct StopDetails {
+    /// Refusal category, e.g. `"cyber"` or `"bio"`; `null` when the API
+    /// doesn't classify the refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<Cow<'static, str>>,
+    /// Human-readable explanation of the refusal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<Cow<'static, str>>,
+}
+
 /// Usage statistics from the API. This is used in multiple contexts, not just
 /// for messages.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, Serialize, Deserialize, Default)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Usage {
@@ -212,15 +256,42 @@ pub struct Usage {
     /// Number of input tokens used to create the cache entry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_creation_input_tokens: Option<u64>,
+    /// Cache-write breakdown by TTL. Sent on message-level usage (e.g.
+    /// `message_start`); absent on `message_delta` usage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_creation: Option<CacheCreation>,
     /// Number of input tokens read from the cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+    /// Capacity tier that served the request: `"standard"`, `"priority"`, or
+    /// `"batch"`. Distinct from the *requested*
+    /// [`ServiceTier`](crate::prompt::ServiceTier) (`auto`/`standard_only`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<Cow<'static, str>>,
+    /// Region that served the request, e.g. `"us"`, `"eu"`, or
+    /// `"not_available"`. Distinct from the *requested*
+    /// [`InferenceGeo`](crate::prompt::InferenceGeo) constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<Cow<'static, str>>,
     /// Server-tool invocation counts (e.g. web searches), when any server tool
     /// ran. See [`ServerMethodDef`](crate::tool::ServerMethodDef).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
+}
+
+/// Cache-write token counts broken down by TTL — the `cache_creation` object
+/// in [`Usage`], the per-TTL detail behind
+/// [`Usage::cache_creation_input_tokens`].
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
+pub struct CacheCreation {
+    /// Input tokens written to the 5-minute-TTL cache.
+    pub ephemeral_5m_input_tokens: u64,
+    /// Input tokens written to the 1-hour-TTL cache.
+    pub ephemeral_1h_input_tokens: u64,
 }
 
 /// Per-request counts of [`ServerMethodDef`](crate::tool::ServerMethodDef) invocations,
@@ -276,11 +347,18 @@ impl std::ops::Add<Usage> for Usage {
                 .cache_creation_input_tokens
                 .map(|c| c + rhs.cache_creation_input_tokens.unwrap_or(0))
                 .or(rhs.cache_creation_input_tokens),
+            cache_creation: match (self.cache_creation, rhs.cache_creation) {
+                (Some(a), Some(b)) => Some(a + b),
+                (a, b) => a.or(b),
+            },
             cache_read_input_tokens: self
                 .cache_read_input_tokens
                 .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
                 .or(rhs.cache_read_input_tokens),
             output_tokens: self.output_tokens + rhs.output_tokens,
+            // Not counts — later (more final) values win.
+            service_tier: rhs.service_tier.or(self.service_tier),
+            inference_geo: rhs.inference_geo.or(self.inference_geo),
             server_tool_use: match (self.server_tool_use, rhs.server_tool_use) {
                 (Some(a), Some(b)) => Some(a + b),
                 (a, b) => a.or(b),
@@ -289,9 +367,22 @@ impl std::ops::Add<Usage> for Usage {
     }
 }
 
+impl std::ops::Add<CacheCreation> for CacheCreation {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            ephemeral_5m_input_tokens: self.ephemeral_5m_input_tokens
+                + rhs.ephemeral_5m_input_tokens,
+            ephemeral_1h_input_tokens: self.ephemeral_1h_input_tokens
+                + rhs.ephemeral_1h_input_tokens,
+        }
+    }
+}
+
 impl std::ops::AddAssign<Usage> for Usage {
     fn add_assign(&mut self, rhs: Usage) {
-        *self = *self + rhs;
+        *self = std::mem::take(self) + rhs;
     }
 }
 
@@ -347,6 +438,7 @@ mod tests {
         let delta = MessageDelta {
             stop_reason: Some(StopReason::MaxTokens),
             stop_sequence: Some("sequence".into()),
+            stop_details: None,
         };
 
         message.apply_delta(delta);
@@ -405,6 +497,7 @@ mod tests {
     ) -> Message {
         Message {
             id: "id".into(),
+            kind: None,
             inner: prompt::AssistantMessage {
                 inner: prompt::Message {
                     role: prompt::message::Role::Assistant,
@@ -414,6 +507,7 @@ mod tests {
             model: crate::Id::Sonnet35.into(),
             stop_reason,
             stop_sequence: None,
+            stop_details: None,
             usage: Usage::default(),
             container: None,
         }
@@ -525,6 +619,7 @@ mod tests {
 
         let message = Message {
             id: "id".into(),
+            kind: None,
             inner: prompt::AssistantMessage {
                 inner: prompt::Message {
                     role: prompt::message::Role::User,
@@ -536,12 +631,13 @@ mod tests {
             model: crate::Id::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
+            stop_details: None,
             usage: Usage {
                 input_tokens: 1,
                 cache_creation_input_tokens: Some(2),
                 cache_read_input_tokens: Some(3),
                 output_tokens: 4,
-                server_tool_use: None,
+                ..Default::default()
             },
             container: None,
         };

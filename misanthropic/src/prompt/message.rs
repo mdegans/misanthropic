@@ -3082,9 +3082,11 @@ mod tests {
             .try_into()
             .unwrap(),
             id: "msg_123".into(),
+            kind: None,
             model: crate::Id::Sonnet35.into(),
             stop_reason: None,
             stop_sequence: None,
+            stop_details: None,
             usage: Default::default(),
             container: None,
         };

@@ -89,6 +89,10 @@ pub enum Event {
 
 /// Internal enum for the API result so we don't have to add an error variant to
 /// the `Event` enum.
+// Transient: parsed and immediately destructured into `Result<Event, Error>`,
+// which is sized by `Event` regardless (see `Stream::new`). Boxing here would
+// shrink nothing downstream. Permanent allow, not a deferral.
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, Deserialize)]
 #[serde(untagged)]
 enum ApiResult {
@@ -347,6 +351,12 @@ pub struct MessageDelta {
     /// Stop sequence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_sequence: Option<Cow<'static, str>>,
+    /// Structured stop detail — populated on
+    /// [`Refusal`](StopReason::Refusal), explicitly `null` otherwise. Boxed
+    /// for the same reason as
+    /// [`Message::stop_details`](crate::response::Message::stop_details).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_details: Option<Box<crate::response::StopDetails>>,
 }
 
 /// Stream error. This can be JSON parsing errors or errors from the API.
@@ -633,7 +643,7 @@ pub trait FilterExt:
                         if let Some(message) = message.as_mut() {
                             message.apply_delta(delta.clone());
                             if let Some(usage) = usage {
-                                message.usage += *usage;
+                                message.usage += usage.clone();
                             }
                         } else {
                             yield Err(Error::MessageAssembly {

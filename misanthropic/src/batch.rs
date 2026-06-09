@@ -737,6 +737,10 @@ pub(crate) struct IdentifiedBatchResult {
 ///
 /// Response data is always owned (`'static`) since it is deserialized from
 /// the batch results JSONL download.
+// `Ok` is the hot payload — boxing it to flatter the rare marker arms would
+// tax every successful result. Permanent allow, not a deferral (see the same
+// reasoning at `Stream::new`).
+#[allow(clippy::large_enum_variant)]
 #[derive(Serialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum BatchResult {
@@ -1066,10 +1070,12 @@ mod tests {
             id,
             BatchResult::Ok(response::Message {
                 id: PENDING_ID.into(),
+                kind: None,
                 inner: Content::from("Hello roboto!").into(),
                 model: model::Model::Anthropic(model::Id::Haiku30),
                 stop_reason: None,
                 stop_sequence: Some("potato".into()),
+                stop_details: None,
                 usage: Usage::default(),
                 container: None,
             }),
@@ -1254,10 +1260,12 @@ mod tests {
     fn test_batch_result_into_result() {
         let ok = Result::from(BatchResult::Ok(response::Message {
             id: PENDING_ID.into(),
+            kind: None,
             inner: Content::from("Hello roboto!").into(),
             model: model::Model::Anthropic(model::Id::Haiku30),
             stop_reason: None,
             stop_sequence: Some("potato".into()),
+            stop_details: None,
             usage: Usage::default(),
             container: None,
         }));
