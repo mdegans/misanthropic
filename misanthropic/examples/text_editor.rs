@@ -58,9 +58,7 @@ const MAX_TURNS: usize = 8;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
+    utils::log_init(false);
     let client = Client::new(utils::api_key()?)?;
 
     // A workspace the backend is jailed to: the model only ever sees paths

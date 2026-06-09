@@ -159,8 +159,7 @@ impl Reminder {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
+    utils::log_init(false);
 
     // Get the API key from stdin *before* the rustyline thread takes over stdin.
     let client = Client::new(utils::api_key()?)?;

@@ -16,6 +16,12 @@ cargo run --example strawberry --features "client,markdown,derive"
 Pass `-- --help` to see an example's own arguments, e.g.
 `cargo run --example strawberry --all-features -- --help`.
 
+Or use the `just run-example` recipe, which turns on every feature for you and
+passes the rest through — `just run-example web_search "what's new?"`. The
+crate's `log` feature is always on for examples, so set `RUST_LOG` (or pass
+`--verbose` where an example supports it) to see the client's internal logs and
+the `Chat` loop's tracing: `RUST_LOG=debug just run-example bash_background`.
+
 | Example | What it shows | Features |
 |---------|---------------|----------|
 | `strawberry` | **Typed tool use** via the `#[tool]` macro — a `count_letters` tool. The canonical tool example. | `client, markdown, derive` |

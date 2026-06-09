@@ -28,6 +28,19 @@ pub use args::{Args, ChatArgs, CommonArgs};
 use rustyline::{DefaultEditor, ExternalPrinter, error::ReadlineError};
 use tokio::sync::mpsc;
 
+/// Initialize logging for an example. With `verbose`, the default level is
+/// `debug` (otherwise `warn`); `RUST_LOG` overrides either. Safe to call once.
+///
+/// The crate's `log` feature is always on for examples (a self dev-dependency
+/// in `Cargo.toml`), so this surfaces both the client's internal logs and any
+/// `log::*` an example emits — e.g. the [`Chat`] loop's tracing.
+pub fn log_init(verbose: bool) {
+    let default = if verbose { "debug" } else { "warn" };
+    let env = env_logger::Env::default().default_filter_or(default);
+    // `try_init` so a second call (or a pre-installed logger) is a no-op.
+    let _ = env_logger::Builder::from_env(env).try_init();
+}
+
 /// Spawn a dedicated thread running a `rustyline` prompt and return the entered
 /// lines as a channel plus a [`Printer`] for the async side to print *through*.
 ///

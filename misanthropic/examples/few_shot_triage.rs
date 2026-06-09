@@ -87,10 +87,8 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
     let cli = Cli::parse();
+    utils::log_init(cli.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
     // The report to triage: CLI arg, or a default.

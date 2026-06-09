@@ -209,6 +209,8 @@ arboard = "3"
 clap = { version = "4", features = ["derive"] }
 # for all examples
 env_logger = "0.11"
+# example-side logging macros (e.g. debugging the chat loop in utils/chat.rs)
+log = "0.4"
 # The async runtime. `misanthropic` itself is async runtime agnostic. Except
 # wasm. Wasm is a special snowflake.
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
@@ -226,6 +228,11 @@ trybuild = "1"
 # new wire variant is forced to have a captured fixture. Test-only — derives are
 # `cfg_attr(test)`-gated, so this stays a dev-dependency.
 strum = { version = "0.26", features = ["derive"] }
+# Build the examples (and tests/benches) with the crate's own `log` feature on,
+# so the client's internal logs surface without an extra `--features log`. This
+# self path dev-dependency is dev/test/bench-scoped only: `cargo build` and
+# downstream consumers keep `log` opt-in. See the `run-example` just recipe.
+misanthropic = { path = ".", features = ["log"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.

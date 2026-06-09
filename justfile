@@ -32,6 +32,12 @@ doc:
 test-ignored:
     cargo test -p misanthropic --all-features -- --ignored
 
+# Run an example with every feature on (so logging and each example's tools are
+# available). Extra args pass through to the example, and `RUST_LOG` works, e.g.
+# `RUST_LOG=debug just run-example web_search "what did Anthropic announce?"`.
+run-example name *args:
+    cargo run -p misanthropic --all-features --example {{name}} -- {{args}}
+
 # The sandbox image tag the DockerSandbox boots by default. Must match
 # DEFAULT_IMAGE in misanthropic/src/tool/bash/docker.rs.
 bashd_image := "misan-bashd:dev"

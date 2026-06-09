@@ -63,8 +63,7 @@ use misanthropic::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
+    utils::log_init(false);
 
     // First, prove the SDK rejects misplaced system turns — no key needed.
     demonstrate_guardrails();

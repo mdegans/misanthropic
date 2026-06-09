@@ -158,6 +158,7 @@ impl<State> Chat<State> {
                         continue;
                     }
                     Some(note) => {
+                        log::debug!("interleaving a tool-pushed notification");
                         let message = self.note_to_message(note);
                         self.seat(message)?;
                     }
@@ -198,6 +199,7 @@ impl<State> Chat<State> {
     async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
         let mut dispatched = 0usize;
         loop {
+            log::trace!("quiesce round {dispatched}: calling the model");
             let response = self.client.message(&self.prompt).await?;
 
             if let Some(hook) = self.on_assistant.as_mut() {
@@ -228,6 +230,7 @@ impl<State> Chat<State> {
                 .into());
             }
             dispatched += 1;
+            log::debug!("dispatching {} client-side tool call(s)", calls.len());
 
             // Dispatch each call and seat all results as one user turn.
             let mut results = Vec::with_capacity(calls.len());

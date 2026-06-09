@@ -66,9 +66,7 @@ fn query_sales(region: &str) -> String {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
+    utils::log_init(false);
     let client = Client::new(utils::api_key()?)?;
 
     // A custom tool the model may call *only* from code execution.

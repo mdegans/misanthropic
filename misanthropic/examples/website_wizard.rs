@@ -43,8 +43,7 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
+    utils::log_init(false);
 
     // Read the command line arguments.
     let args = Args::parse();

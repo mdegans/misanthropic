@@ -44,9 +44,7 @@ const MAX_TURNS: usize = 10;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
+    utils::log_init(false);
     let client = Client::new(utils::api_key()?)?;
 
     // The default sandbox: the baked `misan-bashd` image (read-only rootfs,

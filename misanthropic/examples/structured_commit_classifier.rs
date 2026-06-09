@@ -128,10 +128,8 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
     let args = Args::parse();
+    utils::log_init(args.common.verbose);
 
     let diff = match args.diff {
         Some(path) => std::fs::read_to_string(&path)?,

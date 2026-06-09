@@ -124,10 +124,8 @@ impl Calculator {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    #[cfg(feature = "log")]
-    env_logger::init();
-
     let args = Args::parse();
+    utils::log_init(args.common.verbose);
     let client = Client::new(utils::api_key()?)?;
 
     let mut calc = Calculator;
