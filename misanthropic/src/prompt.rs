@@ -663,11 +663,13 @@ impl Prompt {
         self
     }
 
-    /// Set the [`temperature`] to `Some(value)` or [`None`] to use the default.
+    /// Set the [`temperature`] — accepts a bare `f32` or [`None`] to use the
+    /// default. Anthropic has deprecated this knob upstream, but third-party
+    /// endpoints still honor it; it is omitted from the wire when unset.
     ///
     /// [`temperature`]: Prompt::temperature
-    pub fn temperature(mut self, temperature: Option<f32>) -> Self {
-        self.temperature = temperature;
+    pub fn temperature(mut self, temperature: impl Into<Option<f32>>) -> Self {
+        self.temperature = temperature.into();
         self
     }
 
@@ -902,17 +904,23 @@ impl Prompt {
     // No extend for tools because it's not very common or useful. If somebody
     // really wants this they can submit a PR.
 
-    /// Set the top K tokens to consider for each token. Set to `None` to use
-    /// the default value.
-    pub fn top_k(mut self, top_k: Option<NonZeroU16>) -> Self {
-        self.top_k = top_k;
+    /// Set the top K tokens to consider for each token — accepts a bare
+    /// [`NonZeroU16`] or `None` for the default. Deprecated upstream like
+    /// [`temperature`], but kept for third-party endpoints.
+    ///
+    /// [`temperature`]: Prompt::temperature
+    pub fn top_k(mut self, top_k: impl Into<Option<NonZeroU16>>) -> Self {
+        self.top_k = top_k.into();
         self
     }
 
-    /// Set the top P for nucleus sampling. Set to [`None`] to use the default
-    /// value.
-    pub fn top_p(mut self, top_p: Option<f32>) -> Self {
-        self.top_p = top_p;
+    /// Set the top P for nucleus sampling — accepts a bare `f32` or [`None`]
+    /// for the default. Deprecated upstream like [`temperature`], but kept
+    /// for third-party endpoints.
+    ///
+    /// [`temperature`]: Prompt::temperature
+    pub fn top_p(mut self, top_p: impl Into<Option<f32>>) -> Self {
+        self.top_p = top_p.into();
         self
     }
 
@@ -2427,7 +2435,7 @@ mod tests {
 
     #[test]
     fn test_temperature() {
-        let request = Prompt::default().temperature(Some(0.5));
+        let request = Prompt::default().temperature(0.5);
         assert_eq!(request.temperature, Some(0.5));
     }
 
@@ -2444,14 +2452,13 @@ mod tests {
 
     #[test]
     fn test_top_k() {
-        let request =
-            Prompt::default().top_k(Some(NonZeroU16::new(5).unwrap()));
+        let request = Prompt::default().top_k(NonZeroU16::new(5).unwrap());
         assert_eq!(request.top_k, Some(NonZeroU16::new(5).unwrap()));
     }
 
     #[test]
     fn test_top_p() {
-        let request = Prompt::default().top_p(Some(0.5));
+        let request = Prompt::default().top_p(0.5);
         assert_eq!(request.top_p, Some(0.5));
     }
 

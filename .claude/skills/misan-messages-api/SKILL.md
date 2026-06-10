@@ -108,7 +108,7 @@ let prompt = Prompt::default()
     // Set max tokens.
     .max_tokens(NonZeroU32::new(1024).unwrap())
     // Set temperature (0.0–1.0).
-    .temperature(Some(0.7))
+    .temperature(0.7)
     // Add a user message — returns Result because turn order is validated
     // (must alternate User/Assistant; first message must be User).
     .add_message((Role::User, "Hello!"))?;
