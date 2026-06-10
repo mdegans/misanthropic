@@ -1,0 +1,36 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "What's the weather in Paris? Search your tools to find one that can help, then call it."
+    }
+  ],
+  "tools": [
+    {
+      "type": "tool_search_tool_regex_20251119",
+      "name": "tool_search_tool_regex"
+    },
+    {
+      "name": "get_weather",
+      "description": "Get current weather for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"]
+      },
+      "defer_loading": true
+    },
+    {
+      "name": "get_time",
+      "description": "Get the current local time for a city.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"]
+      },
+      "defer_loading": true
+    }
+  ]
+}

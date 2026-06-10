@@ -6,7 +6,8 @@ use derive_more::derive::IsVariant;
 
 pub(crate) mod message;
 pub use message::{
-    CacheCreation, JsonError, Kind, Message, StopDetails, StopReason, Usage,
+    CacheCreation, Container, JsonError, Kind, Message, StopDetails,
+    StopReason, Usage,
 };
 
 use crate::prompt;
@@ -352,7 +353,7 @@ mod tests {
             server_tool_use: Some(ServerToolUsage {
                 web_search_requests: 1,
                 web_fetch_requests: 100,
-                tool_search_requests: 10,
+                tool_search_requests: Some(10),
             }),
             ..Default::default()
         };
@@ -365,7 +366,7 @@ mod tests {
             server_tool_use: Some(ServerToolUsage {
                 web_search_requests: 2,
                 web_fetch_requests: 200,
-                tool_search_requests: 20,
+                tool_search_requests: Some(20),
             }),
             ..Default::default()
         };
@@ -381,7 +382,7 @@ mod tests {
             Some(ServerToolUsage {
                 web_search_requests: 3,
                 web_fetch_requests: 300,
-                tool_search_requests: 30,
+                tool_search_requests: Some(30),
             })
         );
     }

@@ -1,0 +1,19 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use the web_fetch tool to fetch https://www.rust-lang.org and quote one sentence from the page verbatim, with a citation."
+    }
+  ],
+  "tools": [
+    {
+      "type": "web_fetch_20250910",
+      "name": "web_fetch",
+      "max_uses": 2,
+      "allowed_domains": ["rust-lang.org", "www.rust-lang.org"],
+      "citations": { "enabled": true }
+    }
+  ]
+}

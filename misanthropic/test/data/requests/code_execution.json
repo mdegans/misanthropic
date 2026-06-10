@@ -1,0 +1,11 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Using your code execution tool: 1) run `echo hello && uname -s` in bash; 2) create a file /tmp/notes.txt containing the three lines: apple, banana, cherry; 3) view the file; 4) replace banana with blueberry using str_replace; 5) view it again. Then summarize what you did in one sentence."
+    }
+  ],
+  "tools": [{ "type": "code_execution_20260120", "name": "code_execution" }]
+}

@@ -1,0 +1,23 @@
+{
+  "model": "claude-sonnet-4-6",
+  "max_tokens": 2048,
+  "messages": [
+    {
+      "role": "user",
+      "content": "For West, East, Central, North, and South, call query_sales for each and tell me which region had the highest revenue. Do the lookups in code."
+    }
+  ],
+  "tools": [
+    { "type": "code_execution_20260120", "name": "code_execution" },
+    {
+      "name": "query_sales",
+      "description": "Look up sales revenue for a region. Returns JSON like {\"region\": \"West\", \"revenue\": 12345}.",
+      "input_schema": {
+        "type": "object",
+        "properties": { "region": { "type": "string" } },
+        "required": ["region"]
+      },
+      "allowed_callers": ["code_execution_20260120"]
+    }
+  ]
+}

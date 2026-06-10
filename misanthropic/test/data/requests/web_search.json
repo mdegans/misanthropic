@@ -1,0 +1,13 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Use web_search to find what Anthropic's latest model is, then answer in one sentence with a citation."
+    }
+  ],
+  "tools": [
+    { "type": "web_search_20250305", "name": "web_search", "max_uses": 2 }
+  ]
+}

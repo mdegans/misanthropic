@@ -1,0 +1,100 @@
+{"Ok":{"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01GZZU5VkUXtsNVKP3DY1nvF","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2326,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":4,"service_tier":"standard","inference_geo":"not_available"}}     }}
+{"Ok":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}       }}
+{"Ok":{"type": "ping"}}
+{"Ok":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"I'll execute all"}}}
+{"Ok":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":" these tasks for you. Let me start by running the bash command and creating the file."}   }}
+{"Ok":{"type":"content_block_stop","index":0    }}
+{"Ok":{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01Mh48zMeiPG4C2s3g8NQHXg","name":"bash_code_execution","input":{}}   }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}        }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"comm"}             }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"and\": \"ec"} }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"ho"}             }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" hello && u"}               }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"name"}         }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":" -s\"}"}}}
+{"Ok":{"type":"content_block_stop","index":1             }}
+{"Ok":{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_01435nWMEUbn6t5AfbFchfNJ","name":"text_editor_code_execution","input":{}}             }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}   }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"command"}         }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\": \"cre"}  }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ate\""}           }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":", \"path\": \""}    }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"/tmp/notes."}             }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"txt\""}             }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":", \"file_"}       }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"text\""}  }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":": \"apple\\nb"}}}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"anana\\ncher"} }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ry\"}"}            }}
+{"Ok":{"type":"content_block_stop","index":2    }}
+{"Ok":{"type":"content_block_start","index":3,"content_block":{"type":"bash_code_execution_tool_result","tool_use_id":"srvtoolu_01Mh48zMeiPG4C2s3g8NQHXg","content":{"type":"bash_code_execution_result","stdout":"hello\nLinux\n","stderr":"","return_code":0,"content":[]}} }}
+{"Ok":{"type":"content_block_stop","index":3     }}
+{"Ok":{"type":"content_block_start","index":4,"content_block":{"type":"text_editor_code_execution_tool_result","tool_use_id":"srvtoolu_01435nWMEUbn6t5AfbFchfNJ","content":{"type":"text_editor_code_execution_create_result","is_file_update":false}} }}
+{"Ok":{"type":"content_block_stop","index":4          }}
+{"Ok":{"type":"content_block_start","index":5,"content_block":{"type":"text","text":""}        }}
+{"Ok":{"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":"Now"}      }}
+{"Ok":{"type":"content_block_delta","index":5,"delta":{"type":"text_delta","text":" let me view the file:"}   }}
+{"Ok":{"type":"content_block_stop","index":5        }}
+{"Ok":{"type":"content_block_start","index":6,"content_block":{"type":"server_tool_use","id":"srvtoolu_01LSvKq1m5wRoTAyF9sZvPob","name":"text_editor_code_execution","input":{}}          }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":""}              }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"{\"comman"}            }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"d\": \"view\""}              }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":", \"path\":"}         }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":" \""}     }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"/tmp/notes."}        }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"tx"}      }}
+{"Ok":{"type":"content_block_delta","index":6,"delta":{"type":"input_json_delta","partial_json":"t\"}"}            }}
+{"Ok":{"type":"content_block_stop","index":6   }}
+{"Ok":{"type":"content_block_start","index":7,"content_block":{"type":"text_editor_code_execution_tool_result","tool_use_id":"srvtoolu_01LSvKq1m5wRoTAyF9sZvPob","content":{"type":"text_editor_code_execution_view_result","file_type":"text","content":"apple\nbanana\ncherry","num_lines":3,"start_line":1,"total_lines":3}}            }}
+{"Ok":{"type":"content_block_stop","index":7               }}
+{"Ok":{"type":"content_block_start","index":8,"content_block":{"type":"text","text":""}           }}
+{"Ok":{"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":"Now let"}               }}
+{"Ok":{"type":"content_block_delta","index":8,"delta":{"type":"text_delta","text":" me replace banana with blueberry:"}          }}
+{"Ok":{"type":"content_block_stop","index":8     }}
+{"Ok":{"type":"content_block_start","index":9,"content_block":{"type":"server_tool_use","id":"srvtoolu_01DtLtsYxuKU2dgaC6nKuyJL","name":"text_editor_code_execution","input":{}}          }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":""}         }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"{\""}       }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"co"}        }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"mmand\""}           }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":": \"str_repla"}     }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"ce\""}   }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":", \"path\": \"/"}      }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"tmp/note"}  }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"s.txt\""}          }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":", \"old_str\""}             }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":": \"banana"}             }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"\""}  }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":", \"new_st"}  }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"r\": \"blue"}     }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"be"}         }}
+{"Ok":{"type":"content_block_delta","index":9,"delta":{"type":"input_json_delta","partial_json":"rry\"}"}       }}
+{"Ok":{"type":"content_block_stop","index":9         }}
+{"Ok":{"type":"content_block_start","index":10,"content_block":{"type":"text_editor_code_execution_tool_result","tool_use_id":"srvtoolu_01DtLtsYxuKU2dgaC6nKuyJL","content":{"type":"text_editor_code_execution_str_replace_result","old_start":1,"old_lines":3,"new_start":1,"new_lines":3,"lines":[" apple","-banana","+blueberry"," cherry","\\ No newline at end of file"]}}          }}
+{"Ok":{"type":"content_block_stop","index":10      }}
+{"Ok":{"type":"content_block_start","index":11,"content_block":{"type":"text","text":""}}}
+{"Ok":{"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":"Now"}     }}
+{"Ok":{"type":"content_block_delta","index":11,"delta":{"type":"text_delta","text":" let me view the file again:"}              }}
+{"Ok":{"type":"content_block_stop","index":11          }}
+{"Ok":{"type":"content_block_start","index":12,"content_block":{"type":"server_tool_use","id":"srvtoolu_017Wtabsx4SwDD2z826uygo3","name":"text_editor_code_execution","input":{}}   }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":""}    }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"{\"com"}            }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"mand\": "}          }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"\"view"}     }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"\""}            }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":", \"pat"}      }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"h\": \"/t"}              }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"mp/n"}            }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"ot"}}}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"es.txt"}           }}
+{"Ok":{"type":"content_block_delta","index":12,"delta":{"type":"input_json_delta","partial_json":"\"}"}    }}
+{"Ok":{"type":"content_block_stop","index":12     }}
+{"Ok":{"type":"content_block_start","index":13,"content_block":{"type":"text_editor_code_execution_tool_result","tool_use_id":"srvtoolu_017Wtabsx4SwDD2z826uygo3","content":{"type":"text_editor_code_execution_view_result","file_type":"text","content":"apple\nblueberry\ncherry","num_lines":3,"start_line":1,"total_lines":3}}      }}
+{"Ok":{"type":"content_block_stop","index":13              }}
+{"Ok":{"type":"content_block_start","index":14,"content_block":{"type":"text","text":""}          }}
+{"Ok":{"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"**"}  }}
+{"Ok":{"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":"Summary:** I executed a bash command that printed \"hello\" and the Linux OS, created a text"}             }}
+{"Ok":{"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" file with three fruit names, displayed its contents, replaced \"banana\" with \"blueberry\" using string"}}}
+{"Ok":{"type":"content_block_delta","index":14,"delta":{"type":"text_delta","text":" replacement, and verified the change by viewing the updated file."}            }}
+{"Ok":{"type":"content_block_stop","index":14}}
+{"Ok":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null,"container":{"id":"container_011CbuQSxn93idq91cvSyyv6","expires_at":"2026-06-10T11:16:10.792848Z"}},"usage":{"input_tokens":13375,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":534,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0}} }}
+{"Ok":{"type":"message_stop"             }}

@@ -225,14 +225,19 @@ fn stream_fixtures_round_trip() {
     }
 }
 
-/// **Informational, never fails (yet).** The streaming coverage gate,
-/// content-based: every wire-sourced [`BlockKind`] must arrive in the
-/// `content_block_start` of at least one captured stream fixture. One captured
-/// stream covers every block it contains (a single web_search stream covers
-/// both `ServerToolUse` and `WebSearchToolResult`), so this needs far fewer
-/// captures than a file-per-block convention — and it checks the block
-/// actually *streams*, not that a file merely exists. Flips to a hard
-/// assertion when the #78 captures land (the "force the capture" gate).
+/// The streaming coverage gate, content-based: every wire-sourced
+/// [`BlockKind`] must arrive in the `content_block_start` of at least one
+/// captured stream fixture. One captured stream covers every block it
+/// contains (a single web_search stream covers both `ServerToolUse` and
+/// `WebSearchToolResult`), so this needs far fewer captures than a
+/// file-per-block convention — and it checks the block actually *streams*,
+/// not that a file merely exists. The streaming "force the capture" gate
+/// (#78): a new server tool can't ship without a captured stream.
+///
+/// `ToolReference` is exempt here (not in the block-fixture gate): on the
+/// wire it only appears *nested* inside a `tool_search_tool_result`'s
+/// `tool_references` — never as its own `content_block_start` — so the
+/// tool_search capture covers its streaming shape.
 #[test]
 fn streaming_block_coverage() {
     let seen: HashSet<BlockKind> = stream_fixtures()
@@ -252,19 +257,16 @@ fn streaming_block_coverage() {
 
     let missing: Vec<String> = BlockKind::iter()
         .filter(|k| needs_fixture(*k))
+        .filter(|k| *k != BlockKind::ToolReference) // nested-only; see above
         .filter(|k| !seen.contains(k))
         .map(|k| format!("  Block::{k:?}"))
         .collect();
-    if !missing.is_empty() {
-        eprintln!(
-            "wire_coverage: {} wire-sourced Block variant(s) not yet covered \
-             by any captured stream fixture (deferred to #78):",
-            missing.len(),
-        );
-        for kind in &missing {
-            eprintln!("{kind}");
-        }
-    }
+    assert!(
+        missing.is_empty(),
+        "wire-sourced Block variant(s) not covered by any captured stream \
+         fixture — capture one with test/data/capture.sh (see README):\n{}",
+        missing.join("\n"),
+    );
 }
 
 /// [`roundtrip_sse`] on the wrapped `{"Ok": …}` / `{"Err": …}` jsonl format —

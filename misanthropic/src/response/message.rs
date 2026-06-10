@@ -111,6 +111,9 @@ impl Message {
         if let Some(stop_details) = delta.stop_details {
             self.stop_details = Some(stop_details);
         }
+        if let Some(container) = delta.container {
+            self.container = Some(container);
+        }
     }
 
     /// Get the [`tool::Use`] from the message if the [`StopReason`] was
@@ -308,18 +311,18 @@ pub struct ServerToolUsage {
     /// Number of [tool-search](crate::tool::ServerMethodDef::tool_search_regex)
     /// queries performed.
     ///
-    /// **As of 2026-06-04 the API does not populate this.** The documented
-    /// `tool_search_requests` key is absent from the wire entirely (verified by
-    /// `curl`), so `#[serde(default)]` leaves this `0` even on a turn where a
-    /// tool search demonstrably ran. Count
+    /// **As of 2026-06-10 the API does not populate this.** The documented
+    /// `tool_search_requests` key is absent from the wire entirely (verified
+    /// by `curl`, re-confirmed by the #78 stream captures), so this is `None`
+    /// even on a turn where a tool search demonstrably ran. Count
     /// [`ToolSearchToolResult`](crate::prompt::message::Block::ToolSearchToolResult)
     /// blocks for a reliable signal. See [#72]. (Filed upstream as a docs/wire
     /// discrepancy; the field stays so it Just Works if the API starts sending
     /// it.)
     ///
     /// [#72]: <https://github.com/mdegans/misanthropic/issues/72>
-    #[serde(default)]
-    pub tool_search_requests: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_search_requests: Option<u64>,
 }
 
 impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
@@ -331,8 +334,10 @@ impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
                 + rhs.web_search_requests,
             web_fetch_requests: self.web_fetch_requests
                 + rhs.web_fetch_requests,
-            tool_search_requests: self.tool_search_requests
-                + rhs.tool_search_requests,
+            tool_search_requests: self
+                .tool_search_requests
+                .map(|c| c + rhs.tool_search_requests.unwrap_or(0))
+                .or(rhs.tool_search_requests),
         }
     }
 }
@@ -439,6 +444,7 @@ mod tests {
             stop_reason: Some(StopReason::MaxTokens),
             stop_sequence: Some("sequence".into()),
             stop_details: None,
+            container: None,
         };
 
         message.apply_delta(delta);

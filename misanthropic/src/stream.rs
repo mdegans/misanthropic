@@ -357,6 +357,16 @@ pub struct MessageDelta {
     /// [`Message::stop_details`](crate::response::Message::stop_details).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_details: Option<Box<crate::response::StopDetails>>,
+    /// The [code execution] container backing this turn — streamed in the
+    /// final `message_delta`, *not* `message_start`. Dropping it would make a
+    /// streamed [programmatic tool call] impossible to resume (the container
+    /// id must be passed back via
+    /// [`Prompt::container`](crate::Prompt::container)).
+    ///
+    /// [code execution]: crate::tool::ServerMethodDef::code_execution
+    /// [programmatic tool call]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub container: Option<Box<crate::response::Container>>,
 }
 
 /// Stream error. This can be JSON parsing errors or errors from the API.
@@ -734,16 +744,23 @@ pub trait FilterExt:
                     }
                     Ok(Event::ContentBlockStop { .. }) => {
                         if let Some(mut call) = call.take() {
-                            call.input = match serde_json::from_str(&input) {
-                                Ok(input) => input,
-                                Err(err) => {
-                                    yield Err(Error::MessageAssembly {
-                                        message: format!("Failed to parse JSON: {}", err).into(),
-                                        delta: None,
-                                    });
-                                    continue;
-                                }
-                            };
+                            // No deltas means the call arrived complete in
+                            // `content_block_start` — a PTC / resumed-turn
+                            // `tool_use`, or a zero-argument call. Keep its
+                            // input as-is (captured in
+                            // `ptc.sse.stream.jsonl`).
+                            if !input.is_empty() {
+                                call.input = match serde_json::from_str(&input) {
+                                    Ok(input) => input,
+                                    Err(err) => {
+                                        yield Err(Error::MessageAssembly {
+                                            message: format!("Failed to parse JSON: {}", err).into(),
+                                            delta: None,
+                                        });
+                                        continue;
+                                    }
+                                };
+                            }
 
                             if is_server {
                                 yield Ok(Event::ServerToolUse { tool_use: call });
@@ -1500,5 +1517,74 @@ pub(crate) mod tests {
             seen,
             "bash_code_execution_tool_result did not survive with_tool_use"
         );
+    }
+
+    /// The full PTC turn-1 stream, captured live
+    /// (`test/data/server_tools/ptc.sse.stream.jsonl`): a `server_tool_use`
+    /// assembled from `input_json_delta`s, a complete `tool_use` with a
+    /// `code_execution` caller, and — crucially — the `container` arriving in
+    /// the final `message_delta`, *not* `message_start`. Dropping it would
+    /// make the paused turn impossible to resume; this pins the
+    /// [`MessageDelta::container`] fix.
+    #[tokio::test]
+    async fn test_stream_ptc_container_survives_assembly() {
+        const JSONL: &str =
+            include_str!("../test/data/server_tools/ptc.sse.stream.jsonl");
+
+        let stream = mock_stream_jsonl(JSONL).with_message();
+        pin_mut!(stream);
+
+        let mut assembled = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::Message { message }) = event {
+                assembled = Some(message);
+            }
+        }
+
+        let message = assembled.expect("stream assembles a message");
+        let container = message
+            .container
+            .as_ref()
+            .expect("container survives assembly");
+        assert!(container.id.starts_with("container_"));
+        assert!(matches!(
+            message.stop_reason,
+            Some(response::StopReason::ToolUse)
+        ));
+        let call = message.tool_use().expect("PTC tool_use assembled");
+        assert_eq!(call.name, "query_sales");
+    }
+
+    /// A *resumed* PTC turn, captured live
+    /// (`test/data/server_tools/ptc_resume.sse.stream.jsonl`): the API
+    /// replays the paused message as a `message_start` with **pre-populated
+    /// content** (a complete `tool_use` with caller), `container`, and
+    /// `stop_reason` already set — followed immediately by `message_stop`,
+    /// with no content_block or message_delta events at all. Assembly must
+    /// surface that message as-is.
+    #[tokio::test]
+    async fn test_stream_ptc_resume_prepopulated_message_start() {
+        const JSONL: &str = include_str!(
+            "../test/data/server_tools/ptc_resume.sse.stream.jsonl"
+        );
+
+        let stream = mock_stream_jsonl(JSONL).with_message();
+        pin_mut!(stream);
+
+        let mut assembled = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::Message { message }) = event {
+                assembled = Some(message);
+            }
+        }
+
+        let message = assembled.expect("resumed stream assembles a message");
+        assert!(message.container.is_some(), "container from message_start");
+        assert!(matches!(
+            message.stop_reason,
+            Some(response::StopReason::ToolUse)
+        ));
+        let call = message.tool_use().expect("pre-populated tool_use");
+        assert_eq!(call.name, "query_sales");
     }
 }

@@ -1,0 +1,17 @@
+{"Ok":{"type":"message_start","message":{"model":"claude-sonnet-4-6","id":"msg_017RmkxJvUnNeLUrdJTX9sN9","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":3164,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":1,"service_tier":"standard","inference_geo":"global"}}            }}
+{"Ok":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}     }}
+{"Ok":{"type": "ping"}}
+{"Ok":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Sure"}         }}
+{"Ok":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"! I'll query all 5 regions at the same time in parallel right now."}         }}
+{"Ok":{"type":"content_block_stop","index":0            }}
+{"Ok":{"type":"content_block_start","index":1,"content_block":{"type":"server_tool_use","id":"srvtoolu_01N55zpYS5g7ih75hDRdWwMU","name":"code_execution","input":{}}               }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":""}         }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"code\": \"\\nimport json\\n\\nregions = [\\\"West\\\", \\\"East\\\", \\\"Central\\\", \\\"North\\\", \\\"South\\\"]"}             }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\nresults = {}\\n\\nfor region in regions:\\n    response = await query_sales({\\\"region\\\": region})\\n    data = json.loads(response)\\n    results[region] = data[\\\"revenue"}             }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\\"]\\n    print(f\\\"{region}: {data['revenue']}\\\")\\n"}            }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\"}"}          }}
+{"Ok":{"type":"content_block_stop","index":1        }}
+{"Ok":{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_01DBN4TbJs1Y3YnK6d8cuYrM","name":"query_sales","input":{"region":"West"},"caller":{"type":"code_execution_20260120","tool_id":"srvtoolu_01N55zpYS5g7ih75hDRdWwMU"}}         }}
+{"Ok":{"type":"content_block_stop","index":2    }}
+{"Ok":{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null,"stop_details":null,"container":{"id":"container_011CbuRBpZykWNdnfd4yz4h4","expires_at":"2026-06-10T10:30:44.988734Z"}},"usage":{"input_tokens":3164,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":153,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0}}          }}
+{"Ok":{"type":"message_stop"        }}
