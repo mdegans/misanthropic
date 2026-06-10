@@ -164,6 +164,58 @@ let prompt = Prompt::default().messages([
 > idiomatic fix and a stated goal of the project; reach for that before
 > contorting the call site.
 
+### Role-pinned messages — `RoleMessage<R>`
+
+All message types are one generic struct, `RoleMessage<R> { role, content }`:
+
+- `Message` = `RoleMessage<Role>` — role known at runtime.
+- `UserMessage` / `AssistantMessage` / `SystemMessage` =
+  `RoleMessage<markers::{User, Assistant, System}>` — role pinned at compile
+  time by a zero-sized marker that serializes as the role string, so the
+  pin is **wire-invisible**.
+
+Every `RoleMessage` derefs (and `DerefMut`s) to its `Content` — and `Content`
+derefs to `Vec<Block>` — so content accessors and mutators (`len`, `iter`,
+`push`, `cache`, …) apply directly. Mutation through the deref can never
+change the role; that invariant lives in the type parameter.
+
+```rust
+use misanthropic::prompt::message::{
+    AssistantMessage, Message, Role, SystemMessage, UserMessage, WrongRole,
+};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Role-pinned construction: From<&str>/String/Content, FromIterator<Block>.
+let user = UserMessage::from("Hello!");
+let reply = AssistantMessage::text("Hi — how can I help?");
+let system: SystemMessage = "Prefer SI units.".into();
+
+// Deref to Content (and through it to Vec<Block>) — no `.content()` dance.
+assert_eq!(user.len(), 1);
+let mut cached = reply.clone();
+cached.cache(); // Content::cache via DerefMut — role untouchable.
+
+// The marker is wire-invisible: pinned and erased serialize identically.
+let erased = Message::from(user.clone());
+assert_eq!(serde_json::to_string(&user)?, serde_json::to_string(&erased)?);
+
+// Downcasting checks the role; `WrongRole` reports both sides.
+let err: WrongRole =
+    UserMessage::try_from(Message::from(reply)).unwrap_err();
+assert_eq!(err.expected, Role::User);
+assert_eq!(err.actual, Role::Assistant);
+# let _ = (cached, system);
+# Ok(())
+# }
+```
+
+`Response::{message, into_message, unwrap_message}` return an
+`AssistantMessage` (a response is an assistant turn by construction);
+`prompt.push_message(reply)` accepts it directly. Deserializing a pinned type
+rejects mismatched roles, so `serde_json::from_str::<UserMessage>(…)` doubles
+as a role check. `SystemMessage` is the typed form of the mid-conversation
+`Role::System` turn (Opus 4.8+; see turn-order notes below).
+
 ### Multi-turn conversation
 
 ```no_run
