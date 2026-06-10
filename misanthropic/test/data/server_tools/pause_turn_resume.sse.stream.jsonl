@@ -1,0 +1,32 @@
+{"Ok":{"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_01RZAdiGsMLwKnCxcTrp8mec","type":"message","role":"assistant","content":[],"stop_reason":null,"stop_sequence":null,"stop_details":null,"usage":{"input_tokens":2842,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":0},"output_tokens":8,"service_tier":"standard","inference_geo":"not_available"}}          }}
+{"Ok":{"type":"content_block_start","index":0,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_019ChPMX6FQj6SCpkNLHF43J","content":{"type":"web_fetch_tool_result_error","error_code":"url_not_accessible"},"caller":{"type":"direct"}}   }}
+{"Ok":{"type":"content_block_stop","index":0      }}
+{"Ok":{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}       }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"**URL 11:** Unable to fetch"}       }}
+{"Ok":{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" - network error\n\nTrying URL 12:"}          }}
+{"Ok":{"type":"content_block_stop","index":1               }}
+{"Ok":{"type":"content_block_start","index":2,"content_block":{"type":"server_tool_use","id":"srvtoolu_015GhkCb4b6Z4VJyzUsGwWdW","name":"web_fetch","input":{}}              }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}            }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"url\""} }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":": \"htt"}       }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ps://httpb"}      }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"in.org/any"}           }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"th"} }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"ing/12"}              }}
+{"Ok":{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"\"}"}          }}
+{"Ok":{"type":"content_block_stop","index":2             }}
+{"Ok":{"type":"content_block_start","index":3,"content_block":{"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_015GhkCb4b6Z4VJyzUsGwWdW","content":{"type":"web_fetch_result","url":"https://httpbin.org/anything/12","retrieved_at":"2026-06-10T10:54:53.300965","content":{"type":"document","source":{"type":"text","media_type":"text/plain","data":"{\n  \"args\": {}, \n  \"data\": \"\", \n  \"files\": {}, \n  \"form\": {}, \n  \"headers\": {\n    \"Accept\": \"*/*\", \n    \"Accept-Encoding\": \"gzip, deflate\", \n    \"Host\": \"httpbin.org\", \n    \"User-Agent\": \"Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Claude-User/1.0; +claude-user@anthropic.com)\", \n    \"X-Amzn-Trace-Id\": \"Root=1-6a29427c-1281a6120f8e15947eaaaeca\"\n  }, \n  \"json\": null, \n  \"method\": \"GET\", \n  \"origin\": \"34.162.230.222\", \n  \"url\": \"https://httpbin.org/anything/12\"\n}\n"},"title":null}},"caller":{"type":"direct"}}            }}
+{"Ok":{"type":"content_block_stop","index":3    }}
+{"Ok":{"type":"content_block_start","index":4,"content_block":{"type":"text","text":""}}}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"**URL 12:** `"}             }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"https://httpbin.org/anything/12`\n\n## Summary of Results:\n\n| URL # | Status | URL Field"} }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" Value |\n|-------|--------|-----------------|\n| 1 | ✓ Success | `https://httpbin.org"}        }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":"/anything/1` |\n| 2 | ✗ Error | Network error |\n| 3 | ✗ Error | Network error |\n| 4 | ✗"}             }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" Error | Network error |\n| 5 | ✗ Error | Network error |\n| 6 | ✗ Error | Network error |\n| 7 | ✗ Error | Network error |\n| 8 | ✗ Error | Network error"}           }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" |\n| 9 | ✗ Error | Network error |\n| 10 | ✗ Error | Network error |\n| 11 | ✗ Error | Network error |\n| 12 | ✓ Success | `https://httpbin"}               }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":".org/anything/12` |\n\nSuccessfully fetched URLs 1 and 12, which"}         }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" both returned JSON responses with their respective 'url' fields."}          }}
+{"Ok":{"type":"content_block_delta","index":4,"delta":{"type":"text_delta","text":" URLs 2-11 encountered network errors."}     }}
+{"Ok":{"type":"content_block_stop","index":4  }}
+{"Ok":{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null,"stop_details":null},"usage":{"input_tokens":6058,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":362,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":2}} }}
+{"Ok":{"type":"message_stop"          }}

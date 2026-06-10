@@ -1,0 +1,18 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 4096,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Fetch each of these 12 URLs ONE AT A TIME with web_fetch (never skip any), and after each fetch note the value of the 'url' field in the JSON: https://httpbin.org/anything/1 https://httpbin.org/anything/2 https://httpbin.org/anything/3 https://httpbin.org/anything/4 https://httpbin.org/anything/5 https://httpbin.org/anything/6 https://httpbin.org/anything/7 https://httpbin.org/anything/8 https://httpbin.org/anything/9 https://httpbin.org/anything/10 https://httpbin.org/anything/11 https://httpbin.org/anything/12"
+    }
+  ],
+  "tools": [
+    {
+      "type": "web_fetch_20250910",
+      "name": "web_fetch",
+      "max_uses": 15,
+      "allowed_domains": ["httpbin.org"]
+    }
+  ]
+}

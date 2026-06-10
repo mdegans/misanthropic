@@ -1588,6 +1588,71 @@ pub(crate) mod tests {
         assert_eq!(call.name, "query_sales");
     }
 
+    /// A paused server-tool turn and its continuation, captured live
+    /// (`test/data/server_tools/pause_turn{,_resume}.sse.stream.jsonl`): 11
+    /// sequential `web_fetch` rounds hit the server-side iteration cap and
+    /// the turn pauses with [`StopReason::PauseTurn`] in the `message_delta`.
+    /// Echoing the assembled assistant turn back (same tools, no new user
+    /// message) resumes it — and unlike a PTC resume, the continuation's
+    /// `message_start` is **empty** (a fresh adjacent assistant turn the API
+    /// merges server-side, not a pre-populated replay): it delivers the
+    /// in-flight result, runs the last fetch, and ends normally.
+    #[tokio::test]
+    async fn test_stream_pause_turn_and_resume() {
+        use crate::prompt::message::Block;
+
+        async fn assemble(jsonl: &'static str) -> response::Message {
+            let stream = mock_stream_jsonl(jsonl).with_message();
+            pin_mut!(stream);
+            let mut assembled = None;
+            while let Some(event) = stream.next().await {
+                if let Ok(Event::Message { message }) = event {
+                    assembled = Some(message);
+                }
+            }
+            assembled.expect("stream assembles a message")
+        }
+
+        let fetches = |m: &response::Message| {
+            m.inner
+                .content()
+                .iter()
+                .filter(|b| matches!(b, Block::WebFetchToolResult { .. }))
+                .count()
+        };
+
+        let paused = assemble(include_str!(
+            "../test/data/server_tools/pause_turn.sse.stream.jsonl"
+        ))
+        .await;
+        assert!(matches!(
+            paused.stop_reason,
+            Some(response::StopReason::PauseTurn)
+        ));
+        // The turn pauses *mid-call*: the 11th `server_tool_use` is issued
+        // but its result never arrives in this turn.
+        let calls = paused
+            .inner
+            .content()
+            .iter()
+            .filter(|b| matches!(b, Block::ServerToolUse { .. }))
+            .count();
+        assert_eq!(calls, 11, "11 fetch calls issued");
+        assert_eq!(fetches(&paused), 10, "only 10 results before the pause");
+
+        let resumed = assemble(include_str!(
+            "../test/data/server_tools/pause_turn_resume.sse.stream.jsonl"
+        ))
+        .await;
+        assert!(matches!(
+            resumed.stop_reason,
+            Some(response::StopReason::EndTurn)
+        ));
+        // The continuation first delivers the in-flight 11th result, then
+        // issues and completes the 12th fetch.
+        assert_eq!(fetches(&resumed), 2, "11th (pending) + 12th results");
+    }
+
     /// A tool call whose input is a *list of objects*, captured live
     /// (`test/data/incremental/tool_items.sse.stream.jsonl`): the array
     /// arrives as 21 `input_json_delta` frames split mid-token. The #58
