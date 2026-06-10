@@ -198,11 +198,15 @@ impl CachedPrompt {
     ///
     /// Returns [`TurnOrderError`] if the turn order would be violated
     /// (consecutive same-role turns, or a misplaced system turn).
-    pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
+    pub fn push_message<M>(
+        &mut self,
+        message: M,
+    ) -> Result<&mut Self, TurnOrderError>
     where
         M: Into<Message>,
     {
-        self.inner.push_message(message)
+        self.inner.push_message(message)?;
+        Ok(self)
     }
 
     /// Add a cache breakpoint on the last cacheable block.
@@ -214,11 +218,12 @@ impl CachedPrompt {
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL (useful
     /// for cache priming across an hourly batch cadence), use
     /// [`cache_1h`](CachedPrompt::cache_1h).
-    pub fn cache(&mut self) {
+    pub fn cache(&mut self) -> &mut Self {
         // Prompt::cache() is `fn cache(mut self) -> Self`, so we need to
         // temporarily take ownership.
         let taken = std::mem::take(&mut self.inner);
         self.inner = taken.cache();
+        self
     }
 
     /// Add a 1-hour cache breakpoint on the last cacheable block.
@@ -227,9 +232,10 @@ impl CachedPrompt {
     /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
     /// Useful when the priming write and the real requests may be
     /// separated by more than the default 5-minute window.
-    pub fn cache_1h(&mut self) {
+    pub fn cache_1h(&mut self) -> &mut Self {
         let taken = std::mem::take(&mut self.inner);
         self.inner = taken.cache_1h();
+        self
     }
 
     /// Place `n` cache breakpoints in a rolling trailing window across

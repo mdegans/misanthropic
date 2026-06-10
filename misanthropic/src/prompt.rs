@@ -429,7 +429,10 @@ impl Prompt {
     /// [`messages`]: Prompt::messages
     /// [`push_messages`]: Prompt::push_messages
     /// [`add_messages`]: Prompt::add_messages
-    pub fn push_message<M>(&mut self, message: M) -> Result<(), TurnOrderError>
+    pub fn push_message<M>(
+        &mut self,
+        message: M,
+    ) -> Result<&mut Self, TurnOrderError>
     where
         M: Into<Message>,
     {
@@ -453,7 +456,7 @@ impl Prompt {
             }
         }
         self.messages.push(message);
-        Ok(())
+        Ok(self)
     }
 
     /// Extend the [`messages`] from an iterable. For an in-place version, see
@@ -487,7 +490,7 @@ impl Prompt {
     pub fn push_messages<M, Ms>(
         &mut self,
         messages: Ms,
-    ) -> Result<(), TurnOrderError>
+    ) -> Result<&mut Self, TurnOrderError>
     where
         M: Into<Message>,
         Ms: IntoIterator<Item = M>,
@@ -503,7 +506,7 @@ impl Prompt {
 
             Err(e)
         } else {
-            Ok(())
+            Ok(self)
         }
     }
 

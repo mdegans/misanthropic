@@ -678,31 +678,33 @@ impl Content {
     ///
     /// Uses the default 5-minute ephemeral TTL. For a 1-hour TTL, use
     /// [`cache_1h`](Content::cache_1h).
-    pub fn cache(&mut self) {
-        self.cache_with(CacheControl::ephemeral());
+    pub fn cache(&mut self) -> &mut Self {
+        self.cache_with(CacheControl::ephemeral())
     }
 
     /// Add a 1-hour cache breakpoint to the final [`Block`].
     ///
     /// Behaves identically to [`cache`](Content::cache) but uses
     /// [`CacheControl::one_hour`].
-    pub fn cache_1h(&mut self) {
-        self.cache_with(CacheControl::one_hour());
+    pub fn cache_1h(&mut self) -> &mut Self {
+        self.cache_with(CacheControl::one_hour())
     }
 
     /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
     /// final [`Block`]. Does nothing if the content is empty.
-    pub fn cache_with(&mut self, cache_control: CacheControl) {
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
         if let Some(block) = self.0.last_mut() {
             block.cache_with(cache_control);
         }
+        self
     }
 
     /// Remove all cache breakpoints from all blocks in this content.
-    pub fn uncache(&mut self) {
+    pub fn uncache(&mut self) -> &mut Self {
         for block in &mut self.0 {
             block.uncache();
         }
+        self
     }
 
     /// Returns `true` if any block in this content has a cache breakpoint.
@@ -1700,7 +1702,7 @@ impl Block {
     }
 
     /// Create a cache breakpoint at this block. See [`Prompt::cache`] for more
-    /// information. Returns true if the block was cached. This alwasy succeeds,
+    /// information. Returns true if the block was cached. This always succeeds,
     /// however some blocks are automatically cached and will return false.
     ///
     /// Uses the default 5-minute ephemeral TTL. For a 1-hour TTL, use

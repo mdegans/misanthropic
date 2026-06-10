@@ -188,7 +188,7 @@ pub async fn events_stream(
                 // message was a user message or that there were no messages in
                 // which case the push is allowed.
                 log::debug!("Pushing user message");
-                prompt.push_message(user_message).unwrap()
+                prompt.push_message(user_message).unwrap();
             }
             // Final message is a user message. It is the Agent's turn to
             // respond. We have guaranteed that the last message in the prompt
