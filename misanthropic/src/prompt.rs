@@ -519,34 +519,13 @@ impl Prompt {
         self
     }
 
-    /// Set the [`metadata`] from an iterable of key-value pairs.
-    /// The values must be serializable to JSON.
-    ///
-    /// # Panics
-    /// - if a value cannot be serialized to JSON.
-    ///
-    /// See [`try_metadata`] for a fallible version.
+    /// Replace the [`metadata`] from an iterable of key-value pairs.
+    /// The values must be serializable to JSON. To add a single pair, use
+    /// [`add_metadata`].
     ///
     /// [`metadata`]: Prompt::metadata
-    /// [`try_metadata`]: Prompt::try_metadata
-    pub fn metadata<S, V, Vs>(mut self, metadata: Vs) -> Self
-    where
-        S: Into<String>,
-        V: Serialize,
-        Vs: IntoIterator<Item = (S, V)>,
-    {
-        self.metadata = metadata
-            .into_iter()
-            .map(|(k, v)| (k.into(), serde_json::to_value(v).unwrap()))
-            .collect();
-        self
-    }
-
-    /// Set the [`metadata`] from an iterable of key-value pairs.
-    /// The values must be serializable to JSON.
-    ///
-    /// [`metadata`]: Prompt::metadata
-    pub fn try_metadata<S, V, Vs>(
+    /// [`add_metadata`]: Prompt::add_metadata
+    pub fn metadata<S, V, Vs>(
         mut self,
         metadata: Vs,
     ) -> Result<Self, serde_json::Error>
@@ -1975,16 +1954,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_metadata() {
-        let metadata = vec![("key".to_string(), json!("value"))];
-        let request = Prompt::default().metadata(metadata);
-        assert_eq!(request.metadata.get("key").unwrap(), "value");
-    }
-
-    #[test]
-    fn test_try_metadata() {
+    fn test_metadata() {
         let request = Prompt::default()
-            .try_metadata([("key", "value"), ("key2", "value2")])
+            .metadata([("key", "value"), ("key2", "value2")])
             .unwrap();
         assert_eq!(request.metadata.get("key").unwrap(), "value");
         assert_eq!(request.metadata.get("key2").unwrap(), "value2");
