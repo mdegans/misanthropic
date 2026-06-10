@@ -568,7 +568,7 @@ impl Prompt {
 
     /// Insert a key-value pair into the metadata. Replace the value if the key
     /// already exists.
-    pub fn insert_metadata<S, V>(
+    pub fn add_metadata<S, V>(
         mut self,
         key: S,
         value: V,
@@ -606,7 +606,7 @@ impl Prompt {
     /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
-    pub fn stop_sequence<S>(mut self, stop_sequence: S) -> Self
+    pub fn add_stop_sequence<S>(mut self, stop_sequence: S) -> Self
     where
         S: Into<Cow<'static, str>>,
     {
@@ -623,7 +623,7 @@ impl Prompt {
     /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
     /// [`response::Message::stop_reason`]: crate::response::Message::stop_reason
-    pub fn extend_stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
+    pub fn add_stop_sequences<S, Ss>(mut self, stop_sequences: Ss) -> Self
     where
         S: Into<Cow<'static, str>>,
         Ss: IntoIterator<Item = S>,
@@ -1991,9 +1991,8 @@ mod tests {
     }
 
     #[test]
-    fn test_insert_metadata() {
-        let request =
-            Prompt::default().insert_metadata("key", "value").unwrap();
+    fn test_add_metadata() {
+        let request = Prompt::default().add_metadata("key", "value").unwrap();
         assert_eq!(request.metadata.get("key").unwrap(), "value");
     }
 
@@ -2006,15 +2005,15 @@ mod tests {
     #[test]
     fn test_add_stop_sequence() {
         let mut request = Prompt::default();
-        request = request.stop_sequence(STOP_SEQUENCES[0]);
+        request = request.add_stop_sequence(STOP_SEQUENCES[0]);
         assert_eq!(request.stop_sequences.as_ref().unwrap().len(), 1);
         assert_eq!(request.stop_sequences.unwrap()[0], STOP_SEQUENCES[0]);
     }
 
     #[test]
-    fn test_extend_stop_sequences() {
+    fn test_add_stop_sequences() {
         let mut request = Prompt::default();
-        request = request.extend_stop_sequences(STOP_SEQUENCES);
+        request = request.add_stop_sequences(STOP_SEQUENCES);
         assert_eq!(request.stop_sequences.unwrap().len(), 2);
     }
 
