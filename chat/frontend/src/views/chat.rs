@@ -47,7 +47,7 @@ static DEFAULT_DRAG_CLOSURE: GlobalSignal<
 /// Distinguished by shape via serde `untagged` (the same way we sniff image
 /// types) since Save writes the two as separate files. The shapes are mutually
 /// exclusive: a tool-state file fails the `Prompt` arm because its `tools` is a
-/// map rather than the array `Prompt::methods` (serialized as `tools`) expects,
+/// map rather than the array `Prompt::tools` (serialized as `tools`) expects,
 /// and a prompt fails the `ToolState` arm because it has no top-level `name`.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]

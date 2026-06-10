@@ -2196,7 +2196,7 @@ mod tests {
 
         // The whole prompt round-trips, preserving both tool kinds.
         let back: crate::Prompt = serde_json::from_value(json).unwrap();
-        let methods = back.methods.unwrap();
+        let methods = back.tools.unwrap();
         assert!(matches!(methods[0], MethodDef::Custom(_)));
         assert!(matches!(methods[1], MethodDef::Server(_)));
     }

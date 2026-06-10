@@ -208,7 +208,7 @@ mod tests {
     fn test_prompt_html() {
         let prompt = crate::prompt::Prompt {
             system: Some("Do stuff the user says.".into()),
-            methods: Some(vec![crate::tool::MethodDef::Custom(
+            tools: Some(vec![crate::tool::MethodDef::Custom(
                 CustomMethodDef {
                     name: "python".into(),
                     description: "Run a Python script.".into(),

@@ -425,7 +425,7 @@ impl From<&Prompt> for ChatCompletionRequest {
 
         // Tools. Server tools have no OpenAI chat-completions equivalent in
         // this shim, so only custom methods are forwarded.
-        let tools = prompt.methods.as_ref().map(|methods| {
+        let tools = prompt.tools.as_ref().map(|methods| {
             methods
                 .iter()
                 .filter_map(|t| t.as_method())

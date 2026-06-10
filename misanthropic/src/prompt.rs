@@ -98,8 +98,7 @@ pub struct Prompt {
     /// [`CustomMethodDef`]: crate::tool::CustomMethodDef
     /// [`MethodDef`]: crate::tool::MethodDef
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[serde(rename = "tools")]
-    pub methods: Option<Vec<tool::MethodDef>>,
+    pub tools: Option<Vec<tool::MethodDef>>,
     /// Top K tokens to consider for each token.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
@@ -175,7 +174,7 @@ impl std::fmt::Debug for Prompt {
             .field("system", &self.system)
             .field("temperature", &self.temperature)
             .field("tool_choice", &self.tool_choice)
-            .field("tools", &self.methods)
+            .field("tools", &self.tools)
             .field("top_k", &self.top_k)
             .field("top_p", &self.top_p)
             .field("thinking", &self.thinking)
@@ -199,7 +198,7 @@ impl Default for Prompt {
             system: Default::default(),
             temperature: Default::default(),
             tool_choice: Default::default(),
-            methods: Default::default(),
+            tools: Default::default(),
             top_k: Default::default(),
             top_p: Default::default(),
             thinking: Default::default(),
@@ -736,7 +735,7 @@ impl Prompt {
         T: Into<CustomMethodDef>,
         Ts: IntoIterator<Item = T>,
     {
-        self.methods = Some(
+        self.tools = Some(
             tools
                 .into_iter()
                 .map(|t| tool::MethodDef::Custom(t.into()))
@@ -772,7 +771,7 @@ impl Prompt {
         T: TryInto<CustomMethodDef, Error = E>,
         Ts: IntoIterator<Item = T>,
     {
-        self.methods = Some(
+        self.tools = Some(
             tools
                 .into_iter()
                 .map(|t| t.try_into().map(tool::MethodDef::Custom))
@@ -800,7 +799,7 @@ impl Prompt {
     where
         T: Into<tool::MethodDef>,
     {
-        self.methods
+        self.tools
             .get_or_insert_with(Default::default)
             .push(tool.into());
         self
@@ -812,7 +811,7 @@ impl Prompt {
     where
         T: TryInto<CustomMethodDef, Error = E>,
     {
-        self.methods
+        self.tools
             .get_or_insert_with(Default::default)
             .push(tool::MethodDef::Custom(tool.try_into()?));
         Ok(self)
@@ -838,7 +837,7 @@ impl Prompt {
         T: Into<CustomMethodDef>,
         Ts: IntoIterator<Item = T>,
     {
-        self.methods.get_or_insert_with(Default::default).extend(
+        self.tools.get_or_insert_with(Default::default).extend(
             tools.into_iter().map(|t| tool::MethodDef::Custom(t.into())),
         );
         self
@@ -869,7 +868,7 @@ impl Prompt {
     where
         T: tool::Tool + ?Sized,
     {
-        self.methods
+        self.tools
             .get_or_insert_with(Default::default)
             .extend(tool.definitions());
         self
@@ -893,7 +892,7 @@ impl Prompt {
     ///     .defer_tools();
     /// ```
     pub fn defer_tools(mut self) -> Self {
-        if let Some(methods) = self.methods.as_mut() {
+        if let Some(methods) = self.tools.as_mut() {
             for method in methods
                 .iter_mut()
                 .filter_map(tool::MethodDef::as_method_mut)
@@ -1126,7 +1125,7 @@ impl Prompt {
         // If there are no messages or system prompt, add a cache breakpoint to
         // the tools if they exist.
         if let Some(tool) =
-            self.methods.as_mut().and_then(|tools| tools.last_mut())
+            self.tools.as_mut().and_then(|tools| tools.last_mut())
         {
             tool.cache_with(cache_control);
             return self;
@@ -1584,7 +1583,7 @@ mod tests {
             .add_tool(crate::tool::ServerMethodDef::tool_search_regex())
             .defer_tools();
 
-        let methods = prompt.methods.as_ref().unwrap();
+        let methods = prompt.tools.as_ref().unwrap();
         // Both custom tools are now deferred...
         for def in methods.iter().filter_map(|d| d.as_method()) {
             assert_eq!(def.defer_loading, Some(true));
@@ -1612,7 +1611,7 @@ mod tests {
             ]);
 
         let names: Vec<_> = prompt
-            .methods
+            .tools
             .as_ref()
             .unwrap()
             .iter()
@@ -1647,7 +1646,7 @@ mod tests {
         // A short-lived `Prompt` accepts the tool's `MethodDef`s.
         let prompt = Prompt::default().register_tool(&PairTool);
         let names: Vec<_> = prompt
-            .methods
+            .tools
             .as_ref()
             .unwrap()
             .iter()
@@ -1696,7 +1695,7 @@ mod tests {
         assert!(request.system.is_none());
         assert!(request.temperature.is_none());
         assert!(request.tool_choice.is_none());
-        assert!(request.methods.is_none());
+        assert!(request.tools.is_none());
         assert!(request.top_k.is_none());
         assert!(request.top_p.is_none());
     }
@@ -2058,32 +2057,16 @@ mod tests {
             allowed_callers: None,
         });
 
-        assert!(
-            !request
-                .methods
-                .as_ref()
-                .unwrap()
-                .last()
-                .unwrap()
-                .is_cached()
-        );
+        assert!(!request.tools.as_ref().unwrap().last().unwrap().is_cached());
 
         let mut request = request.cache();
 
-        assert!(
-            request
-                .methods
-                .as_ref()
-                .unwrap()
-                .last()
-                .unwrap()
-                .is_cached()
-        );
+        assert!(request.tools.as_ref().unwrap().last().unwrap().is_cached());
 
         // remove the cache breakpoint
         // TODO: add an un_cache method? set_cache?
         request
-            .methods
+            .tools
             .as_mut()
             .unwrap()
             .last_mut()
@@ -2101,15 +2084,7 @@ mod tests {
 
         assert!(request.system.as_ref().unwrap().last().unwrap().is_cached());
         // ensure the tools are not affected
-        assert!(
-            !request
-                .methods
-                .as_ref()
-                .unwrap()
-                .last()
-                .unwrap()
-                .is_cached()
-        );
+        assert!(!request.tools.as_ref().unwrap().last().unwrap().is_cached());
 
         // Test with messages. The call to cache should affect the last message.
         let request = request
@@ -2414,7 +2389,7 @@ mod tests {
             .try_add_tool(json_tool)
             .unwrap();
 
-        let methods = request.methods.as_ref().unwrap();
+        let methods = request.tools.as_ref().unwrap();
         let method = |i: usize| methods[i].as_method().unwrap();
         assert_eq!(methods.len(), 2);
         assert_eq!(method(0).name, "ping");

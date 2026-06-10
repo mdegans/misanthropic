@@ -109,7 +109,7 @@ impl Prompt {
     pub fn get(&self, index: Index) -> Option<IndexRef<'_>> {
         match index {
             Index::Method(MethodIndex(i)) => self
-                .methods
+                .tools
                 .as_ref()?
                 .get(i)?
                 .as_method()
@@ -128,7 +128,7 @@ impl Prompt {
     pub fn get_mut(&mut self, index: Index) -> Option<IndexMut<'_>> {
         match index {
             Index::Method(MethodIndex(i)) => self
-                .methods
+                .tools
                 .as_mut()?
                 .get_mut(i)?
                 .as_method_mut()
@@ -151,7 +151,7 @@ impl Prompt {
         // Only custom tools are addressable as a `MethodIndex`; server tools
         // carry their own `cache_control` and are skipped here.
         let tools = self
-            .methods
+            .tools
             .iter()
             .flatten()
             .enumerate()
@@ -178,7 +178,7 @@ impl std::ops::Index<MethodIndex> for Prompt {
     ///   addressed tool is a [`ServerMethodDef`](crate::tool::ServerMethodDef) rather
     ///   than a custom [`CustomMethodDef`].
     fn index(&self, index: MethodIndex) -> &Self::Output {
-        self.methods.as_ref().expect("no tools on this prompt")[index.0]
+        self.tools.as_ref().expect("no tools on this prompt")[index.0]
             .as_method()
             .expect(
                 "tool at this index is a server tool, not a CustomMethodDef",
@@ -192,7 +192,7 @@ impl std::ops::IndexMut<MethodIndex> for Prompt {
     ///   addressed tool is a [`ServerMethodDef`](crate::tool::ServerMethodDef) rather
     ///   than a custom [`CustomMethodDef`].
     fn index_mut(&mut self, index: MethodIndex) -> &mut Self::Output {
-        self.methods.as_mut().expect("no tools on this prompt")[index.0]
+        self.tools.as_mut().expect("no tools on this prompt")[index.0]
             .as_method_mut()
             .expect(
                 "tool at this index is a server tool, not a CustomMethodDef",

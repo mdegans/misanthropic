@@ -339,7 +339,7 @@ impl CachedPrompt {
             self.inner.system.as_ref().is_some_and(|s| s.has_cache()),
         );
         let tool_count =
-            self.inner.methods.as_ref().map_or(0, |tools| {
+            self.inner.tools.as_ref().map_or(0, |tools| {
                 tools.iter().filter(|t| t.is_cached()).count()
             });
         let used = system_count + tool_count + tail_set.len();
@@ -691,7 +691,7 @@ mod tests {
         // Can read via Deref
         assert_eq!(cached.max_tokens, NonZeroU32::new(1024).unwrap());
         assert!(cached.tool_choice.is_none());
-        assert!(cached.methods.is_none());
+        assert!(cached.tools.is_none());
     }
 
     #[test]

@@ -179,7 +179,7 @@ impl ToolBox {
         self.method_to_tool_name.keys().map(|name| name.as_ref())
     }
 
-    /// Install this toolbox into `prompt`: overwrite [`Prompt::methods`] with
+    /// Install this toolbox into `prompt`: overwrite [`Prompt::tools`] with
     /// the toolbox's (namespaced) [`definitions`], then run each tool's
     /// [`on_init`] via [`init_tools`]. Call this once when (re)loading a
     /// conversation.
@@ -197,7 +197,7 @@ impl ToolBox {
         &mut self,
         prompt: &mut Prompt,
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        prompt.methods = Some(self.definitions());
+        prompt.tools = Some(self.definitions());
         self.init_tools(prompt).await
     }
 
@@ -360,7 +360,7 @@ impl Tool for ToolBox {
             None => {
                 // This can happen if somehow the Prompt and ToolBox are out of
                 // sync because the ToolBox methods do not match the
-                // Prompt::methods.
+                // Prompt::tools.
                 let mut available_methods: String =
                     self.method_names().collect::<Vec<_>>().join(", ");
                 if available_methods.is_empty() {
