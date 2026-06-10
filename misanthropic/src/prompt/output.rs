@@ -46,6 +46,34 @@ pub struct OutputConfig {
     pub effort: Option<Effort>,
 }
 
+/// Conventional top-level wrapper for a *list*-shaped structured output.
+/// The API requires a top-level `object` schema, so a `Vec<T>` rides in
+/// [`items`](Self::items). Pairs with [`FilterExt::json_items`], which
+/// yields each element as its bytes arrive.
+///
+/// [`FilterExt::json_items`]: crate::stream::FilterExt::json_items
+#[derive(Clone, Debug, Serialize, Deserialize, schemars::JsonSchema)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+pub struct Items<T> {
+    /// The elements.
+    pub items: Vec<T>,
+}
+
+impl<T> From<Vec<T>> for Items<T> {
+    fn from(items: Vec<T>) -> Self {
+        Self { items }
+    }
+}
+
+impl<T> IntoIterator for Items<T> {
+    type Item = T;
+    type IntoIter = std::vec::IntoIter<T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.items.into_iter()
+    }
+}
+
 /// How eagerly the model spends tokens, set on [`OutputConfig::effort`].
 ///
 /// Affects *all* output tokens — text, tool calls, and extended thinking — so

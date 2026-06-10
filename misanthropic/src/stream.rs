@@ -85,6 +85,22 @@ pub enum Event {
         /// The server tool use.
         tool_use: tool::Use,
     },
+    /// A completed element of the outermost JSON array in a [`Text`] or
+    /// [`ToolUse`] block — see [`Items`] for the conventional shape.
+    /// Assembled by [`FilterExt::with_json`], not the API.
+    ///
+    /// [`Text`]: Block::Text
+    /// [`ToolUse`]: Block::ToolUse
+    /// [`Items`]: crate::prompt::Items
+    JsonObject {
+        /// Index of the [`Content`] [`Block`] the element belongs to.
+        index: usize,
+        /// The parsed element. Conforms to the schema when
+        /// [`output_config`] is set.
+        ///
+        /// [`output_config`]: crate::Prompt::output_config
+        value: serde_json::Value,
+    },
 }
 
 /// Internal enum for the API result so we don't have to add an error variant to
@@ -410,6 +426,18 @@ pub enum Error {
         #[from]
         error: DeltaError,
     },
+    /// JSON assembly error from [`FilterExt::with_json`] — an array element
+    /// failed to parse, or the block ended mid-value (e.g. on
+    /// [`MaxTokens`]).
+    ///
+    /// [`MaxTokens`]: crate::response::StopReason::MaxTokens
+    #[error("JSON assembly error: {message}")]
+    JsonAssembly {
+        /// Error message.
+        message: Cow<'static, str>,
+        /// Index of the [`Content`] [`Block`] that failed.
+        index: usize,
+    },
 }
 
 // Some of the error types do not implement `Serialize` so we do it manually.
@@ -458,6 +486,12 @@ impl Serialize for Error {
                 "type": "delta",
                 "message": message,
                 "error": error,
+            })
+            .serialize(serializer),
+            Error::JsonAssembly { index, .. } => json!({
+                "type": "json_assembly",
+                "message": message,
+                "index": index,
             })
             .serialize(serializer),
         }
@@ -532,6 +566,144 @@ impl futures::Stream for Stream {
         cx: &mut std::task::Context,
     ) -> Poll<Option<Self::Item>> {
         self.inner.as_mut().poll_next(cx)
+    }
+}
+
+/// Incremental scanner yielding each completed element of the outermost JSON
+/// array as its bytes arrive. The target array is the first one opened at the
+/// root or as a direct value of the root object — the shape [`Items`]
+/// serializes to. Drives [`FilterExt::with_json`].
+///
+/// [`Items`]: crate::prompt::Items
+#[derive(Debug, Default)]
+struct ArrayScanner {
+    /// Bytes seen so far for the block.
+    buf: String,
+    /// Scan cursor into [`buf`](Self::buf). Structural bytes are ASCII, so
+    /// it always lands on a char boundary.
+    pos: usize,
+    /// Open `{` / `[` containers at the cursor.
+    depth: usize,
+    in_string: bool,
+    escaped: bool,
+    /// [`depth`](Self::depth) of elements inside the target array, once
+    /// found. Cleared when the array closes so a sibling array can't
+    /// re-target.
+    element_depth: Option<usize>,
+    /// Offset of the first byte of the element being scanned.
+    element_start: Option<usize>,
+    /// The target array closed cleanly.
+    done: bool,
+    /// An element failed to parse; scanning is abandoned.
+    failed: bool,
+}
+
+impl ArrayScanner {
+    /// Feed a chunk, returning the elements it completed.
+    fn feed(
+        &mut self,
+        chunk: &str,
+    ) -> Result<Vec<serde_json::Value>, serde_json::Error> {
+        self.buf.push_str(chunk);
+        let mut out = Vec::new();
+
+        if self.failed {
+            self.pos = self.buf.len();
+            return Ok(out);
+        }
+
+        while self.pos < self.buf.len() {
+            let i = self.pos;
+            let b = self.buf.as_bytes()[i];
+            self.pos += 1;
+
+            if self.in_string {
+                if self.escaped {
+                    self.escaped = false;
+                } else if b == b'\\' {
+                    self.escaped = true;
+                } else if b == b'"' {
+                    self.in_string = false;
+                }
+                continue;
+            }
+
+            match b {
+                b'"' => {
+                    self.start_element(i);
+                    self.in_string = true;
+                }
+                b'{' => {
+                    self.start_element(i);
+                    self.depth += 1;
+                }
+                b'[' => {
+                    if !self.done
+                        && self.element_depth.is_none()
+                        && self.depth <= 1
+                    {
+                        // The first root-or-root-field array: the target.
+                        self.depth += 1;
+                        self.element_depth = Some(self.depth);
+                    } else {
+                        self.start_element(i);
+                        self.depth += 1;
+                    }
+                }
+                b'}' => {
+                    self.depth = self.depth.saturating_sub(1);
+                }
+                b']' => {
+                    if self.element_depth == Some(self.depth) {
+                        // Closes the target array.
+                        if let Some(start) = self.element_start.take() {
+                            out.push(self.parse(start, i)?);
+                        }
+                        self.element_depth = None;
+                        self.done = true;
+                    }
+                    self.depth = self.depth.saturating_sub(1);
+                }
+                b',' => {
+                    if self.element_depth == Some(self.depth)
+                        && let Some(start) = self.element_start.take()
+                    {
+                        out.push(self.parse(start, i)?);
+                    }
+                }
+                b' ' | b'\t' | b'\n' | b'\r' => {}
+                _ => self.start_element(i),
+            }
+        }
+
+        Ok(out)
+    }
+
+    /// Mark `i` as the start of an element when the cursor sits directly
+    /// inside the target array and no element is in progress.
+    fn start_element(&mut self, i: usize) {
+        if self.element_depth == Some(self.depth)
+            && self.element_start.is_none()
+        {
+            self.element_start = Some(i);
+        }
+    }
+
+    /// Parse one element's bytes, abandoning the scan on failure.
+    fn parse(
+        &mut self,
+        start: usize,
+        end: usize,
+    ) -> Result<serde_json::Value, serde_json::Error> {
+        serde_json::from_str(&self.buf[start..end])
+            .inspect_err(|_| self.failed = true)
+    }
+
+    /// Whether the block ended mid-value — e.g. cut off by
+    /// [`MaxTokens`](StopReason::MaxTokens). Parse failures already
+    /// surfaced, so they don't count.
+    fn is_truncated(&self) -> bool {
+        !self.failed && (self.depth > 0 || self.in_string)
     }
 }
 
@@ -674,6 +846,7 @@ pub trait FilterExt:
                     }
                     Ok(Event::ContentBlockStop { .. })
                     | Ok(Event::Ping)
+                    | Ok(Event::JsonObject { .. })
                     | Ok(Event::Message { .. })=> {
                         // This is a no-op. We don't need to do anything with
                         // this event.
@@ -773,6 +946,133 @@ pub trait FilterExt:
                 }
             }
         }
+    }
+
+    /// Adds [`Event::JsonObject`] to the stream by incrementally scanning
+    /// [`Text`] and tool-input JSON for completed elements of the outermost
+    /// array (the [`Items`] shape). Elements are yielded the moment their
+    /// closing byte arrives — before the block, let alone the message,
+    /// completes. All original events still pass through.
+    ///
+    /// # Note:
+    /// - Text blocks are scanned unconditionally — call this when
+    ///   [`output_config`] is set (the block is then guaranteed to be JSON).
+    /// - Apply *upstream* of [`with_tool_use`] / [`with_message`], which
+    ///   consume the input JSON deltas this scans.
+    /// - A block that ends mid-value (e.g. on [`MaxTokens`]) yields
+    ///   [`Error::JsonAssembly`].
+    ///
+    /// [`Text`]: Block::Text
+    /// [`Items`]: crate::prompt::Items
+    /// [`output_config`]: crate::Prompt::output_config
+    /// [`with_tool_use`]: FilterExt::with_tool_use
+    /// [`with_message`]: FilterExt::with_message
+    /// [`MaxTokens`]: StopReason::MaxTokens
+    fn with_json(
+        self,
+    ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
+        async_stream::stream! {
+            let stream = self;
+            pin_mut!(stream);
+
+            // Scanner for the in-progress block, keyed by its index.
+            let mut scan: Option<(usize, ArrayScanner)> = None;
+
+            while let Some(result) = stream.next().await {
+                match &result {
+                    Ok(Event::ContentBlockStart { index, content_block }) => {
+                        scan = match content_block {
+                            Block::Text { .. }
+                            | Block::ToolUse { .. }
+                            | Block::ServerToolUse { .. } => {
+                                Some((*index, ArrayScanner::default()))
+                            }
+                            _ => None,
+                        };
+                    }
+                    Ok(Event::ContentBlockDelta { index, delta }) => {
+                        let chunk = match delta {
+                            Delta::Text { text } => Some(text.as_ref()),
+                            Delta::Json { partial_json } => {
+                                Some(partial_json.as_ref())
+                            }
+                            _ => None,
+                        };
+                        if let Some(chunk) = chunk
+                            && let Some((block, scanner)) = scan
+                                .as_mut()
+                                .filter(|(block, _)| block == index)
+                        {
+                            match scanner.feed(chunk) {
+                                Ok(values) => for value in values {
+                                    yield Ok(Event::JsonObject {
+                                        index: *block,
+                                        value,
+                                    });
+                                },
+                                Err(error) => {
+                                    yield Err(Error::JsonAssembly {
+                                        message: format!(
+                                            "Array element does not parse: {error}"
+                                        ).into(),
+                                        index: *block,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    Ok(Event::ContentBlockStop { index }) => {
+                        if let Some((block, scanner)) =
+                            scan.take_if(|(block, _)| block == index)
+                            && scanner.is_truncated()
+                        {
+                            yield Err(Error::JsonAssembly {
+                                message: "Block ended mid-JSON \
+                                    (truncated output?)".into(),
+                                index: block,
+                            });
+                        }
+                    }
+                    _ => {}
+                }
+
+                yield result;
+            }
+        }
+    }
+
+    /// [`with_json`], typed: yields each completed element of the outermost
+    /// array deserialized as a `T`, dropping all other events (errors still
+    /// pass through). Pair with a [`Prompt::structured_output`] of
+    /// [`Items<T>`] so every element is guaranteed by the schema to be a
+    /// `T`.
+    ///
+    /// [`with_json`]: FilterExt::with_json
+    /// [`Prompt::structured_output`]: crate::Prompt::structured_output
+    /// [`Items<T>`]: crate::prompt::Items
+    fn json_items<T>(
+        self,
+    ) -> impl futures::Stream<Item = Result<T, Error>> + Send
+    where
+        T: serde::de::DeserializeOwned + Send,
+    {
+        self.with_json().filter_map(|result| async move {
+            match result {
+                Ok(Event::JsonObject { index, value }) => {
+                    Some(serde_json::from_value(value).map_err(|error| {
+                        Error::JsonAssembly {
+                            message: format!(
+                                "Element does not deserialize: {error}"
+                            )
+                            .into(),
+                            index,
+                        }
+                    }))
+                }
+                Ok(_) => None,
+                Err(error) => Some(Err(error)),
+            }
+        })
     }
 }
 
@@ -1099,6 +1399,146 @@ pub(crate) mod tests {
             }
             .to_string()
         );
+    }
+
+    // ArrayScanner unit tests. Chunk splits mirror the wire: the captures in
+    // `test/data/incremental/` split mid-token, so feeds here split at the
+    // nastiest spots (mid-escape, mid-number) on purpose.
+
+    #[test]
+    fn test_array_scanner_split_mid_escape() {
+        let mut scanner = ArrayScanner::default();
+        // First chunk ends on a pending escape inside a string element.
+        let out = scanner.feed(r#"["a\"#).unwrap();
+        assert!(out.is_empty());
+        let out = scanner.feed(r#""x", 42"#).unwrap();
+        assert_eq!(out, vec![serde_json::json!("a\"x")]);
+        let out = scanner.feed(r#"]"#).unwrap();
+        assert_eq!(out, vec![serde_json::json!(42)]);
+        assert!(!scanner.is_truncated());
+    }
+
+    #[test]
+    fn test_array_scanner_nested_containers() {
+        let mut scanner = ArrayScanner::default();
+        // Elements that are themselves arrays and objects; trailing root
+        // fields after the target array are ignored.
+        let out = scanner
+            .feed(r#"{"items":[[1,2],{"a":[3]}],"x":1}"#)
+            .unwrap();
+        assert_eq!(
+            out,
+            vec![serde_json::json!([1, 2]), serde_json::json!({"a": [3]})]
+        );
+        assert!(!scanner.is_truncated());
+    }
+
+    #[test]
+    fn test_array_scanner_targets_first_array_only() {
+        let mut scanner = ArrayScanner::default();
+        let out = scanner.feed(r#"{"a":[1],"b":[2]}"#).unwrap();
+        assert_eq!(out, vec![serde_json::json!(1)]);
+        assert!(!scanner.is_truncated());
+    }
+
+    #[test]
+    fn test_array_scanner_no_array_no_emission() {
+        let mut scanner = ArrayScanner::default();
+        // A plain object — the common non-list tool input. Nothing to emit,
+        // nothing truncated. The nested array is too deep to target.
+        let out = scanner
+            .feed(r#"{"location": {"coords": [1, 2]}, "unit": "C"}"#)
+            .unwrap();
+        assert!(out.is_empty());
+        assert!(!scanner.is_truncated());
+    }
+
+    #[test]
+    fn test_array_scanner_truncated() {
+        let mut scanner = ArrayScanner::default();
+        let out = scanner.feed(r#"{"items":[{"a":1},{"b""#).unwrap();
+        assert_eq!(out, vec![serde_json::json!({"a": 1})]);
+        assert!(scanner.is_truncated());
+    }
+
+    #[test]
+    fn test_array_scanner_unicode() {
+        let mut scanner = ArrayScanner::default();
+        let out = scanner.feed(r#"{ "items" : [ "héllo 🌍" ,"#).unwrap();
+        assert_eq!(out, vec![serde_json::json!("héllo 🌍")]);
+        let out = scanner.feed(r#" {"emoji": "🦀"} ] }"#).unwrap();
+        assert_eq!(out, vec![serde_json::json!({"emoji": "🦀"})]);
+        assert!(!scanner.is_truncated());
+    }
+
+    /// The shared `Item` schema both incremental fixtures were captured
+    /// against (see `test/data/README.md`).
+    #[derive(Debug, Deserialize, PartialEq)]
+    struct GroceryItem {
+        name: String,
+        quantity: u32,
+        #[serde(default)]
+        note: Option<String>,
+    }
+
+    #[tokio::test]
+    async fn test_json_items_structured_output() {
+        // Structured output (`output_config`): JSON arrives in `text_delta`s.
+        let items: Vec<GroceryItem> = mock_stream_jsonl(include_str!(
+            "../test/data/incremental/structured_items.sse.stream.jsonl"
+        ))
+        .json_items()
+        .try_collect()
+        .await
+        .unwrap();
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "granny smith apples");
+        assert_eq!(items[0].quantity, 3);
+        assert_eq!(items[2].note.as_deref(), Some("carton"));
+    }
+
+    #[tokio::test]
+    async fn test_json_items_tool_use() {
+        // The same list arriving as a tool call's `input_json_delta`s, split
+        // mid-token across 21 frames.
+        let items: Vec<GroceryItem> = mock_stream_jsonl(include_str!(
+            "../test/data/incremental/tool_items.sse.stream.jsonl"
+        ))
+        .json_items()
+        .try_collect()
+        .await
+        .unwrap();
+
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].name, "granny smith apples");
+        assert_eq!(items[2].name, "oat milk");
+    }
+
+    #[tokio::test]
+    async fn test_with_json_composes_with_message() {
+        // `with_json` upstream of `with_message`: elements stream out early
+        // and the complete message still assembles.
+        let events: Vec<Event> = mock_stream_jsonl(include_str!(
+            "../test/data/incremental/structured_items.sse.stream.jsonl"
+        ))
+        .with_json()
+        .with_message()
+        .try_collect()
+        .await
+        .unwrap();
+
+        let n_json = events.iter().filter(|e| e.is_json_object()).count();
+        assert_eq!(n_json, 3);
+        let message = events
+            .iter()
+            .find_map(|e| match e {
+                Event::Message { message } => Some(message),
+                _ => None,
+            })
+            .expect("with_message should assemble a complete message");
+        // The assembled message carries the full JSON text block.
+        assert!(message.inner.inner.content.to_string().contains("oat milk"));
     }
 
     #[tokio::test]

@@ -149,6 +149,8 @@ the methods compose by chaining.
 | `.with_message()` | `Stream<Result<Event, Error>>` | Assembles a complete `response::Message` and yields it as `Event::Message` at stream end (implies `with_tool_use`). |
 | `.with_message_ip(&mut Option<Message>)` | `Stream<Result<Event, Error>>` | Same, but assembles *in place* so you can break early and keep the partial message. |
 | `.with_tool_use()` | `Stream<Result<Event, Error>>` | Assembles complete `tool::Use` from JSON deltas and yields it as `Event::ToolUse` (skips raw `input_json_delta` events). |
+| `.with_json()` | `Stream<Result<Event, Error>>` | Incrementally scans text / tool-input JSON and yields each completed element of the outermost array as `Event::JsonObject`, as its bytes arrive. Apply *upstream* of `with_tool_use` / `with_message`. |
+| `.json_items::<T>()` | `Stream<Result<T, Error>>` | Typed `with_json`: each element deserialized to `T`. Pair with `structured_output::<Items<T>>()`. |
 
 ### Chaining
 
@@ -191,6 +193,7 @@ match event {
     Event::Message { message } => {}                   // via with_message()
     Event::ToolUse { tool_use } => {}                  // via with_tool_use(); tool::Use
     Event::ServerToolUse { tool_use } => {}            // via with_tool_use(); server tool (e.g. web_search)
+    Event::JsonObject { index, value } => {}           // via with_json(); element of the outermost array
 }
 # }
 ```
@@ -233,6 +236,7 @@ match error {
     Error::Anthropic { error, event } => {}         // API error over SSE (raw event kept)
     Error::MessageAssembly { message, delta } => {} // e.g. a delta before MessageStart
     Error::Delta { error } => {}                    // a delta could not be applied
+    Error::JsonAssembly { message, index } => {}    // with_json(): bad element or truncated block
 }
 # }
 ```
@@ -352,6 +356,56 @@ while let Some(event) = stream.try_next().await? {
 Need to interrupt early and keep what was assembled so far? Use
 `with_message_ip(&mut your_option)` instead and read your `Option<Message>`
 after breaking out of the loop.
+
+## `json_items` — incremental structured output
+
+With `Prompt::structured_output` the response text block is schema-guaranteed
+JSON. For a *list*, wrap the element type in `prompt::Items<T>` (the API
+requires a top-level object schema) and consume each element the moment its
+bytes arrive — no waiting for the message to finish. The runnable example is
+`misanthropic/examples/triage_stream.rs`.
+
+```no_run
+use futures::TryStreamExt;
+use misanthropic::{
+    Client, Id, Prompt,
+    prompt::{Items, message::Role},
+    stream::FilterExt,
+};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Fact {
+    claim: String,
+    confidence: String,
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+
+let prompt = Prompt::default()
+    .model(Id::Haiku45)
+    .structured_output::<Items<Fact>>()
+    .add_message((Role::User, "Three facts about crabs."))?;
+
+let facts = client.stream(&prompt).await?.json_items::<Fact>();
+futures::pin_mut!(facts);
+
+while let Some(fact) = facts.try_next().await? {
+    println!("{fact:?}"); // printed as each element completes
+}
+# Ok(())
+# }
+```
+
+The untyped layer is `with_json()`, which yields `Event::JsonObject { index,
+value }` per completed element of the *outermost* array (the `Items` shape)
+while passing all other events through — it also scans tool-input
+`input_json_delta`s, so a list-shaped tool argument streams the same way.
+Apply it upstream of `with_tool_use()` / `with_message()` (those consume the
+input JSON deltas). A block that ends mid-value (e.g. `max_tokens`) yields
+`Error::JsonAssembly`.
 
 ## Server-Sent Events (SSE) backend
 

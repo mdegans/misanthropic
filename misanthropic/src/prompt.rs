@@ -33,7 +33,7 @@ pub mod cached;
 pub use cached::CachedPrompt;
 
 pub mod output;
-pub use output::{Effort, JsonSchemaFormat, OutputConfig, OutputFormat};
+pub use output::{Effort, Items, JsonSchemaFormat, OutputConfig, OutputFormat};
 
 pub mod index;
 pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
@@ -1329,7 +1329,10 @@ impl Prompt {
             }
             stream::Event::Ping
             | stream::Event::MessageStop
-            | stream::Event::MessageDelta { .. } => {
+            | stream::Event::MessageDelta { .. }
+            // Synthetic and derived from deltas already applied above; the
+            // element is part of the block's text/input, not its own block.
+            | stream::Event::JsonObject { .. } => {
                 // Can't merge MessageDelta because a prompt contains
                 // `prompt::Message` not `response::Message` which contains
                 // `Usage`. But also I don't like throwing this away since it's
