@@ -284,7 +284,7 @@ pub enum TurnOrderError {
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
-/// Error from [`Prompt::with_examples`]: an exemplar failed to serialize, or
+/// Error from [`Prompt::add_examples`]: an exemplar failed to serialize, or
 /// inserting the example pairs violated [turn order].
 ///
 /// Kept separate from the runtime [`Error`](crate::client::Error) (reqwest, Anthropic, …)
@@ -1019,10 +1019,28 @@ impl Prompt {
     ///
     /// [`output_config`]: Prompt::output_config
     /// [`json_schema`]: Prompt::json_schema
-    pub fn with_examples<I, U, A>(
+    pub fn add_examples<I, U, A>(
         mut self,
         examples: I,
     ) -> Result<Self, ExamplesError>
+    where
+        I: IntoIterator<Item = (U, A)>,
+        U: Into<UserMessage>,
+        A: Serialize + schemars::JsonSchema,
+    {
+        self.push_examples(examples)?;
+        Ok(self)
+    }
+
+    /// Append schema-conformant few-shot examples in place. Like
+    /// [`add_examples`] but `&mut`, for prompts already seated in a larger
+    /// struct.
+    ///
+    /// [`add_examples`]: Prompt::add_examples
+    pub fn push_examples<I, U, A>(
+        &mut self,
+        examples: I,
+    ) -> Result<&mut Self, ExamplesError>
     where
         I: IntoIterator<Item = (U, A)>,
         U: Into<UserMessage>,
@@ -2282,7 +2300,7 @@ mod tests {
     }
 
     #[test]
-    fn test_with_examples_sets_config_and_pairs() {
+    fn test_add_examples_sets_config_and_pairs() {
         let ex = Triage {
             component: "auth-ui".into(),
             is_regression: true,
@@ -2291,7 +2309,7 @@ mod tests {
         let expected = serde_json::to_string(&ex).unwrap();
 
         let prompt = Prompt::default()
-            .with_examples([("login broken on safari", ex)])
+            .add_examples([("login broken on safari", ex)])
             .unwrap();
 
         // output_config is seeded from the exemplar type `A`.
@@ -2317,13 +2335,13 @@ mod tests {
     }
 
     #[test]
-    fn test_with_examples_turn_order_error() {
+    fn test_add_examples_turn_order_error() {
         // A user turn already at the tail collides with the first example's
         // user turn, and the prompt is left unmodified.
         let err = Prompt::default()
             .add_message((Role::User, "real question"))
             .unwrap()
-            .with_examples([(
+            .add_examples([(
                 "example input",
                 Triage {
                     component: "x".into(),
@@ -2335,12 +2353,12 @@ mod tests {
     }
 
     #[test]
-    fn test_with_examples_clobbers_output_config() {
+    fn test_add_examples_clobbers_output_config() {
         // An explicitly-set config is overwritten by the exemplar's schema,
         // even when no examples are supplied.
         let prompt = Prompt::default()
             .json_schema(serde_json::json!({ "type": "object" }))
-            .with_examples(std::iter::empty::<(&str, Triage)>())
+            .add_examples(std::iter::empty::<(&str, Triage)>())
             .unwrap();
 
         let cfg = prompt.output_config.as_ref().unwrap();

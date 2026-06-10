@@ -3,7 +3,7 @@ name: misan-messages-api
 description: >-
   Write Rust code against the `misanthropic` crate's non-streaming
   (`Client::message`) path — single messages, multi-turn chats, system
-  prompts, structured output (`structured_output`, `with_examples`), and
+  prompts, structured output (`structured_output`, `add_examples`), and
   tool use (the `#[tool]` macro and manual `CustomMethodDef`s). Use
   when writing or editing Rust that calls the Anthropic Messages API through
   the `misanthropic` crate, or when the user mentions `misanthropic`,
@@ -458,7 +458,7 @@ Notes:
 
 - **Field order is generation order** — each field is context for the next,
   so put anchoring fields (a summary, say) first.
-- **Few-shot**: `Prompt::with_examples([(input, output), …])` turns each
+- **Few-shot**: `Prompt::add_examples([(input, output), …])` turns each
   `(impl Into<UserMessage>, T)` pair into a user/assistant exchange *and*
   seeds the schema from `T` — the constraint can't drift from the exemplars.
   Runnable example: `misanthropic/examples/few_shot_triage.rs`.

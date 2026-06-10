@@ -1,4 +1,4 @@
-//! Example: *few-shot* structured output via [`Prompt::with_examples`]. Each
+//! Example: *few-shot* structured output via [`Prompt::add_examples`]. Each
 //! `(input, output)` pair becomes a user/assistant exchange *and* seeds the
 //! [`output_config`] schema — no separate [`Prompt::structured_output`] call
 //! needed, and the constraint can't drift from the examples. Exemplars teach
@@ -11,7 +11,7 @@
 //!     "Search returns no results for any query since this morning."
 //! ```
 //!
-//! [`Prompt::with_examples`]: misanthropic::Prompt::with_examples
+//! [`Prompt::add_examples`]: misanthropic::Prompt::add_examples
 //! [`Prompt::structured_output`]: misanthropic::Prompt::structured_output
 //! [`output_config`]: misanthropic::Prompt::output_config
 
@@ -86,7 +86,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                  a regression from the wording of the report.",
             ));
     let prompt = base
-        .with_examples([
+        .add_examples([
             (
                 "Safari users say the login button does nothing when clicked. \
                  Started after last week's release.",

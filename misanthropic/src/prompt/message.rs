@@ -350,7 +350,7 @@ pub struct AssistantMessage {
 impl AssistantMessage {
     /// An assistant turn whose [`Content`] is a single [`Block::Text`]. Handy
     /// for prefill and for hand-authored examples (see
-    /// [`Prompt::with_examples`](crate::Prompt::with_examples)).
+    /// [`Prompt::add_examples`](crate::Prompt::add_examples)).
     pub fn text<T>(text: T) -> Self
     where
         T: Into<crate::CowStr>,
