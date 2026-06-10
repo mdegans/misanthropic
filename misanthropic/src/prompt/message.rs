@@ -135,6 +135,50 @@ impl Message {
         self.content.is_empty()
     }
 
+    /// Add a cache breakpoint to the final [`Block`] of [`content`]. See
+    /// [`Content::cache`].
+    ///
+    /// [`content`]: Message::content
+    pub fn cache(&mut self) -> &mut Self {
+        self.content.cache();
+        self
+    }
+
+    /// Add a 1-hour cache breakpoint to the final [`Block`] of [`content`].
+    /// See [`Content::cache_1h`].
+    ///
+    /// [`content`]: Message::content
+    pub fn cache_1h(&mut self) -> &mut Self {
+        self.content.cache_1h();
+        self
+    }
+
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
+    /// final [`Block`] of [`content`]. See [`Content::cache_with`].
+    ///
+    /// [`content`]: Message::content
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
+        self.content.cache_with(cache_control);
+        self
+    }
+
+    /// Remove all cache breakpoints from [`content`]. See
+    /// [`Content::uncache`].
+    ///
+    /// [`content`]: Message::content
+    pub fn uncache(&mut self) -> &mut Self {
+        self.content.uncache();
+        self
+    }
+
+    /// Returns `true` if any block of [`content`] has a cache breakpoint. See
+    /// [`Content::has_cache`].
+    ///
+    /// [`content`]: Message::content
+    pub fn has_cache(&self) -> bool {
+        self.content.has_cache()
+    }
+
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ToolUse`].
     pub fn tool_use(&self) -> Option<&crate::tool::Use> {
@@ -368,6 +412,38 @@ impl AssistantMessage {
         &mut self.inner.content
     }
 
+    /// Add a cache breakpoint to the final [`Block`]. See [`Content::cache`].
+    pub fn cache(&mut self) -> &mut Self {
+        self.inner.cache();
+        self
+    }
+
+    /// Add a 1-hour cache breakpoint to the final [`Block`]. See
+    /// [`Content::cache_1h`].
+    pub fn cache_1h(&mut self) -> &mut Self {
+        self.inner.cache_1h();
+        self
+    }
+
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
+    /// final [`Block`]. See [`Content::cache_with`].
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
+        self.inner.cache_with(cache_control);
+        self
+    }
+
+    /// Remove all cache breakpoints. See [`Content::uncache`].
+    pub fn uncache(&mut self) -> &mut Self {
+        self.inner.uncache();
+        self
+    }
+
+    /// Returns `true` if any block has a cache breakpoint. See
+    /// [`Content::has_cache`].
+    pub fn has_cache(&self) -> bool {
+        self.inner.has_cache()
+    }
+
     /// Remove an incomplete [`Block::Thought`] from the end of the message.
     /// See [`Message::remove_incomplete_thought`] for more information.
     pub fn remove_incomplete_thought(self) -> Option<Self> {
@@ -477,6 +553,38 @@ impl UserMessage {
     /// Get the inner [`Content`] mutably.
     pub fn content_mut(&mut self) -> &mut Content {
         &mut self.inner.content
+    }
+
+    /// Add a cache breakpoint to the final [`Block`]. See [`Content::cache`].
+    pub fn cache(&mut self) -> &mut Self {
+        self.inner.cache();
+        self
+    }
+
+    /// Add a 1-hour cache breakpoint to the final [`Block`]. See
+    /// [`Content::cache_1h`].
+    pub fn cache_1h(&mut self) -> &mut Self {
+        self.inner.cache_1h();
+        self
+    }
+
+    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
+    /// final [`Block`]. See [`Content::cache_with`].
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
+        self.inner.cache_with(cache_control);
+        self
+    }
+
+    /// Remove all cache breakpoints. See [`Content::uncache`].
+    pub fn uncache(&mut self) -> &mut Self {
+        self.inner.uncache();
+        self
+    }
+
+    /// Returns `true` if any block has a cache breakpoint. See
+    /// [`Content::has_cache`].
+    pub fn has_cache(&self) -> bool {
+        self.inner.has_cache()
     }
 }
 
