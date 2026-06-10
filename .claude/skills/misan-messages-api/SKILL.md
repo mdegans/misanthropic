@@ -3,7 +3,8 @@ name: misan-messages-api
 description: >-
   Write Rust code against the `misanthropic` crate's non-streaming
   (`Client::message`) path — single messages, multi-turn chats, system
-  prompts, and tool use (the `#[tool]` macro and manual `CustomMethodDef`s). Use
+  prompts, structured output (`structured_output`, `with_examples`), and
+  tool use (the `#[tool]` macro and manual `CustomMethodDef`s). Use
   when writing or editing Rust that calls the Anthropic Messages API through
   the `misanthropic` crate, or when the user mentions `misanthropic`,
   `Client::message`, or `Prompt`. For token-by-token streaming, see the
@@ -416,6 +417,61 @@ All three share the same shape: `add_tool(Memory::latest())` /
 tool loop that executes each `tool_use` locally and feeds the `tool::Result`
 back. Their backends drop into a `ToolBox` and route by their fixed bare name
 with no special-casing.
+
+## Structured output
+
+`Prompt::structured_output::<T>()` constrains the response (grammar-based
+decoding, not prompting) to a single text block of JSON matching `T`'s
+schema, generated via `schemars` and sanitized to Anthropic's supported
+subset (`additionalProperties: false` added, `oneOf` → `anyOf`, numeric/
+string range keywords stripped — see `prompt::output::sanitize_for_anthropic`).
+Parse with `response.json::<T>()`:
+
+```no_run
+use misanthropic::{Client, Id, Prompt, prompt::message::Role};
+use schemars::JsonSchema;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct Triage {
+    /// Doc comments become schema descriptions — the model reads them.
+    summary: String,
+    severity: String,
+    is_regression: bool,
+}
+
+# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+
+let prompt = Prompt::default()
+    .model(Id::Haiku45)
+    .structured_output::<Triage>()
+    .add_message((Role::User, "Checkout shows $0.00 on mobile Safari."))?;
+
+let triage: Triage = client.message(&prompt).await?.json()?;
+# let _ = triage;
+# Ok(())
+# }
+```
+
+Notes:
+
+- **Field order is generation order** — each field is context for the next,
+  so put anchoring fields (a summary, say) first.
+- **Few-shot**: `Prompt::with_examples([(input, output), …])` turns each
+  `(impl Into<UserMessage>, T)` pair into a user/assistant exchange *and*
+  seeds the schema from `T` — the constraint can't drift from the exemplars.
+  Runnable example: `misanthropic/examples/few_shot_triage.rs`.
+- **Lists**: the API requires a top-level *object* schema, so a list rides
+  in `prompt::Items<T>` (`{"items": [T, …]}`). When streaming, pair it with
+  `FilterExt::json_items::<T>()` to consume each element as it arrives —
+  see the misan-streaming-api skill and
+  `misanthropic/examples/triage_stream.rs`.
+- The model can decline with `StopReason::Refusal`; changing the schema
+  invalidates the prompt cache for the thread, so keep it stable when
+  caching matters. `output_config` also carries `Effort` (token-spend
+  control) — the granular builders (`structured_output`, `effort`) merge
+  per-field rather than overwrite.
 
 ## Using `json!` instead of `Prompt`
 
