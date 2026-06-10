@@ -278,7 +278,7 @@ mod test {
                 defer_loading: None,
                 allowed_callers: None,
             })
-            .set_system(Content(vec!["sys0".into(), "sys1".into()]))
+            .system(Content(vec!["sys0".into(), "sys1".into()]))
             .add_message((Role::User, "hi"))
             .unwrap();
 
@@ -303,7 +303,7 @@ mod test {
         use crate::prompt::message::{Block, Content, Role};
 
         let mut prompt = Prompt::default()
-            .set_system(Content::text("system"))
+            .system(Content::text("system"))
             .add_message((Role::User, "hello"))
             .unwrap();
 

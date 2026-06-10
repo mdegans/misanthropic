@@ -201,7 +201,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // only some methods.
     let mut prompt = cli
         .common
-        .configure(Prompt::default().model(Id::Haiku45).set_system(system))
+        .configure(Prompt::default().model(Id::Haiku45).system(system))
         .add_message((Role::User, question))?;
     for definition in toolkit.definitions() {
         prompt = prompt.add_tool(definition);

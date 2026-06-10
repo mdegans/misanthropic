@@ -52,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .stream(
             Prompt::default()
                 .model(Id::Sonnet46)
-                .set_system("You are a helpful assistant.")
+                .system("You are a helpful assistant.")
                 .add_message((Role::User, "Write a haiku about Rust."))?,
         )
         .await?

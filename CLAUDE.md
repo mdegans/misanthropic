@@ -98,7 +98,7 @@ self-describing (`StopReason::EndTurn`).
 
 ### Patterns in use
 
-- **Builder-style fluent APIs** — `Prompt::default().add_tool(…).set_system(…)`
+- **Builder-style fluent APIs** — `Prompt::default().add_tool(…).system(…)`
 - **Borrowed-by-default with `into_static()`** — most public types carry a
   lifetime `'a`; call `.into_static()` when ownership is needed.
 - **`From` / `Into` blanket conversions** — e.g. `(Role, &str) -> Message`,

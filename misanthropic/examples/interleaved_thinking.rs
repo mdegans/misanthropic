@@ -126,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 // Adaptive: model decides depth; interleaves with tool use
                 // automatically. No `budget_tokens` to set.
                 .thinking(Thinking::adaptive())
-                .set_system(
+                .system(
                     "You are a careful calculator's assistant. You cannot do \
                  arithmetic reliably in your head, so use the `compute` tool \
                  for every operation, one operation per call, and reason about \

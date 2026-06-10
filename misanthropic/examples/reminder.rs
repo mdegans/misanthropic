@@ -87,7 +87,7 @@ impl Reminder {
     /// Injects reminder instructions. Production tools should append, not
     /// overwrite, and be idempotent.
     #[on_init]
-    async fn set_system(
+    async fn system(
         &mut self,
         prompt: &mut Prompt,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -351,8 +351,7 @@ mod tests {
     async fn test_notepad_setup_no_existing_block() {
         let mut notepad = Notepad::new();
         notepad.notes.push("I am test code! Whee!".into());
-        let mut prompt =
-            Prompt::default().set_system("You are a test code! Whee!");
+        let mut prompt = Prompt::default().system("You are a test code! Whee!");
         notepad.on_init(&mut prompt).await.unwrap();
 
         // The block should have been appended.
@@ -373,7 +372,7 @@ mod tests {
     async fn test_notepad_setup_existing_block() {
         let mut notepad = Notepad::new();
         notepad.notes.push("I am test code! Whee!".into());
-        let mut prompt = Prompt::default().set_system(
+        let mut prompt = Prompt::default().system(
             "<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions><notepad><note>Existing note.</note></notepad>",
         );
         notepad.on_init(&mut prompt).await.unwrap();

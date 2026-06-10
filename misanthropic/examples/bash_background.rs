@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // pushes flow into the driver's `select!`.
     let toolbox = ToolBox::new().add(RichBash::new(DockerSandbox::default()));
 
-    let prompt = cli.common.configure(Prompt::default().set_system(
+    let prompt = cli.common.configure(Prompt::default().system(
         "You are a helpful assistant with a sandboxed bash tool. For anything \
          long-running, start it in the background (`background: true`) — you \
          will be notified when it finishes, so do not poll. Keep chatting or \

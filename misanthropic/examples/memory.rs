@@ -53,7 +53,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // The memory protocol ("ALWAYS VIEW YOUR MEMORY DIRECTORY FIRST …") is
     // injected server-side when the tool is enabled.
-    let prompt = cli.common.configure(Prompt::default().set_system(
+    let prompt = cli.common.configure(Prompt::default().system(
         "You are a helpful assistant with a persistent memory. Record \
              durable facts, decisions, and progress so you can resume in a \
              later session, and keep your notes tidy — prune what's stale.",

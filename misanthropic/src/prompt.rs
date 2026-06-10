@@ -356,13 +356,16 @@ impl Prompt {
         self.model.resolve_role(preferred)
     }
 
-    /// Set the [`messages`] from an iterable of [`Message`]s.
+    /// Replace the [`messages`] from an iterable of [`Message`]s. To append,
+    /// use [`add_messages`] or [`push_messages`].
     ///
     /// # Errors
     /// - If the turn order is incorrect.
     ///
     /// [`messages`]: Prompt::messages
-    pub fn set_messages<M, Ms>(
+    /// [`add_messages`]: Prompt::add_messages
+    /// [`push_messages`]: Prompt::push_messages
+    pub fn messages<M, Ms>(
         mut self,
         messages: Ms,
     ) -> Result<Self, TurnOrderError>
@@ -395,27 +398,6 @@ impl Prompt {
             }
         }
         Ok(())
-    }
-
-    /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
-    /// [`add_messages`] or [`push_messages`] for better performance.
-    ///
-    /// # Panics
-    /// - If the turn order is incorrect.
-    ///
-    /// [`messages`]: Prompt::messages
-    /// [`add_messages`]: Prompt::add_messages
-    /// [`push_messages`]: Prompt::push_messages
-    // So we don't break the API, but in version 1.0.0 this will be removed.
-    #[deprecated(
-        since = "0.6.0",
-        note = "Use `add_message` or `push_message` instead."
-    )]
-    pub fn message<M>(self, message: M) -> Self
-    where
-        M: Into<Message>,
-    {
-        self.add_message(message).unwrap()
     }
 
     /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
@@ -472,28 +454,6 @@ impl Prompt {
         }
         self.messages.push(message);
         Ok(())
-    }
-
-    /// Extend the [`messages`] from an iterable. For an in-place version, see
-    /// [`push_messages`]. For a fallible version, see [`add_messages`].
-    ///
-    /// # Panics
-    /// - If the turn order is incorrect.
-    ///
-    /// [`messages`]: Prompt::messages
-    /// [`push_messages`]: Prompt::push_messages
-    /// [`add_messages`]: Prompt::add_messages
-    // So we don't break the API, but in version 1.0.0 this will be removed.
-    #[deprecated(
-        since = "0.6.0",
-        note = "Use `add_message` or `push_message` instead."
-    )]
-    pub fn messages<M, Ms>(self, messages: Ms) -> Self
-    where
-        M: Into<Message>,
-        Ms: IntoIterator<Item = M>,
-    {
-        self.add_messages(messages).unwrap()
     }
 
     /// Extend the [`messages`] from an iterable. For an in-place version, see
@@ -674,28 +634,14 @@ impl Prompt {
         self
     }
 
-    /// Set the [`system`] prompt [`Content`]. This is content that the model
-    /// will give special attention to. Instructions should be placed here.
+    /// Replace the [`system`] prompt [`Content`]. This is content that the
+    /// model will give special attention to. Instructions should be placed
+    /// here. To append a [`Block`], use [`add_system`].
     ///
     /// [`system`]: Prompt::system
-    // So we don't break the API, but in version 1.0.0 this will be removed.
-    #[deprecated(
-        since = "0.6.0",
-        note = "Use `set_system` or `add_system` instead."
-    )]
+    /// [`Block`]: message::Block
+    /// [`add_system`]: Prompt::add_system
     pub fn system<S>(mut self, system: S) -> Self
-    where
-        S: Into<message::Content>,
-    {
-        self.system = Some(system.into());
-        self
-    }
-
-    /// Set the [`system`] prompt [`Content`]. This is content that the model
-    /// will give special attention to. Instructions should be placed here.
-    ///
-    /// [`system`]: Prompt::system
-    pub fn set_system<S>(mut self, system: S) -> Self
     where
         S: Into<message::Content>,
     {
@@ -1788,10 +1734,9 @@ mod tests {
     }
 
     #[test]
-    fn test_set_messages() {
-        let request = Prompt::default()
-            .set_messages(create_test_messages())
-            .unwrap();
+    fn test_messages() {
+        let request =
+            Prompt::default().messages(create_test_messages()).unwrap();
         assert_eq!(request.messages, create_test_messages());
     }
 
@@ -2074,8 +2019,8 @@ mod tests {
     }
 
     #[test]
-    fn test_set_system() {
-        let request = Prompt::default().set_system("system");
+    fn test_system() {
+        let request = Prompt::default().system("system");
         assert_eq!(request.system.unwrap().to_string(), "system");
     }
 
@@ -2563,8 +2508,8 @@ mod tests {
                 defer_loading: None,
                 allowed_callers: None,
             }])
-            .set_system("You are a very succinct assistant.")
-            .set_messages([
+            .system("You are a very succinct assistant.")
+            .messages([
                 Message {
                     role: Role::User,
                     content: Content::text("Hello"),

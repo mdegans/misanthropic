@@ -52,7 +52,7 @@ pub struct Client {
     /// Value for the `anthropic-beta` header, or `None` to omit it. A
     /// comma-separated list of beta feature flags (e.g.
     /// [`Self::INTERLEAVED_THINKING_BETA`]). Injected on every request via
-    /// [`Self::request_raw`]. Set with [`Self::with_beta`].
+    /// [`Self::request_raw`]. Set with [`Self::beta`].
     pub beta: Arc<Option<String>>,
 }
 
@@ -65,7 +65,7 @@ impl Client {
     /// `anthropic-beta` flag enabling interleaved thinking — thinking between
     /// tool calls — on models that still gate it behind a header (older Claude
     /// 4). Opus 4.7+ enable it automatically with adaptive thinking. Pass to
-    /// [`Self::with_beta`].
+    /// [`Self::beta`].
     pub const INTERLEAVED_THINKING_BETA: &'static str =
         "interleaved-thinking-2025-05-14";
     /// Our user agent.
@@ -150,10 +150,10 @@ impl Client {
     /// ```rust
     /// # use misanthropic::Client;
     /// let client = Client::new("x".repeat(108))?
-    ///     .with_beta(Client::INTERLEAVED_THINKING_BETA);
+    ///     .beta(Client::INTERLEAVED_THINKING_BETA);
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn with_beta(mut self, beta: impl Into<String>) -> Self {
+    pub fn beta(mut self, beta: impl Into<String>) -> Self {
         self.beta = Arc::new(Some(beta.into()));
         self
     }
@@ -170,10 +170,10 @@ impl Client {
     /// ```rust,no_run
     /// # use misanthropic::Client;
     /// let client = Client::new("x".repeat(108))?
-    ///     .with_base_url("http://localhost:11434")?;
+    ///     .base_url("http://localhost:11434")?;
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
-    pub fn with_base_url(
+    pub fn base_url(
         mut self,
         base: impl reqwest::IntoUrl,
     ) -> reqwest::Result<Self> {
@@ -1084,19 +1084,19 @@ mod tests {
 
     #[cfg(feature = "client")]
     #[test]
-    fn test_with_beta_sets_header_value() {
+    fn test_beta_sets_header_value() {
         let client = Client::new("x".repeat(108)).unwrap();
         // Off by default — no header is sent.
         assert!(client.beta.is_none());
 
-        let client = client.with_beta(Client::INTERLEAVED_THINKING_BETA);
+        let client = client.beta(Client::INTERLEAVED_THINKING_BETA);
         assert_eq!(
             client.beta.as_deref(),
             Some(Client::INTERLEAVED_THINKING_BETA)
         );
 
         // Setting again replaces, and clones share the value cheaply.
-        let client = client.with_beta("a,b");
+        let client = client.beta("a,b");
         assert_eq!(client.clone().beta.as_deref(), Some("a,b"));
     }
 
@@ -1485,7 +1485,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let message = client
-            .message(Prompt::default().set_messages([(
+            .message(Prompt::default().messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))
@@ -1879,10 +1879,10 @@ mod tests {
 
     #[test]
     #[cfg(feature = "client")]
-    fn test_with_base_url() {
+    fn test_base_url() {
         let client = Client::new(FAKE_API_KEY.to_string())
             .unwrap()
-            .with_base_url("http://localhost:11434")
+            .base_url("http://localhost:11434")
             .unwrap();
 
         assert_eq!(
@@ -1902,7 +1902,7 @@ mod tests {
 
         // Invalid URL should error.
         let client = Client::new(FAKE_API_KEY.to_string()).unwrap();
-        assert!(client.with_base_url("not a url").is_err());
+        assert!(client.base_url("not a url").is_err());
     }
 
     #[cfg(feature = "client")]
@@ -1916,7 +1916,7 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let stream = client
-            .stream(Prompt::default().set_messages([(
+            .stream(Prompt::default().messages([(
                 Role::User,
                 "Emit just the \"🙏\" emoji, please.",
             )]))
@@ -1940,7 +1940,7 @@ mod tests {
 
         let count = client
             .count_tokens(
-                Prompt::default().set_messages([(Role::User, "Hello, world!")]),
+                Prompt::default().messages([(Role::User, "Hello, world!")]),
             )
             .await
             .unwrap();

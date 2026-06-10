@@ -97,7 +97,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .configure(
             Prompt::default()
                 .model(Id::Haiku45)
-                .set_system(
+                .system(
                     "You triage incoming bug reports into a structured \
                      form, one triage per numbered report, in order.",
                 )

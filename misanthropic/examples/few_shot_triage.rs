@@ -80,7 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let base =
         cli.common
-            .configure(Prompt::default().model(Id::Haiku45).set_system(
+            .configure(Prompt::default().model(Id::Haiku45).system(
                 "You triage incoming bug reports into a structured form. \
                  Infer concrete reproduction steps and whether the issue is \
                  a regression from the wording of the report.",

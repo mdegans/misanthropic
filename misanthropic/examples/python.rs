@@ -184,13 +184,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .build()?,
         )
         // Inform the assistant about their limitations.
-        .set_system(include_str!("python_system.md"))
+        .system(include_str!("python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", python_version))
         // The example has some examples of the Assistant using Python and some
         // without to help guide the assistant to use Python when necessary and
         // not when it isn't. The more examples here, with more varied prompts,
         // the better the Assistant will be at this.
-        .set_messages([
+        .messages([
             Message {
                 role: Role::User,
                 content: "Write a haiku about Python.".into(),

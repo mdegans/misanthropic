@@ -69,7 +69,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let message = client
         .message(
             Prompt::default()
-                .set_messages([(Role::User, "What is 2+2?")]),
+                .messages([(Role::User, "What is 2+2?")]),
         )
         .await?;
 
@@ -102,7 +102,7 @@ let prompt = Prompt::default()
     // Set model — accepts Id, model::Model, or any string.
     .model(Id::Sonnet46)
     // System prompt — accepts &str, String, or Content.
-    .set_system("You are a helpful assistant.")
+    .system("You are a helpful assistant.")
     // Append to the system prompt.
     .add_system("Respond concisely.")
     // Set max tokens.
@@ -134,7 +134,7 @@ yet, pass `model::Model::Custom("your-model-id".into())` or just the string.
 ### Messages — generic conversions
 
 The crate leans **heavily on generics and `From`/`Into`** so call sites stay
-clean. Every message method (`add_message`, `push_message`, `set_messages`,
+clean. Every message method (`add_message`, `push_message`, `messages`,
 `add_messages`, …) is bounded on `M: Into<Message>`, and the tuple
 conversion is `(Role, T) where T: Into<Content>` — not just `&str`. A
 `Message`/`Content`/`Block` can be built from a `&str`, a `String`, a
@@ -146,8 +146,8 @@ whatever converts into `Content` — a string is just the common case.
 use misanthropic::{Prompt, prompt::message::Role};
 
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
-// set_messages replaces all messages; add_message appends one.
-let prompt = Prompt::default().set_messages([
+// messages replaces all messages; add_message appends one.
+let prompt = Prompt::default().messages([
     (Role::User, "What is Rust?"),
     (Role::Assistant, "Rust is a systems programming language."),
     (Role::User, "What are its key features?"),
@@ -174,7 +174,7 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 
 let mut chat = Prompt::default()
     .model(Id::Sonnet46)
-    .set_system("You are a helpful assistant.")
+    .system("You are a helpful assistant.")
     .add_message((Role::User, "What is Rust?"))?;
 
 let reply = client.message(&chat).await?;
@@ -239,7 +239,7 @@ let mut weather = Weather;
 
 let mut chat = Prompt::default()
     .model(misanthropic::Id::Sonnet46)
-    .set_system("Use tools when appropriate.")
+    .system("Use tools when appropriate.")
     .add_message((Role::User, "What's the weather in Paris?"))?;
 
 // Register the generated definition(s). Methods are namespaced by the tool
@@ -317,7 +317,7 @@ let mut chat = Prompt::default()
         defer_loading: None,    // Some(true) = defer schema (tool-search)
         allowed_callers: None,  // Some(...) = programmatic tool calling
     })
-    .set_system("Use tools when appropriate.")
+    .system("Use tools when appropriate.")
     .add_message((Role::User, "What's the weather in Paris?"))?;
 
 let message = client.message(&chat).await?;

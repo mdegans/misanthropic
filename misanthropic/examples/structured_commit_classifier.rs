@@ -128,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             Prompt::default()
                 .model(Id::Haiku45)
                 .structured_output::<CommitClassification>()
-                .set_system(system),
+                .system(system),
         )
         .add_message((
             Role::User,

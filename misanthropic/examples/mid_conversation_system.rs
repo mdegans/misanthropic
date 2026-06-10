@@ -51,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let prompt = cli
         .common
         .configure(Prompt::default().model(Id::Opus48))
-        .set_system(
+        .system(
             "You are a support agent for Acme Corp. Be concise and friendly, \
              and help customers resolve order issues.",
         )

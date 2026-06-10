@@ -46,7 +46,7 @@ impl CommonArgs {
             prompt = prompt.max_tokens(max_tokens);
         }
         if let Some(system) = &self.system {
-            prompt = prompt.set_system(system.clone());
+            prompt = prompt.system(system.clone());
         }
         prompt
     }
