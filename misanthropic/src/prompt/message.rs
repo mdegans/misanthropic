@@ -93,8 +93,117 @@ impl std::fmt::Display for Role {
     }
 }
 
-/// A message in a [`Request`]. See [`response::Message`] for the version with
-/// additional metadata.
+impl markers::RoleTag for Role {
+    fn role(&self) -> Role {
+        *self
+    }
+}
+
+/// Zero-sized role markers pinning a [`RoleMessage`]'s [`Role`] at compile
+/// time, plus the [`RoleTag`](markers::RoleTag) trait they share with [`Role`]
+/// itself.
+pub mod markers {
+    use super::Role;
+
+    /// Types usable in the `role` slot of a [`RoleMessage`]: a marker ZST
+    /// fixing the role at compile time ([`User`], [`Assistant`], [`System`])
+    /// or [`Role`] itself for a runtime role ([`Message`]).
+    ///
+    /// [`RoleMessage`]: super::RoleMessage
+    /// [`Message`]: super::Message
+    pub trait RoleTag: Copy {
+        /// The [`Role`] this tag denotes.
+        fn role(&self) -> Role;
+    }
+
+    macro_rules! marker {
+        ($(#[$meta:meta])* $name:ident, $str:literal) => {
+            $(#[$meta])*
+            #[derive(
+                Clone, Copy, Debug, Default, PartialEq, Eq, Hash,
+            )]
+            pub struct $name;
+
+            impl RoleTag for $name {
+                fn role(&self) -> Role {
+                    Role::$name
+                }
+            }
+
+            impl From<$name> for Role {
+                fn from(_: $name) -> Role {
+                    Role::$name
+                }
+            }
+
+            impl std::fmt::Display for $name {
+                fn fmt(
+                    &self,
+                    f: &mut std::fmt::Formatter,
+                ) -> std::fmt::Result {
+                    f.write_str(Role::$name.as_str())
+                }
+            }
+
+            impl serde::Serialize for $name {
+                fn serialize<S>(
+                    &self,
+                    serializer: S,
+                ) -> Result<S::Ok, S::Error>
+                where
+                    S: serde::Serializer,
+                {
+                    serializer.serialize_str($str)
+                }
+            }
+
+            impl<'de> serde::Deserialize<'de> for $name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: serde::Deserializer<'de>,
+                {
+                    let role = Role::deserialize(deserializer)?;
+                    if role == Role::$name {
+                        Ok($name)
+                    } else {
+                        Err(serde::de::Error::invalid_value(
+                            serde::de::Unexpected::Str(role.as_lowercase()),
+                            &$str,
+                        ))
+                    }
+                }
+            }
+        };
+    }
+
+    marker!(
+        /// Marker for [`Role::User`]. See [`UserMessage`](super::UserMessage).
+        User,
+        "user"
+    );
+    marker!(
+        /// Marker for [`Role::Assistant`]. See
+        /// [`AssistantMessage`](super::AssistantMessage).
+        Assistant,
+        "assistant"
+    );
+    marker!(
+        /// Marker for [`Role::System`]. See
+        /// [`SystemMessage`](super::SystemMessage).
+        System,
+        "system"
+    );
+}
+
+/// A message in a [`Request`], generic over how its role is known. See
+/// [`response::Message`] for the version with additional metadata.
+///
+/// The `role` slot holds any [`RoleTag`](markers::RoleTag): [`Role`] for a
+/// runtime role ([`Message`]) or a [`markers`] ZST fixing it at compile time
+/// ([`UserMessage`], [`AssistantMessage`], [`SystemMessage`]). Derefs to
+/// [`Content`] (and through it to `Vec<Block>`), so content accessors and
+/// mutators like [`Content::cache`] apply directly — mutating content can
+/// never change the role.
 ///
 /// A message is [`Display`]ed as markdown with a heading indicating the
 /// [`Role`] of the author. [`Image`]s are supported and will be rendered as
@@ -103,81 +212,60 @@ impl std::fmt::Display for Role {
 /// [`Display`]: std::fmt::Display
 /// [`Request`]: crate::prompt
 /// [`response::Message`]: crate::response::Message
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "snake_case")]
-#[cfg_attr(
-    not(feature = "markdown"),
-    derive(derive_more::Display),
-    display("{}{}{}{}", Self::HEADING, role, Content::SEP, content)
+#[derive(
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    derive_more::Deref,
+    derive_more::DerefMut,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-pub struct Message {
+pub struct RoleMessage<R> {
     /// Who is the message from.
-    pub role: Role,
+    pub role: R,
     /// The [`Content`] of the message as a sequence of [`Block`]s.
+    #[deref]
+    #[deref_mut]
     pub content: Content,
 }
 
-impl Message {
+/// A message whose [`Role`] is only known at runtime.
+pub type Message = RoleMessage<Role>;
+
+/// A message guaranteed to be from the user.
+pub type UserMessage = RoleMessage<markers::User>;
+
+/// A message guaranteed to be from the assistant.
+pub type AssistantMessage = RoleMessage<markers::Assistant>;
+
+/// A message guaranteed to be a mid-conversation system turn. See
+/// [`Role::System`] for semantics and placement rules.
+pub type SystemMessage = RoleMessage<markers::System>;
+
+#[cfg(not(feature = "markdown"))]
+impl<R> std::fmt::Display for RoleMessage<R>
+where
+    R: markers::RoleTag,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "{}{}{}{}",
+            Self::HEADING,
+            self.role.role(),
+            Content::SEP,
+            self.content
+        )
+    }
+}
+
+impl<R> RoleMessage<R> {
     /// Heading for the message when rendered as markdown using [`Display`].
     ///
     /// [`Display`]: std::fmt::Display
     #[cfg(not(feature = "markdown"))]
     pub const HEADING: &'static str = "### ";
-
-    /// Returns the number of [`Content`] [`Block`]s in the message.
-    pub fn len(&self) -> usize {
-        self.content.len()
-    }
-
-    /// Returns true if self has no parts.
-    pub fn is_empty(&self) -> bool {
-        self.content.is_empty()
-    }
-
-    /// Add a cache breakpoint to the final [`Block`] of [`content`]. See
-    /// [`Content::cache`].
-    ///
-    /// [`content`]: Message::content
-    pub fn cache(&mut self) -> &mut Self {
-        self.content.cache();
-        self
-    }
-
-    /// Add a 1-hour cache breakpoint to the final [`Block`] of [`content`].
-    /// See [`Content::cache_1h`].
-    ///
-    /// [`content`]: Message::content
-    pub fn cache_1h(&mut self) -> &mut Self {
-        self.content.cache_1h();
-        self
-    }
-
-    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
-    /// final [`Block`] of [`content`]. See [`Content::cache_with`].
-    ///
-    /// [`content`]: Message::content
-    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
-        self.content.cache_with(cache_control);
-        self
-    }
-
-    /// Remove all cache breakpoints from [`content`]. See
-    /// [`Content::uncache`].
-    ///
-    /// [`content`]: Message::content
-    pub fn uncache(&mut self) -> &mut Self {
-        self.content.uncache();
-        self
-    }
-
-    /// Returns `true` if any block of [`content`] has a cache breakpoint. See
-    /// [`Content::has_cache`].
-    ///
-    /// [`content`]: Message::content
-    pub fn has_cache(&self) -> bool {
-        self.content.has_cache()
-    }
 
     /// Returns Some([`tool::Use`]) if the final [`Content`] [`Block`] is a
     /// [`Block::ToolUse`].
@@ -204,6 +292,55 @@ impl Message {
         }
     }
 
+    /// Whether any [`Content`] [`Block`] is a
+    /// [`ServerToolUse`](Block::ServerToolUse).
+    fn has_server_tool_use(&self) -> bool {
+        self.content
+            .iter()
+            .any(|b| matches!(b, Block::ServerToolUse { .. }))
+    }
+}
+
+impl<R> RoleMessage<R>
+where
+    R: markers::RoleTag,
+{
+    /// A turn whose [`Content`] is a single [`Block::Text`]. Handy for
+    /// prefill and for hand-authored examples (see
+    /// [`Prompt::add_examples`](crate::Prompt::add_examples)).
+    pub fn text<T>(text: T) -> Self
+    where
+        T: Into<crate::CowStr>,
+        R: Default,
+    {
+        Content::text(text).into()
+    }
+
+    /// A convenience method to fix an incomplete [`Block::Thought`] in the case
+    /// of interruption in a streaming context.
+    ///
+    /// Such messages must be removed or the API will reject the request if this
+    /// is sent in a new request (because the signature will be absent).
+    ///
+    /// If, after removing the last block, there are no more blocks, None will
+    /// be returned.
+    pub fn remove_incomplete_thought(mut self) -> Option<Self> {
+        if self.role.role() != Role::Assistant {
+            // There cannot be thinking content from the user.
+            return Some(self);
+        }
+
+        if let Some(Block::Thought { signature, .. }) = self.content.last()
+            && signature.is_empty()
+        {
+            self.content.pop();
+        }
+
+        if self.is_empty() { None } else { Some(self) }
+    }
+}
+
+impl Message {
     /// Whether this turn may be immediately followed by `next` in the
     /// `messages` array.
     ///
@@ -228,42 +365,120 @@ impl Message {
             && next.role == Assistant
             && self.has_server_tool_use())
     }
+}
 
-    /// Whether any [`Content`] [`Block`] is a
-    /// [`ServerToolUse`](Block::ServerToolUse).
-    fn has_server_tool_use(&self) -> bool {
-        self.content
-            .iter()
-            .any(|b| matches!(b, Block::ServerToolUse { .. }))
+impl<R> From<Content> for RoleMessage<R>
+where
+    R: Default,
+{
+    fn from(content: Content) -> Self {
+        Self {
+            role: R::default(),
+            content,
+        }
     }
+}
 
-    /// A convenience method to fix an incomplete [`Block::Thought`] in the case
-    /// of interruption in a streaming context.
-    ///
-    /// Such messages must be removed or the API will reject the request if this
-    /// is sent in a new request (because the signature will be absent).
-    ///
-    /// If, after removing the last block, there are no more blocks, None will
-    /// be returned.
-    pub fn remove_incomplete_thought(mut self) -> Option<Self> {
-        if self.role != Role::Assistant {
-            // There cannot be thinking content from the user.
-            return Some(self);
+impl<R> From<String> for RoleMessage<R>
+where
+    R: Default,
+{
+    fn from(string: String) -> Self {
+        Content::text(string).into()
+    }
+}
+
+impl<R> From<&str> for RoleMessage<R>
+where
+    R: Default,
+{
+    fn from(string: &str) -> Self {
+        Content::text(string.to_owned()).into()
+    }
+}
+
+impl<R, T> FromIterator<T> for RoleMessage<R>
+where
+    R: Default,
+    T: Into<Block>,
+{
+    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
+        Self::from(Content::from_iter(iter))
+    }
+}
+
+impl<R> IntoIterator for RoleMessage<R> {
+    type Item = Block;
+    type IntoIter = std::vec::IntoIter<Block>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.content.into_iter()
+    }
+}
+
+/// Per-marker conversions that would conflict with blanket impls (reflexive
+/// [`From`], `T: Into<Block>` into [`Content`]) if written generically.
+macro_rules! marker_conversions {
+    ($marker:ident) => {
+        impl From<RoleMessage<markers::$marker>> for Message {
+            fn from(message: RoleMessage<markers::$marker>) -> Self {
+                Self {
+                    role: Role::$marker,
+                    content: message.content,
+                }
+            }
         }
 
-        if let Some(Block::Thought { signature, .. }) = self.content.last()
-            && signature.is_empty()
-        {
-            self.content.pop();
+        impl From<RoleMessage<markers::$marker>> for Content {
+            fn from(message: RoleMessage<markers::$marker>) -> Self {
+                message.content
+            }
         }
 
-        if self.is_empty() { None } else { Some(self) }
+        impl TryFrom<Message> for RoleMessage<markers::$marker> {
+            type Error = WrongRole;
+
+            fn try_from(message: Message) -> Result<Self, Self::Error> {
+                if message.role == Role::$marker {
+                    Ok(Self {
+                        role: markers::$marker,
+                        content: message.content,
+                    })
+                } else {
+                    Err(WrongRole {
+                        expected: Role::$marker,
+                        actual: message.role,
+                    })
+                }
+            }
+        }
+    };
+}
+
+marker_conversions!(User);
+marker_conversions!(Assistant);
+marker_conversions!(System);
+
+/// Error converting a [`Message`] into a role-pinned [`RoleMessage`] whose
+/// role doesn't match.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, thiserror::Error)]
+#[error("expected a {expected} message, got {actual}")]
+pub struct WrongRole {
+    /// The [`Role`] the target type requires.
+    pub expected: Role,
+    /// The [`Role`] the message actually has.
+    pub actual: Role,
+}
+
+impl From<WrongRole> for Cow<'static, str> {
+    fn from(err: WrongRole) -> Self {
+        err.to_string().into()
     }
 }
 
 impl From<response::Message> for Message {
     fn from(message: response::Message) -> Self {
-        message.inner.inner
+        message.inner.into()
     }
 }
 
@@ -303,17 +518,11 @@ impl From<tool::Result> for Message {
     }
 }
 
-impl IntoIterator for Message {
-    type Item = Block;
-    type IntoIter = std::vec::IntoIter<Block>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.content.into_iter()
-    }
-}
-
 #[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for Message {
+impl<R> crate::markdown::ToMarkdown for RoleMessage<R>
+where
+    R: markers::RoleTag,
+{
     /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
     /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
     /// [`Role`].
@@ -341,9 +550,9 @@ impl crate::markdown::ToMarkdown for Message {
                     return Box::new(std::iter::empty());
                 }
 
-                self.role.as_str()
+                self.role.role().as_str()
             }
-            _ => self.role.as_str(),
+            _ => self.role.role().as_str(),
         };
         let heading_tag = Tag::Heading {
             level: options.heading_level.unwrap_or(H3),
@@ -367,7 +576,10 @@ impl crate::markdown::ToMarkdown for Message {
 }
 
 #[cfg(feature = "markdown")]
-impl std::fmt::Display for Message {
+impl<R> std::fmt::Display for RoleMessage<R>
+where
+    R: markers::RoleTag,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         use crate::markdown::ToMarkdown;
 
@@ -375,350 +587,23 @@ impl std::fmt::Display for Message {
     }
 }
 
-/// A message guaranteed to be from the assistant.
-#[derive(
-    Debug,
-    Serialize,
-    Clone,
-    derive_more::Deref,
-    Deserialize,
-    derive_more::Display,
-)]
-#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[serde(try_from = "Message", into = "Message")]
-#[display("{}", inner)]
-pub struct AssistantMessage {
-    pub(crate) inner: Message, // Invariant: role == Role::Assistant
-}
-
-impl AssistantMessage {
-    /// An assistant turn whose [`Content`] is a single [`Block::Text`]. Handy
-    /// for prefill and for hand-authored examples (see
-    /// [`Prompt::add_examples`](crate::Prompt::add_examples)).
-    pub fn text<T>(text: T) -> Self
-    where
-        T: Into<crate::CowStr>,
-    {
-        Content::text(text).into()
-    }
-
-    /// Get the inner [`Content`].
-    pub fn content(&self) -> &Content {
-        &self.inner.content
-    }
-
-    /// Get the inner [`Content`] mutably.
-    pub fn content_mut(&mut self) -> &mut Content {
-        &mut self.inner.content
-    }
-
-    /// Add a cache breakpoint to the final [`Block`]. See [`Content::cache`].
-    pub fn cache(&mut self) -> &mut Self {
-        self.inner.cache();
-        self
-    }
-
-    /// Add a 1-hour cache breakpoint to the final [`Block`]. See
-    /// [`Content::cache_1h`].
-    pub fn cache_1h(&mut self) -> &mut Self {
-        self.inner.cache_1h();
-        self
-    }
-
-    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
-    /// final [`Block`]. See [`Content::cache_with`].
-    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
-        self.inner.cache_with(cache_control);
-        self
-    }
-
-    /// Remove all cache breakpoints. See [`Content::uncache`].
-    pub fn uncache(&mut self) -> &mut Self {
-        self.inner.uncache();
-        self
-    }
-
-    /// Returns `true` if any block has a cache breakpoint. See
-    /// [`Content::has_cache`].
-    pub fn has_cache(&self) -> bool {
-        self.inner.has_cache()
-    }
-
-    /// Remove an incomplete [`Block::Thought`] from the end of the message.
-    /// See [`Message::remove_incomplete_thought`] for more information.
-    pub fn remove_incomplete_thought(self) -> Option<Self> {
-        self.inner
-            .remove_incomplete_thought()
-            .map(|inner| AssistantMessage { inner })
-    }
-}
-
-impl From<Content> for AssistantMessage {
-    fn from(content: Content) -> Self {
-        Self {
-            inner: Message {
-                role: Role::Assistant,
-                content,
-            },
-        }
-    }
-}
-
-impl From<String> for AssistantMessage {
-    fn from(string: String) -> Self {
-        Content::text(string).into()
-    }
-}
-
-impl From<&str> for AssistantMessage {
-    fn from(string: &str) -> Self {
-        Content::text(string.to_owned()).into()
-    }
-}
-
-impl From<AssistantMessage> for Message {
-    fn from(val: AssistantMessage) -> Self {
-        val.inner
-    }
-}
-
-impl From<AssistantMessage> for Content {
-    fn from(val: AssistantMessage) -> Self {
-        val.inner.content
-    }
-}
-
-impl<T> FromIterator<T> for AssistantMessage
-where
-    T: Into<Block>,
-{
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::from(Content::from_iter(iter))
-    }
-}
-
-impl TryFrom<Message> for AssistantMessage {
-    type Error = NotTheAssistant;
-
-    fn try_from(message: Message) -> Result<Self, Self::Error> {
-        if message.role == Role::Assistant {
-            Ok(Self { inner: message })
-        } else {
-            Err(NotTheAssistant)
-        }
-    }
-}
-
-#[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for AssistantMessage {
-    /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
-    /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
-    /// [`Role`].
-    ///
-    /// [`Options`]: crate::markdown::Options
-    fn markdown_events_custom(
-        &self,
-        options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
-        self.inner.markdown_events_custom(options)
-    }
-}
-
-/// Error message when conversion to [`AssistantMessage`] fails.
-#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
-#[error("Message is not from the assistant.")]
-pub struct NotTheAssistant;
-
-/// A message guaranteed to be from the user.
-#[derive(
-    Clone,
-    Debug,
-    derive_more::Deref,
-    derive_more::Display,
-    Deserialize,
-    Serialize,
-)]
-#[serde(try_from = "Message", into = "Message")]
-#[display("{}", inner)]
-pub struct UserMessage {
-    inner: Message, // Invariant: role == Role::User
-}
-
-impl UserMessage {
-    /// Get the inner [`Content`].
-    pub fn content(&self) -> &Content {
-        &self.inner.content
-    }
-
-    /// Get the inner [`Content`] mutably.
-    pub fn content_mut(&mut self) -> &mut Content {
-        &mut self.inner.content
-    }
-
-    /// Add a cache breakpoint to the final [`Block`]. See [`Content::cache`].
-    pub fn cache(&mut self) -> &mut Self {
-        self.inner.cache();
-        self
-    }
-
-    /// Add a 1-hour cache breakpoint to the final [`Block`]. See
-    /// [`Content::cache_1h`].
-    pub fn cache_1h(&mut self) -> &mut Self {
-        self.inner.cache_1h();
-        self
-    }
-
-    /// Add a cache breakpoint with a caller-provided [`CacheControl`] to the
-    /// final [`Block`]. See [`Content::cache_with`].
-    pub fn cache_with(&mut self, cache_control: CacheControl) -> &mut Self {
-        self.inner.cache_with(cache_control);
-        self
-    }
-
-    /// Remove all cache breakpoints. See [`Content::uncache`].
-    pub fn uncache(&mut self) -> &mut Self {
-        self.inner.uncache();
-        self
-    }
-
-    /// Returns `true` if any block has a cache breakpoint. See
-    /// [`Content::has_cache`].
-    pub fn has_cache(&self) -> bool {
-        self.inner.has_cache()
-    }
-}
-
-impl From<Content> for UserMessage {
-    fn from(content: Content) -> Self {
-        Self {
-            inner: Message {
-                role: Role::User,
-                content,
-            },
-        }
-    }
-}
-
-impl From<UserMessage> for Content {
-    fn from(message: UserMessage) -> Self {
-        message.inner.content
-    }
-}
-
-impl From<String> for UserMessage {
-    fn from(string: String) -> Self {
-        UserMessage {
-            inner: Message {
-                role: Role::User,
-                content: Content::text(string),
-            },
-        }
-    }
-}
-
-impl From<&str> for UserMessage {
-    fn from(string: &str) -> Self {
-        UserMessage {
-            inner: Message {
-                role: Role::User,
-                content: Content::text(string.to_owned()),
-            },
-        }
-    }
-}
-
 impl From<tool::Result> for UserMessage {
     fn from(result: tool::Result) -> Self {
-        UserMessage {
-            inner: result.into(),
-        }
-    }
-}
-
-impl<T> FromIterator<T> for UserMessage
-where
-    T: Into<Block>,
-{
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        Self::from(Content::from_iter(iter))
-    }
-}
-
-impl IntoIterator for UserMessage {
-    type Item = Block;
-    type IntoIter = std::vec::IntoIter<Block>;
-
-    fn into_iter(self) -> Self::IntoIter {
-        self.inner.content.into_iter()
+        Content::from(result).into()
     }
 }
 
 #[cfg(feature = "dioxus")]
 impl From<dioxus::events::FormEvent> for UserMessage {
     fn from(event: dioxus::events::FormEvent) -> Self {
-        UserMessage {
-            inner: Message {
-                role: Role::User,
-                content: event.data().value().into(),
-            },
-        }
+        Content::from(event.data().value()).into()
     }
 }
 
 #[cfg(feature = "dioxus")]
 impl From<dioxus::html::FormData> for UserMessage {
     fn from(data: dioxus::html::FormData) -> Self {
-        let content = data.into();
-        UserMessage {
-            inner: Message {
-                role: Role::User,
-                content,
-            },
-        }
-    }
-}
-
-impl TryFrom<Message> for UserMessage {
-    type Error = NotTheUser;
-
-    fn try_from(message: Message) -> Result<Self, Self::Error> {
-        if message.role == Role::User {
-            Ok(Self { inner: message })
-        } else {
-            Err(NotTheUser)
-        }
-    }
-}
-
-impl From<UserMessage> for Message {
-    fn from(message: UserMessage) -> Self {
-        message.inner
-    }
-}
-
-#[cfg(feature = "markdown")]
-impl crate::markdown::ToMarkdown for UserMessage {
-    /// Returns an iterator over the text as [`pulldown_cmark::Event`]s using
-    /// custom [`Options`]. This is [`Content`] markdown plus a heading for the
-    /// [`Role`].
-    ///
-    /// [`Options`]: crate::markdown::Options
-    fn markdown_events_custom(
-        &self,
-        options: crate::markdown::Options,
-    ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
-        self.inner.markdown_events_custom(options)
-    }
-}
-
-/// Error message when conversion to [`UserMessage`] fails.
-#[derive(Debug, Serialize, Deserialize, thiserror::Error)]
-#[error("Message is not from the user.")]
-pub struct NotTheUser;
-
-impl From<NotTheUser> for Cow<'static, str> {
-    fn from(_: NotTheUser) -> Self {
-        "Message is not from the user.".into()
+        Content::from(data).into()
     }
 }
 
@@ -3474,10 +3359,42 @@ mod tests {
     }
 
     #[test]
+    fn test_system_message_serde() {
+        let message: Message = (Role::User, "Imitation!").into();
+        let invalid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<SystemMessage, _> = serde_json::from_str(&invalid_json);
+        assert!(ret.is_err());
+        let message: Message = (Role::System, "Valid!").into();
+        let valid_json = serde_json::to_string(&message).unwrap();
+        let ret: Result<SystemMessage, _> = serde_json::from_str(&valid_json);
+        assert!(ret.is_ok());
+    }
+
+    #[test]
+    fn test_role_pinned_wire_equality() {
+        // A role-pinned message and a runtime-role `Message` must serialize
+        // byte-identically: the marker is a wire-invisible refinement.
+        let pinned = AssistantMessage::text("Hello!");
+        let erased = Message::from(pinned.clone());
+        assert_eq!(
+            serde_json::to_string(&pinned).unwrap(),
+            serde_json::to_string(&erased).unwrap(),
+        );
+    }
+
+    #[test]
+    fn test_wrong_role_error() {
+        let message: Message = (Role::Assistant, "Imitation!").into();
+        let err = UserMessage::try_from(message).unwrap_err();
+        assert_eq!(err.expected, Role::User);
+        assert_eq!(err.actual, Role::Assistant);
+    }
+
+    #[test]
     fn test_user_message_from_iter() {
         // From an iterator of &str (via blanket Into<Block>).
         let msg: UserMessage = ["Hello,", "world!"].into_iter().collect();
-        let blocks = msg.content();
+        let blocks = &msg.content;
         assert_eq!(blocks.len(), 2);
 
         // From an iterator of tool::Result.
@@ -3486,7 +3403,7 @@ mod tests {
             tool::Result::new("tool_2", "parse error: ...").error(),
         ];
         let msg: UserMessage = results.into_iter().collect();
-        let blocks = msg.content();
+        let blocks = &msg.content;
         assert_eq!(blocks.len(), 2);
         assert!(matches!(blocks[0], Block::ToolResult { .. }));
         assert!(matches!(blocks[1], Block::ToolResult { .. }));
@@ -3496,7 +3413,7 @@ mod tests {
     fn test_assistant_message_from_iter() {
         let msg: AssistantMessage =
             ["thinking...", "done."].into_iter().collect();
-        let blocks = msg.content();
+        let blocks = &msg.content;
         assert_eq!(blocks.len(), 2);
     }
 

@@ -529,9 +529,7 @@ pub fn Chat() -> Element {
                             let content = input_buffer.read().to_string();
                             if !content.trim().is_empty() {
                                 let mut message = UserMessage::from(content);
-                                message.content_mut().extend(
-                                    attachments.write().drain(..)
-                                );
+                                message.extend(attachments.write().drain(..));
                                 if let Err(e) = CLIENT.read().send(message).await {
                                     connected.set(false);
                                     log::error!(

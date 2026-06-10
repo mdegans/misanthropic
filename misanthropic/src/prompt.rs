@@ -23,7 +23,10 @@ pub mod citation;
 pub use citation::Citation;
 
 pub mod message;
-pub use message::{AssistantMessage, Message, UserMessage};
+pub use message::{
+    AssistantMessage, Message, RoleMessage, SystemMessage, UserMessage,
+    WrongRole,
+};
 
 pub mod thinking;
 pub use thinking::Display as ThinkingDisplay;

@@ -515,7 +515,7 @@ mod tests {
         message.stop_reason = Some(StopReason::ToolUse);
         assert!(message.tool_use().is_none());
 
-        message.inner.content_mut().push(
+        message.inner.content.push(
             crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
         );
         assert!(message.tool_use().is_some());
@@ -559,10 +559,8 @@ mod tests {
             id: "id".into(),
             kind: None,
             inner: prompt::AssistantMessage {
-                inner: prompt::Message {
-                    role: prompt::message::Role::Assistant,
-                    content,
-                },
+                role: prompt::message::markers::Assistant,
+                content,
             },
             model: crate::Id::Sonnet35.into(),
             stop_reason,
@@ -681,12 +679,8 @@ mod tests {
             id: "id".into(),
             kind: None,
             inner: prompt::AssistantMessage {
-                inner: prompt::Message {
-                    role: prompt::message::Role::User,
-                    content: prompt::message::Content::text(
-                        "Hello, **world**!",
-                    ),
-                },
+                role: prompt::message::markers::Assistant,
+                content: prompt::message::Content::text("Hello, **world**!"),
             },
             model: crate::Id::Sonnet35.into(),
             stop_reason: None,
@@ -703,7 +697,7 @@ mod tests {
             container: None,
         };
 
-        let expected = "### User\n\nHello, **world**!";
+        let expected = "### Assistant\n\nHello, **world**!";
         let markdown = message.markdown();
         assert_eq!(markdown.as_ref(), expected);
     }

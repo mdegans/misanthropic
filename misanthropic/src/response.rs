@@ -56,36 +56,39 @@ impl Response {
             .expect("`Response` is not a `Stream` variant.")
     }
 
-    /// Unwrap a [`Response::Message`] variant into a [`prompt::message`]. Use
-    /// this if you don't care about [`response::Message`] metadata.
+    /// Unwrap a [`Response::Message`] variant into a
+    /// [`prompt::AssistantMessage`]. Use this if you don't care about
+    /// [`response::Message`] metadata.
     ///
     /// # Panics
     /// - If the variant is not a [`Response::Message`].
     ///
     /// [`response::Message`]: self::Message
-    pub fn unwrap_message(self) -> prompt::Message {
+    pub fn unwrap_message(self) -> prompt::AssistantMessage {
         self.into_message()
             .expect("`Response` is not a `Message` variant.")
     }
 
-    /// Get the [`prompt::message`] from a [`Response::Message`] variant. Use
-    /// this if you don't care about [`response::Message`] metadata.
+    /// Get the [`prompt::AssistantMessage`] from a [`Response::Message`]
+    /// variant. Use this if you don't care about [`response::Message`]
+    /// metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn message(&self) -> Option<&prompt::Message> {
+    pub fn message(&self) -> Option<&prompt::AssistantMessage> {
         match self {
             Self::Message { message, .. } => Some(&message.inner),
             _ => None,
         }
     }
 
-    /// Convert a [`Response::Message`] variant into a [`prompt::message`]. Use
-    /// this if you don't care about [`response::Message`] metadata.
+    /// Convert a [`Response::Message`] variant into a
+    /// [`prompt::AssistantMessage`]. Use this if you don't care about
+    /// [`response::Message`] metadata.
     ///
     /// [`response::Message`]: self::Message
-    pub fn into_message(self) -> Option<prompt::Message> {
+    pub fn into_message(self) -> Option<prompt::AssistantMessage> {
         match self {
-            Self::Message { message, .. } => Some(message.inner.into()),
+            Self::Message { message, .. } => Some(message.inner),
             _ => None,
         }
     }
@@ -136,10 +139,8 @@ mod tests {
                 id: TEST_ID.into(),
                 kind: None,
                 inner: prompt::AssistantMessage {
-                    inner: prompt::Message {
-                        role: prompt::message::Role::Assistant,
-                        content: CONTENT.into(),
-                    },
+                    role: prompt::message::markers::Assistant,
+                    content: CONTENT.into(),
                 },
                 model: crate::Id::Sonnet35.into(),
                 stop_reason: None,

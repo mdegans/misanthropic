@@ -767,7 +767,7 @@ pub trait FilterExt:
                     // The most common case is content block delta.
                     Ok(Event::ContentBlockDelta { delta, ..}) => {
                         if let Some(message) = message.as_mut() {
-                            if let Err(e) = message.inner.inner.content.push_delta(delta.clone()) {
+                            if let Err(e) = message.inner.content.push_delta(delta.clone()) {
                                 yield Err(e.into());
                             }
                         } else {
@@ -784,7 +784,7 @@ pub trait FilterExt:
                         content_block, ..
                     }) => {
                         if let Some(message) = message.as_mut() {
-                            message.inner.inner.content.push(
+                            message.inner.content.push(
                                 content_block.clone()
                             );
                         } else {
@@ -796,7 +796,7 @@ pub trait FilterExt:
                     }
                     Ok(Event::ToolUse { tool_use }) => {
                         if let Some(message) = message.as_mut() {
-                            message.inner.inner.content.push(tool_use.clone());
+                            message.inner.content.push(tool_use.clone());
                         } else {
                             yield Err(Error::MessageAssembly {
                                 message: "Tool use received before message start.".into(),
@@ -809,7 +809,7 @@ pub trait FilterExt:
                             // No `From<tool::Use>` shortcut here: that builds a
                             // `Block::ToolUse`. A server tool use is its own
                             // block.
-                            message.inner.inner.content.push(
+                            message.inner.content.push(
                                 crate::prompt::message::Block::ServerToolUse {
                                     call: tool_use.clone(),
                                 },
@@ -1116,7 +1116,7 @@ pub(crate) mod tests {
         .unwrap();
         match event {
             Event::MessageStart { message } => {
-                assert_eq!(message.inner.inner.role, Role::Assistant);
+                assert_eq!(Role::from(message.inner.role), Role::Assistant);
                 assert_eq!(message.id, "msg_014p7gG3wDgGV9EUtLvnow3U");
             }
             _ => panic!("Unexpected event: {:?}", event),
@@ -1538,7 +1538,7 @@ pub(crate) mod tests {
             })
             .expect("with_message should assemble a complete message");
         // The assembled message carries the full JSON text block.
-        assert!(message.inner.inner.content.to_string().contains("oat milk"));
+        assert!(message.inner.content.to_string().contains("oat milk"));
     }
 
     #[tokio::test]
@@ -2055,7 +2055,6 @@ pub(crate) mod tests {
 
         let fetches = |m: &response::Message| {
             m.inner
-                .content()
                 .iter()
                 .filter(|b| matches!(b, Block::WebFetchToolResult { .. }))
                 .count()
@@ -2073,7 +2072,6 @@ pub(crate) mod tests {
         // but its result never arrives in this turn.
         let calls = paused
             .inner
-            .content()
             .iter()
             .filter(|b| matches!(b, Block::ServerToolUse { .. }))
             .count();

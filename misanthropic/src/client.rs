@@ -1492,7 +1492,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(message.inner.role, Role::Assistant);
+        assert_eq!(Role::from(message.inner.role), Role::Assistant);
         assert!(message.to_string().contains("🙏"));
     }
 
