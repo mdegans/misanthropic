@@ -7,7 +7,7 @@ use derive_more::derive::IsVariant;
 pub(crate) mod message;
 pub use message::{
     CacheCreation, Container, JsonError, Kind, Message, StopDetails,
-    StopReason, Usage,
+    StopReason, TokenCounts, Usage,
 };
 
 use crate::prompt;
@@ -145,13 +145,14 @@ mod tests {
                 stop_reason: None,
                 stop_sequence: None,
                 stop_details: None,
-                usage: Usage {
+                usage: message::TokenCounts {
                     input_tokens: 1,
                     cache_creation_input_tokens: Some(2),
                     cache_read_input_tokens: Some(3),
                     output_tokens: 4,
                     ..Default::default()
-                },
+                }
+                .into(),
                 container: None,
             },
         }
@@ -345,7 +346,7 @@ mod tests {
     fn test_usage_add() {
         use crate::response::message::ServerToolUsage;
 
-        let mut a = Usage {
+        let mut a = Usage::from(message::TokenCounts {
             input_tokens: 1,
             cache_creation_input_tokens: Some(2),
             cache_read_input_tokens: Some(3),
@@ -356,9 +357,9 @@ mod tests {
                 tool_search_requests: Some(10),
             }),
             ..Default::default()
-        };
+        });
 
-        let b = Usage {
+        let b = Usage::from(message::TokenCounts {
             input_tokens: 5,
             cache_creation_input_tokens: Some(6),
             cache_read_input_tokens: Some(7),
@@ -369,7 +370,7 @@ mod tests {
                 tool_search_requests: Some(20),
             }),
             ..Default::default()
-        };
+        });
 
         a += b;
 

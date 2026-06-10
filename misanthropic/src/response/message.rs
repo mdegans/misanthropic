@@ -250,10 +250,49 @@ pub struct StopDetails {
 
 /// Usage statistics from the API. This is used in multiple contexts, not just
 /// for messages.
-#[derive(Clone, Debug, Serialize, Deserialize, Default)]
+///
+/// The numeric token counters live in [`counts`](Self::counts) (flattened on
+/// the wire) and are re-exposed here via `Deref`, so `usage.input_tokens`
+/// reads through. `Usage` itself is not `Copy` — the API also reports
+/// `service_tier`/`inference_geo` strings here, which arguably belong on the
+/// parent response but are out of our control — so downstream code that wants
+/// cheap copyable counters should take `usage.counts` ([`TokenCounts`]).
+#[derive(
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    Default,
+    derive_more::Deref,
+    derive_more::DerefMut,
+)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 pub struct Usage {
+    /// The numeric token counters, `Copy` — see [`TokenCounts`].
+    #[serde(flatten)]
+    #[deref]
+    #[deref_mut]
+    pub counts: TokenCounts,
+    /// Capacity tier that served the request: `"standard"`, `"priority"`, or
+    /// `"batch"`. Distinct from the *requested*
+    /// [`ServiceTier`](crate::prompt::ServiceTier) (`auto`/`standard_only`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<Cow<'static, str>>,
+    /// Region that served the request, e.g. `"us"`, `"eu"`, or
+    /// `"not_available"`. Distinct from the *requested*
+    /// [`InferenceGeo`](crate::prompt::InferenceGeo) constraint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inference_geo: Option<Cow<'static, str>>,
+}
+
+/// The numeric token counters of [`Usage`], flattened on the wire and
+/// re-exposed on `Usage` via `Deref`. Split out so the counters stay `Copy`
+/// for cheap accumulation even though `Usage` carries strings.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
+pub struct TokenCounts {
     /// Number of input tokens used.
     pub input_tokens: u64,
     /// Number of input tokens used to create the cache entry.
@@ -268,16 +307,6 @@ pub struct Usage {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
-    /// Capacity tier that served the request: `"standard"`, `"priority"`, or
-    /// `"batch"`. Distinct from the *requested*
-    /// [`ServiceTier`](crate::prompt::ServiceTier) (`auto`/`standard_only`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<Cow<'static, str>>,
-    /// Region that served the request, e.g. `"us"`, `"eu"`, or
-    /// `"not_available"`. Distinct from the *requested*
-    /// [`InferenceGeo`](crate::prompt::InferenceGeo) constraint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inference_geo: Option<Cow<'static, str>>,
     /// Server-tool invocation counts (e.g. web searches), when any server tool
     /// ran. See [`ServerMethodDef`](crate::tool::ServerMethodDef).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -286,7 +315,7 @@ pub struct Usage {
 
 /// Cache-write token counts broken down by TTL — the `cache_creation` object
 /// in [`Usage`], the per-TTL detail behind
-/// [`Usage::cache_creation_input_tokens`].
+/// [`TokenCounts::cache_creation_input_tokens`].
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
@@ -347,6 +376,19 @@ impl std::ops::Add<Usage> for Usage {
 
     fn add(self, rhs: Self) -> Self::Output {
         Self {
+            counts: self.counts + rhs.counts,
+            // Not counts — later (more final) values win.
+            service_tier: rhs.service_tier.or(self.service_tier),
+            inference_geo: rhs.inference_geo.or(self.inference_geo),
+        }
+    }
+}
+
+impl std::ops::Add<TokenCounts> for TokenCounts {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
             input_tokens: self.input_tokens + rhs.input_tokens,
             cache_creation_input_tokens: self
                 .cache_creation_input_tokens
@@ -361,13 +403,25 @@ impl std::ops::Add<Usage> for Usage {
                 .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
                 .or(rhs.cache_read_input_tokens),
             output_tokens: self.output_tokens + rhs.output_tokens,
-            // Not counts — later (more final) values win.
-            service_tier: rhs.service_tier.or(self.service_tier),
-            inference_geo: rhs.inference_geo.or(self.inference_geo),
             server_tool_use: match (self.server_tool_use, rhs.server_tool_use) {
                 (Some(a), Some(b)) => Some(a + b),
                 (a, b) => a.or(b),
             },
+        }
+    }
+}
+
+impl std::ops::AddAssign<TokenCounts> for TokenCounts {
+    fn add_assign(&mut self, rhs: TokenCounts) {
+        *self = *self + rhs;
+    }
+}
+
+impl From<TokenCounts> for Usage {
+    fn from(counts: TokenCounts) -> Self {
+        Self {
+            counts,
+            ..Default::default()
         }
     }
 }
@@ -638,13 +692,14 @@ mod tests {
             stop_reason: None,
             stop_sequence: None,
             stop_details: None,
-            usage: Usage {
+            usage: TokenCounts {
                 input_tokens: 1,
                 cache_creation_input_tokens: Some(2),
                 cache_read_input_tokens: Some(3),
                 output_tokens: 4,
                 ..Default::default()
-            },
+            }
+            .into(),
             container: None,
         };
 
