@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("{message}");
 
     // Access fields:
-    //   message.inner          — the prompt::AssistantMessage
+    //   message.inner          — prompt::AssistantMessage (derefs to Content)
     //   message.inner.content  — Content (Display, iterable over Blocks)
     //   message.model          — model::Model
     //   message.stop_reason    — Option<StopReason>
@@ -583,10 +583,9 @@ if let Error::Anthropic(api_err) = e {
 ```text
 response::Message
 ├── id: Cow<str>              — unique message ID
-├── inner: AssistantMessage
-│   └── inner: prompt::Message
-│       ├── role: Role::Assistant
-│       └── content: Content  — Display, iterable over Blocks
+├── inner: AssistantMessage   — RoleMessage<markers::Assistant>, derefs to Content
+│   ├── role: markers::Assistant
+│   └── content: Content      — Display, iterable over Blocks
 ├── model: model::Model
 ├── stop_reason: Option<StopReason>
 │   └── EndTurn | MaxTokens | StopSequence | ToolUse | PauseTurn | Refusal
