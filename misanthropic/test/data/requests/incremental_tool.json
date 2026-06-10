@@ -1,0 +1,35 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Add these to my shopping list: 3 granny smith apples, 2 bananas, and 1 carton of oat milk."
+    }
+  ],
+  "tools": [
+    {
+      "name": "add_items",
+      "description": "Add items to the shopping list.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "quantity": { "type": "integer" },
+                "note": { "type": "string" }
+              },
+              "required": ["name", "quantity"]
+            }
+          }
+        },
+        "required": ["items"]
+      }
+    }
+  ],
+  "tool_choice": { "type": "tool", "name": "add_items" }
+}

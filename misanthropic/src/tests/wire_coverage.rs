@@ -31,6 +31,12 @@ const DIR: &str =
 /// `redacted_thought.sse.stream.jsonl`) live here, predating `server_tools/`.
 const DATA_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/test/data");
 
+/// Incremental-JSON captures (a tool call whose input is a list of objects,
+/// and a structured-output generation of the same shape) — the parsing
+/// substrate for #58. Round-trip-gated here like every stream fixture.
+const INCREMENTAL_DIR: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/test/data/incremental");
+
 /// Whether a [`Block`] variant is a wire-sourced server-tool / caller-bearing
 /// block that must have a captured fixture under `test/data/server_tools/`.
 ///
@@ -82,10 +88,13 @@ fn block_fixtures() -> Vec<(String, String)> {
 }
 
 /// `(file_name, contents)` for every streaming fixture (`*.sse.stream.jsonl`),
-/// from `server_tools/` and the data root (legacy captures).
+/// from `server_tools/`, `incremental/`, and the data root (legacy captures).
 fn stream_fixtures() -> Vec<(String, String)> {
     let mut out = read_fixtures(DIR, |n| n.ends_with(".sse.stream.jsonl"));
     out.extend(read_fixtures(DATA_DIR, |n| {
+        n.ends_with(".sse.stream.jsonl")
+    }));
+    out.extend(read_fixtures(INCREMENTAL_DIR, |n| {
         n.ends_with(".sse.stream.jsonl")
     }));
     out.sort();

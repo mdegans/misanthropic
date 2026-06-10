@@ -1587,4 +1587,83 @@ pub(crate) mod tests {
         let call = message.tool_use().expect("pre-populated tool_use");
         assert_eq!(call.name, "query_sales");
     }
+
+    /// A tool call whose input is a *list of objects*, captured live
+    /// (`test/data/incremental/tool_items.sse.stream.jsonl`): the array
+    /// arrives as 21 `input_json_delta` frames split mid-token. The #58
+    /// incremental-parsing substrate; here, end-to-end through
+    /// [`FilterExt::with_tool_use`] assembly.
+    #[tokio::test]
+    async fn test_stream_tool_items_list_assembles() {
+        const JSONL: &str = include_str!(
+            "../test/data/incremental/tool_items.sse.stream.jsonl"
+        );
+
+        let stream = mock_stream_jsonl(JSONL).with_tool_use();
+        pin_mut!(stream);
+
+        let mut call = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::ToolUse { tool_use }) = event {
+                call = Some(tool_use);
+            }
+        }
+
+        let call = call.expect("tool_use assembles from json deltas");
+        assert_eq!(call.name, "add_items");
+        let items = call.input["items"]
+            .as_array()
+            .expect("input.items is an array");
+        assert_eq!(items.len(), 3, "three shopping-list items");
+        assert!(
+            items
+                .iter()
+                .all(|i| i["name"].is_string() && i["quantity"].is_u64())
+        );
+    }
+
+    /// A structured-output generation with the same list-of-items schema,
+    /// captured live
+    /// (`test/data/incremental/structured_items.sse.stream.jsonl`): with
+    /// [`Prompt::output_config`] the JSON arrives as plain `text_delta`s in a
+    /// [`Block::Text`]. End-to-end: assemble with
+    /// [`FilterExt::with_message`], parse with [`response::Message::json`].
+    ///
+    /// [`Prompt::output_config`]: crate::Prompt::output_config
+    #[tokio::test]
+    async fn test_stream_structured_items_list_assembles() {
+        const JSONL: &str = include_str!(
+            "../test/data/incremental/structured_items.sse.stream.jsonl"
+        );
+
+        #[derive(serde::Deserialize)]
+        struct Item {
+            name: String,
+            quantity: u64,
+        }
+        #[derive(serde::Deserialize)]
+        struct ShoppingList {
+            items: Vec<Item>,
+        }
+
+        let stream = mock_stream_jsonl(JSONL).with_message();
+        pin_mut!(stream);
+
+        let mut assembled = None;
+        while let Some(event) = stream.next().await {
+            if let Ok(Event::Message { message }) = event {
+                assembled = Some(message);
+            }
+        }
+
+        let message = assembled.expect("stream assembles a message");
+        let list: ShoppingList =
+            message.json().expect("text block parses as the schema");
+        assert_eq!(list.items.len(), 3);
+        assert!(
+            list.items
+                .iter()
+                .any(|i| i.name.contains("apple") && i.quantity == 3)
+        );
+    }
 }
