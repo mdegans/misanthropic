@@ -276,7 +276,8 @@ batch = ["client"]
 # requires Sync on some things and that's not possible in wasm.
 client = []
 # Enables some Dioxus support. This is not necessary for the client.
-dioxus = ["dep:dioxus"]
+# Rendering splits thoughts/speech via `cot`'s ThoughtsAndSpeech.
+dioxus = ["dep:dioxus", "cot"]
 # Notepad tool for the assistant to take notes. Implemented with the typed-tool
 # derive macros, so it requires `derive`.
 notepad = ["derive"]

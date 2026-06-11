@@ -29,7 +29,7 @@ pub struct Thought {
 impl crate::markdown::ToMarkdown for Thought {
     fn markdown_events_custom(
         &self,
-        options: crate::html::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         Box::new(pulldown_cmark::Parser::new_ext(
             self.text.as_ref(),
@@ -50,7 +50,7 @@ pub struct Speech {
 impl crate::markdown::ToMarkdown for Speech {
     fn markdown_events_custom(
         &self,
-        options: crate::html::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         Box::new(pulldown_cmark::Parser::new_ext(
             self.text.as_ref(),
@@ -320,7 +320,7 @@ impl Thinkable for Message {
 impl crate::markdown::ToMarkdown for ThoughtOrSpeech {
     fn markdown_events_custom(
         &self,
-        options: crate::html::Options,
+        options: crate::markdown::Options,
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{Event, HeadingLevel::H5, Tag, TagEnd};
 
@@ -366,12 +366,9 @@ impl crate::markdown::ToMarkdown for ThoughtOrSpeech {
 
 #[cfg(test)]
 mod tests {
-    use std::fmt::Write;
-
-    use crate::{
-        html::ToHtml,
-        prompt::{self, message::Role},
-    };
+    use crate::prompt::{self, message::Role};
+    #[cfg(feature = "html")]
+    use {crate::html::ToHtml, std::fmt::Write};
 
     use super::*;
 
@@ -461,6 +458,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "html")]
     fn test_thoughts_and_speech_to_html_helper(text: &str, expected: &str) {
         let message: prompt::Message = (Role::Assistant, text).into();
 
@@ -475,6 +473,7 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    #[cfg(feature = "html")]
     #[test]
     fn test_thoughts_and_speech_to_html() {
         test_thoughts_and_speech_to_html_helper(
