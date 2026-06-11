@@ -515,13 +515,15 @@ impl DockerSandbox {
         Ok(container)
     }
 
-    /// Fail early with an actionable message if the baked `DEFAULT_IMAGE` is
-    /// not built locally. Custom images get docker's own not-found error.
+    /// Ensure the `DEFAULT_IMAGE` is present: a local build (`just
+    /// build-bashd`) shadows the published image; otherwise pull this
+    /// release's tag. Fails with an actionable message only when both are
+    /// unavailable. Custom images get docker's own not-found error.
     async fn ensure_default_image(&self) -> Result<(), BashError> {
         if self.base_image != DEFAULT_IMAGE {
             return Ok(());
         }
-        let ok = Command::new(&self.runtime)
+        let local = Command::new(&self.runtime)
             .args(["image", "inspect", DEFAULT_IMAGE])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -529,12 +531,19 @@ impl DockerSandbox {
             .await
             .map(|s| s.success())
             .unwrap_or(false);
-        ok.then_some(()).ok_or_else(|| {
-            BashError::Backend(format!(
-                "default sandbox image `{DEFAULT_IMAGE}` is not built — \
-                 run `just build-bashd`"
-            ))
-        })
+        if local {
+            return Ok(());
+        }
+        let pull = capture(&self.runtime, ["pull", DEFAULT_IMAGE]).await?;
+        if pull.status.success() {
+            return Ok(());
+        }
+        Err(BashError::Backend(format!(
+            "default sandbox image `{DEFAULT_IMAGE}` is not available \
+             locally and could not be pulled ({}) — build it with \
+             `just build-bashd`",
+            String::from_utf8_lossy(&pull.stderr).trim()
+        )))
     }
 
     /// Launch `bashd --http` (attached, as the run user) over an ephemeral
@@ -1098,17 +1107,22 @@ mod tests {
             .unwrap_or(false)
     }
 
-    /// Whether the baked `DEFAULT_IMAGE` is built locally (via `just
-    /// build-bashd`). `false` → skip the live test.
+    /// Whether the `DEFAULT_IMAGE` is available — built locally (`just
+    /// build-bashd`) or pullable (published releases). `false` → skip the
+    /// live test (e.g. offline with no local build, or a pre-publish tag).
     async fn default_image_built() -> bool {
-        Command::new("docker")
-            .args(["image", "inspect", DEFAULT_IMAGE])
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .await
-            .map(|s| s.success())
-            .unwrap_or(false)
+        async fn succeeds(args: [&str; 3]) -> bool {
+            Command::new("docker")
+                .args(args)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .await
+                .map(|s| s.success())
+                .unwrap_or(false)
+        }
+        succeeds(["image", "inspect", DEFAULT_IMAGE]).await
+            || succeeds(["pull", DEFAULT_IMAGE, "--quiet"]).await
     }
 
     fn run(cmd: &str) -> crate::tool::bash::Command {
