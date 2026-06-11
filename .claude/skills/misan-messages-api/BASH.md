@@ -14,7 +14,8 @@ Don't confuse it with the `code_execution` *server* tool: that one runs in
 **your** host, in a sandbox you control and tear down.
 
 `tool::bash::DockerSandbox` (feature `bash-container`) is the reference executor:
-it boots the baked `misan-bashd` image — `bashd` (a tiny session daemon) on an
+it boots the `misan-bashd` image (published per release, pulled on first run;
+tag = crate version) — `bashd` (a tiny session daemon) baked onto an
 immutable read-only rootfs — as a non-root user, and reaches it over an
 ephemeral per-container mutual-TLS channel. A `docker exec` per command would
 lose the working directory and environment, so `bashd` owns one persistent

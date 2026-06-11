@@ -1,5 +1,6 @@
 [package]
 name = "chat-frontend"
+publish = false
 version = "0.1.0"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 edition = "2021"

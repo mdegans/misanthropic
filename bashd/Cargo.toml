@@ -1,5 +1,7 @@
 [package]
 name = "bashd"
+# Distributed as the mdegans/misan-bashd image, not on crates.io.
+publish = false
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

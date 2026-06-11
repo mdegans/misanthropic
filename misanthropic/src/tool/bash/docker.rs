@@ -40,9 +40,12 @@ use super::{
 const BASHD_PORT: u16 = 9099;
 
 /// The sandbox image [`DockerSandbox::default`] boots: `bashd` baked into an
-/// immutable rootfs with a pinned non-root `agent` user. Built (and the binary
-/// extracted) by `just build-bashd`; must match `bashd_image` in the `justfile`.
-const DEFAULT_IMAGE: &str = "misan-bashd:dev";
+/// immutable rootfs with a pinned non-root `agent` user. Published per release
+/// (the tag is this crate's version, single-sourced from the workspace), so
+/// the first run pulls it; `just build-bashd` builds the same tag locally and
+/// shadows the published image for development.
+const DEFAULT_IMAGE: &str =
+    concat!("mdegans/misan-bashd:", env!("CARGO_PKG_VERSION"));
 
 /// The home directory of the baked `agent` user — the default workdir and the
 /// mount point for the `$HOME` volume.
@@ -125,7 +128,8 @@ impl From<&str> for HomeFs {
 /// # fn f() {
 /// use misanthropic::tool::bash::{BashTool, DockerSandbox};
 ///
-/// // The default boots the baked `misan-bashd` image (`just build-bashd`):
+/// // The default boots this release's published `mdegans/misan-bashd`
+/// // image (pulled on first run; `just build-bashd` shadows it locally):
 /// // bashd is already on an immutable rootfs, as a non-root `agent` user.
 /// let tool = BashTool::new(DockerSandbox::default());
 /// # let _ = tool;

@@ -8,7 +8,8 @@
 //! must terminate.
 //!
 //! ```sh
-//! just build-bashd   # build the misan-bashd sandbox image (once; needs Docker)
+//! # needs Docker; the published misan-bashd image is pulled on first run
+//! # (`just build-bashd` builds the same tag locally to shadow it)
 //! cargo run --features "client bash-container" --example bash
 //! ```
 //!

@@ -38,9 +38,12 @@ test-ignored:
 run-example name *args:
     cargo run -p misanthropic --all-features --example {{name}} -- {{args}}
 
-# The sandbox image tag the DockerSandbox boots by default. Must match
-# DEFAULT_IMAGE in misanthropic/src/tool/bash/docker.rs.
-bashd_image := "misan-bashd:dev"
+# The sandbox image the DockerSandbox boots by default (DEFAULT_IMAGE in
+# misanthropic/src/tool/bash/docker.rs): the published image tagged with the
+# workspace version, both single-sourced from the root Cargo.toml. Building
+# locally shadows the published tag for development.
+version := `sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1`
+bashd_image := "mdegans/misan-bashd:" + version
 
 # Build the sandbox image (bashd baked into an immutable rootfs) and extract the
 # static linux-musl binary to target-linux/ for the dev bind-mount path + live
