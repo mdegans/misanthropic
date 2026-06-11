@@ -95,7 +95,8 @@ static_assertions = "1"
 # Independently, zero-width/bidi controls stay denied via langsan's
 # `FORBIDDEN_BIDI` list and tag chars because the `tags` block is off, so even
 # the enabled blocks can't smuggle the known vectors. See #74.
-langsan = { version = "0", features = [
+# 0.0.15+: build.rs is read-only-safe (docs.rs builds; 0.0.14 broke them).
+langsan = { version = "0.0.15", features = [
     "serde",
     "verbose",
     # Languages (each pulls the Latin-1 Supplement etc. it needs).
