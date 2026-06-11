@@ -33,6 +33,9 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      # One OS failing shouldn't cancel the others — the surviving legs are
+      # the signal for whether a failure is platform-specific.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
 
@@ -92,7 +95,9 @@ jobs:
 
       - name: Write API key to api.key
         if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        run: echo ${{ secrets.ANTHROPIC_API_KEY }} > api.key
+        # load_api_key reads CRATE_ROOT/api.key — the misanthropic crate dir,
+        # not the workspace root (pre-workspace layout had them identical).
+        run: echo ${{ secrets.ANTHROPIC_API_KEY }} > misanthropic/api.key
 
       - name: Collect coverage data (including ignored tests)
         if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
