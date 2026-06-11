@@ -688,11 +688,13 @@ mod tests {
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_ids_are_valid() {
-        // Not probed live: RETIRED ids 404 for everyone (the whole Claude 3
-        // family, verified 2026-06-11); GATED ids exist but 404 on accounts
-        // without the entitlement (Mythos is org-approved). A *typo'd* new
-        // variant still fails: it's in neither list. When a model retires,
-        // move it here — consciously.
+        // Not probed live: RETIRED ids 404 for everyone *on the API* (the
+        // whole Claude 3 family, verified 2026-06-11 — retirement differs
+        // by surface: claude.ai un-retired Opus 3 by popular demand);
+        // GATED ids exist but 404 on accounts without the entitlement
+        // (Mythos is org-approved). A *typo'd* new variant still fails:
+        // it's in neither list. When a model retires, move it here —
+        // consciously.
         const RETIRED: &[Id] = &[
             Id::Haiku30,
             Id::Haiku35,
@@ -726,26 +728,27 @@ mod tests {
             // * the `name` method updated
             //
             // 15 sequential live calls — concurrently with the rest of the
-            // `--ignored` suite — *will* see transient 429/529s, so honor
-            // the server's `retry-after` hint (both variants carry one)
-            // rather than flake.
+            // `--ignored` suite — *will* see transient 429/529s, so retry
+            // those rather than flake. `retry_after()` is the designed
+            // discriminator (`Some` only for RateLimit/Overloaded), though
+            // a 529 can arrive without the header — seen live 2026-06-11 —
+            // so header-less Overloaded gets a small backoff instead.
             let mut attempts = 0;
             let response = loop {
+                use crate::client::{AnthropicError, Error};
                 match client.message(&prompt).await {
                     Ok(response) => break response,
-                    Err(crate::client::Error::Anthropic(e))
-                        if e.status()
-                            .is_some_and(|s| matches!(s.get(), 429 | 529))
-                            && attempts < 5 =>
-                    {
+                    Err(Error::Anthropic(e)) if attempts < 5 => {
                         attempts += 1;
+                        let wait = match (e.retry_after(), &e) {
+                            (Some(hint), _) => hint,
+                            (None, AnthropicError::Overloaded { .. }) => {
+                                std::time::Duration::from_secs(2 * attempts)
+                            }
+                            _ => panic!("{model:?}: {e}"),
+                        };
                         eprintln!("{model:?}: {e}; retry {attempts}/5");
-                        // The server's hint is authoritative; back off on
-                        // our own only when it didn't send one.
-                        tokio::time::sleep(e.retry_after().unwrap_or(
-                            std::time::Duration::from_secs(2 * attempts),
-                        ))
-                        .await;
+                        tokio::time::sleep(wait).await;
                     }
                     Err(e) => panic!("{model:?}: {e}"),
                 }
