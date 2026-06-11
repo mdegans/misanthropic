@@ -1707,53 +1707,6 @@ pub(crate) mod tests {
         }
     }
 
-    // Test from live API. If they break our client, we'll know.
-    #[cfg(feature = "client")]
-    #[tokio::test]
-    #[ignore]
-    async fn test_stream_redacted_thought() {
-        const TRIGGER: &str = "ANTHROPIC_MAGIC_STRING_TRIGGER_REDACTED_THINKING_46C9A13E193C177646C7398A98432ECCCE4C1253D5E2D82641AC0E52CC2876CB";
-        let api_key = crate::utils::load_api_key().await;
-        let client = crate::Client::new(api_key).unwrap();
-        let prompt = Prompt::default()
-            // Only sonnet 3.7 and newer will respond to the trigger.
-            .model(Id::Sonnet37)
-            // Sonnet 3.7 still accepts the deprecated fixed-budget mode.
-            .thinking(prompt::Thinking::enabled(1024.try_into().unwrap()))
-            .add_message(Message {
-                role: Role::User,
-                content: TRIGGER.into(),
-            })
-            .unwrap();
-
-        // In a real app you could RwLock the prompt and pass a reference, and
-        // then append to the same prompt with `.write().await.extend(stream)`.
-        let stream = client.stream(prompt.clone()).await.unwrap();
-
-        pin_mut!(stream);
-
-        let mut redacted_seen = false;
-        let mut events = Vec::new();
-        while let Some(event) = stream.next().await {
-            match &event {
-                Ok(Event::ContentBlockStart { content_block, .. }) => {
-                    if let Block::RedactedThought { signature } = content_block
-                    {
-                        assert!(!signature.is_empty());
-                        redacted_seen = true;
-                    }
-
-                    events.push(event);
-                }
-                _ => {
-                    events.push(event);
-                }
-            }
-        }
-
-        assert!(redacted_seen);
-    }
-
     // This also tests the `_ip` version since this just wraps it.
     #[tokio::test]
     async fn test_stream_with_message() {

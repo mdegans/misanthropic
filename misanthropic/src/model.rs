@@ -688,6 +688,25 @@ mod tests {
     #[tokio::test]
     #[ignore = "This test requires a real API key."]
     async fn test_ids_are_valid() {
+        // Not probed live: RETIRED ids 404 for everyone (the whole Claude 3
+        // family, verified 2026-06-11); GATED ids exist but 404 on accounts
+        // without the entitlement (Mythos is org-approved). A *typo'd* new
+        // variant still fails: it's in neither list. When a model retires,
+        // move it here — consciously.
+        const RETIRED: &[Id] = &[
+            Id::Haiku30,
+            Id::Haiku35,
+            Id::Haiku35_20241022,
+            Id::Opus30,
+            Id::Opus30_20240229,
+            Id::Sonnet35,
+            Id::Sonnet35_20240620,
+            Id::Sonnet35_20241022,
+            Id::Sonnet37,
+            Id::Sonnet37_20250219,
+        ];
+        const GATED: &[Id] = &[Id::Mythos5];
+
         let key = load_api_key().expect("API key not found");
         let client = Client::new(key).unwrap();
 
@@ -696,17 +715,53 @@ mod tests {
             .unwrap();
 
         for model in Id::iter() {
+            if RETIRED.contains(&model) || GATED.contains(&model) {
+                continue;
+            }
             prompt.model = model.into();
 
             // If this fails (because a new model was added), it should be:
             // * added to the list of models above and
             // * the `latest` aliases should be updated
             // * the `name` method updated
-            let response = client.message(&prompt).await.unwrap();
+            //
+            // 15 sequential live calls — concurrently with the rest of the
+            // `--ignored` suite — *will* see transient 429/529s, so honor
+            // the server's `retry-after` hint (both variants carry one)
+            // rather than flake.
+            let mut attempts = 0;
+            let response = loop {
+                match client.message(&prompt).await {
+                    Ok(response) => break response,
+                    Err(crate::client::Error::Anthropic(e))
+                        if e.status()
+                            .is_some_and(|s| matches!(s.get(), 429 | 529))
+                            && attempts < 5 =>
+                    {
+                        attempts += 1;
+                        eprintln!("{model:?}: {e}; retry {attempts}/5");
+                        // The server's hint is authoritative; back off on
+                        // our own only when it didn't send one.
+                        tokio::time::sleep(e.retry_after().unwrap_or(
+                            std::time::Duration::from_secs(2 * attempts),
+                        ))
+                        .await;
+                    }
+                    Err(e) => panic!("{model:?}: {e}"),
+                }
+            };
 
-            // If the mode is not a latest tag, we want to check it matches
-            // the model we set.
-            if !serde_json::to_string(&model).unwrap().contains("latest") {
+            // Only date-pinned ids echo back verbatim; aliases (3.x
+            // `-latest`, 4.x+ undated like `claude-opus-4-0`) resolve
+            // server-side to whatever dated id is current.
+            let pinned = Model::from(model)
+                .name()
+                .rsplit('-')
+                .next()
+                .is_some_and(|tail| {
+                    tail.len() == 8 && tail.bytes().all(|b| b.is_ascii_digit())
+                });
+            if pinned {
                 assert_eq!(response.model, model);
             }
         }
