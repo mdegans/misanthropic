@@ -1,0 +1,119 @@
+# Release pipeline: multi-arch sandbox image to Docker Hub, then the crates to
+# crates.io. Triggered by a `v*` tag matching the workspace version (the single
+# source of truth — DEFAULT_IMAGE and the justfile read the same field).
+#
+# The image publishes before the crates so a freshly published crate's
+# DEFAULT_IMAGE (`mdegans/misan-bashd:<version>`) is already pullable. Each
+# arch builds on a native runner (QEMU cross-builds of rustc are painfully
+# slow) and pushes an arch tag; a merge job stitches them into one manifest.
+#
+# `workflow_dispatch` rebuilds and pushes the image only — crates publish is
+# gated on an actual tag push.
+#
+# Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, CARGO_REGISTRY_TOKEN.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  IMAGE: mdegans/misan-bashd
+
+jobs:
+  # Read the workspace version and require the tag to match it exactly, so a
+  # mistagged release fails before anything publishes.
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      minor: ${{ steps.meta.outputs.minor }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read workspace version
+        id: meta
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "minor=$(echo "$VERSION" | cut -d. -f1-2)" >> "$GITHUB_OUTPUT"
+          case "$VERSION" in
+            *-*) echo "prerelease=true" >> "$GITHUB_OUTPUT" ;;
+            *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Check tag matches workspace version
+        if: github.ref_type == 'tag'
+        run: |
+          [ "$GITHUB_REF_NAME" = "v${{ steps.meta.outputs.version }}" ] || {
+            echo "tag $GITHUB_REF_NAME != v${{ steps.meta.outputs.version }}"
+            exit 1
+          }
+
+  # One native build per arch, pushed as an arch tag the merge job consumes.
+  build-image:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          tags: ${{ env.IMAGE }}:${{ needs.version.outputs.version }}-${{ matrix.arch }}
+
+  # Stitch the arch tags into one multi-arch manifest. Prereleases get only
+  # the exact-version tag; releases also move `<major.minor>` and `latest`.
+  merge-image:
+    needs: [version, build-image]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Create and push the multi-arch manifest
+        run: |
+          VERSION=${{ needs.version.outputs.version }}
+          TAGS="-t $IMAGE:$VERSION"
+          if [ "${{ needs.version.outputs.prerelease }}" = "false" ]; then
+            TAGS="$TAGS -t $IMAGE:${{ needs.version.outputs.minor }} -t $IMAGE:latest"
+          fi
+          docker buildx imagetools create $TAGS \
+            "$IMAGE:$VERSION-amd64" "$IMAGE:$VERSION-arm64"
+
+  # Publish misanthropic-derive then misanthropic (--workspace resolves the
+  # order and skips the publish = false members). The image is live by now,
+  # so the crate's DEFAULT_IMAGE resolves from the first install.
+  publish-crates:
+    if: github.ref_type == 'tag'
+    needs: merge-image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace
