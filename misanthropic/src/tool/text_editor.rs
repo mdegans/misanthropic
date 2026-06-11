@@ -16,6 +16,7 @@
 //! plumbing in `fs`.
 //!
 //! ```no_run
+//! # #[cfg(feature = "text-editor-fs")] // backend is feature-gated; doc isn't
 //! # async fn f() -> Result<(), Box<dyn std::error::Error>> {
 //! use misanthropic::{Prompt, tool::{TextEditor, Tool, text_editor::FsEditorBackend}};
 //!

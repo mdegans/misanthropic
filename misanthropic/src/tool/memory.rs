@@ -9,6 +9,7 @@
 //! single directory.
 //!
 //! ```no_run
+//! # #[cfg(feature = "memory-fs")] // backend is feature-gated; doc isn't
 //! # async fn f() -> Result<(), Box<dyn std::error::Error>> {
 //! use misanthropic::{Prompt, tool::{Memory, Tool, memory::FsMemoryBackend}};
 //!
