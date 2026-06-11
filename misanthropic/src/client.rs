@@ -1485,10 +1485,14 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let message = client
-            .message(Prompt::default().messages([(
-                Role::User,
-                "Emit just the \"🙏\" emoji, please.",
-            )]))
+            .message(
+                Prompt::default()
+                    .messages([(
+                        Role::User,
+                        "Emit just the \"🙏\" emoji, please.",
+                    )])
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1916,10 +1920,14 @@ mod tests {
         let client = Client::new(key).unwrap();
 
         let stream = client
-            .stream(Prompt::default().messages([(
-                Role::User,
-                "Emit just the \"🙏\" emoji, please.",
-            )]))
+            .stream(
+                Prompt::default()
+                    .messages([(
+                        Role::User,
+                        "Emit just the \"🙏\" emoji, please.",
+                    )])
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -1940,7 +1948,9 @@ mod tests {
 
         let count = client
             .count_tokens(
-                Prompt::default().messages([(Role::User, "Hello, world!")]),
+                Prompt::default()
+                    .messages([(Role::User, "Hello, world!")])
+                    .unwrap(),
             )
             .await
             .unwrap();

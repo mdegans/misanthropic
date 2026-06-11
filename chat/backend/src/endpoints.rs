@@ -117,12 +117,13 @@ pub async fn events_stream(
                     // responding. This is posisble but unlikely. The client
                     // will have to handle this case.
                     log::error!(
-                        "User possibly responded too fast. Error pushing user message to prompt: {:?}",
-                        serde_json::to_string_pretty(&e).unwrap()
+                        "User possibly responded too fast. Error pushing user message to prompt: {e}",
                     );
 
                     let response = model::response::Response::Err(
-                        model::response::Error::TurnOrder { error: e },
+                        model::response::Error::TurnOrder {
+                            message: e.to_string(),
+                        },
                     );
                     yield Event::default()
                         .event("response")

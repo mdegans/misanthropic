@@ -25,14 +25,15 @@ pub enum Success {
 #[serde(rename_all = "snake_case")]
 pub enum Error {
     /// [`TurnOrderError`] when appending a [`Message`] to the [`Prompt`].
+    /// Carried as its display string — the error type itself is deliberately
+    /// not serde (see its docs).
     ///
     /// [`TurnOrderError`]: prompt::TurnOrderError
     /// [`Message`]: prompt::Message
     /// [`Prompt`]: prompt::Prompt
     TurnOrder {
-        /// Error
-        #[from]
-        error: prompt::TurnOrderError,
+        /// Error message
+        message: String,
     },
     /// [`misanthropic::client::Error`] (connection related).
     MisanthropicClient {

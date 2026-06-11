@@ -259,7 +259,11 @@ pub enum InferenceGeo {
 /// [`System`]: crate::prompt::message::Role::System
 /// [`ServerToolUse`]: crate::prompt::message::Block::ServerToolUse
 /// [`StopReason::PauseTurn`]: crate::response::StopReason::PauseTurn
-#[derive(Debug, thiserror::Error, Serialize, Deserialize)]
+// Deliberately NOT Serialize: serde's blanket `impl Serialize for Result`
+// would otherwise let an un-unwrapped builder Result pass `impl Serialize`
+// bounds (e.g. `client.message(prompt.messages(…))`) and reach the wire as
+// `{"Ok": {…}}` — a silent 400. Without the derive that's a compile error.
+#[derive(Debug, thiserror::Error)]
 pub enum TurnOrderError {
     /// The first message must be from the user — assistant and system turns
     /// cannot open a conversation. Use the top-level [`Prompt::system`] field
