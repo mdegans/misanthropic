@@ -84,6 +84,8 @@ println!("{}", message);
 - **Why is it called `misanthropic`?** No reason, really. I just like the word.
   Anthropic is both a company and a word meaning "relating to mankind". This
   crate is neither official or related to mankind so, `misanthropic` it is.
+- **Did you know Elon Musk called Anthropic misanthropic?** Not until recently
+  and this crate predates that asshole's utterances on the topic.
 - **Doesn't `reqwest` depend on `tokio`?** On some platforms, yes.
 - **Can i use `misanthropic` with Amazon or Vertex?** Not yet, but it's on the
   roadmap. for now the `Client` does support custom endpoints and the inner

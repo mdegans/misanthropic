@@ -24,3 +24,7 @@ just install-hooks   # runs `just test` before every commit
   API key in `misanthropic/api.key`).
 
 Please do not bypass the gate with --no-verify.
+
+## FAQ
+
+See [here](misanthropic/README.md) for the main FAQ and crate README.md.
