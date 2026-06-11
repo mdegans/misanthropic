@@ -212,7 +212,10 @@ impl Model {
                 Id::Opus45 => "claude-opus-4-5",
                 Id::Sonnet46 => "claude-sonnet-4-6",
                 Id::Opus46 => "claude-opus-4-6",
+                Id::Opus47 => "claude-opus-4-7",
                 Id::Opus48 => "claude-opus-4-8",
+                Id::Fable5 => "claude-fable-5",
+                Id::Mythos5 => "claude-mythos-5",
             },
             Model::Custom(name) => name,
         }
@@ -232,7 +235,12 @@ impl Model {
     /// [`Role::System`]: crate::prompt::message::Role::System
     /// [`Prompt::system`]: crate::Prompt::system
     pub fn supports_system_role(&self) -> bool {
-        matches!(self, Model::Anthropic(Id::Opus48))
+        // Fable 5 verified live 2026-06-11 (placement grammar enforced, turn
+        // honored); Mythos 5 is the same underlying model.
+        matches!(
+            self,
+            Model::Anthropic(Id::Opus48 | Id::Fable5 | Id::Mythos5)
+        )
     }
 
     /// Pick the first of `preferred` [`Role`]s this model supports, for seating
@@ -410,10 +418,27 @@ pub enum Id {
     /// Opus 4.6
     #[serde(rename = "claude-opus-4-6")]
     Opus46,
+    /// Opus 4.7. Supports the 1M-token context window via the
+    /// `context-1m-2025-08-07` beta header — see `Client::beta`; there is
+    /// no separate wire id (Claude Code's `[1m]` suffix is UI notation).
+    #[serde(rename = "claude-opus-4-7")]
+    Opus47,
     /// Opus 4.8 (latest flagship). First model to support
     /// [mid-conversation system messages](crate::prompt::message::Role::System).
+    /// 1M context via the `context-1m-2025-08-07` beta header.
     #[serde(rename = "claude-opus-4-8")]
     Opus48,
+
+    // ── Claude 5.x ───────────────────────────────────────────────────────
+    /// Fable 5 — the first Mythos-class model (above Opus in capability).
+    /// The 1M-token context window is the default (no beta header), with up
+    /// to 128k output tokens.
+    #[serde(rename = "claude-fable-5")]
+    Fable5,
+    /// Mythos 5 — Fable 5 without the dual-use safety measures; available
+    /// only to approved organizations (account-gated). 1M context default.
+    #[serde(rename = "claude-mythos-5")]
+    Mythos5,
 }
 
 impl Id {
@@ -444,7 +469,10 @@ impl Id {
             Id::Opus45 => "opus-4.5-latest",
             Id::Sonnet46 => "sonnet-4.6",
             Id::Opus46 => "opus-4.6",
+            Id::Opus47 => "opus-4.7",
             Id::Opus48 => "opus-4.8",
+            Id::Fable5 => "fable-5",
+            Id::Mythos5 => "mythos-5",
         }
     }
 }
