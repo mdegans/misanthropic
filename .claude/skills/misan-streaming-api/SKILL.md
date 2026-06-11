@@ -27,7 +27,7 @@ skill.
 
 ```toml
 [dependencies]
-misanthropic = "1.0.0-alpha.1"
+misanthropic = "1.0.0-alpha.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 futures = "0.3"  # needed for TryStreamExt, StreamExt
 ```

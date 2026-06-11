@@ -26,7 +26,7 @@ path. For streaming, see the **misan-streaming-api** skill.
 
 ```toml
 [dependencies]
-misanthropic = "1.0.0-alpha.1"
+misanthropic = "1.0.0-alpha.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # For the `#[tool]` macro (below). Already pulled in by the default `derive`
 # feature, but tool *argument* structs need these directly:

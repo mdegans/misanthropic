@@ -19,7 +19,7 @@ as a doc-test.
 
 ```toml
 [dependencies]
-misanthropic = "1.0.0-alpha.1"
+misanthropic = "1.0.0-alpha.2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 # Tool argument and structured output structs derive these:
 schemars = "0.8"
