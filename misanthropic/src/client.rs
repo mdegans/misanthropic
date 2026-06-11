@@ -701,6 +701,10 @@ impl Client {
     /// This calls the `/v1/messages/count_tokens` endpoint and returns the
     /// `input_tokens` count. Useful for estimating costs or making decisions
     /// about prompt construction before sending a full request.
+    ///
+    /// Generation-side fields a [`Prompt`] carries (`max_tokens`,
+    /// `temperature`, …) are stripped before posting — the endpoint rejects
+    /// them as extra inputs, and `max_tokens` is always set on a [`Prompt`].
     pub async fn count_tokens<P>(&self, prompt: P) -> Result<u32>
     where
         P: Serialize,
@@ -710,8 +714,29 @@ impl Client {
             input_tokens: u32,
         }
 
-        let response =
-            self.post(self.count_tokens_url.as_str(), prompt).await?;
+        // Fields the endpoint 400s on ("Extra inputs are not permitted"),
+        // captured live 2026-06-11 by probing each Prompt field. Deny-list
+        // (not allow-list) so an unknown future field still reaches the API
+        // and fails loudly there rather than being dropped silently here.
+        const NOT_COUNTABLE: &[&str] = &[
+            "max_tokens",
+            "metadata",
+            "stop_sequences",
+            "stream",
+            "temperature",
+            "top_k",
+            "top_p",
+            "service_tier",
+            "inference_geo",
+            "container",
+        ];
+
+        let mut body = serde_json::to_value(prompt)?;
+        if let Some(map) = body.as_object_mut() {
+            map.retain(|k, _| !NOT_COUNTABLE.contains(&k.as_str()));
+        }
+
+        let response = self.post(self.count_tokens_url.as_str(), body).await?;
         let count: TokenCount = parse_body(response, "TokenCount").await?;
 
         Ok(count.input_tokens)
