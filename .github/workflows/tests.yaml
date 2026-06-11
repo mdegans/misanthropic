@@ -7,6 +7,12 @@ on:
   pull_request:
     branches: [main]
 
+# A push superseding a PR head cancels the now-stale run instead of
+# overlapping it (main pushes keep their own group per sha and never cancel).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # Build the `bashd` daemon as a static linux-musl binary (the artifact the
   # `DockerSandbox` injects into a container) and run its unit tests.
