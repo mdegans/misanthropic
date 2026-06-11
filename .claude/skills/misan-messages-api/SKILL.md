@@ -295,10 +295,10 @@ let mut chat = Prompt::default()
     .add_message((Role::User, "What's the weather in Paris?"))?;
 
 // Register the generated definition(s). Methods are namespaced by the tool
-// type, e.g. `Weather__get_weather` (the `__` separator).
-for definition in weather.definitions() {
-    chat = chat.add_tool(definition);
-}
+// type, e.g. `Weather__get_weather` (the `__` separator). `tools` /
+// `add_tools` take anything `Into<MethodDef>`, so a tool's `definitions()`
+// drops straight in (`register_tool(&weather)` is the same one-liner).
+chat = chat.add_tools(weather.definitions());
 
 let message = client.message(&chat).await?;
 

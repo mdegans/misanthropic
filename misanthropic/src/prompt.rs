@@ -710,8 +710,10 @@ impl Prompt {
         self
     }
 
-    /// Set the available [`tools`]. When the [`Model`] uses a [`Tool`], the
-    /// [`StopReason`] will be [`ToolUse`] in the
+    /// Set the available [`tools`] — each item anything [`Into`] a
+    /// [`MethodDef`], like [`add_tool`], so it composes with a [`Tool`]'s
+    /// [`definitions`] and server defs survive as-is. When the [`Model`] uses
+    /// a [`Tool`], the [`StopReason`] will be [`ToolUse`] in the
     /// [`response::Message::stop_reason`] and the final [`Content`] [`Block`]
     /// will be [`Block::ToolUse`] with a unique [`tool::Use::id`].
     ///
@@ -722,6 +724,9 @@ impl Prompt {
     /// For a fallible version, see [`try_tools`].
     ///
     /// [`tools`]: Prompt::tools
+    /// [`add_tool`]: Prompt::add_tool
+    /// [`MethodDef`]: crate::tool::MethodDef
+    /// [`definitions`]: crate::Tool::definitions
     /// [`Model`]: crate::model::Model
     /// [`Tool`]: crate::Tool
     /// [`StopReason`]: crate::response::StopReason
@@ -735,15 +740,10 @@ impl Prompt {
     /// [`try_tools`]: Prompt::try_tools
     pub fn tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<CustomMethodDef>,
+        T: Into<tool::MethodDef>,
         Ts: IntoIterator<Item = T>,
     {
-        self.tools = Some(
-            tools
-                .into_iter()
-                .map(|t| tool::MethodDef::Custom(t.into()))
-                .collect(),
-        );
+        self.tools = Some(tools.into_iter().map(Into::into).collect());
         self
     }
 
@@ -820,10 +820,9 @@ impl Prompt {
         Ok(self)
     }
 
-    /// Add several custom tools at once — the plural of [`add_tool`]. Each item
-    /// is anything [`Into`] a [`CustomMethodDef`], so this composes with a
-    /// tool's [`definitions`] just as well as with hand-built
-    /// [`CustomMethodDef`]s:
+    /// Add several tools at once — the plural of [`add_tool`]. Each item is
+    /// anything [`Into`] a [`MethodDef`], so this composes with a tool's
+    /// [`definitions`] just as well as with hand-built [`CustomMethodDef`]s:
     ///
     /// ```
     /// # use misanthropic::{Prompt, tool::CustomMethodDef};
@@ -834,15 +833,16 @@ impl Prompt {
     /// ```
     ///
     /// [`add_tool`]: Self::add_tool
+    /// [`MethodDef`]: crate::tool::MethodDef
     /// [`definitions`]: crate::Tool::definitions
     pub fn add_tools<T, Ts>(mut self, tools: Ts) -> Self
     where
-        T: Into<CustomMethodDef>,
+        T: Into<tool::MethodDef>,
         Ts: IntoIterator<Item = T>,
     {
-        self.tools.get_or_insert_with(Default::default).extend(
-            tools.into_iter().map(|t| tool::MethodDef::Custom(t.into())),
-        );
+        self.tools
+            .get_or_insert_with(Default::default)
+            .extend(tools.into_iter().map(Into::into));
         self
     }
 
