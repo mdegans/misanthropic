@@ -30,12 +30,15 @@ If you see "Loading..." for a long time, it means the backend is not running or 
 
 ## Tailwind
 
-To modify the look and feel, use Tailwind CSS. The styles are in `input.css` and the compiled CSS is in `assets/tailwind.css`. To compile the CSS, you need to have Node.js and npm installed, sorry.
+To modify the look and feel, use Tailwind CSS. The styles are in `input.css`
+and the compiled CSS is committed at `assets/tailwind.css`, so you only need
+the compiler to *change* styles — no Node/npm required:
 
-1. Install npm: https://docs.npmjs.com/downloading-and-installing-node-js-and-npm
-2. Install the Tailwind CSS CLI: https://tailwindcss.com/docs/installation
-3. Run the following command in the root of the project to start the Tailwind CSS compiler:
+1. Install the standalone Tailwind CLI (a self-contained binary; grab the
+   v3.x release matching `tailwind.config.js`):
+   https://github.com/tailwindlabs/tailwindcss/releases
+2. Run it in this directory to start the watcher:
 
 ```bash
-npx tailwindcss -i ./input.css -o ./assets/tailwind.css --watch
+tailwindcss -i ./input.css -o ./assets/tailwind.css --watch
 ```
