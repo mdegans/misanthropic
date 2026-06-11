@@ -47,8 +47,9 @@ model = { path = "../model" }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"], default-features = false }
 
+# Web-only demo. No desktop/mobile feature scaffolding: those pull the native
+# renderers (gtk/glib on Linux via dioxus-desktop), which --all-features CI
+# builds would then demand as system packages.
 [features]
 default = ["web"]
 web = ["dioxus/web"]
-desktop = ["dioxus/desktop"]
-mobile = ["dioxus/mobile"]
