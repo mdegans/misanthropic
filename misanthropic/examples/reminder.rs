@@ -143,7 +143,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             toolbox,
         ))
         .on_assistant(move |_state: &mut (), msg| {
-            printer.line(format!("claude ▸ {}\n", msg.content))
+            printer.line(format!("claude ▸ {}\n", msg.content));
+            [msg.into()] // seat the turn unchanged
         })
         .run((), async move |_state: &mut ()| {
             Ok(lines

@@ -6,37 +6,76 @@
 //! tool call until the assistant stops calling tools), repeat. [`Chat`] owns
 //! all of that — the [`ToolBox`](misanthropic::tool::ToolBox) lifecycle, the
 //! tool-dispatch sub-loop, append-only (cache-friendly) prompt mutation,
-//! interleaving tool-pushed notifications with the user's input, and
-//! teardown-even-on-error. The example supplies only the part that *varies*:
-//! how to read the next line of user input.
+//! interleaving tool-pushed notifications with the user's input, paused
+//! server-tool turns, and teardown-even-on-error. The example supplies only
+//! the part that *varies*: how to read the next line of user input, and (via
+//! [`Chat::on_assistant`]) what each assistant turn becomes.
 //!
 //! ```ignore
 //! utils::Chat::new(client, Prompt::default(), toolbox)
-//!     .on_assistant(move |_state, msg| printer.line(format!("claude ▸ {}", msg.content)))
+//!     .on_assistant(move |_state, msg| {
+//!         printer.line(format!("claude ▸ {}", msg.content));
+//!         [msg.into()] // seat the turn unchanged
+//!     })
 //!     .run((), async move |_state| {
 //!         Ok(lines.recv().await.map(|line| vec![(Role::User, line).into()]))
 //!     })
 //!     .await?;
 //! ```
+//!
+//! # The `System` invariant
+//!
+//! A [`System`](Role::System) turn enters [`Prompt::messages`] **only via the
+//! pre-request flush**. Wherever a system message comes from — a tool-pushed
+//! [`Notification`] or an [`on_assistant`](Chat::on_assistant) return — it is
+//! merged into one pending buffer and seated immediately before the next API
+//! call, iff the tail allows it (after a user turn, or an assistant turn
+//! [ending in a server-tool result](Message::ends_in_server_tool_result) —
+//! the wire rule, stricter than the docs). It is **never** downgraded to the
+//! user role: operator-authored content riding the user channel misattributes
+//! authorship and erodes exactly the channel-authority distinction the system
+//! role exists to provide. Buffering costs nothing: the flush precedes every
+//! request, so a pending note rides the next call the placement rules permit.
 
 use misanthropic::{
     Client, Prompt,
-    prompt::message::{AssistantMessage, Block, Content, Message, Role},
-    tool::{Notification, Notifications, Tool, ToolBox, Use},
+    prompt::message::{
+        AssistantMessage, Block, Content, Message, Role, SystemMessage,
+    },
+    response::StopReason,
+    tool::{self, Notification, Notifications, Tool, ToolBox, Use},
 };
 
 /// Boxed, thread-safe error — matches the `Tool` lifecycle-hook error type and
 /// the crate's `Client` errors, so both flow through `?` unchanged.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default ceiling on consecutive tool-dispatch rounds within a single user
-/// beat. A runaway model that keeps calling tools is stopped here; real agents
-/// (Claude Code) run uncapped, so override with
-/// [`Chat::max_consecutive_tool_calls`].
+/// Default ceiling on consecutive model rounds (tool dispatches and paused
+/// server-tool continuations both count) within a single user beat. A runaway
+/// model is stopped here; real agents (Claude Code) run uncapped, so override
+/// with [`Chat::max_consecutive_tool_calls`]. What happens at the cap is the
+/// [`BudgetPolicy`].
 const DEFAULT_MAX_TOOL_CALLS: usize = 8;
 
+/// What [`Chat::run`] does when one user beat exhausts
+/// [`max_consecutive_tool_calls`](Chat::max_consecutive_tool_calls). Either
+/// way, every dangling tool call is answered with a synthetic `is_error`
+/// result explaining the situation, so the prompt stays legal and the model
+/// learns *why* nothing ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum BudgetPolicy {
+    /// Seat the synthetic results and hand control back to the caller
+    /// silently; the model sees the explanation on the next beat.
+    #[default]
+    HandBack,
+    /// Make exactly one more call so the assistant can wrap up verbally. If
+    /// that turn calls tools *again*, those are synthetic-errored too and
+    /// control is handed back unconditionally.
+    FinalWord,
+}
+
 /// An append-only chat driver, generic over a caller-owned `State` threaded
-/// through the per-turn closure and the [`Chat::on_assistant`] display hook.
+/// through the per-turn closure and the [`Chat::on_assistant`] hook.
 ///
 /// Build it, optionally tune it, then [`run`](Chat::run) it with your `State`
 /// and a closure that produces the next user-side beat.
@@ -45,8 +84,13 @@ pub struct Chat<State> {
     prompt: Prompt,
     toolbox: ToolBox,
     max_tool_calls: usize,
+    budget_policy: BudgetPolicy,
+    /// The system-defer buffer — see the module-level `System` invariant.
+    pending_system: Option<SystemMessage>,
     #[allow(clippy::type_complexity)]
-    on_assistant: Option<Box<dyn FnMut(&mut State, &AssistantMessage) + Send>>,
+    on_assistant: Option<
+        Box<dyn FnMut(&mut State, AssistantMessage) -> Vec<Message> + Send>,
+    >,
 }
 
 impl<State> Chat<State> {
@@ -59,27 +103,53 @@ impl<State> Chat<State> {
             prompt,
             toolbox,
             max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            budget_policy: BudgetPolicy::default(),
+            pending_system: None,
             on_assistant: None,
         }
     }
 
-    /// Cap consecutive tool-dispatch rounds within one user beat (default
-    /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap ends [`run`](Chat::run)
-    /// with an error.
+    /// Cap consecutive model rounds within one user beat (default
+    /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap triggers the
+    /// [`BudgetPolicy`].
     pub fn max_consecutive_tool_calls(mut self, max: usize) -> Self {
         self.max_tool_calls = max;
         self
     }
 
-    /// Display hook, called with each assistant [`Message`](AssistantMessage)
-    /// as the loop runs the model — the example's output side (the input side
-    /// is the [`run`](Chat::run) closure). Shares `&mut State` with that
-    /// closure, so a counter set in one is visible to the other.
-    pub fn on_assistant(
+    /// What to do at the [`max_consecutive_tool_calls`] cap (default
+    /// [`BudgetPolicy::HandBack`]).
+    ///
+    /// [`max_consecutive_tool_calls`]: Chat::max_consecutive_tool_calls
+    pub fn on_budget_exhausted(mut self, policy: BudgetPolicy) -> Self {
+        self.budget_policy = policy;
+        self
+    }
+
+    /// The assistant-turn hook: receives each assistant
+    /// [`Message`](AssistantMessage) the model produces and returns the
+    /// message(s) actually seated — the loop's output side (the input side is
+    /// the [`run`](Chat::run) closure). Shares `&mut State` with that closure.
+    ///
+    /// Return `[msg.into()]` to seat the turn unchanged (display-only hooks),
+    /// something else to replace it (redaction, a classifier verdict), extra
+    /// messages to append context, or an assistant message carrying
+    /// `tool_use` blocks to *force* tool calls — the driver dispatches
+    /// whatever client tool calls are in the **seated** assistant turns,
+    /// regardless of provenance. A returned [`System`](Role::System) message
+    /// is buffered per the module-level invariant, never seated directly.
+    ///
+    /// Without a hook the response is seated unchanged.
+    pub fn on_assistant<I>(
         mut self,
-        hook: impl FnMut(&mut State, &AssistantMessage) + Send + 'static,
-    ) -> Self {
-        self.on_assistant = Some(Box::new(hook));
+        mut hook: impl FnMut(&mut State, AssistantMessage) -> I + Send + 'static,
+    ) -> Self
+    where
+        I: IntoIterator<Item = Message>,
+    {
+        self.on_assistant = Some(Box::new(move |state, msg| {
+            hook(state, msg).into_iter().collect()
+        }));
         self
     }
 
@@ -89,7 +159,9 @@ impl<State> Chat<State> {
     /// `next_beat` produces the next user-side turn(s) — a human line, a
     /// scripted prompt — as `Some(messages)`, or `None` to stop. It owns its
     /// own input source (typically captured by `move`), so the driver stays
-    /// I/O-agnostic. Returning several messages seats them in order.
+    /// I/O-agnostic. Returning several messages seats them in order; a beat
+    /// that seats nothing new (empty, or all-[`System`](Role::System) and thus
+    /// buffered) is a no-op round — the model is not called.
     ///
     /// Tool-pushed notifications are handled by the driver itself: it races
     /// them against `next_beat`, so the losing future is cancelled. Keep
@@ -114,7 +186,10 @@ impl<State> Chat<State> {
         // teardown can't ride `Drop`, so we sequence it by hand and don't let
         // it mask the original outcome.
         let outcome = self.drive(&mut state, next_beat, notifications).await;
-        let _ = self.toolbox.teardown_tools(&mut self.prompt).await;
+        if let Err(error) = self.toolbox.teardown_tools(&mut self.prompt).await
+        {
+            log::warn!("tool teardown failed: {error}");
+        }
 
         outcome.map(|()| (self.prompt, state))
     }
@@ -141,6 +216,7 @@ impl<State> Chat<State> {
             // The losing future is cancelled; both arms await a cancel-safe
             // channel `recv`, so a beat or note that loses simply stays
             // buffered for the next round.
+            let seated_before = self.prompt.messages.len();
             tokio::select! {
                 result = next_beat(state) => match result? {
                     None => return Ok(()), // graceful stop (e.g. Ctrl-D)
@@ -159,103 +235,264 @@ impl<State> Chat<State> {
                     }
                     Some(note) => {
                         log::debug!("interleaving a tool-pushed notification");
-                        let message = self.note_to_message(note);
-                        self.seat(message)?;
+                        self.seat_note(note)?;
                     }
                 },
+            }
+
+            // A beat that seated nothing (all-System → buffered, or empty)
+            // gives the model nothing new: don't call it. The buffer flushes
+            // with the next beat that does.
+            if self.prompt.messages.len() == seated_before {
+                continue;
             }
 
             self.quiesce(state).await?;
         }
     }
 
-    /// Turn a pushed [`Notification`] into a seat-able [`Message`], resolving
-    /// its preferred role against the model with a placement guard: a `System`
-    /// turn is only legal immediately after a `user` turn (the API also allows
-    /// it last, or after a server-tool assistant turn), so if the tail isn't a
-    /// `User` we fall back to `User` (always legal) rather than push an
-    /// unplaceable turn.
+    /// Seat a pushed [`Notification`], resolving its preferred role against
+    /// the model.
     ///
-    /// This fallback honors a `[System, User]` preference list (the tool itself
-    /// declared `User` an acceptable fallback). The agreed direction for a
-    /// *dedicated* `[System]`-only note with no placeable slot is to **defer**
-    /// it and flush it after the next `User` turn — a buffer we'll add when a
-    /// System-only pusher exists; downgrade is the placeholder until then.
-    fn note_to_message(&self, note: Notification) -> Message {
-        let mut role = self.prompt.resolve_role(&note.preferred_roles);
-        let tail_is_user = matches!(
-            self.prompt.messages.last().map(|message| message.role),
-            Some(Role::User)
+    /// A note resolving to [`System`](Role::System) lands in the defer buffer
+    /// (the module-level invariant). Buffering is *not* slower than seating:
+    /// nothing reaches the model between requests, and the flush precedes
+    /// every request — the difference is that a [`User`](Role::User)-seated
+    /// note triggers an immediate model round (right for a job completion),
+    /// while a buffered system note waits for the next beat (right for an
+    /// operator fact).
+    ///
+    /// # Panics
+    /// A `[System]`-only preference on a model with no system role is a
+    /// programming error in the tool itself — there is nothing legal to seat,
+    /// ever — so this panics naming the offender rather than silently
+    /// re-attributing operator content.
+    fn seat_note(&mut self, note: Notification) -> Result<(), BoxError> {
+        let role = self.prompt.resolve_role(&note.preferred_roles);
+        let downgraded = role != Role::System
+            && note.preferred_roles.contains(&Role::System);
+        let has_fallback = note
+            .preferred_roles
+            .iter()
+            .any(|r| matches!(r, Role::User | Role::Assistant));
+        assert!(
+            !downgraded || has_fallback,
+            "tool `{}` pushed a [System]-only notification, but model `{}` \
+             has no system role — give the tool a fallback role or gate it \
+             on Model::supports_system_role",
+            note.source,
+            self.prompt.model,
         );
-        if role == Role::System && !tail_is_user {
-            role = Role::User;
-        }
-        (role, note.content).into()
+
+        self.seat((role, note.content))
     }
 
     /// Call the model, answer every tool call, and loop until the assistant
-    /// stops calling tools — so the caller's beat is the *last* thing seated
-    /// before control returns.
+    /// stops calling tools *and* the turn isn't paused on a server tool — so
+    /// the caller's beat is the *last* thing seated before control returns.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
-        let mut dispatched = 0usize;
+        let mut rounds = 0usize;
         loop {
-            log::trace!("quiesce round {dispatched}: calling the model");
+            log::trace!("quiesce round {rounds}: calling the model");
+            // The one flush point: a pending system note rides every request
+            // whose tail permits it.
+            self.flush_pending_system()?;
             let response = self.client.message(&self.prompt).await?;
+            // `pause_turn` means a server tool is still running: the turn
+            // must be continued, even though there's nothing to dispatch.
+            let paused =
+                matches!(response.stop_reason, Some(StopReason::PauseTurn));
 
-            if let Some(hook) = self.on_assistant.as_mut() {
-                hook(state, &response.inner);
-            }
+            let calls = self.seat_assistant(state, response.inner)?;
 
-            // Collect *every* client-side tool call (the model may emit several
-            // in one turn; server tools carry their own results and just flow
-            // through) before the message is moved into the prompt.
-            let calls: Vec<Use> = response
-                .inner
-                .content
-                .iter()
-                .filter_map(|block| block.tool_use().cloned())
-                .collect();
-
-            self.seat(response)?;
-
-            if calls.is_empty() {
+            if calls.is_empty() && !paused {
                 return Ok(()); // assistant is done; back to the caller
             }
 
-            if dispatched >= self.max_tool_calls {
-                return Err(format!(
-                    "exceeded {} consecutive tool-call rounds",
-                    self.max_tool_calls
-                )
-                .into());
+            if rounds >= self.max_tool_calls {
+                return self.exhaust_budget(state, calls).await;
             }
-            dispatched += 1;
-            log::debug!("dispatching {} client-side tool call(s)", calls.len());
+            rounds += 1;
 
-            // Dispatch each call and seat all results as one user turn.
-            let mut results = Vec::with_capacity(calls.len());
-            for call in calls {
-                results.push(Block::from(self.toolbox.call(call).await));
+            if !calls.is_empty() {
+                log::debug!(
+                    "dispatching {} client-side tool call(s)",
+                    calls.len()
+                );
+                self.dispatch(calls).await?;
             }
-            self.seat((Role::User, Content(results)))?;
+            // Paused with no client calls: loop — the next request resumes
+            // the in-flight server tool.
         }
+    }
+
+    /// Run the assistant turn through the [`on_assistant`](Chat::on_assistant)
+    /// hook (or seat it unchanged), then collect the client tool calls **from
+    /// what was seated** — single source of truth, so a hook that replaces or
+    /// redacts the turn naturally governs which tools run.
+    fn seat_assistant(
+        &mut self,
+        state: &mut State,
+        message: AssistantMessage,
+    ) -> Result<Vec<Use>, BoxError> {
+        let seated: Vec<Message> = match self.on_assistant.as_mut() {
+            Some(hook) => hook(state, message),
+            None => vec![message.into()],
+        };
+        let calls = seated
+            .iter()
+            .filter(|m| m.role == Role::Assistant)
+            .flat_map(|m| m.content.iter())
+            .filter_map(|block| block.tool_use().cloned())
+            .collect();
+        for message in seated {
+            self.seat(message)?;
+        }
+        Ok(calls)
+    }
+
+    /// Dispatch each call through the [`ToolBox`] and seat all results as one
+    /// user turn.
+    async fn dispatch(&mut self, calls: Vec<Use>) -> Result<(), BoxError> {
+        let mut results = Vec::with_capacity(calls.len());
+        for call in calls {
+            results.push(Block::from(self.toolbox.call(call).await));
+        }
+        self.seat((Role::User, Content(results)))
+    }
+
+    /// The beat hit [`max_consecutive_tool_calls`]: answer every dangling
+    /// call with a synthetic error result (keeping the prompt legal and
+    /// telling the model why), then apply the [`BudgetPolicy`].
+    ///
+    /// [`max_consecutive_tool_calls`]: Chat::max_consecutive_tool_calls
+    async fn exhaust_budget(
+        &mut self,
+        state: &mut State,
+        calls: Vec<Use>,
+    ) -> Result<(), BoxError> {
+        log::warn!(
+            "beat exhausted {} consecutive model rounds ({:?})",
+            self.max_tool_calls,
+            self.budget_policy,
+        );
+        self.synthesize_results(&calls)?;
+
+        if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
+            self.flush_pending_system()?;
+            let response = self.client.message(&self.prompt).await?;
+            let again = self.seat_assistant(state, response.inner)?;
+            // No second chance: error these too and hand back regardless.
+            self.synthesize_results(&again)?;
+        }
+        Ok(())
+    }
+
+    /// Seat one user turn of `is_error` results answering `calls` — the
+    /// "tool budget exhausted, wait for the user" explanation. No-op when
+    /// there are no dangling calls (a paused turn that ran out of budget).
+    fn synthesize_results(&mut self, calls: &[Use]) -> Result<(), BoxError> {
+        if calls.is_empty() {
+            return Ok(());
+        }
+        let results: Vec<Block> = calls
+            .iter()
+            .map(|call| {
+                Block::from(
+                    tool::Result::new(
+                        call.id.clone(),
+                        format!(
+                            "Not run: this turn already used {} consecutive \
+                             tool-call rounds (the loop's budget). Stop \
+                             calling tools and wait for the user.",
+                            self.max_tool_calls
+                        ),
+                    )
+                    .error(),
+                )
+            })
+            .collect();
+        self.seat((Role::User, Content(results)))
+    }
+
+    /// Whether a [`System`](Role::System) turn may legally follow the current
+    /// tail: a user turn, or an assistant turn
+    /// [ending in a server-tool result](Message::ends_in_server_tool_result).
+    /// The wire rule, verified live — a *paused* assistant turn (ending in
+    /// the in-flight `server_tool_use`) does **not** qualify.
+    fn system_flushable(&self) -> bool {
+        self.prompt.messages.last().is_some_and(|tail| {
+            tail.role == Role::User
+                || (tail.role == Role::Assistant
+                    && tail.ends_in_server_tool_result())
+        })
+    }
+
+    /// Seat the pending system note when the tail allows it. Called once per
+    /// request, immediately before the model — the only place a `System` turn
+    /// enters the messages (see the module-level invariant). The seated note
+    /// either ends the array (this request) or precedes the assistant
+    /// response (every later request): legal by construction.
+    fn flush_pending_system(&mut self) -> Result<(), BoxError> {
+        if self.pending_system.is_some() && self.system_flushable() {
+            log::debug!("flushing the pending system note");
+            let note = self.pending_system.take().unwrap();
+            self.prompt.push_message(note)?;
+        }
+        Ok(())
     }
 
     /// Append `message`, keeping the conversation legal *and* portable to
     /// third-party servers: consecutive same-role turns are concatenated
-    /// client-side (exactly what Anthropic does server-side) rather than pushed
-    /// as a second turn. So a tool result followed by an injected user note, or
-    /// two assistant turns, never trips turn-order validation.
+    /// client-side (exactly what Anthropic does server-side) rather than
+    /// pushed as a second turn. [`System`](Role::System) messages never seat
+    /// directly — they merge into the defer buffer (see the module-level
+    /// invariant). Any other illegal placement is a programming error in the
+    /// caller's beat or hook and errors loudly ([`TurnOrderError`]).
+    ///
+    /// [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
     fn seat(&mut self, message: impl Into<Message>) -> Result<(), BoxError> {
         let message = message.into();
+        if message.role == Role::System {
+            self.buffer_system(message.content);
+            return Ok(());
+        }
         if let Some(last) = self.prompt.messages.last_mut()
             && last.role == message.role
         {
+            // Wire rule (verified live): `tool_result` blocks must *lead*
+            // their user message. Merging a result-bearing message onto a
+            // tail that already has other content would trail them — a 400.
+            // Unreachable in this loop's own choreography (results always
+            // follow an assistant tail); a hook-authored beat can get here.
+            debug_assert!(
+                !(message
+                    .content
+                    .iter()
+                    .any(|b| matches!(b, Block::ToolResult { .. }))
+                    && last
+                        .content
+                        .iter()
+                        .any(|b| !matches!(b, Block::ToolResult { .. }))),
+                "merging tool_result blocks after other content — the API \
+                 rejects results that don't lead the user message"
+            );
             last.content.extend(message.content);
             return Ok(());
         }
         self.prompt.push_message(message)?;
         Ok(())
+    }
+
+    /// Merge `content` into the pending [`SystemMessage`] (consecutive system
+    /// turns are illegal on the wire, so accumulated notes must travel as
+    /// one).
+    fn buffer_system(&mut self, content: Content) {
+        log::debug!("buffering a system note for the pre-request flush");
+        match self.pending_system.as_mut() {
+            Some(pending) => pending.extend(content),
+            None => self.pending_system = Some(content.into()),
+        }
     }
 }
 

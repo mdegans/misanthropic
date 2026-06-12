@@ -72,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             if msg.tool_use().is_none() {
                 printer.line(format!("\nclaude ▸ {}\n", msg.content));
             }
+            [msg.into()] // seat the turn unchanged
         })
         .run((), async move |_state: &mut ()| {
             Ok(lines
