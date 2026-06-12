@@ -1525,6 +1525,195 @@ mod tests {
         assert!(message.to_string().contains("🙏"));
     }
 
+    /// Free, live placement probes: `count_tokens` runs full message
+    /// validation *before* counting (and before rejecting server tools), so
+    /// turn-order rules can be interrogated at zero token cost. These pin the
+    /// **wire** rules for mid-conversation `system` turns and `tool_result`
+    /// ordering, captured 2026-06-12. The docs disagree with the wire: they
+    /// say a `system` turn may follow an assistant turn "ending in server
+    /// tool *use*"; the validator demands ending in a server tool **result**,
+    /// strict on the *last* block. [`Message::may_precede`] mirrors the
+    /// validator, so if this test starts failing the predicate has drifted
+    /// from the wire (or the wire moved).
+    ///
+    /// [`Message::may_precede`]: crate::prompt::message::Message
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "requires a real API key (but free: count_tokens only)"]
+    async fn test_count_tokens_validates_system_placement() {
+        use serde_json::json;
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        // Wire shapes from the probe run (see test/data/requests/
+        // system_after_server_tool.json). No `tools` array: placement
+        // validation fires first, and count_tokens rejects server-tool
+        // definitions outright ("use the /v1/messages endpoint instead").
+        let fetch_use = json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_01XAxdGfRL2vypN6SF17MJXT",
+            "name": "web_fetch",
+            "input": {"url": "https://httpbin.org/anything/1"}
+        });
+        let fetch_result = json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_01XAxdGfRL2vypN6SF17MJXT",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://httpbin.org/anything/1",
+                "retrieved_at": "2026-06-04T15:49:37.688665",
+                "content": {
+                    "type": "document",
+                    "source": {
+                        "type": "text",
+                        "media_type": "text/plain",
+                        "data": "{\"url\": \"…/anything/1\"}"
+                    },
+                    "title": "httpbin"
+                }
+            },
+            "caller": {"type": "direct"}
+        });
+        let client_use = json!({
+            "type": "tool_use",
+            "id": "toolu_01A1B2C3D4E5F6G7H8J9K0L1",
+            "name": "get_time",
+            "input": {}
+        });
+        let client_result = json!({
+            "type": "tool_result",
+            "tool_use_id": "toolu_01A1B2C3D4E5F6G7H8J9K0L1",
+            "content": "12:00"
+        });
+        let note = json!({"type": "text", "text": "note"});
+
+        let opus = crate::Model::from(crate::Id::Opus48);
+        let haiku = crate::Model::from(crate::Id::Haiku45);
+
+        // (case, model, messages, Some(expected error fragment) | None = Ok)
+        let cases = [
+            (
+                "system first is rejected (control: validation runs)",
+                &opus,
+                json!([{"role": "system", "content": "note"}]),
+                Some("use the top-level 'system'"),
+            ),
+            (
+                "system after assistant ending in server tool USE \
+                 (the paused shape) is rejected — docs say otherwise",
+                &opus,
+                json!([
+                    {"role": "user", "content": "fetch it"},
+                    {"role": "assistant", "content": [note, fetch_use]},
+                    {"role": "system", "content": "note"}
+                ]),
+                Some("ending in a server tool result"),
+            ),
+            (
+                "system after a server-tool turn ending in TEXT is \
+                 rejected — 'ending in' is strict on the last block",
+                &opus,
+                json!([
+                    {"role": "user", "content": "fetch it"},
+                    {"role": "assistant",
+                     "content": [fetch_use, fetch_result, note]},
+                    {"role": "system", "content": "note"}
+                ]),
+                Some("ending in a server tool result"),
+            ),
+            (
+                "system after assistant ending in a server tool RESULT \
+                 is accepted",
+                &opus,
+                json!([
+                    {"role": "user", "content": "fetch it"},
+                    {"role": "assistant",
+                     "content": [note, fetch_use, fetch_result]},
+                    {"role": "system", "content": "note"}
+                ]),
+                None,
+            ),
+            (
+                "system followed by user is rejected",
+                &opus,
+                json!([
+                    {"role": "user", "content": "hi"},
+                    {"role": "system", "content": "note"},
+                    {"role": "user", "content": "hi again"}
+                ]),
+                Some("must precede an 'assistant' message"),
+            ),
+            (
+                "system ending the array is accepted",
+                &opus,
+                json!([
+                    {"role": "user", "content": "hi"},
+                    {"role": "system", "content": "note"}
+                ]),
+                None,
+            ),
+            (
+                "system role is rejected per-model below Opus 4.8",
+                &haiku,
+                json!([
+                    {"role": "user", "content": "hi"},
+                    {"role": "system", "content": "note"}
+                ]),
+                Some("not supported on this model"),
+            ),
+            (
+                "text before tool_result in a user turn is rejected — \
+                 results must lead the message",
+                &haiku,
+                json!([
+                    {"role": "user", "content": "time?"},
+                    {"role": "assistant", "content": [client_use]},
+                    {"role": "user", "content": [note, client_result]}
+                ]),
+                Some("immediately after"),
+            ),
+            (
+                "tool_result first, text after is accepted",
+                &haiku,
+                json!([
+                    {"role": "user", "content": "time?"},
+                    {"role": "assistant", "content": [client_use]},
+                    {"role": "user", "content": [client_result, note]}
+                ]),
+                None,
+            ),
+        ];
+
+        for (case, model, messages, expect) in cases {
+            // Sidestep `push_message` on purpose: half of these shapes are
+            // illegal by our own `may_precede`, and the point is to ask the
+            // *server's* validator, not ours.
+            let prompt = Prompt {
+                model: model.clone(),
+                messages: serde_json::from_value(messages).unwrap(),
+                ..Default::default()
+            };
+
+            let outcome = client.count_tokens(&prompt).await;
+            match expect {
+                None => {
+                    assert!(outcome.is_ok(), "{case}: {outcome:?}");
+                }
+                Some(fragment) => {
+                    let error = outcome.expect_err(case).to_string();
+                    assert!(
+                        error.contains(fragment),
+                        "{case}: expected {fragment:?} in {error:?}"
+                    );
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     #[cfg(feature = "client")]
     #[ignore = "This test requires a real API key."]
