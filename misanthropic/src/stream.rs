@@ -498,11 +498,130 @@ impl Serialize for Error {
     }
 }
 
+/// A raw `data:` payload held for the [recorder](Stream::record): `Ok` for an
+/// event line, `Err` for a wire `{"type":"error"}` line — the two arms of the
+/// wrapped fixture format (see `test/data/README.md`). Pure bytes, never
+/// re-serialized through our types (that would hide dropped fields, the exact
+/// drift recordings exist to catch).
+type RawLine = std::result::Result<String, String>;
+
+/// One inner item: the parsed event (or error) plus the raw payload bytes the
+/// [recorder](Stream::record) writes, when there are any.
+type Recorded = (Result<Event, Error>, Option<RawLine>);
+
 /// Stream of [`Event`]s or [`Error`]s.
 pub struct Stream {
-    inner: Pin<
-        Box<dyn futures::Stream<Item = Result<Event, Error>> + Send + 'static>,
-    >,
+    inner: Pin<Box<dyn futures::Stream<Item = Recorded> + Send + 'static>>,
+    recorder: Option<Recorder>,
+}
+
+/// The [`Stream::record`] sink and its write-ahead state machine.
+struct Recorder {
+    writer: Pin<Box<dyn futures::io::AsyncWrite + Send>>,
+    state: RecordState,
+}
+
+/// Where the recorder is between events. The held item is yielded only once
+/// its line is written *and flushed* — everything the consumer has seen is
+/// already durably handed to the OS.
+enum RecordState {
+    /// Nothing pending.
+    Idle,
+    /// Writing `line` (from `written`) ahead of yielding `item`.
+    Writing {
+        line: Vec<u8>,
+        written: usize,
+        item: Option<Result<Event, Error>>,
+    },
+    /// Flushing the line ahead of yielding `item`.
+    Flushing { item: Option<Result<Event, Error>> },
+    /// The inner stream ended: closing the writer before yielding `None`.
+    Closing,
+}
+
+impl Recorder {
+    /// Drive the pending write/flush/close. `Ready(Some(item))` hands back the
+    /// item now safe to yield; `Ready(None)` means the close finished. An
+    /// `Err` carries the failed item (or `None` mid-close) so the caller can
+    /// still yield it — a disk problem must not poison the conversation.
+    #[allow(clippy::type_complexity)]
+    fn poll(
+        &mut self,
+        cx: &mut std::task::Context,
+    ) -> Poll<
+        std::result::Result<
+            Option<Result<Event, Error>>,
+            (std::io::Error, Option<Result<Event, Error>>),
+        >,
+    > {
+        loop {
+            match &mut self.state {
+                RecordState::Idle => return Poll::Ready(Ok(None)),
+                RecordState::Writing {
+                    line,
+                    written,
+                    item,
+                } => {
+                    while *written < line.len() {
+                        match self
+                            .writer
+                            .as_mut()
+                            .poll_write(cx, &line[*written..])
+                        {
+                            Poll::Ready(Ok(n)) => *written += n,
+                            Poll::Ready(Err(e)) => {
+                                let item = item.take();
+                                self.state = RecordState::Idle;
+                                return Poll::Ready(Err((e, item)));
+                            }
+                            Poll::Pending => return Poll::Pending,
+                        }
+                    }
+                    self.state = RecordState::Flushing { item: item.take() };
+                }
+                RecordState::Flushing { item } => {
+                    match self.writer.as_mut().poll_flush(cx) {
+                        Poll::Ready(Ok(())) => {
+                            let item = item.take();
+                            self.state = RecordState::Idle;
+                            return Poll::Ready(Ok(item));
+                        }
+                        Poll::Ready(Err(e)) => {
+                            let item = item.take();
+                            self.state = RecordState::Idle;
+                            return Poll::Ready(Err((e, item)));
+                        }
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+                RecordState::Closing => {
+                    return match self.writer.as_mut().poll_close(cx) {
+                        Poll::Ready(Ok(())) => Poll::Ready(Ok(None)),
+                        Poll::Ready(Err(e)) => Poll::Ready(Err((e, None))),
+                        Poll::Pending => Poll::Pending,
+                    };
+                }
+            }
+        }
+    }
+
+    /// Queue `raw` (wrapped, one jsonl line) ahead of yielding `item`.
+    fn enqueue(&mut self, raw: RawLine, item: Result<Event, Error>) {
+        // Pure text concatenation, mirroring `test/data/capture.sh`.
+        let (tag, data) = match &raw {
+            Ok(data) => ("{\"Ok\":", data),
+            Err(data) => ("{\"Err\":", data),
+        };
+        let mut line = Vec::with_capacity(tag.len() + data.len() + 2);
+        line.extend_from_slice(tag.as_bytes());
+        line.extend_from_slice(data.as_bytes());
+        line.extend_from_slice(b"}\n");
+        self.state = RecordState::Writing {
+            line,
+            written: 0,
+            item: Some(item),
+        };
+    }
 }
 
 static_assertions::assert_impl_all!(Stream: futures::Stream, Send);
@@ -530,21 +649,70 @@ impl Stream {
                     #[cfg(feature = "log")]
                     log::trace!("Event: {:?}", event);
 
+                    // The raw `data:` bytes ride alongside the parsed item
+                    // for the recorder. The success arm *moves* them (the
+                    // wire event is dropped anyway — recording or not, the
+                    // cost is zero); the error arms clone because the wire
+                    // event is preserved inside the `Error`.
                     match serde_json::from_str::<ApiResult>(&event.data) {
-                        Ok(ApiResult::Event { event }) => Ok(event),
-                        Ok(ApiResult::Error(ErrorEvent { error, .. })) => {
-                            Err(Error::Anthropic { error, event })
+                        Ok(ApiResult::Event { event: parsed }) => {
+                            (Ok(parsed), Some(Ok(event.data)))
                         }
-                        Err(error) => Err(Error::Parse { error, event }),
+                        Ok(ApiResult::Error(ErrorEvent { error, .. })) => {
+                            let raw = event.data.clone();
+                            (
+                                Err(Error::Anthropic { error, event }),
+                                Some(Err(raw)),
+                            )
+                        }
+                        // A payload our types can't parse is the single most
+                        // valuable thing to record — wrapped `Ok`, it's still
+                        // an event line, just one we don't model (yet).
+                        Err(error) => {
+                            let raw = event.data.clone();
+                            (Err(Error::Parse { error, event }), Some(Ok(raw)))
+                        }
                     }
                 }
                 Err(error) => {
                     #[cfg(feature = "log")]
                     log::error!("Stream error: {:?}", error);
-                    Err(Error::Stream { error })
+                    // Transport errors have no payload line — `capture.sh`
+                    // wouldn't have one either.
+                    (Err(Error::Stream { error }), None)
                 }
             })),
+            recorder: None,
         }
+    }
+
+    /// Tee every raw `data:` payload into `writer` as one wrapped
+    /// `{"Ok": <event>}` / `{"Err": <error event>}` jsonl line — the
+    /// `*.sse.stream.jsonl` fixture format (see `test/data/README.md`),
+    /// written by pure text concatenation, never re-serialized through the
+    /// crate's own types. Point a long-running app at a file and every rare
+    /// wire shape it ever encounters lands on disk already fixture-shaped.
+    ///
+    /// Each line is written **and flushed before its event is yielded**, so
+    /// everything the consumer has seen is already handed to the OS — a
+    /// recording survives the process dying mid-stream, which is exactly
+    /// when the interesting shapes appear. (Flush is not fsync: it's a
+    /// userspace-to-kernel push, microseconds against network-paced events.)
+    /// The writer is closed when the stream ends.
+    ///
+    /// A write error stops the recording (logged on the `log` feature) but
+    /// never poisons the stream itself: the conversation outlives a full
+    /// disk. Payloads our types fail to parse are still recorded — those
+    /// are the lines the fixtures exist to catch.
+    pub fn record<W>(mut self, writer: W) -> Self
+    where
+        W: futures::io::AsyncWrite + Send + 'static,
+    {
+        self.recorder = Some(Recorder {
+            writer: Box::pin(writer),
+            state: RecordState::Idle,
+        });
+        self
     }
 
     // TODO: Figure out an ergonomic way to handle tool use when streaming. We
@@ -565,7 +733,58 @@ impl futures::Stream for Stream {
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context,
     ) -> Poll<Option<Self::Item>> {
-        self.inner.as_mut().poll_next(cx)
+        let this = &mut *self;
+        loop {
+            // Drive any pending write/flush/close ahead of new work — the
+            // held item yields only once its line is durably written.
+            if let Some(recorder) = this.recorder.as_mut() {
+                let closing = matches!(recorder.state, RecordState::Closing);
+                match recorder.poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Ok(Some(item))) => {
+                        return Poll::Ready(Some(item));
+                    }
+                    Poll::Ready(Ok(None)) if closing => {
+                        // The close finished: the recording is complete.
+                        this.recorder = None;
+                        return Poll::Ready(None);
+                    }
+                    Poll::Ready(Ok(None)) => {} // idle: poll the inner stream
+                    Poll::Ready(Err((_error, item))) => {
+                        #[cfg(feature = "log")]
+                        log::error!("stream recording failed: {_error}");
+                        // A disk problem must not poison the conversation:
+                        // stop recording, keep streaming.
+                        this.recorder = None;
+                        match item {
+                            Some(item) => return Poll::Ready(Some(item)),
+                            None if closing => return Poll::Ready(None),
+                            None => {}
+                        }
+                    }
+                }
+            }
+
+            match this.inner.as_mut().poll_next(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(None) => match this.recorder.as_mut() {
+                    // Close the writer before reporting the end.
+                    Some(recorder) => {
+                        recorder.state = RecordState::Closing;
+                    }
+                    None => return Poll::Ready(None),
+                },
+                Poll::Ready(Some((item, raw))) => {
+                    match (this.recorder.as_mut(), raw) {
+                        (Some(recorder), Some(raw)) => {
+                            recorder.enqueue(raw, item);
+                            // Loop: drive the write before yielding.
+                        }
+                        (_, _) => return Poll::Ready(Some(item)),
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1285,6 +1504,80 @@ pub(crate) mod tests {
                 }
             }
         }))
+    }
+
+    /// [`Stream::record`]ing a replayed fixture reproduces the file
+    /// byte-for-byte: the recorder's wrapper concatenation is the exact
+    /// inverse of the unwrap slicing here, both pure text — no trip through
+    /// the crate's own types in either direction.
+    #[test]
+    fn test_record_reproduces_fixture() {
+        use futures::StreamExt;
+
+        const FIXTURE: &str = include_str!(
+            "../test/data/system_after_server_tool.sse.stream.jsonl"
+        );
+
+        /// A clonable sink so the bytes survive `record` consuming it.
+        #[derive(Clone, Default)]
+        struct SharedBuf(std::sync::Arc<std::sync::Mutex<(Vec<u8>, bool)>>);
+        impl futures::io::AsyncWrite for SharedBuf {
+            fn poll_write(
+                self: Pin<&mut Self>,
+                _cx: &mut std::task::Context,
+                buf: &[u8],
+            ) -> Poll<std::io::Result<usize>> {
+                self.0.lock().unwrap().0.extend_from_slice(buf);
+                Poll::Ready(Ok(buf.len()))
+            }
+            fn poll_flush(
+                self: Pin<&mut Self>,
+                _cx: &mut std::task::Context,
+            ) -> Poll<std::io::Result<()>> {
+                Poll::Ready(Ok(()))
+            }
+            fn poll_close(
+                self: Pin<&mut Self>,
+                _cx: &mut std::task::Context,
+            ) -> Poll<std::io::Result<()>> {
+                self.0.lock().unwrap().1 = true;
+                Poll::Ready(Ok(()))
+            }
+        }
+
+        // Unwrap each line back to the raw `data:` payload bytes.
+        let events: Vec<_> = FIXTURE
+            .lines()
+            .map(|line| {
+                let data = line
+                    .strip_prefix("{\"Ok\":")
+                    .or_else(|| line.strip_prefix("{\"Err\":"))
+                    .and_then(|rest| rest.strip_suffix('}'))
+                    .unwrap();
+                Ok(eventsource_stream::Event {
+                    event: String::new(),
+                    data: data.to_string(),
+                    id: String::new(),
+                    retry: None,
+                })
+            })
+            .collect();
+
+        let sink = SharedBuf::default();
+        let stream =
+            Stream::new(futures::stream::iter(events)).record(sink.clone());
+
+        let n = futures::executor::block_on(
+            stream.fold(0usize, |n, _| async move { n + 1 }),
+        );
+        assert_eq!(n, FIXTURE.lines().count());
+
+        let (bytes, closed) = {
+            let guard = sink.0.lock().unwrap();
+            (guard.0.clone(), guard.1)
+        };
+        assert!(closed, "the writer must be closed at end of stream");
+        assert_eq!(std::str::from_utf8(&bytes).unwrap(), FIXTURE);
     }
 
     #[test]
