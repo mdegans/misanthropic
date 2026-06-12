@@ -1,0 +1,4 @@
+# Wire fixtures are byte-exact captures (see misanthropic/test/data/README.md):
+# EOL translation corrupts them and breaks byte-for-byte round-trip tests on
+# Windows. Never translate.
+misanthropic/test/data/** -text
