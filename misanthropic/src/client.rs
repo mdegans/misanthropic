@@ -1686,6 +1686,19 @@ mod tests {
                 ]),
                 None,
             ),
+            (
+                "abandoning a paused server tool is rejected — a \
+                 server_tool_use without its result 400s once any turn \
+                 follows it (the in-flight turn may only be resumed, last \
+                 in the array, or dropped entirely)",
+                &haiku,
+                json!([
+                    {"role": "user", "content": "fetch it"},
+                    {"role": "assistant", "content": [note, fetch_use]},
+                    {"role": "user", "content": "never mind — what is 2+2?"}
+                ]),
+                Some("without a corresponding"),
+            ),
         ];
 
         for (case, model, messages, expect) in cases {

@@ -310,6 +310,22 @@ impl<State> Chat<State> {
             }
 
             if rounds >= self.max_tool_calls {
+                if paused {
+                    // The wire forbids abandoning an in-flight server tool:
+                    // a `server_tool_use` without its result 400s the moment
+                    // any turn follows it (verified live — see the
+                    // count_tokens placement probes). The only legal exit is
+                    // to drop the paused turn entirely; with it go any
+                    // continuations merged into it. The policy doesn't get a
+                    // FinalWord here — a fresh call could just pause again.
+                    log::warn!(
+                        "budget exhausted mid-pause: dropping the in-flight \
+                         server-tool turn (the wire forbids abandoning it \
+                         in place)"
+                    );
+                    self.prompt.messages.pop();
+                    return Ok(());
+                }
                 return self.exhaust_budget(state, calls).await;
             }
             rounds += 1;
