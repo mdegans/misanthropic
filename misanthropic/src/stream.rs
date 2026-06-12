@@ -715,15 +715,33 @@ impl Stream {
         self
     }
 
-    // TODO: Figure out an ergonomic way to handle tool use when streaming. We
-    // may need another wrapper stream to store json deltas until a full block
-    // is received. This would allow us to merge json deltas and then emit a
-    // tool use event. Emitting `Block`s might not be a bad idea, but it would
-    // delay the text output, which is the primary use case for streaming. Even
-    // though events can be made up of multiple text blocks, generally the model
-    // only generates a single block per message per type. Waiting for an entire
-    // text block would mean waiting for the entire message. Waiting on JSON, is
-    // however necessary since we can't do anything useful with partial JSON.
+    /// Replay a [`record`](Self::record)ing (or a checked-in
+    /// `*.sse.stream.jsonl` fixture) through the **real** parse path, exactly
+    /// as the live wire would arrive: each line is unwrapped back to its raw
+    /// `data:` payload bytes and fed through the same machinery as
+    /// [`new`](Self::new). Total on purpose — a line that doesn't match the
+    /// wrapped format passes through as raw payload and surfaces downstream
+    /// as a typed [`Error::Parse`], so a corrupt recording fails loudly
+    /// in-stream rather than silently dropping lines.
+    pub fn replay(jsonl: &str) -> Self {
+        let events: Vec<_> = jsonl
+            .lines()
+            .map(|line| {
+                let data = line
+                    .strip_prefix("{\"Ok\":")
+                    .or_else(|| line.strip_prefix("{\"Err\":"))
+                    .and_then(|rest| rest.strip_suffix('}'))
+                    .unwrap_or(line);
+                Ok(eventsource_stream::Event {
+                    event: String::new(),
+                    data: data.to_string(),
+                    id: String::new(),
+                    retry: None,
+                })
+            })
+            .collect();
+        Self::new(futures::stream::iter(events))
+    }
 }
 
 impl futures::Stream for Stream {
@@ -1506,10 +1524,10 @@ pub(crate) mod tests {
         }))
     }
 
-    /// [`Stream::record`]ing a replayed fixture reproduces the file
-    /// byte-for-byte: the recorder's wrapper concatenation is the exact
-    /// inverse of the unwrap slicing here, both pure text — no trip through
-    /// the crate's own types in either direction.
+    /// `record(replay(fixture))` reproduces the file byte-for-byte: the
+    /// recorder's wrapper concatenation is the exact inverse of `replay`'s
+    /// unwrap slicing, both pure text — no trip through the crate's own
+    /// types in either direction. Covers both halves of the round trip.
     #[test]
     fn test_record_reproduces_fixture() {
         use futures::StreamExt;
@@ -1545,27 +1563,8 @@ pub(crate) mod tests {
             }
         }
 
-        // Unwrap each line back to the raw `data:` payload bytes.
-        let events: Vec<_> = FIXTURE
-            .lines()
-            .map(|line| {
-                let data = line
-                    .strip_prefix("{\"Ok\":")
-                    .or_else(|| line.strip_prefix("{\"Err\":"))
-                    .and_then(|rest| rest.strip_suffix('}'))
-                    .unwrap();
-                Ok(eventsource_stream::Event {
-                    event: String::new(),
-                    data: data.to_string(),
-                    id: String::new(),
-                    retry: None,
-                })
-            })
-            .collect();
-
         let sink = SharedBuf::default();
-        let stream =
-            Stream::new(futures::stream::iter(events)).record(sink.clone());
+        let stream = Stream::replay(FIXTURE).record(sink.clone());
 
         let n = futures::executor::block_on(
             stream.fold(0usize, |n, _| async move { n + 1 }),

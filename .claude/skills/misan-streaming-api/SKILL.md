@@ -170,6 +170,40 @@ let events = stream.with_tool_use();
 # }
 ```
 
+## Recording the raw wire (`Stream::record`)
+
+`Stream::record(impl futures::io::AsyncWrite)` tees every raw `data:` payload
+into the writer as one wrapped `{"Ok": …}`/`{"Err": …}` jsonl line — the
+`*.sse.stream.jsonl` fixture format (`misanthropic/test/data/README.md`),
+written as raw bytes, never re-serialized through the crate's types. Each line
+is written and flushed *before* its event is yielded, so a recording survives
+the process dying mid-stream; the writer is closed at stream end, and a write
+error stops the recording without poisoning the stream. Chain it *before* the
+`FilterExt` combinators (it is a method on the concrete `Stream` the client
+returns):
+
+```rust,no_run
+# use misanthropic::{Client, Prompt, stream::FilterExt};
+# async fn f(client: Client, prompt: Prompt, file: impl futures::io::AsyncWrite + Send + 'static) -> Result<(), Box<dyn std::error::Error>> {
+let mut text = client.stream(&prompt).await?.record(file).text();
+# Ok(()) }
+```
+
+(A tokio `File` adapts via `tokio_util::compat::TokioAsyncWriteCompatExt` —
+the crate itself stays runtime-agnostic.)
+
+`Stream::replay(&str)` is the inverse: it feeds a recording (or a checked-in
+fixture) back through the real parse path, exactly as the live wire would
+arrive — record a session in production, replay it offline in tests:
+
+```rust
+# use misanthropic::stream::{FilterExt, Stream};
+let events = Stream::replay(include_str!(
+    "../../../misanthropic/test/data/text.sse.stream.jsonl"
+))
+.with_message();
+```
+
 ## Raw event types (`stream::Event`)
 
 Every `Event` variant, shown as an exhaustive `match` — this block is a
