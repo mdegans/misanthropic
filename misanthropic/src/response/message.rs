@@ -307,10 +307,36 @@ pub struct TokenCounts {
     pub cache_read_input_tokens: Option<u64>,
     /// Number of output tokens generated.
     pub output_tokens: u64,
+    /// Breakdown of [`output_tokens`](Self::output_tokens) — see
+    /// [`OutputTokensDetails`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_tokens_details: Option<OutputTokensDetails>,
     /// Server-tool invocation counts (e.g. web searches), when any server tool
     /// ran. See [`ServerMethodDef`](crate::tool::ServerMethodDef).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
+}
+
+/// The `output_tokens_details` object in [`TokenCounts`]: how many of the
+/// output tokens were thinking. On the wire in both paths (the non-streaming
+/// `usage` and the final `message_delta` usage; captured live on Opus 4.8,
+/// 2026-06-12) even with thinking off, as an explicit `{"thinking_tokens": 0}`.
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[serde(default)]
+pub struct OutputTokensDetails {
+    /// Number of output tokens spent thinking.
+    pub thinking_tokens: u64,
+}
+
+impl std::ops::Add<OutputTokensDetails> for OutputTokensDetails {
+    type Output = Self;
+
+    fn add(self, rhs: Self) -> Self::Output {
+        Self {
+            thinking_tokens: self.thinking_tokens + rhs.thinking_tokens,
+        }
+    }
 }
 
 /// Cache-write token counts broken down by TTL — the `cache_creation` object
@@ -403,6 +429,13 @@ impl std::ops::Add<TokenCounts> for TokenCounts {
                 .map(|c| c + rhs.cache_read_input_tokens.unwrap_or(0))
                 .or(rhs.cache_read_input_tokens),
             output_tokens: self.output_tokens + rhs.output_tokens,
+            output_tokens_details: match (
+                self.output_tokens_details,
+                rhs.output_tokens_details,
+            ) {
+                (Some(a), Some(b)) => Some(a + b),
+                (a, b) => a.or(b),
+            },
             server_tool_use: match (self.server_tool_use, rhs.server_tool_use) {
                 (Some(a), Some(b)) => Some(a + b),
                 (a, b) => a.or(b),
@@ -480,6 +513,25 @@ mod tests {
         "output_tokens": 503
     }
 }"#;
+
+    /// A captured non-streaming response (Opus 4.8, 2026-06-12) round-trips
+    /// exactly — guards `usage.output_tokens_details` (sent even with thinking
+    /// off) and the full response envelope. Streaming twin:
+    /// `system_after_server_tool.sse.stream.jsonl`, gated by wire coverage.
+    #[test]
+    fn captured_response_roundtrip() {
+        let message: Message = crate::utils::roundtrip(include_str!(
+            "../../test/data/system_after_server_tool.response.json"
+        ));
+        assert_eq!(
+            message
+                .usage
+                .output_tokens_details
+                .expect("wire sends output_tokens_details")
+                .thinking_tokens,
+            0
+        );
+    }
 
     #[test]
     fn deserialize_response_message() {

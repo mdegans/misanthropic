@@ -1,0 +1,10 @@
+{
+  "model": "claude-opus-4-8",
+  "max_tokens": 128,
+  "tools": [{"type": "web_fetch_20250910", "name": "web_fetch", "max_uses": 1, "allowed_domains": ["httpbin.org"]}],
+  "messages": [
+    {"role": "user", "content": "Fetch https://httpbin.org/anything/1 and tell me the value of the 'url' field."},
+    {"role": "assistant", "content": [{"type": "text", "text": "Fetching."}, {"type":"server_tool_use","id":"srvtoolu_01XAxdGfRL2vypN6SF17MJXT","name":"web_fetch","input":{"url":"https://httpbin.org/anything/1"}}, {"type":"web_fetch_tool_result","tool_use_id":"srvtoolu_01XAxdGfRL2vypN6SF17MJXT","content":{"type":"web_fetch_result","url":"https://httpbin.org/anything/1","retrieved_at":"2026-06-04T15:49:37.688665","content":{"type":"document","source":{"type":"text","media_type":"text/plain","data":"{\"url\": \"https://httpbin.org/anything/1\"}"},"title":"httpbin"}},"caller":{"type":"direct"}}]},
+    {"role": "system", "content": "Operator note: the fetch budget is exhausted. Do not fetch anything further; answer from the result you already have, in one short sentence."}
+  ]
+}

@@ -106,6 +106,8 @@ the win; fix the types, then commit the real bytes.
 | --- | --- | --- |
 | `text.sse.stream.jsonl` | live (plain text turn, Haiku 4.5, `capture.sh`, 2026-06-09) | captured (baseline message envelope: `message.type`, `stop_details: null`, `usage.cache_creation`/`service_tier`/`inference_geo`, SSE whitespace padding; request in `requests/text.json`) |
 | `redacted_thought.sse.stream.jsonl` | live | captured (text-delta tags restored to the wire's `text_delta` — the original capture had been normalized through the crate's own types to the legacy `text`; the lines are otherwise the captured bytes) |
+| `system_after_server_tool.sse.stream.jsonl` | live (Opus 4.8, `capture.sh`, 2026-06-12) | captured (mid-conversation `system` turn after an assistant turn ending in `web_fetch_tool_result` — the **wire-legal** placement; the docs' "ending in server tool *use*" is wrong, the validator demands "ending in a server tool **result**", strict on the *last* block. Also caught undocumented `usage.output_tokens_details` in `message_delta`. Request in `requests/system_after_server_tool.json`) |
+| `system_after_server_tool.response.json` | live (Opus 4.8, 2026-06-12) | captured (the non-streaming twin, full response envelope; `usage.output_tokens_details: {"thinking_tokens": 0}` sent even with thinking off; replayed by `response::message::tests::captured_response_roundtrip`) |
 | `thinking.sse.stream.txt` | live | captured |
 | `sse.stream.txt` | live | captured |
 | `server_tools/web_fetch_result.json` | live (`web_fetch`, Haiku 4.5) | captured (`caller` verified; no-citations doc shape; text data truncated) |
