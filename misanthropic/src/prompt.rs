@@ -276,8 +276,10 @@ pub enum TurnOrderError {
         message: Message,
     },
     /// `second` is not a legal turn after `first`. Either two same-role turns
-    /// are adjacent, or a [`System`] turn is misplaced (not preceded by a user
-    /// turn, or not followed by an assistant turn).
+    /// are adjacent, or a [`System`] turn is misplaced — it must follow a user
+    /// turn or an assistant turn
+    /// [ending in a server-tool result](crate::prompt::message::Message::ends_in_server_tool_result),
+    /// and must precede an assistant turn or end the array.
     ///
     /// [`System`]: crate::prompt::message::Role::System
     #[error("a {} turn may not immediately follow a {} turn", .second.role, .first.role)]
@@ -1852,8 +1854,8 @@ mod tests {
 
     #[test]
     fn test_system_cannot_follow_assistant() {
-        // assistant → system is rejected (legal only after server tool use,
-        // which the crate cannot yet construct).
+        // assistant → system is rejected unless the assistant turn ends in a
+        // server-tool result (see test_system_after_server_tool_tails).
         let err = Prompt::default()
             .add_message((Role::User, "hi"))
             .unwrap()
@@ -1862,6 +1864,47 @@ mod tests {
             .add_message((Role::System, "be terse"))
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    /// Offline mirror of the live `count_tokens` placement probes
+    /// (`client::tests::test_count_tokens_validates_system_placement`):
+    /// assistant → system is legal iff the assistant turn ends in a
+    /// server-tool *result* — strictly the last block, and a *use* (the
+    /// paused-turn tail) does not qualify. The fixture blocks keep the
+    /// shapes wire-sourced.
+    #[test]
+    fn test_system_after_server_tool_tails() {
+        use crate::prompt::message::{Block, Content};
+
+        let fetch_use: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+        let fetch_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_fetch_result.json"
+        ))
+        .unwrap();
+        let text = Block::text("done.");
+
+        // (assistant tail blocks, may a system turn follow?)
+        let cases = [
+            (vec![text.clone(), fetch_use.clone()], false), // paused turn
+            (
+                vec![fetch_use.clone(), fetch_result.clone(), text.clone()],
+                false, // "ending in" is strict on the last block
+            ),
+            (vec![fetch_use, fetch_result], true),
+        ];
+
+        for (blocks, legal) in cases {
+            let outcome = Prompt::default()
+                .add_message((Role::User, "fetch it"))
+                .unwrap()
+                .add_message((Role::Assistant, Content(blocks)))
+                .unwrap()
+                .add_message((Role::System, "note"));
+            assert_eq!(outcome.is_ok(), legal);
+        }
     }
 
     #[test]

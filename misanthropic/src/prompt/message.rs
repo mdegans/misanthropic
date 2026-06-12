@@ -299,6 +299,20 @@ impl<R> RoleMessage<R> {
             .iter()
             .any(|b| matches!(b, Block::ServerToolUse { .. }))
     }
+
+    /// Whether the final [`Content`] [`Block`] is a server-tool *result* —
+    /// the one assistant tail the API allows a [`System`](Role::System) turn
+    /// to follow (the turn-order rule behind
+    /// [`TurnOrderError`](crate::prompt::TurnOrderError)). Strict on the
+    /// *last* block by design — the validator's own words: "role 'system'
+    /// must follow a 'user' message or an 'assistant' message ending in a
+    /// server tool result" (verified live, 2026-06-12; the docs' "ending in
+    /// server tool use" is wrong on the wire).
+    pub fn ends_in_server_tool_result(&self) -> bool {
+        self.content
+            .last()
+            .is_some_and(Block::is_server_tool_result)
+    }
 }
 
 impl<R> RoleMessage<R>
@@ -345,12 +359,19 @@ impl Message {
     /// `messages` array.
     ///
     /// Encodes the user/assistant alternation plus the placement rules for a
-    /// mid-conversation [`System`](Role::System) turn (it must follow a user
-    /// turn and immediately precede an assistant turn), with one
-    /// content-sensitive exception: two adjacent [`Assistant`](Role::Assistant)
-    /// turns are allowed when the first carries a
-    /// [`ServerToolUse`](Block::ServerToolUse) block — see [`TurnOrderError`]
-    /// for the rationale.
+    /// mid-conversation [`System`](Role::System) turn, with two
+    /// content-sensitive exceptions on an [`Assistant`](Role::Assistant)
+    /// tail:
+    ///
+    /// - two adjacent `Assistant` turns are allowed when the first carries a
+    ///   [`ServerToolUse`](Block::ServerToolUse) block (a paused turn and its
+    ///   continuation) — see [`TurnOrderError`] for the rationale;
+    /// - `Assistant` → `System` is allowed when the first
+    ///   [ends in a server-tool *result*](Self::ends_in_server_tool_result).
+    ///   This is the **wire** rule, verified live against the validator
+    ///   (2026-06-12, pinned by the `count_tokens` placement probes): the
+    ///   docs' "ending in server tool use" is wrong, so a *paused* turn
+    ///   (ending in the in-flight use) is **not** a legal predecessor.
     ///
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
     pub(crate) fn may_precede(&self, next: &Self) -> bool {
@@ -364,6 +385,9 @@ impl Message {
         ) || (self.role == Assistant
             && next.role == Assistant
             && self.has_server_tool_use())
+            || (self.role == Assistant
+                && next.role == System
+                && self.ends_in_server_tool_result())
     }
 }
 
@@ -1516,6 +1540,32 @@ impl Block {
     /// [`Thought`]: Block::Thought
     pub fn is_complete_thought(&self) -> bool {
         matches!(self, Self::Thought { signature, .. } if !signature.is_empty())
+    }
+
+    /// Is a server-tool *result* block (the output half of a
+    /// [`ServerToolUse`](Self::ServerToolUse), any server tool). Exhaustive on
+    /// purpose: a new [`Block`] variant fails to compile until it's
+    /// classified result / not-result, because turn-order legality (a
+    /// [`System`](Role::System) turn may follow an assistant turn ending in
+    /// one of these) depends on the answer.
+    pub fn is_server_tool_result(&self) -> bool {
+        match self {
+            Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
+            | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. } => true,
+            Self::Text { .. }
+            | Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::Image { .. }
+            | Self::Document { .. }
+            | Self::ToolUse { .. }
+            | Self::ToolResult { .. }
+            | Self::ServerToolUse { .. }
+            | Self::ToolReference { .. } => false,
+        }
     }
 
     /// Merge [`Delta`]s into a [`Block`]. The types must be compatible or this
