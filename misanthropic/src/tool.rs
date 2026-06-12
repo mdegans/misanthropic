@@ -1940,7 +1940,9 @@ pub struct Result {
     /// [`Assistant`](crate::prompt::message::Role::Assistant) what went wrong
     /// and how they can try to fix it.
     pub content: Content,
-    /// Is the result an error message?
+    /// Is the result an error message? Optional on the wire (absent means
+    /// `false`), so deserializing externally-authored prompts Just Works.
+    #[serde(default)]
     pub is_error: bool,
     /// Use prompt caching. See [`Prompt::cache`] for more information.
     ///
