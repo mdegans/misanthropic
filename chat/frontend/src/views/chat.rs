@@ -122,24 +122,23 @@ fn make_prompt() -> Prompt {
 
     Prompt::default()
         .model(Sonnet35)
-        .add_tool(CustomMethodDef {
-            name: "python".into(),
-            description: "Run a Python script.".into(),
-            schema: json!({
-                "type": "object",
-                "properties": {
-                    "script": {
-                        "type": "string",
-                        "description": "Python script to run.",
+        .add_tool(
+            CustomMethodDef::builder("python")
+                .description("Run a Python script.")
+                .schema(json!({
+                    "type": "object",
+                    "properties": {
+                        "script": {
+                            "type": "string",
+                            "description": "Python script to run.",
+                        },
                     },
-                },
-                "required": ["script"],
-            }),
-            cache_control: None,
-            strict: Some(true),
-            defer_loading: None,
-            allowed_callers: None,
-        })
+                    "required": ["script"],
+                }))
+                .strict(true)
+                .build()
+                .expect("valid python tool definition"),
+        )
         // Inform the assistant about their limitations.
         .system(include_str!("../../../../misanthropic/examples/python_system.md"))
         .add_system(format!("## Python Environment\n\n{}", "3.12"))
