@@ -1028,12 +1028,26 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 /// `CustomMethodDef` definition for a [`Tool`] a [`Model`] can [`Use`] while
 /// completing a [`prompt::Message`].
 ///
+/// **Construction.** Don't build this with a struct literal — it is
+/// `#[non_exhaustive]`, so the API can grow fields (as it has: `strict`,
+/// `defer_loading`, `allowed_callers`) without breaking you. Use one of the
+/// validated paths instead, all forward-compatible by construction:
+///
+/// - The [`#[tool]`](macro@tool) macro — preferred for new code; derives
+///   the schema and definition from a typed function at compile time (see the
+///   `strawberry` example and `tool::bash::rich`).
+/// - [`CustomMethodDef::builder`] / [`MethodBuilder`] — the fluent, *validated*
+///   path for a hand-written definition.
+/// - [`CustomMethodDef::simple`] / [`with_string_param`](Self::with_string_param)
+///   — quick constructors for trivial tools.
+///
 /// [`prompt::Message`]: crate::prompt::Message
 /// [`Model`]: crate::model::ModelInfo
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(try_from = "MethodBuilder")]
 #[serde(rename = "tool")]
+#[non_exhaustive]
 pub struct CustomMethodDef {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'static, str>,
