@@ -278,39 +278,13 @@ pub enum Model {
 }
 
 impl Model {
-    /// Get the name of the model.
+    /// The model's wire id — the canonical string the API expects (e.g.
+    /// `claude-opus-4-8`). For a known [`Anthropic`](Self::Anthropic) model this
+    /// delegates to [`Id::name`]; for a [`Custom`](Self::Custom) model it is the
+    /// caller-provided string verbatim.
     pub fn name(&self) -> &str {
         match self {
-            Model::Anthropic(model) => match model {
-                Id::Sonnet37 => "claude-3-7-sonnet-latest",
-                Id::Sonnet37_20250219 => "claude-3-7-sonnet-20250219",
-                Id::Sonnet35 => "claude-3-5-sonnet-latest",
-                Id::Sonnet35_20240620 => "claude-3-5-sonnet-20240620",
-                Id::Sonnet35_20241022 => "claude-3-5-sonnet-20241022",
-                Id::Opus30 => "claude-3-opus-latest",
-                Id::Opus30_20240229 => "claude-3-opus-20240229",
-                Id::Haiku35 => "claude-3-5-haiku-latest",
-                Id::Haiku35_20241022 => "claude-3-5-haiku-20241022",
-                Id::Haiku30 => "claude-3-haiku-20240307",
-                Id::Opus40_20250514 => "claude-opus-4-20250514",
-                Id::Opus40 => "claude-opus-4-0",
-                Id::Sonnet40_20250514 => "claude-sonnet-4-20250514",
-                Id::Sonnet40 => "claude-sonnet-4-0",
-                Id::Opus41_20250805 => "claude-opus-4-1-20250805",
-                Id::Opus41 => "claude-opus-4-1",
-                Id::Haiku45_20251001 => "claude-haiku-4-5-20251001",
-                Id::Haiku45 => "claude-haiku-4-5",
-                Id::Sonnet45_20250929 => "claude-sonnet-4-5-20250929",
-                Id::Sonnet45 => "claude-sonnet-4-5",
-                Id::Opus45_20251101 => "claude-opus-4-5-20251101",
-                Id::Opus45 => "claude-opus-4-5",
-                Id::Sonnet46 => "claude-sonnet-4-6",
-                Id::Opus46 => "claude-opus-4-6",
-                Id::Opus47 => "claude-opus-4-7",
-                Id::Opus48 => "claude-opus-4-8",
-                Id::Fable5 => "claude-fable-5",
-                Id::Mythos5 => "claude-mythos-5",
-            },
+            Model::Anthropic(id) => id.name(),
             Model::Custom(name) => name,
         }
     }
@@ -536,37 +510,43 @@ pub enum Id {
 }
 
 impl Id {
-    /// Get the display name of the model.
+    /// The canonical wire id — the exact string the API expects and echoes
+    /// back (e.g. `claude-opus-4-8`), matching this variant's `serde(rename)`.
+    ///
+    /// This is the single source of truth for a known model's string form;
+    /// [`Model::name`] delegates here. There is deliberately no short "display"
+    /// form on [`Id`] — a human-readable label is the API's concern and lives on
+    /// [`ModelInfo::display_name`], which `/v1/models` returns.
     pub fn name(self) -> &'static str {
         match self {
-            Id::Haiku30 => "haiku-3.0-20240307",
-            Id::Haiku35 => "haiku-3.5-latest",
-            Id::Haiku35_20241022 => "haiku-3.5-20241022",
-            Id::Opus30 => "opus-3.0-latest",
-            Id::Opus30_20240229 => "opus-3.0-20240229",
-            Id::Sonnet35 => "sonnet-3.5-latest",
-            Id::Sonnet35_20240620 => "sonnet-3.5-20240620",
-            Id::Sonnet35_20241022 => "sonnet-3.5-20241022",
-            Id::Sonnet37 => "sonnet-3.7-latest",
-            Id::Sonnet37_20250219 => "sonnet-3.7-20250219",
-            Id::Opus40_20250514 => "opus-4.0-20250514",
-            Id::Opus40 => "opus-4.0-latest",
-            Id::Sonnet40_20250514 => "sonnet-4.0-20250514",
-            Id::Sonnet40 => "sonnet-4.0-latest",
-            Id::Opus41_20250805 => "opus-4.1-20250805",
-            Id::Opus41 => "opus-4.1-latest",
-            Id::Haiku45_20251001 => "haiku-4.5-20251001",
-            Id::Haiku45 => "haiku-4.5-latest",
-            Id::Sonnet45_20250929 => "sonnet-4.5-20250929",
-            Id::Sonnet45 => "sonnet-4.5-latest",
-            Id::Opus45_20251101 => "opus-4.5-20251101",
-            Id::Opus45 => "opus-4.5-latest",
-            Id::Sonnet46 => "sonnet-4.6",
-            Id::Opus46 => "opus-4.6",
-            Id::Opus47 => "opus-4.7",
-            Id::Opus48 => "opus-4.8",
-            Id::Fable5 => "fable-5",
-            Id::Mythos5 => "mythos-5",
+            Id::Sonnet37 => "claude-3-7-sonnet-latest",
+            Id::Sonnet37_20250219 => "claude-3-7-sonnet-20250219",
+            Id::Sonnet35 => "claude-3-5-sonnet-latest",
+            Id::Sonnet35_20240620 => "claude-3-5-sonnet-20240620",
+            Id::Sonnet35_20241022 => "claude-3-5-sonnet-20241022",
+            Id::Opus30 => "claude-3-opus-latest",
+            Id::Opus30_20240229 => "claude-3-opus-20240229",
+            Id::Haiku35 => "claude-3-5-haiku-latest",
+            Id::Haiku35_20241022 => "claude-3-5-haiku-20241022",
+            Id::Haiku30 => "claude-3-haiku-20240307",
+            Id::Opus40_20250514 => "claude-opus-4-20250514",
+            Id::Opus40 => "claude-opus-4-0",
+            Id::Sonnet40_20250514 => "claude-sonnet-4-20250514",
+            Id::Sonnet40 => "claude-sonnet-4-0",
+            Id::Opus41_20250805 => "claude-opus-4-1-20250805",
+            Id::Opus41 => "claude-opus-4-1",
+            Id::Haiku45_20251001 => "claude-haiku-4-5-20251001",
+            Id::Haiku45 => "claude-haiku-4-5",
+            Id::Sonnet45_20250929 => "claude-sonnet-4-5-20250929",
+            Id::Sonnet45 => "claude-sonnet-4-5",
+            Id::Opus45_20251101 => "claude-opus-4-5-20251101",
+            Id::Opus45 => "claude-opus-4-5",
+            Id::Sonnet46 => "claude-sonnet-4-6",
+            Id::Opus46 => "claude-opus-4-6",
+            Id::Opus47 => "claude-opus-4-7",
+            Id::Opus48 => "claude-opus-4-8",
+            Id::Fable5 => "claude-fable-5",
+            Id::Mythos5 => "claude-mythos-5",
         }
     }
 }
@@ -835,35 +815,46 @@ mod tests {
 
     #[test]
     fn test_id_name() {
-        // Claude 3.x
-        assert_eq!(Id::Sonnet35.name(), "sonnet-3.5-latest");
-        assert_eq!(Id::Sonnet35_20240620.name(), "sonnet-3.5-20240620");
-        assert_eq!(Id::Sonnet35_20241022.name(), "sonnet-3.5-20241022");
-        assert_eq!(Id::Opus30.name(), "opus-3.0-latest");
-        assert_eq!(Id::Opus30_20240229.name(), "opus-3.0-20240229");
-        assert_eq!(Id::Haiku35.name(), "haiku-3.5-latest");
-        assert_eq!(Id::Haiku35_20241022.name(), "haiku-3.5-20241022");
-        assert_eq!(Id::Haiku30.name(), "haiku-3.0-20240307");
+        // `Id::name` is the canonical wire id — identical to `Model::name` and
+        // to the variant's `serde(rename)`. There is no short display form.
+        assert_eq!(Id::Sonnet35.name(), "claude-3-5-sonnet-latest");
+        assert_eq!(Id::Opus30_20240229.name(), "claude-3-opus-20240229");
+        assert_eq!(Id::Haiku30.name(), "claude-3-haiku-20240307");
+        assert_eq!(Id::Opus48.name(), "claude-opus-4-8");
+        assert_eq!(Id::Fable5.name(), "claude-fable-5");
 
-        // Claude 4.x
-        assert_eq!(Id::Opus40_20250514.name(), "opus-4.0-20250514");
-        assert_eq!(Id::Opus40.name(), "opus-4.0-latest");
-        assert_eq!(Id::Sonnet40_20250514.name(), "sonnet-4.0-20250514");
-        assert_eq!(Id::Sonnet40.name(), "sonnet-4.0-latest");
-        assert_eq!(Id::Opus41_20250805.name(), "opus-4.1-20250805");
-        assert_eq!(Id::Opus41.name(), "opus-4.1-latest");
-        assert_eq!(Id::Haiku45_20251001.name(), "haiku-4.5-20251001");
-        assert_eq!(Id::Haiku45.name(), "haiku-4.5-latest");
-        assert_eq!(Id::Sonnet45_20250929.name(), "sonnet-4.5-20250929");
-        assert_eq!(Id::Sonnet45.name(), "sonnet-4.5-latest");
-        assert_eq!(Id::Opus45_20251101.name(), "opus-4.5-20251101");
-        assert_eq!(Id::Opus45.name(), "opus-4.5-latest");
-        assert_eq!(Id::Sonnet46.name(), "sonnet-4.6");
-        assert_eq!(Id::Opus46.name(), "opus-4.6");
+        // `Model::name` delegates to `Id::name` for known models.
+        assert_eq!(Model::Anthropic(Id::Opus48).name(), Id::Opus48.name());
 
         let model: Model = "custom_model".into();
         assert_eq!(model.name(), "custom_model");
         assert_eq!(model, "custom_model");
+    }
+
+    /// Regression for #109: `Model`'s hand-written `PartialEq` impls compare
+    /// against the **wire id**, not a short display form. Before the fix they
+    /// reached for `Id::name`'s display string and these were all `false`.
+    #[test]
+    fn test_model_eq_uses_wire_id() {
+        use strum::IntoEnumIterator;
+        // Every known id equals its own wire string, in both directions, and
+        // serde round-trips a bare wire string to the same `Anthropic` variant.
+        for id in Id::iter() {
+            let wire = id.name();
+            let anthropic = Model::Anthropic(id);
+
+            // PartialEq<S: AsRef<str>> for Model
+            assert_eq!(anthropic, wire, "Anthropic({id:?}) == {wire:?}");
+            // PartialEq<Id> for Model, exercised via a Custom carrying the wire
+            // id — `Model::from` would normalize it, so build Custom directly.
+            assert_eq!(
+                Model::Custom(wire.into()),
+                id,
+                "Custom({wire:?}) == {id:?}"
+            );
+            // The wire string parses back to the known variant (not Custom).
+            assert_eq!(Model::from(wire), anthropic, "from({wire:?})");
+        }
     }
 
     // Some of these overlap, but it's fine.
