@@ -39,6 +39,26 @@ pub struct ModelInfo {
     pub created_at: DateTime<Utc>,
 }
 
+impl ModelInfo {
+    /// Whether this *offered* model (as returned by
+    /// [`Client::models`](crate::Client::models)) meets a `requested` spec:
+    /// same [`id`](Self::id) and [`kind`](Self::kind), token ceilings at least
+    /// as high, and [`Capabilities::satisfies`] for the rest.
+    /// [`display_name`](Self::display_name) and [`created_at`](Self::created_at)
+    /// are ignored.
+    ///
+    /// A `requested` token ceiling of `0` means "no requirement"; an *offered*
+    /// `0` (e.g. an older response that omitted the field) meets only a `0`
+    /// request — the conservative call.
+    pub fn satisfies(&self, requested: &ModelInfo) -> bool {
+        self.id == requested.id
+            && self.kind == requested.kind
+            && requested.max_input_tokens <= self.max_input_tokens
+            && requested.max_tokens <= self.max_tokens
+            && self.capabilities.satisfies(&requested.capabilities)
+    }
+}
+
 /// Object-type discriminator on a [`ModelInfo`]. Always [`Kind::Model`] for the
 /// `/v1/models` endpoint.
 #[derive(
@@ -89,6 +109,28 @@ impl PartialEq<Capability> for bool {
     }
 }
 
+impl Capability {
+    /// Whether this *offered* capability meets `requested` — the boolean
+    /// implication `requested ⟹ self`. A capability the requester didn't ask
+    /// for (`requested` unsupported) imposes no constraint.
+    pub fn satisfies(&self, requested: &Capability) -> bool {
+        self.supported || !requested.supported
+    }
+}
+
+/// Whether `offered` meets every entry `requested` marks supported: each such
+/// key must be present and supported in `offered`. Keys the requester didn't
+/// ask for impose nothing. The leaf rule behind the map-bearing capabilities
+/// ([`ContextManagement`], [`EffortSupport`], [`ThinkingSupport`]).
+fn map_satisfies<K: Ord>(
+    offered: &BTreeMap<K, Capability>,
+    requested: &BTreeMap<K, Capability>,
+) -> bool {
+    requested.iter().all(|(key, want)| {
+        !want.supported || offered.get(key).is_some_and(|have| have.supported)
+    })
+}
+
 /// What a [`ModelInfo`] supports, from the `capabilities` field of the
 /// `/v1/models` response.
 ///
@@ -126,6 +168,28 @@ pub struct Capabilities {
     pub thinking: ThinkingSupport,
 }
 
+impl Capabilities {
+    /// Whether this *offered* set meets `requested` — every capability the
+    /// requester asked for is offered, per [`Capability::satisfies`] (and the
+    /// per-strategy/level/type subset checks for the map-bearing ones).
+    /// Capabilities the requester didn't ask for impose nothing.
+    pub fn satisfies(&self, requested: &Capabilities) -> bool {
+        self.batch.satisfies(&requested.batch)
+            && self.citations.satisfies(&requested.citations)
+            && self.code_execution.satisfies(&requested.code_execution)
+            && self
+                .context_management
+                .satisfies(&requested.context_management)
+            && self.effort.satisfies(&requested.effort)
+            && self.image_input.satisfies(&requested.image_input)
+            && self.pdf_input.satisfies(&requested.pdf_input)
+            && self
+                .structured_outputs
+                .satisfies(&requested.structured_outputs)
+            && self.thinking.satisfies(&requested.thinking)
+    }
+}
+
 /// Context-management support — the `context_management` capability.
 ///
 /// Beyond the top-level [`supported`](Self::supported) flag, the API reports a
@@ -140,6 +204,16 @@ pub struct ContextManagement {
     /// Supported strategies, keyed by their API name.
     #[serde(flatten)]
     pub strategies: BTreeMap<String, Capability>,
+}
+
+impl ContextManagement {
+    /// Whether this *offered* support meets `requested`: the top-level flag
+    /// follows `requested ⟹ self`, and every [strategy](Self::strategies) the
+    /// requester asked for must be offered (see `map_satisfies`).
+    pub fn satisfies(&self, requested: &ContextManagement) -> bool {
+        (self.supported || !requested.supported)
+            && map_satisfies(&self.strategies, &requested.strategies)
+    }
 }
 
 /// Reasoning-[`effort`](crate::prompt::Effort) support — the `effort`
@@ -158,6 +232,16 @@ pub struct EffortSupport {
     pub levels: BTreeMap<Effort, Capability>,
 }
 
+impl EffortSupport {
+    /// Whether this *offered* support meets `requested`: the top-level flag
+    /// follows `requested ⟹ self`, and every [level](Self::levels) the
+    /// requester asked for must be offered (see `map_satisfies`).
+    pub fn satisfies(&self, requested: &EffortSupport) -> bool {
+        (self.supported || !requested.supported)
+            && map_satisfies(&self.levels, &requested.levels)
+    }
+}
+
 /// Extended-[`thinking`](crate::prompt::Thinking) support — the `thinking`
 /// capability.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -168,6 +252,16 @@ pub struct ThinkingSupport {
     /// Supported thinking types (e.g. `adaptive`, `enabled`), keyed by name.
     #[serde(default)]
     pub types: BTreeMap<String, Capability>,
+}
+
+impl ThinkingSupport {
+    /// Whether this *offered* support meets `requested`: the top-level flag
+    /// follows `requested ⟹ self`, and every [type](Self::types) the requester
+    /// asked for must be offered (see `map_satisfies`).
+    pub fn satisfies(&self, requested: &ThinkingSupport) -> bool {
+        (self.supported || !requested.supported)
+            && map_satisfies(&self.types, &requested.types)
+    }
 }
 
 /// The model to use for inference — a known Anthropic [`Id`], or a custom id
@@ -612,6 +706,131 @@ mod tests {
         assert_eq!(model.max_tokens, 0);
         assert!(!model.capabilities.thinking.supported);
         assert!(model.capabilities.thinking.types.is_empty());
+    }
+
+    /// A minimal [`ModelInfo`] for negotiation tests: given `id`, default caps,
+    /// and the given token ceilings.
+    fn info(id: Id, max_input_tokens: u32, max_tokens: u32) -> ModelInfo {
+        ModelInfo {
+            id: id.into(),
+            display_name: "test".into(),
+            capabilities: Capabilities::default(),
+            max_input_tokens,
+            max_tokens,
+            kind: Kind::Model,
+            created_at: "2026-01-01T00:00:00Z".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn test_capability_satisfies() {
+        let yes = Capability::from(true);
+        let no = Capability::from(false);
+
+        // requested ⟹ offered: only "asked but not offered" fails.
+        assert!(yes.satisfies(&yes));
+        assert!(yes.satisfies(&no)); // offered extra, ignored
+        assert!(no.satisfies(&no)); // didn't ask
+        assert!(!no.satisfies(&yes)); // asked, not offered
+    }
+
+    #[test]
+    fn test_capabilities_satisfies_flat() {
+        let mut offered = Capabilities::default();
+        let mut requested = Capabilities::default();
+
+        // Empty request is met by anything, including an empty offer.
+        assert!(offered.satisfies(&requested));
+
+        // Ask for pdf the offer lacks -> rejected; grant it -> satisfied.
+        requested.pdf_input = true.into();
+        assert!(!offered.satisfies(&requested));
+        offered.pdf_input = true.into();
+        assert!(offered.satisfies(&requested));
+
+        // An unrequested capability the offer happens to provide is ignored.
+        offered.citations = true.into();
+        assert!(offered.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_capabilities_satisfies_nested_maps() {
+        let mut offered = Capabilities::default();
+        let mut requested = Capabilities::default();
+
+        // Request a thinking type and the top-level flag.
+        requested.thinking.supported = true;
+        requested
+            .thinking
+            .types
+            .insert("adaptive".into(), true.into());
+
+        // Offer the flag but not the type -> rejected.
+        offered.thinking.supported = true;
+        assert!(!offered.satisfies(&requested));
+
+        // Offer the type as well -> satisfied.
+        offered
+            .thinking
+            .types
+            .insert("adaptive".into(), true.into());
+        assert!(offered.satisfies(&requested));
+
+        // A strategy present but explicitly unsupported does not satisfy.
+        requested
+            .context_management
+            .strategies
+            .insert("compact_20260112".into(), true.into());
+        offered
+            .context_management
+            .strategies
+            .insert("compact_20260112".into(), false.into());
+        assert!(!offered.satisfies(&requested));
+        offered
+            .context_management
+            .strategies
+            .insert("compact_20260112".into(), true.into());
+        assert!(offered.satisfies(&requested));
+
+        // Effort levels are keyed by the typed `Effort`.
+        requested.effort.levels.insert(Effort::High, true.into());
+        assert!(!offered.satisfies(&requested));
+        offered.effort.levels.insert(Effort::High, true.into());
+        assert!(offered.satisfies(&requested));
+    }
+
+    #[test]
+    fn test_model_info_satisfies_id_and_tokens() {
+        let offered = info(Id::Opus48, 200_000, 64_000);
+
+        // Identical -> satisfies.
+        assert!(offered.satisfies(&info(Id::Opus48, 200_000, 64_000)));
+
+        // Different id -> never.
+        assert!(!offered.satisfies(&info(Id::Haiku45, 200_000, 64_000)));
+
+        // requested ceilings <= offered pass; exceeding either fails.
+        assert!(offered.satisfies(&info(Id::Opus48, 100_000, 32_000)));
+        assert!(offered.satisfies(&info(Id::Opus48, 0, 0))); // no requirement
+        assert!(!offered.satisfies(&info(Id::Opus48, 200_001, 64_000)));
+        assert!(!offered.satisfies(&info(Id::Opus48, 200_000, 64_001)));
+
+        // An offer with unknown (0) ceilings meets only a 0 request.
+        let unknown = info(Id::Opus48, 0, 0);
+        assert!(unknown.satisfies(&info(Id::Opus48, 0, 0)));
+        assert!(!unknown.satisfies(&info(Id::Opus48, 1, 0)));
+        assert!(!unknown.satisfies(&info(Id::Opus48, 0, 1)));
+    }
+
+    #[test]
+    fn test_model_info_satisfies_capabilities() {
+        let mut offered = info(Id::Opus48, 200_000, 64_000);
+        let mut requested = info(Id::Opus48, 200_000, 64_000);
+
+        requested.capabilities.batch = true.into();
+        assert!(!offered.satisfies(&requested));
+        offered.capabilities.batch = true.into();
+        assert!(offered.satisfies(&requested));
     }
 
     #[test]
