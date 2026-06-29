@@ -340,9 +340,17 @@ See the runnable example: `misanthropic/examples/strawberry.rs`.
 
 ## Tool use — manual `CustomMethodDef` (no macro)
 
-When you want a hand-written schema, build a `tool::CustomMethodDef` and hand it
-to `add_tool`. (This struct was previously named `MethodDef`, and before that
-`Method`.)
+When you want a hand-written schema, build a `tool::CustomMethodDef` with
+`CustomMethodDef::builder(...)` and hand it to `add_tool`. (This struct was
+previously named `MethodDef`, and before that `Method`.)
+
+> Don't reach for a `CustomMethodDef { .. }` struct literal: it's
+> `#[non_exhaustive]`, so the API can grow fields (it already gained `strict`,
+> `defer_loading`, `allowed_callers`) without breaking you — but only if you go
+> through a constructor. Use `builder()` (fluent + validated),
+> `CustomMethodDef::simple(name, desc)` for a trivial empty-schema tool, or
+> the `#[tool]` macro above for new code. `try_add_tool` accepts a
+> `MethodBuilder` directly, validating on add.
 
 ```no_run
 use misanthropic::{
@@ -356,23 +364,23 @@ let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
 
 let mut chat = Prompt::default()
     .model(misanthropic::Id::Sonnet46)
-    .add_tool(CustomMethodDef {
-        name: "get_weather".into(),
-        description: "Get the weather for a city.".into(),
-        schema: json!({
-            "type": "object",
-            "properties": {
-                "city": { "type": "string", "description": "City name" }
-            },
-            "required": ["city"],
-        }),
-        // These four are plain `Option`s — NOT feature-gated. Leave `None`
-        // unless you need them:
-        cache_control: None,    // prompt-caching breakpoint
-        strict: None,           // Some(true) = grammar-constrained decoding
-        defer_loading: None,    // Some(true) = defer schema (tool-search)
-        allowed_callers: None,  // Some(...) = programmatic tool calling
-    })
+    .add_tool(
+        CustomMethodDef::builder("get_weather")
+            .description("Get the weather for a city.")
+            .schema(json!({
+                "type": "object",
+                "properties": {
+                    "city": { "type": "string", "description": "City name" }
+                },
+                "required": ["city"],
+            }))
+            // Optional, forward-compatible setters — call only what you need:
+            //   .strict(true)              grammar-constrained decoding
+            //   .defer_loading(true)       defer schema (tool-search)
+            //   .programmatic()            allow code-execution callers
+            //   .cache()                   prompt-caching breakpoint
+            .build()?,
+    )
     .system("Use tools when appropriate.")
     .add_message((Role::User, "What's the weather in Paris?"))?;
 
