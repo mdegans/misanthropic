@@ -34,6 +34,7 @@ pub enum JsonError {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::Display)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{}", inner)]
+#[non_exhaustive]
 pub struct Message {
     /// Unique `id` for the message.
     pub id: Cow<'static, str>,
@@ -89,6 +90,7 @@ pub struct Message {
 /// [code execution]: crate::tool::ServerMethodDef::code_execution
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[non_exhaustive]
 pub struct Container {
     /// The container id (`container_…`), reused via [`Prompt::container`].
     ///
@@ -238,6 +240,7 @@ pub enum Kind {
 /// [`Refusal`](StopReason::Refusal).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[non_exhaustive]
 pub struct StopDetails {
     /// Refusal category, e.g. `"cyber"` or `"bio"`; `null` when the API
     /// doesn't classify the refusal.
@@ -268,6 +271,7 @@ pub struct StopDetails {
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct Usage {
     /// The numeric token counters, `Copy` — see [`TokenCounts`].
     #[serde(flatten)]
@@ -292,6 +296,7 @@ pub struct Usage {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Default)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct TokenCounts {
     /// Number of input tokens used.
     pub input_tokens: u64,
@@ -324,6 +329,7 @@ pub struct TokenCounts {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct OutputTokensDetails {
     /// Number of output tokens spent thinking.
     pub thinking_tokens: u64,
@@ -345,6 +351,7 @@ impl std::ops::Add<OutputTokensDetails> for OutputTokensDetails {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct CacheCreation {
     /// Input tokens written to the 5-minute-TTL cache.
     pub ephemeral_5m_input_tokens: u64,
@@ -357,6 +364,7 @@ pub struct CacheCreation {
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
+#[non_exhaustive]
 pub struct ServerToolUsage {
     /// Number of web searches performed.
     pub web_search_requests: u64,
