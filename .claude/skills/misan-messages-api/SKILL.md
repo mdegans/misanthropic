@@ -85,7 +85,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     //   message.inner.content  — Content (Display, iterable over Blocks)
     //   message.model          — model::Model
     //   message.stop_reason    — Option<StopReason>
-    //   message.usage          — Usage { input_tokens, output_tokens, .. }
+    //   message.usage          — Usage; counters on usage.counts (TokenCounts),
+    //                            read through via Deref (usage.input_tokens)
 
     Ok(())
 }
@@ -654,9 +655,37 @@ response::Message
 ├── stop_reason: Option<StopReason>
 │   └── EndTurn | MaxTokens | StopSequence | ToolUse | PauseTurn | Refusal
 ├── stop_sequence: Option<Cow<str>>
-└── usage: Usage
-    ├── input_tokens: u64
-    └── output_tokens: u64
+└── usage: Usage                       — NOT Copy (carries the strings below)
+    ├── counts: TokenCounts            — Copy; flattened on the wire, Deref'd
+    │   ├── input_tokens: u64          —   from Usage (so usage.input_tokens reads through)
+    │   ├── output_tokens: u64
+    │   ├── cache_creation_input_tokens: Option<u64>
+    │   ├── cache_read_input_tokens: Option<u64>
+    │   ├── cache_creation: Option<CacheCreation>
+    │   ├── output_tokens_details: Option<OutputTokensDetails>
+    │   └── server_tool_use: Option<ServerToolUsage>
+    ├── service_tier: Option<Cow<str>>     — capacity tier that served the request
+    └── inference_geo: Option<Cow<str>>    — region that served the request
+```
+
+The numeric counters live on `usage.counts` (a [`TokenCounts`](crate::response::TokenCounts)), not directly
+on `Usage`. Reads still work via `Usage`'s `Deref`, so `usage.input_tokens`
+compiles — but for **accumulation**, hold a `TokenCounts`: it's `Copy` and
+`Usage` isn't (the strings above keep it from being `Copy`). Copy `.counts` off
+each response and `+=` into a running total — no `Usage` clones:
+
+```rust
+use misanthropic::response::{Usage, TokenCounts};
+
+# #[allow(unused_variables)]
+# fn document(usage: &Usage) {
+let via_deref = usage.input_tokens;           // Deref<Target = TokenCounts>
+let explicit = usage.counts.output_tokens;    // the same counters, named
+
+// A running total is a `TokenCounts` (Copy + AddAssign), not a `Usage`:
+let mut total = TokenCounts::default();
+total += usage.counts;                         // AddAssign<TokenCounts>
+# }
 ```
 
 `StopReason` in full, as an exhaustive `match` (doc-tested drift guard — a new
