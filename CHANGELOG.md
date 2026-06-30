@@ -31,6 +31,11 @@ record; this file aggregates them.
   literal or matched exhaustively by downstreams. Construct via
   `Default::default()` + field assignment (all fields are public); future wire
   fields are now non-breaking additions (#105).
+- **`prompt::message::Block` (the enum) is `#[non_exhaustive]`.** Downstream
+  `match` on a `Block` now needs a `_` arm, so future API-added variants (the
+  wire grows these every few months) are non-breaking. The variants themselves
+  are *not* sealed — `Block::Text { … }` literals, `Into<Block>` / `Into<Content>`,
+  and `(Role, T)` construction are all unaffected (#105).
 - **`tool::CustomMethodDef` is `#[non_exhaustive]`.** Build it via the `#[tool]`
   macro, `CustomMethodDef::builder()` / `MethodBuilder`, or
   `CustomMethodDef::simple()` — not a struct literal. This makes future tool

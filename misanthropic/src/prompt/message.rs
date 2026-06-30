@@ -907,6 +907,7 @@ where
     test,
     strum_discriminants(name(BlockKind), derive(strum::EnumIter, Hash))
 )]
+#[non_exhaustive]
 pub enum Block {
     /// Text content.
     #[serde(alias = "text_delta")]
