@@ -289,6 +289,33 @@ pub enum TurnOrderError {
         /// The message that may not follow it.
         second: Message,
     },
+    /// A turn places a [`ToolResult`] after non-result content. The wire
+    /// requires `tool_result` blocks to *lead* their (user) message — a
+    /// contiguous leading run. `[text, tool_result]` is a 400; `[tool_result,
+    /// text]` is accepted (verified live, 2026-06-12).
+    ///
+    /// [`ToolResult`]: crate::prompt::message::Block::ToolResult
+    #[error("tool_result blocks must lead their message, but a {} turn places one after other content", .message.role)]
+    ToolResultNotLeading {
+        /// The offending message.
+        message: Message,
+    },
+    /// An [`Assistant`] turn emitted client [`ToolUse`] blocks the immediately
+    /// following user turn does not answer: each client `tool_use` must have a
+    /// matching leading [`ToolResult`] (by [`tool_use_id`]) in the next
+    /// message.
+    ///
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    /// [`ToolUse`]: crate::prompt::message::Block::ToolUse
+    /// [`ToolResult`]: crate::prompt::message::Block::ToolResult
+    /// [`tool_use_id`]: crate::tool::Result::tool_use_id
+    #[error("{} client tool_use block(s) were not answered by the next turn: {}", .unanswered.len(), .unanswered.join(", "))]
+    UnansweredToolUse {
+        /// The assistant message whose `tool_use` blocks went unanswered.
+        message: Message,
+        /// The `tool_use` ids with no matching leading `tool_result` next.
+        unanswered: Vec<String>,
+    },
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
@@ -397,15 +424,26 @@ impl Prompt {
                 message: first.clone(),
             });
         }
+        for message in &self.messages {
+            Self::check_results_lead(message)?;
+        }
         for pair in self.messages.windows(2) {
-            if !pair[0].may_precede(&pair[1]) {
-                return Err(TurnOrderError::BadTransition {
-                    first: pair[0].clone(),
-                    second: pair[1].clone(),
-                });
-            }
+            pair[0].may_precede(&pair[1])?;
         }
         Ok(())
+    }
+
+    /// A turn's [`ToolResult`](message::Block::ToolResult) blocks must lead
+    /// (the within-message half of #102; the pairwise half lives in
+    /// [`Message::may_precede`]).
+    fn check_results_lead(message: &Message) -> Result<(), TurnOrderError> {
+        if message.results_lead() {
+            Ok(())
+        } else {
+            Err(TurnOrderError::ToolResultNotLeading {
+                message: message.clone(),
+            })
+        }
     }
 
     /// Add a [`Message`] to [`messages`]. When adding multiple messages, use
@@ -445,14 +483,10 @@ impl Prompt {
         M: Into<Message>,
     {
         let message: Message = message.into();
+        Self::check_results_lead(&message)?;
         match self.messages.last() {
             Some(last) => {
-                if !last.may_precede(&message) {
-                    return Err(TurnOrderError::BadTransition {
-                        first: last.clone(),
-                        second: message.clone(),
-                    });
-                }
+                last.may_precede(&message)?;
             }
             None => {
                 // The first message must be a user message.
@@ -1980,6 +2014,124 @@ mod tests {
             .add_message((Role::Assistant, "hello again"))
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_tool_result_must_lead_user_turn() {
+        // The wire requires `tool_result` blocks to lead their user message
+        // (#102). `[result, text]` is accepted; `[text, result]` is a 400.
+        use crate::prompt::message::{Block, Content};
+
+        let tool_use: Block = serde_json::from_value(serde_json::json!({
+            "type": "tool_use", "id": "toolu_1", "name": "get_time", "input": {}
+        }))
+        .unwrap();
+        let result: Block = serde_json::from_value(serde_json::json!({
+            "type": "tool_result", "tool_use_id": "toolu_1", "content": "12:00"
+        }))
+        .unwrap();
+        let text = Block::text("here you go");
+
+        let head = || {
+            Prompt::default()
+                .add_message((Role::User, "what time is it?"))
+                .unwrap()
+                .add_message((Role::Assistant, Content(vec![tool_use.clone()])))
+                .unwrap()
+        };
+
+        // Results lead → accepted.
+        head()
+            .add_message((
+                Role::User,
+                Content(vec![result.clone(), text.clone()]),
+            ))
+            .unwrap();
+
+        // A result trailing other content → rejected.
+        let err = head()
+            .add_message((Role::User, Content(vec![text, result])))
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::ToolResultNotLeading { .. }));
+    }
+
+    #[test]
+    fn test_client_tool_use_must_be_answered() {
+        // A client `tool_use` must be answered by a matching leading
+        // `tool_result` in the immediately following user turn (#102).
+        use crate::prompt::message::{Block, Content};
+
+        let mk_use = |id: &str| -> Block {
+            serde_json::from_value(serde_json::json!({
+                "type": "tool_use", "id": id, "name": "get_time", "input": {}
+            }))
+            .unwrap()
+        };
+        let mk_result = |id: &str| -> Block {
+            serde_json::from_value(serde_json::json!({
+                "type": "tool_result", "tool_use_id": id, "content": "ok"
+            }))
+            .unwrap()
+        };
+
+        // Answered → accepted.
+        Prompt::default()
+            .add_message((Role::User, "go"))
+            .unwrap()
+            .add_message((Role::Assistant, Content(vec![mk_use("toolu_1")])))
+            .unwrap()
+            .add_message((Role::User, Content(vec![mk_result("toolu_1")])))
+            .unwrap();
+
+        // A plain-text user turn answers nothing → rejected.
+        let err = Prompt::default()
+            .add_message((Role::User, "go"))
+            .unwrap()
+            .add_message((Role::Assistant, Content(vec![mk_use("toolu_1")])))
+            .unwrap()
+            .add_message((Role::User, "no results here"))
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::UnansweredToolUse { .. }));
+
+        // Partial coverage → the error names the unanswered id.
+        let err = Prompt::default()
+            .add_message((Role::User, "go"))
+            .unwrap()
+            .add_message((
+                Role::Assistant,
+                Content(vec![mk_use("toolu_1"), mk_use("toolu_2")]),
+            ))
+            .unwrap()
+            .add_message((Role::User, Content(vec![mk_result("toolu_1")])))
+            .unwrap_err();
+        match err {
+            TurnOrderError::UnansweredToolUse { unanswered, .. } => {
+                assert_eq!(unanswered, vec!["toolu_2".to_string()]);
+            }
+            other => panic!("expected UnansweredToolUse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_trailing_client_tool_use_is_allowed() {
+        // An assistant `tool_use` as the *last* turn has no following turn to
+        // answer it, so the pairwise rule does not fire. (Whether a trailing
+        // unanswered `tool_use` is itself a wire error is a separate, as-yet
+        // unverified question — see the #102 live probe.)
+        use crate::prompt::message::{Block, Content};
+
+        let tool_use: Block = serde_json::from_value(serde_json::json!({
+            "type": "tool_use", "id": "toolu_1", "name": "get_time", "input": {}
+        }))
+        .unwrap();
+
+        Prompt::default()
+            .add_message((Role::User, "go"))
+            .unwrap()
+            .add_message((Role::Assistant, Content(vec![tool_use])))
+            .unwrap()
+            .check_turn_order()
+            .unwrap();
     }
 
     #[test]
