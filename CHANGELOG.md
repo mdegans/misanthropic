@@ -15,6 +15,14 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.4] — 2026-06-30
+
+### Added
+
+- **`ModelInfo::satisfies`** for model/capability negotiation — compares a
+  required `Model`/capability against an available one, ids compared
+  `Model`-to-`Model` (#109).
+
 ### Breaking
 
 - **`Model::name()` / `Id::name()` always return the canonical wire id.**
