@@ -1,6 +1,7 @@
 /target
 /target-linux
-Cargo.lock
+# Cargo.lock is intentionally NOT ignored here: the bashd image builds with
+# `cargo build --locked`, which needs the committed lockfile in the context.
 .vscode
 cobertura.xml
 api.key
