@@ -15,7 +15,41 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.5] — 2026-06-30
+
+### Added
+
+- **Client-side `tool_use`/`tool_result` adjacency validation** (#102).
+  `Prompt` turn-order validation now models two more wire rules as constructive
+  [`TurnOrderError`]s instead of deferring to a server 400:
+  - `ToolResultNotLeading` — a turn's `tool_result` blocks must form a leading
+    run (`[tool_result, text]` is accepted; `[text, tool_result]` is a 400).
+  - `UnansweredToolUse` — every client `tool_use` must be answered by a matching
+    leading `tool_result` in the immediately following user turn; the error
+    names the unanswered ids. `server_tool_use` is excluded — the API answers
+    those itself.
+
+  [`TurnOrderError`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.TurnOrderError.html
+
+### Breaking
+
+- **`prompt::TurnOrderError` is `#[non_exhaustive]`.** Downstream `match` on it
+  now needs a `_` arm. The wire turn-order grammar keeps growing (and shrinking
+  — Anthropic relaxes rules too), so adding a variant must stay non-breaking
+  (#102).
+
+### Fixed
+
+- **`bashd` release image now builds.** `Cargo.lock` was still excluded by
+  `.dockerignore`, so the `--locked` build introduced in alpha.4 could not find
+  the lockfile — the image build, and with it the whole release, failed.
+  Un-ignore `Cargo.lock` so the release image builds reproducibly.
+
 ## [1.0.0-alpha.4] — 2026-06-30
+
+> Tagged but never published: the `bashd` image build failed on the
+> `.dockerignore` issue fixed in alpha.5, so `publish-crates` never ran. These
+> changes ship in alpha.5.
 
 ### Added
 
@@ -50,24 +84,6 @@ record; this file aggregates them.
   fields non-breaking (it already grew `strict`, `defer_loading`,
   `allowed_callers`). No `Default` is derived, deliberately: an empty-schema
   default is an invalid tool (#106).
-- **`prompt::TurnOrderError` is `#[non_exhaustive]`.** Downstream `match` on it
-  now needs a `_` arm. The wire turn-order grammar keeps growing (and shrinking
-  — Anthropic relaxes rules too), so adding a variant must stay non-breaking
-  (#102).
-
-### Added
-
-- **Client-side `tool_use`/`tool_result` adjacency validation** (#102).
-  `Prompt` turn-order validation now models two more wire rules as constructive
-  [`TurnOrderError`]s instead of deferring to a server 400:
-  - `ToolResultNotLeading` — a turn's `tool_result` blocks must form a leading
-    run (`[tool_result, text]` is accepted; `[text, tool_result]` is a 400).
-  - `UnansweredToolUse` — every client `tool_use` must be answered by a matching
-    leading `tool_result` in the immediately following user turn; the error
-    names the unanswered ids. `server_tool_use` is excluded — the API answers
-    those itself.
-
-  [`TurnOrderError`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.TurnOrderError.html
 
 ### Documentation
 
