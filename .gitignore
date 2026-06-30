@@ -5,7 +5,9 @@
 *.env
 target/
 api.key
-Cargo.lock
+# Cargo.lock is tracked: the workspace ships a binary (the `bashd` image built
+# by release.yaml), so the lockfile pins reproducible release builds. Cargo
+# ignores a dependency's lockfile, so this is invisible to library consumers.
 cobertura.xml
 lcov.info
 node_modules/
