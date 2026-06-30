@@ -17,7 +17,9 @@ FROM rust:alpine AS builder
 RUN apk add --no-cache build-base linux-headers
 WORKDIR /src
 COPY . .
-RUN cargo build -p bashd --release
+# `--locked`: build against the committed Cargo.lock so a given image tag is
+# reproducible (the lockfile is tracked precisely for this release path).
+RUN cargo build -p bashd --release --locked
 
 # --- stage 2: the runtime sandbox image ----------------------------------------
 FROM alpine:3
