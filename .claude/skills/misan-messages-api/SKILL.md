@@ -751,7 +751,10 @@ your task — they're the most current, compiler-checked usage.
   resume by appending the paused turn back. Note Anthropic itself **no longer
   enforces** strict alternation server-side, but many Anthropic-compatible
   backends still do, so the crate keeps the check (in `prompt.rs`,
-  `check_turn_order` / `Message::may_precede`).
+  `check_turn_order` / `Message::may_precede`). Tool blocks are checked too:
+  `tool_result`s must **lead** their user turn, and every client `tool_use`
+  must be answered by a matching `tool_result` in the next turn — otherwise
+  `TurnOrderError::ToolResultNotLeading` / `UnansweredToolUse`.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.

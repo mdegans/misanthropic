@@ -263,7 +263,11 @@ pub enum InferenceGeo {
 // would otherwise let an un-unwrapped builder Result pass `impl Serialize`
 // bounds (e.g. `client.message(prompt.messages(…))`) and reach the wire as
 // `{"Ok": {…}}` — a silent 400. Without the derive that's a compile error.
+// `#[non_exhaustive]`: the wire turn-order grammar keeps growing (the tool
+// adjacency rules in #102 were the latest), so adding a variant must stay a
+// non-breaking change. Downstream `match` needs a `_` arm.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum TurnOrderError {
     /// The first message must be from the user — assistant and system turns
     /// cannot open a conversation. Use the top-level [`Prompt::system`] field
