@@ -355,28 +355,44 @@ where
 }
 
 impl Message {
-    /// Whether this turn may be immediately followed by `next` in the
-    /// `messages` array.
+    /// Validate that this turn may be immediately followed by `next` in the
+    /// `messages` array, returning the specific [`TurnOrderError`] on the
+    /// first violation. (There is no `bool` coercion in Rust — call
+    /// [`is_ok`](Result::is_ok) for a predicate, or `?` to propagate.)
     ///
-    /// Encodes the user/assistant alternation plus the placement rules for a
-    /// mid-conversation [`System`](Role::System) turn, with two
-    /// content-sensitive exceptions on an [`Assistant`](Role::Assistant)
-    /// tail:
+    /// Enforces, in order:
     ///
-    /// - two adjacent `Assistant` turns are allowed when the first carries a
-    ///   [`ServerToolUse`](Block::ServerToolUse) block (a paused turn and its
-    ///   continuation) — see [`TurnOrderError`] for the rationale;
-    /// - `Assistant` → `System` is allowed when the first
-    ///   [ends in a server-tool *result*](Self::ends_in_server_tool_result).
-    ///   This is the **wire** rule, verified live against the validator
-    ///   (2026-06-12, pinned by the `count_tokens` placement probes): the
-    ///   docs' "ending in server tool use" is wrong, so a *paused* turn
-    ///   (ending in the in-flight use) is **not** a legal predecessor.
+    /// - the user/assistant role alternation plus the mid-conversation
+    ///   [`System`](Role::System) placement rules, with two content-sensitive
+    ///   exceptions on an [`Assistant`](Role::Assistant) tail — a
+    ///   [`BadTransition`] otherwise:
+    ///   - two adjacent `Assistant` turns when the first carries a
+    ///     [`ServerToolUse`](Block::ServerToolUse) block (a paused turn and its
+    ///     continuation);
+    ///   - `Assistant` → `System` when the first
+    ///     [ends in a server-tool *result*](Self::ends_in_server_tool_result).
+    ///     This is the **wire** rule, verified live against the validator
+    ///     (2026-06-12, pinned by the `count_tokens` placement probes): the
+    ///     docs' "ending in server tool use" is wrong, so a *paused* turn
+    ///     (ending in the in-flight use) is **not** a legal predecessor.
+    /// - every client [`ToolUse`](Block::ToolUse) in this turn is answered by
+    ///   a matching leading [`ToolResult`](Block::ToolResult) in `next` — an
+    ///   [`UnansweredToolUse`] otherwise (#102).
+    ///
+    /// The within-message "results lead" rule is *not* pairwise and is checked
+    /// per message by [`Prompt::check_turn_order`](crate::Prompt::check_turn_order).
     ///
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
-    pub(crate) fn may_precede(&self, next: &Self) -> bool {
+    /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
+    /// [`UnansweredToolUse`]: crate::prompt::TurnOrderError::UnansweredToolUse
+    pub(crate) fn may_precede(
+        &self,
+        next: &Self,
+    ) -> Result<(), crate::prompt::TurnOrderError> {
+        use crate::prompt::TurnOrderError;
         use Role::{Assistant, System, User};
-        matches!(
+
+        let role_ok = matches!(
             (self.role, next.role),
             (User, Assistant)
                 | (Assistant, User)
@@ -387,7 +403,74 @@ impl Message {
             && self.has_server_tool_use())
             || (self.role == Assistant
                 && next.role == System
-                && self.ends_in_server_tool_result())
+                && self.ends_in_server_tool_result());
+        if !role_ok {
+            return Err(TurnOrderError::BadTransition {
+                first: self.clone(),
+                second: next.clone(),
+            });
+        }
+
+        // Every client `tool_use` must be answered by a matching leading
+        // `tool_result` in `next`. A no-op unless this turn carries client
+        // tool-use blocks (so it never fires on plain turns or a
+        // `server_tool_use` tail — the API answers those itself).
+        let answered: std::collections::BTreeSet<&str> =
+            next.leading_tool_result_ids().collect();
+        let unanswered: Vec<String> = self
+            .client_tool_use_ids()
+            .filter(|id| !answered.contains(id))
+            .map(String::from)
+            .collect();
+        if !unanswered.is_empty() {
+            return Err(TurnOrderError::UnansweredToolUse {
+                message: self.clone(),
+                unanswered,
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Whether every [`Block::ToolResult`] in this turn *leads* — i.e. the
+    /// results form a contiguous prefix, with no result after a non-result
+    /// block. The wire requires `tool_result` blocks to lead their user
+    /// message (`[text, tool_result]` is a 400; `[tool_result, text]` is
+    /// accepted). Trivially true for content with no results.
+    pub(crate) fn results_lead(&self) -> bool {
+        match self.content.iter().position(|b| !b.is_tool_result()) {
+            Some(first_non_result) => !self.content[first_non_result..]
+                .iter()
+                .any(Block::is_tool_result),
+            None => true,
+        }
+    }
+
+    /// Ids of the *client* [`Block::ToolUse`] calls in this turn — the ones
+    /// the caller must answer with a `tool_result` in the next turn.
+    /// [`ServerToolUse`](Block::ServerToolUse) is excluded: the API answers
+    /// those itself.
+    pub(crate) fn client_tool_use_ids(&self) -> impl Iterator<Item = &str> {
+        self.content.iter().filter_map(|b| match b {
+            Block::ToolUse { call } => Some(call.id.as_ref()),
+            _ => None,
+        })
+    }
+
+    /// Ids answered by the *leading* run of [`Block::ToolResult`] blocks (the
+    /// `tool_use_id` each carries). Only the leading run counts — a result
+    /// that does not lead is itself a [`results_lead`](Self::results_lead)
+    /// violation.
+    pub(crate) fn leading_tool_result_ids(&self) -> impl Iterator<Item = &str> {
+        self.content
+            .iter()
+            .take_while(|b| b.is_tool_result())
+            .filter_map(|b| match b {
+                Block::ToolResult { result } => {
+                    Some(result.tool_use_id.as_ref())
+                }
+                _ => None,
+            })
     }
 }
 
