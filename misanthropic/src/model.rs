@@ -7,12 +7,70 @@ use serde::{Deserialize, Serialize};
 
 use crate::prompt::Effort;
 
-/// All available models.
-#[derive(Debug, Serialize, Deserialize, derive_more::Deref)]
+/// All available models, as returned by
+/// [`Client::models`](crate::Client::models) — a thin wrapper over a `Vec` of
+/// [`ModelInfo`] that [`Deref`](std::ops::Deref)s (and
+/// [`DerefMut`](std::ops::DerefMut)s) to it.
+///
+/// The wire response nests the list under a `data` key, so this is a struct
+/// rather than a bare `Vec`. [`data`](Self::data) is public and the type is
+/// [`FromIterator`] / [`From<Vec>`](From) so tests can mock a model list
+/// without round-tripping through JSON — e.g.
+/// `[info(Id::Opus48, …)].into_iter().collect::<Models>()`.
+#[derive(
+    Debug,
+    Clone,
+    Default,
+    Serialize,
+    Deserialize,
+    derive_more::Deref,
+    derive_more::DerefMut,
+)]
 #[serde(rename_all = "snake_case")]
 pub struct Models {
     /// List of available models.
-    data: Vec<ModelInfo>,
+    pub data: Vec<ModelInfo>,
+}
+
+impl FromIterator<ModelInfo> for Models {
+    fn from_iter<I: IntoIterator<Item = ModelInfo>>(iter: I) -> Self {
+        Self {
+            data: iter.into_iter().collect(),
+        }
+    }
+}
+
+impl From<Vec<ModelInfo>> for Models {
+    fn from(data: Vec<ModelInfo>) -> Self {
+        Self { data }
+    }
+}
+
+impl IntoIterator for Models {
+    type Item = ModelInfo;
+    type IntoIter = std::vec::IntoIter<ModelInfo>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a Models {
+    type Item = &'a ModelInfo;
+    type IntoIter = std::slice::Iter<'a, ModelInfo>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut Models {
+    type Item = &'a mut ModelInfo;
+    type IntoIter = std::slice::IterMut<'a, ModelInfo>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.data.iter_mut()
+    }
 }
 
 /// Model information, as returned by [`Client::models`](crate::Client::models).
@@ -582,6 +640,39 @@ mod tests {
         const JSON:&[u8] = b"{\"data\":[{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20241022\",\"display_name\":\"Claude 3.5 Sonnet (New)\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-haiku-20241022\",\"display_name\":\"Claude 3.5 Haiku\",\"created_at\":\"2024-10-22T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-5-sonnet-20240620\",\"display_name\":\"Claude 3.5 Sonnet (Old)\",\"created_at\":\"2024-06-20T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-haiku-20240307\",\"display_name\":\"Claude 3 Haiku\",\"created_at\":\"2024-03-07T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-opus-20240229\",\"display_name\":\"Claude 3 Opus\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-3-sonnet-20240229\",\"display_name\":\"Claude 3 Sonnet\",\"created_at\":\"2024-02-29T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.1\",\"display_name\":\"Claude 2.1\",\"created_at\":\"2023-11-21T00:00:00Z\"},{\"type\":\"model\",\"id\":\"claude-2.0\",\"display_name\":\"Claude 2.0\",\"created_at\":\"2023-07-11T00:00:00Z\"}],\"has_more\":false,\"first_id\":\"claude-3-5-sonnet-20241022\",\"last_id\":\"claude-2.0\"}";
         let models = serde_json::from_slice::<Models>(JSON).unwrap();
         assert_eq!(models.len(), 8);
+    }
+
+    /// #119: a `Models` can be built without deserializing — from an iterator,
+    /// from a `Vec`, or mutated in place through `DerefMut` — so tests can mock
+    /// the model list. `data` is public too.
+    #[test]
+    fn test_models_construct_for_mocking() {
+        let offered = [
+            info(Id::Opus48, 200_000, 64_000),
+            info(Id::Haiku45, 200_000, 64_000),
+        ];
+
+        // FromIterator / .collect()
+        let mut models: Models = offered.iter().cloned().collect();
+        assert_eq!(models.len(), 2); // via Deref<Target = Vec<_>>
+        assert_eq!(models[0].id, Id::Opus48);
+
+        // DerefMut lets it be mutated in place.
+        models.push(info(Id::Sonnet45, 200_000, 64_000));
+        assert_eq!(models.len(), 3);
+        models.pop();
+
+        // From<Vec> and the public `data` field.
+        let from_vec = Models::from(offered.to_vec());
+        assert_eq!(from_vec.data.len(), 2);
+
+        // IntoIterator by value.
+        let ids: Vec<Model> = from_vec.into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, [Id::Opus48, Id::Haiku45]); // Model: PartialEq<Id>
+
+        // Round-trips through the wire shape it deserializes from.
+        let json = serde_json::to_string(&models).unwrap();
+        assert_eq!(serde_json::from_str::<Models>(&json).unwrap().len(), 2);
     }
 
     #[test]
