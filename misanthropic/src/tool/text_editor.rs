@@ -733,7 +733,12 @@ def get_primes(limit):
         // Drive the tool loop exactly as the example does.
         let mut turns = 0;
         loop {
-            let message = client.message(&chat).await.unwrap();
+            let message = crate::utils::retry_transient(
+                "live_text_editor_fixes_file_on_disk",
+                || client.message(&chat),
+            )
+            .await
+            .unwrap();
             turns += 1;
             assert!(turns <= 12, "runaway editor loop ({turns} turns)");
             let Some(call) = message.tool_use() else {

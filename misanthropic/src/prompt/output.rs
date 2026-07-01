@@ -590,7 +590,12 @@ mod tests {
             ))
             .unwrap();
 
-        let response = client.message(&prompt).await.expect("API call");
+        let response = crate::utils::retry_transient(
+            "live_structured_output_roundtrip",
+            || client.message(&prompt),
+        )
+        .await
+        .expect("API call");
         let fact: CapitalFact = response
             .json()
             .expect("json() should parse structured output");

@@ -239,3 +239,210 @@ pub(crate) async fn load_api_key() -> String {
         .trim()
         .to_string()
 }
+
+/// Retry a live API call while Anthropic returns a *retryable* error, backing
+/// off on the server's own `retry_after` hint — the only wait we can trust —
+/// then return whatever it finally yields (`Ok`, or a non-retryable `Err` for
+/// the caller to inspect).
+///
+/// Shared by the `#[ignore]`d live tests so the push-to-`main` coverage run
+/// rides out a transient 429/529 instead of reding the CI badge (#116), and
+/// without the harness inventing a delay a conservative rate limiter might
+/// count against us (the argument against a blind `nextest --retries`).
+///
+/// Only `RateLimit` (429) and `Overloaded` (529) are retried, and only for a
+/// wait we can justify: the `retry_after` hint, or — for a header-less 529,
+/// which the API does emit (seen live 2026-06-11) — a small courtesy backoff.
+/// A header-less 429 (which should carry the header) and every other error are
+/// surfaced unchanged. Gives up after `MAX` attempts, returning the last error.
+///
+/// This is the one path outside `model::tests::test_ids_are_valid` that
+/// exercises [`AnthropicError::retry_after`](crate::client::AnthropicError::retry_after).
+#[cfg(all(test, feature = "client"))]
+pub(crate) async fn retry_transient<F, Fut, T>(
+    what: &str,
+    mut op: F,
+) -> crate::client::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = crate::client::Result<T>>,
+{
+    /// Retries before giving up and surfacing the last error.
+    const MAX: u32 = 5;
+
+    let mut attempt = 0;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            // `retry_backoff` decides purely from `&err`, so no borrow is held
+            // across the `return Err(err)`.
+            Err(err) => match retry_backoff(&err, attempt + 1) {
+                Some(wait) if attempt < MAX => {
+                    attempt += 1;
+                    eprintln!(
+                        "{what}: retryable {err}; \
+                         attempt {attempt}/{MAX} after {wait:?}"
+                    );
+                    tokio::time::sleep(wait).await;
+                }
+                _ => return Err(err),
+            },
+        }
+    }
+}
+
+/// The backoff policy behind [`retry_transient`]: how long to wait before the
+/// `attempt`-th retry (1-indexed) of `err`, or `None` if `err` is not
+/// retryable. Only `RateLimit` (429) / `Overloaded` (529) are retryable, and
+/// only for a wait we can justify — the `retry_after` hint, or a small courtesy
+/// backoff for a header-less 529 (which the API does emit). Pure, so the policy
+/// is unit-testable without touching the clock or the network.
+#[cfg(all(test, feature = "client"))]
+fn retry_backoff(
+    err: &crate::client::Error,
+    attempt: u32,
+) -> Option<std::time::Duration> {
+    use crate::client::{AnthropicError, Error};
+    use std::time::Duration;
+
+    match err {
+        Error::Anthropic(e) => match (e.retry_after(), e) {
+            (Some(hint), _) => Some(hint),
+            (None, AnthropicError::Overloaded { .. }) => {
+                Some(Duration::from_secs(2 * u64::from(attempt)))
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+#[cfg(all(test, feature = "client"))]
+mod retry_tests {
+    use super::retry_transient;
+    use crate::client::{AnthropicError, Error, Result};
+    use std::cell::Cell;
+    use std::time::Duration;
+
+    fn rate_limit(retry_after: Option<u64>) -> Error {
+        Error::Anthropic(AnthropicError::RateLimit {
+            message: "slow down".into(),
+            retry_after,
+        })
+    }
+    fn overloaded(retry_after: Option<u64>) -> Error {
+        Error::Anthropic(AnthropicError::Overloaded {
+            message: "busy".into(),
+            retry_after,
+        })
+    }
+    fn invalid() -> Error {
+        Error::Anthropic(AnthropicError::InvalidRequest {
+            message: "nope".into(),
+        })
+    }
+
+    /// The pure policy: what's retryable, and for how long. Covers the
+    /// header-less-529 courtesy backoff without sleeping.
+    #[test]
+    fn backoff_policy() {
+        use super::retry_backoff;
+
+        // The `retry_after` hint is honored verbatim, on both retryable kinds
+        // and independent of the attempt number.
+        assert_eq!(
+            retry_backoff(&rate_limit(Some(3)), 1),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            retry_backoff(&overloaded(Some(1)), 9),
+            Some(Duration::from_secs(1))
+        );
+
+        // Header-less 529: a small backoff that grows with the attempt.
+        assert_eq!(
+            retry_backoff(&overloaded(None), 1),
+            Some(Duration::from_secs(2))
+        );
+        assert_eq!(
+            retry_backoff(&overloaded(None), 3),
+            Some(Duration::from_secs(6))
+        );
+
+        // Not retryable: a header-less 429 (should carry the header), a plain
+        // 4xx, and any non-Anthropic error are all surfaced, never guessed at.
+        assert_eq!(retry_backoff(&rate_limit(None), 1), None);
+        assert_eq!(retry_backoff(&invalid(), 1), None);
+        assert_eq!(
+            retry_backoff(&Error::UnexpectedResponse { message: "x" }, 1),
+            None
+        );
+    }
+
+    /// Succeeds on the first try — no retry, no wait.
+    #[tokio::test]
+    async fn returns_first_ok() {
+        let calls = Cell::new(0u32);
+        let out: Result<u8> = retry_transient("t", || {
+            calls.set(calls.get() + 1);
+            async { Ok(7) }
+        })
+        .await;
+        assert_eq!(out.unwrap(), 7);
+        assert_eq!(calls.get(), 1);
+    }
+
+    /// A retryable error (with a zero-second hint, so the sleep is instant)
+    /// retries, then the next `Ok` is returned.
+    #[tokio::test]
+    async fn retries_then_succeeds() {
+        let calls = Cell::new(0u32);
+        let out: Result<u8> = retry_transient("t", || {
+            let n = calls.get() + 1;
+            calls.set(n);
+            async move {
+                if n >= 3 {
+                    Ok(7)
+                } else {
+                    Err(rate_limit(Some(0)))
+                }
+            }
+        })
+        .await;
+        assert_eq!(out.unwrap(), 7);
+        assert_eq!(calls.get(), 3);
+    }
+
+    /// A persistently retryable error gives up after `MAX` retries (6 total
+    /// calls) and surfaces the last error.
+    #[tokio::test]
+    async fn gives_up_after_max() {
+        let calls = Cell::new(0u32);
+        let out: Result<u8> = retry_transient("t", || {
+            calls.set(calls.get() + 1);
+            async { Err(overloaded(Some(0))) }
+        })
+        .await;
+        assert!(matches!(
+            out,
+            Err(Error::Anthropic(AnthropicError::Overloaded { .. }))
+        ));
+        assert_eq!(calls.get(), 6); // initial + MAX (5) retries
+    }
+
+    /// A non-retryable error is surfaced immediately, without a retry.
+    #[tokio::test]
+    async fn surfaces_non_retryable() {
+        let calls = Cell::new(0u32);
+        let out: Result<u8> = retry_transient("t", || {
+            calls.set(calls.get() + 1);
+            async { Err(invalid()) }
+        })
+        .await;
+        assert!(matches!(
+            out,
+            Err(Error::Anthropic(AnthropicError::InvalidRequest { .. }))
+        ));
+        assert_eq!(calls.get(), 1);
+    }
+}

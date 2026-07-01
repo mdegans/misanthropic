@@ -258,7 +258,12 @@ mod tests {
             ))
             .unwrap();
 
-        let message = client.message(prompt).await.unwrap();
+        let message = crate::utils::retry_transient(
+            "live_text_document_returns_citation",
+            || client.message(&prompt),
+        )
+        .await
+        .unwrap();
 
         // The answer must be grounded in the document, not world knowledge.
         assert!(
@@ -323,7 +328,12 @@ mod tests {
             ))
             .unwrap();
 
-        let message = client.message(prompt).await.unwrap();
+        let message = crate::utils::retry_transient(
+            "live_pdf_document_returns_page_citation",
+            || client.message(&prompt),
+        )
+        .await
+        .unwrap();
 
         // Grounded in the PDF, not world knowledge.
         let answer = message.to_string().to_lowercase();
@@ -385,7 +395,12 @@ mod tests {
         // First turn: the model cites the PDF. Our fixture has no title, so
         // the returned citation's `document_title` is `None` — the exact shape
         // that broke the round-trip.
-        let first = client.message(&prompt).await.unwrap();
+        let first = crate::utils::retry_transient(
+            "live_multi_turn_echoes_untitled_citation:first",
+            || client.message(&prompt),
+        )
+        .await
+        .unwrap();
         let assistant: Message = Message::from(first);
 
         // Second turn: echo the cited assistant turn back, then follow up.
@@ -395,7 +410,12 @@ mod tests {
             .add_message((Role::User, "And what are its two moons named?"))
             .unwrap();
 
-        let second = client.message(&prompt).await.unwrap();
+        let second = crate::utils::retry_transient(
+            "live_multi_turn_echoes_untitled_citation:second",
+            || client.message(&prompt),
+        )
+        .await
+        .unwrap();
         let answer = second.to_string().to_lowercase();
         assert!(
             answer.contains("pim") && answer.contains("wassel"),
