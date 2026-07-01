@@ -1748,7 +1748,11 @@ mod tests {
             .model(crate::Id::Haiku45)
             .add_message((
                 Role::User,
-                "Search anthropic.com and name one product Anthropic makes. \
+                // No "search anthropic.com": `allowed_domains` is a server-side
+                // result filter the model can't see, so naming a domain in the
+                // prompt makes it decline a restriction it can't express (#117).
+                // The filter below still scopes results to anthropic.com.
+                "Search and name one product Anthropic makes. \
                  Cite the page you used.",
             ))
             .unwrap()
