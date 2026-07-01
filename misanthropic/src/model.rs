@@ -1002,6 +1002,12 @@ mod tests {
             Id::Haiku35_20241022,
             Id::Opus30,
             Id::Opus30_20240229,
+            // Claude 4.0 dated snapshots retired 2026-06-15 (#118): the id is
+            // still recognized (404 "model: …", not an unknown-model error) but
+            // no longer served. The undated `-4-0` aliases resolve server-side
+            // and stay live.
+            Id::Opus40_20250514,
+            Id::Sonnet40_20250514,
             Id::Sonnet35,
             Id::Sonnet35_20240620,
             Id::Sonnet35_20241022,
