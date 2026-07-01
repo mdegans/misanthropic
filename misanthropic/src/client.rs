@@ -1509,15 +1509,13 @@ mod tests {
         let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
-        let message = client
-            .message(
-                Prompt::default()
-                    .messages([(
-                        Role::User,
-                        "Emit just the \"🙏\" emoji, please.",
-                    )])
-                    .unwrap(),
-            )
+        let prompt = Prompt::default()
+            .messages([(Role::User, "Emit just the \"🙏\" emoji, please.")])
+            .unwrap();
+        let message =
+            crate::utils::retry_transient("test_client_message", || {
+                client.message(&prompt)
+            })
             .await
             .unwrap();
 
@@ -1711,7 +1709,10 @@ mod tests {
                 ..Default::default()
             };
 
-            let outcome = client.count_tokens(&prompt).await;
+            let outcome = crate::utils::retry_transient(case, || {
+                client.count_tokens(&prompt)
+            })
+            .await;
             match expect {
                 None => {
                     assert!(outcome.is_ok(), "{case}: {outcome:?}");
@@ -1789,7 +1790,12 @@ mod tests {
         let mut urls: Vec<String> = Vec::new();
         let mut pauses = 0u32;
         loop {
-            let response = client.message(&prompt).await.unwrap();
+            let response = crate::utils::retry_transient(
+                "test_web_search_server_tool",
+                || client.message(&prompt),
+            )
+            .await
+            .unwrap();
             if let Some(usage) = response.usage.server_tool_use {
                 total_searches += usage.web_search_requests;
             }
@@ -1882,7 +1888,12 @@ mod tests {
         let mut calls_made = 0u32;
         let mut pauses = 0u32;
         let answer = loop {
-            let response = client.message(&prompt).await.unwrap();
+            let response = crate::utils::retry_transient(
+                "test_programmatic_tool_calling",
+                || client.message(&prompt),
+            )
+            .await
+            .unwrap();
 
             if let Some(container) = &response.container {
                 prompt.container = Some(container.id.clone());
@@ -2013,7 +2024,12 @@ mod tests {
         let mut urls: Vec<String> = Vec::new();
         let mut pauses = 0u32;
         loop {
-            let response = client.message(&prompt).await.unwrap();
+            let response = crate::utils::retry_transient(
+                "test_web_fetch_server_tool",
+                || client.message(&prompt),
+            )
+            .await
+            .unwrap();
             if let Some(usage) = response.usage.server_tool_use {
                 total_fetches += usage.web_fetch_requests;
             }
@@ -2079,7 +2095,12 @@ mod tests {
         let mut saw_bash = false;
         let mut pauses = 0u32;
         loop {
-            let response = client.message(&prompt).await.unwrap();
+            let response = crate::utils::retry_transient(
+                "test_code_execution_server_tool",
+                || client.message(&prompt),
+            )
+            .await
+            .unwrap();
 
             for block in response.inner.content.iter() {
                 match block {
@@ -2150,15 +2171,13 @@ mod tests {
         let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
-        let stream = client
-            .stream(
-                Prompt::default()
-                    .messages([(
-                        Role::User,
-                        "Emit just the \"🙏\" emoji, please.",
-                    )])
-                    .unwrap(),
-            )
+        let prompt = Prompt::default()
+            .messages([(Role::User, "Emit just the \"🙏\" emoji, please.")])
+            .unwrap();
+        let stream =
+            crate::utils::retry_transient("test_client_stream", || {
+                client.stream(&prompt)
+            })
             .await
             .unwrap();
 
@@ -2177,12 +2196,13 @@ mod tests {
         let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
-        let count = client
-            .count_tokens(
-                Prompt::default()
-                    .messages([(Role::User, "Hello, world!")])
-                    .unwrap(),
-            )
+        let prompt = Prompt::default()
+            .messages([(Role::User, "Hello, world!")])
+            .unwrap();
+        let count =
+            crate::utils::retry_transient("test_client_count_tokens", || {
+                client.count_tokens(&prompt)
+            })
             .await
             .unwrap();
 
@@ -2199,7 +2219,12 @@ mod tests {
         let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
-        let models = client.models().await.unwrap();
+        let models =
+            crate::utils::retry_transient("test_client_models", || {
+                client.models()
+            })
+            .await
+            .unwrap();
         assert!(!models.is_empty());
         for model in models.iter() {
             dbg!(&model);

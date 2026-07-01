@@ -1036,30 +1036,15 @@ mod tests {
             //
             // 15 sequential live calls — concurrently with the rest of the
             // `--ignored` suite — *will* see transient 429/529s, so retry
-            // those rather than flake. `retry_after()` is the designed
-            // discriminator (`Some` only for RateLimit/Overloaded), though
-            // a 529 can arrive without the header — seen live 2026-06-11 —
-            // so header-less Overloaded gets a small backoff instead.
-            let mut attempts = 0;
-            let response = loop {
-                use crate::client::{AnthropicError, Error};
-                match client.message(&prompt).await {
-                    Ok(response) => break response,
-                    Err(Error::Anthropic(e)) if attempts < 5 => {
-                        attempts += 1;
-                        let wait = match (e.retry_after(), &e) {
-                            (Some(hint), _) => hint,
-                            (None, AnthropicError::Overloaded { .. }) => {
-                                std::time::Duration::from_secs(2 * attempts)
-                            }
-                            _ => panic!("{model:?}: {e}"),
-                        };
-                        eprintln!("{model:?}: {e}; retry {attempts}/5");
-                        tokio::time::sleep(wait).await;
-                    }
-                    Err(e) => panic!("{model:?}: {e}"),
-                }
-            };
+            // those rather than flake, backing off on `retry_after()` (see
+            // `crate::utils::retry_transient`). A non-retryable error (e.g. a
+            // genuine 404 for a typo'd/retired id) still surfaces here.
+            let response =
+                crate::utils::retry_transient(&format!("{model:?}"), || {
+                    client.message(&prompt)
+                })
+                .await
+                .unwrap_or_else(|e| panic!("{model:?}: {e}"));
 
             // Only date-pinned ids echo back verbatim; aliases (3.x
             // `-latest`, 4.x+ undated like `claude-opus-4-0`) resolve

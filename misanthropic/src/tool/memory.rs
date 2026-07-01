@@ -914,7 +914,12 @@ mod tests {
         // Drive the tool loop exactly as the example does.
         let mut turns = 0;
         loop {
-            let message = client.message(&chat).await.unwrap();
+            let message = crate::utils::retry_transient(
+                "live_memory_tool_writes_to_disk",
+                || client.message(&chat),
+            )
+            .await
+            .unwrap();
             turns += 1;
             assert!(turns <= 12, "runaway memory loop ({turns} turns)");
             let Some(call) = message.tool_use() else {
