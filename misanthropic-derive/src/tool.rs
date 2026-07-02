@@ -65,7 +65,10 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
 fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
     let self_ty = (*item_impl.self_ty).clone();
     let self_ident = self_ty_ident(&self_ty)?;
-    let tool_name = parse_name(attr)?.unwrap_or_else(|| self_ident.to_string());
+    let ToolAttr { name, flat } = parse_tool_attr(attr)?;
+    let tool_name = name.unwrap_or_else(|| self_ident.to_string());
+    // Only emit the const when set, so the trait default (`false`) stands.
+    let flat = flat.then(|| quote! { const FLAT: bool = true; });
 
     // Scan items for `#[method]`s and lifecycle markers (a fn may carry more
     // than one, e.g. `#[on_init] #[on_turn]`).
@@ -167,6 +170,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         #methods_async
         impl #ig ::misanthropic::tool::Methods for #self_ty #wc {
             const NAME: &'static str = #tool_name;
+            #flat
 
             fn methods(
                 &self,
@@ -488,22 +492,32 @@ fn strip_markers(item_impl: &mut ItemImpl) {
     }
 }
 
-/// Parse the optional `name = "…"` from the `#[tool(…)]` attribute tokens.
-fn parse_name(attr: TokenStream) -> syn::Result<Option<String>> {
+/// The parsed `#[tool(…)]` keys: an optional `name = "…"` and a bare `flat`.
+#[derive(Default)]
+struct ToolAttr {
+    name: Option<String>,
+    flat: bool,
+}
+
+/// Parse the `#[tool(…)]` attribute tokens. See [`ToolAttr`].
+fn parse_tool_attr(attr: TokenStream) -> syn::Result<ToolAttr> {
+    let mut parsed = ToolAttr::default();
     if attr.is_empty() {
-        return Ok(None);
+        return Ok(parsed);
     }
-    let mut name = None;
     let parser = syn::meta::parser(|meta| {
         if meta.path.is_ident("name") {
-            name = Some(meta.value()?.parse::<LitStr>()?.value());
+            parsed.name = Some(meta.value()?.parse::<LitStr>()?.value());
+            Ok(())
+        } else if meta.path.is_ident("flat") {
+            parsed.flat = true;
             Ok(())
         } else {
-            Err(meta.error("unknown `tool` key; expected `name`"))
+            Err(meta.error("unknown `tool` key; expected `name` or `flat`"))
         }
     });
     parser.parse2(attr)?;
-    Ok(name)
+    Ok(parsed)
 }
 
 /// The last path segment ident of the impl's self type, used to mangle wrapper

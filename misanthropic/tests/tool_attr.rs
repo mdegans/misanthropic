@@ -243,6 +243,114 @@ async fn generic_tool_defaults_name_to_ident() {
     assert_eq!(holder.0.items.len(), 1);
 }
 
+// A `#[tool(flat)]` tool: method names reach the wire bare.
+#[derive(Deserialize, JsonSchema)]
+struct Ping {}
+
+#[derive(Default)]
+struct Sonar {
+    pings: usize,
+}
+
+#[tool(flat, name = "sonar")]
+impl Sonar {
+    /// Ping.
+    #[method]
+    async fn ping(&mut self, _args: Ping) -> Result<Content, Content> {
+        self.pings += 1;
+        Ok("pong".into())
+    }
+}
+
+// A second flat tool sharing `Sonar`'s method *name*, to prove the route
+// collision assert. Its own `Args` type: the macro impls `ToolArgs` on the
+// args struct, so one struct can't serve methods of two tools.
+#[derive(Deserialize, JsonSchema)]
+struct PingB {}
+
+#[derive(Default)]
+struct SonarB;
+
+#[tool(flat, name = "sonar_b")]
+impl SonarB {
+    /// Ping.
+    #[method]
+    async fn ping(&mut self, _args: PingB) -> Result<Content, Content> {
+        Ok("pong".into())
+    }
+}
+
+#[test]
+// Pins a compile-time associated const, like `DEFER_LOADING` above.
+#[allow(clippy::assertions_on_constants)]
+fn flat_definitions_are_bare() {
+    assert!(<Sonar as Methods>::FLAT);
+    assert!(!<Calc as Methods>::FLAT);
+    let names: Vec<_> = Typed(Sonar::default())
+        .definitions()
+        .into_iter()
+        .map(|d| d.name().to_string())
+        .collect();
+    assert_eq!(names, vec!["ping".to_string()]);
+}
+
+#[tokio::test]
+async fn flat_tool_in_flat_toolbox_is_bare_end_to_end() {
+    use misanthropic::tool::ToolBox;
+
+    let mut tools = ToolBox::flat().add(Sonar::default());
+    let mut prompt = Prompt::default();
+    tools.prepare(&mut prompt).await.unwrap();
+
+    let names: Vec<_> = prompt
+        .tools
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|d| d.name().to_string())
+        .collect();
+    assert_eq!(names, vec!["ping".to_string()]);
+
+    // The model emits exactly the installed name; it must route.
+    let r = tools.call(use_call("ping", serde_json::json!({}))).await;
+    assert!(!r.is_error, "{}", r.content);
+    assert_eq!(r.content.to_string(), "pong");
+}
+
+#[tokio::test]
+async fn flat_tool_in_default_toolbox_keeps_the_box_segment() {
+    use misanthropic::tool::ToolBox;
+
+    // Only the tool is flat: the (non-flat) box still adds its segment.
+    let mut tools = ToolBox::new().add(Sonar::default());
+    let mut prompt = Prompt::default();
+    tools.prepare(&mut prompt).await.unwrap();
+
+    let names: Vec<_> = prompt
+        .tools
+        .as_ref()
+        .unwrap()
+        .iter()
+        .map(|d| d.name().to_string())
+        .collect();
+    assert_eq!(names, vec!["toolbox__ping".to_string()]);
+
+    let r = tools
+        .call(use_call("toolbox__ping", serde_json::json!({})))
+        .await;
+    assert!(!r.is_error, "{}", r.content);
+}
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "already claimed")]
+fn flat_route_collision_asserts_in_debug() {
+    use misanthropic::tool::ToolBox;
+
+    // Two different flat tools exposing the same bare method name.
+    let _ = ToolBox::flat().add(Sonar::default()).add(SonarB);
+}
+
 #[tokio::test]
 async fn save_and_load_round_trip() {
     let mut calc = Calc {

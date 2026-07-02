@@ -36,6 +36,9 @@ pub struct ToolBox {
     /// source is the bare tool name); `Some("root/child")` once nested, so
     /// sources compose `parent/child/leaf`.
     source_prefix: Option<String>,
+    /// When `true`, this box adds no `box__` segment to wire names or routes.
+    /// See [`flat`](Self::flat).
+    flat: bool,
 }
 
 impl Default for ToolBox {
@@ -46,6 +49,7 @@ impl Default for ToolBox {
             tool_name_to_tool: HashMap::new(),
             mailbox: Some(Mailbox::new("toolbox")),
             source_prefix: None,
+            flat: false,
         }
     }
 }
@@ -84,6 +88,20 @@ impl ToolBox {
             name,
             ..Self::default()
         })
+    }
+
+    /// Create a `ToolBox` that adds **no** `box__` segment to wire names or
+    /// routes: a [`FLAT`](Methods::FLAT) tool's methods reach the wire
+    /// completely bare (`create_post`), a namespaced tool's as `tool__method`.
+    /// The box still has a [`name`](Tool::name) (state key, mailbox source) —
+    /// flatness only affects method naming. Bare names forfeit the collision
+    /// protection namespacing exists for; [`push_boxed`](Self::push_boxed)
+    /// debug-asserts that no route is claimed by two different tools.
+    pub fn flat() -> Self {
+        Self {
+            flat: true,
+            ..Self::default()
+        }
     }
 
     /// Add a [`Tool`] to the [`ToolBox`].
@@ -138,15 +156,25 @@ impl ToolBox {
         // model emits exactly that, so prefixing it would break routing. A bare
         // name has no `box__` prefix to strip on descent, so it passes through
         // nested boxes untouched, which is what makes it reachable from the
-        // root.
+        // root. A [`flat`](Self::flat) box adds no segment of its own.
         for def in tool.definitions() {
-            let route = if def.is_server() {
+            let route = if def.is_server() || self.flat {
                 def.name().to_string()
             } else {
                 format!("{}{}{}", self.name, Self::SEP, def.name())
             };
-            self.method_to_tool_name
-                .insert(route.into(), tool.name().to_string());
+            let claimed = self
+                .method_to_tool_name
+                .insert(route.clone().into(), tool.name().to_string());
+            // Two *different* tools claiming one route is unreachable code
+            // waiting to run — the risk `flat` naming reintroduces. Replacing
+            // a same-named tool stays a documented overwrite.
+            debug_assert!(
+                claimed.as_deref().is_none_or(|t| t == tool.name()),
+                "method route `{route}` already claimed by tool \
+                 `{}`; renaming or un-flattening one of the tools is required",
+                claimed.as_deref().unwrap_or_default(),
+            );
         }
 
         // Hand the tool a send-only handle on this box's channel, stamped with
@@ -332,8 +360,11 @@ impl Tool for ToolBox {
                     // Prefix custom method names with this box's segment
                     // (they already carry `tool__method`); leave server defs
                     // bare so their fixed wire name survives every nesting
-                    // level. See [`push_boxed`](Self::push_boxed).
-                    if let Some(method) = def.as_method_mut() {
+                    // level, and add nothing when the box is
+                    // [`flat`](Self::flat). See [`push_boxed`](Self::push_boxed).
+                    if !self.flat
+                        && let Some(method) = def.as_method_mut()
+                    {
                         method.name = Cow::Owned(format!(
                             "{}{}{}",
                             self.name(),
@@ -388,11 +419,15 @@ impl Tool for ToolBox {
             // keys its routes by its *own* name only (`tool__method`), so it
             // would not recognize the outer-qualified `box__tool__method` we
             // looked up here. Leaf tools rsplit on [`Self::SEP`] and read only
-            // the final segment, so this is a no-op for them.
+            // the final segment, so this is a no-op for them. A
+            // [`flat`](Self::flat) box added no segment, so none is stripped —
+            // guarded rather than assumed, against a method name that happens
+            // to start with `{box}__`.
             let mut call = call;
             let prefix = format!("{}{}", self.name, Self::SEP);
-            if let Some(rest) =
-                call.name.strip_prefix(prefix.as_str()).map(str::to_owned)
+            if !self.flat
+                && let Some(rest) =
+                    call.name.strip_prefix(prefix.as_str()).map(str::to_owned)
             {
                 call.name = Cow::Owned(rest);
             }

@@ -165,6 +165,13 @@ pub trait Methods: Send + Sized {
     /// Tool name.
     const NAME: &'static str;
 
+    /// When `true`, method names go on the wire **bare** — no `tool__` segment
+    /// (see [`methods_definitions`]). [`NAME`](Self::NAME) still names the tool
+    /// itself (registry key, mailbox source). Set with `#[tool(flat)]`. Pair
+    /// with [`ToolBox::flat`](super::ToolBox::flat) to drop the box segment
+    /// too. Suffix routing makes dispatch indifferent to the choice.
+    const FLAT: bool = false;
+
     /// The methods this tool provides, erased so heterogeneous `Args` coexist.
     fn methods(&self) -> Vec<Box<dyn ErasedMethod<Self>>>;
 
@@ -205,16 +212,18 @@ pub trait Methods: Send + Sized {
 /// Namespace each of `tool`'s methods as `tool__method` for the wire, so
 /// distinct tools sharing a bare method name (e.g. two `push`es) don't collide
 /// in a [`ToolBox`](super::ToolBox), which further prefixes its own name
-/// (`box__tool__method`). Shared by [`Typed`] and the `#[tool]`-generated
-/// `impl Tool`.
+/// (`box__tool__method`). A [`FLAT`](Methods::FLAT) tool skips its segment.
+/// Shared by [`Typed`] and the `#[tool]`-generated `impl Tool`.
 #[doc(hidden)]
 pub fn methods_definitions<M: Methods>(tool: &M) -> Vec<tool::MethodDef> {
     tool.methods()
         .iter()
         .map(|m| {
             let mut def = m.definition();
-            def.name =
-                format!("{}{}{}", M::NAME, ToolBox::SEP, def.name).into();
+            if !M::FLAT {
+                def.name =
+                    format!("{}{}{}", M::NAME, ToolBox::SEP, def.name).into();
+            }
             tool::MethodDef::Custom(def)
         })
         .collect()
@@ -443,5 +452,51 @@ mod tests {
             .collect();
         assert!(names.contains(&"notes__push".to_string()));
         assert!(names.contains(&"notes__clear".to_string()));
+    }
+
+    // A hand-written `Methods` with `FLAT = true` — the non-macro flat path.
+    #[derive(Default)]
+    struct BareNotes {
+        notes: Vec<String>,
+    }
+
+    struct BarePush;
+    #[async_trait::async_trait]
+    impl Method<BareNotes> for BarePush {
+        type Args = Push;
+        async fn run(
+            &self,
+            state: &mut BareNotes,
+            args: Push,
+        ) -> std::result::Result<Content, Content> {
+            state.notes.push(args.note);
+            Ok("noted".into())
+        }
+    }
+
+    impl Methods for BareNotes {
+        const NAME: &'static str = "bare_notes";
+        const FLAT: bool = true;
+        fn methods(&self) -> Vec<Box<dyn ErasedMethod<Self>>> {
+            vec![Box::new(BarePush) as Box<dyn ErasedMethod<Self>>]
+        }
+    }
+
+    #[tokio::test]
+    async fn flat_definitions_skip_the_tool_segment() {
+        let mut tool = Typed(BareNotes::default());
+        let names: Vec<_> = tool
+            .definitions()
+            .into_iter()
+            .map(|d| d.name().to_string())
+            .collect();
+        assert_eq!(names, vec!["push".to_string()]);
+
+        // Bare-name dispatch (suffix routing degenerates to the whole name).
+        let r = tool
+            .call(call_with("push", serde_json::json!({"note": "hi"})))
+            .await;
+        assert!(!r.is_error, "{}", r.content);
+        assert_eq!(tool.0.notes, vec!["hi".to_string()]);
     }
 }
