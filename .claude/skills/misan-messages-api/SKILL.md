@@ -330,7 +330,13 @@ Notes on the macro:
 
 - Each `#[method]` becomes a real inherent method you can still call directly.
 - One `#[tool]` block can hold several `#[method]`s; each is namespaced
-  `TypeName__method_name`.
+  `TypeName__method_name` (and a `ToolBox` adds its own segment:
+  `toolbox__TypeName__method_name`).
+- `#[tool(flat)]` puts method names on the wire **bare** — no `TypeName__`
+  segment. Pair with `ToolBox::flat()` (no `toolbox__` segment either) for
+  fully bare names, e.g. matching an MCP server's `create_post`. Collisions
+  between two tools' bare names are debug-asserted at add time; note that
+  un-flattening later renames the methods (prompt-cache / transcript churn).
 - `#[method(defer_loading)]` marks a method's schema as deferrable for use
   with the tool-search server tool (large tool sets).
 - The `Tool` trait also has `definitions()`, `call()`, plus optional

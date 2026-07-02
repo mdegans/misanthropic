@@ -50,7 +50,9 @@ pub fn derive_tool_args(input: TokenStream) -> TokenStream {
 /// `Result<Content<'static>, Content<'static>>`. The macro keeps your fns as
 /// real inherent methods and generates a thin `Method` per fn that delegates
 /// to them, plus the `Methods` impl. The tool `NAME` defaults to the self
-/// type's ident; override with `#[tool(name = "…")]`.
+/// type's ident; override with `#[tool(name = "…")]`. Add `flat` to put
+/// method names on the wire bare — no `tool__` segment (sets
+/// `Methods::FLAT`; pair with a flat `ToolBox` to drop its segment too).
 ///
 /// ```ignore
 /// #[tool(name = "Notepad")]
