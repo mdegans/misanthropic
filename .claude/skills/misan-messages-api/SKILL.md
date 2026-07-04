@@ -248,6 +248,53 @@ println!("Assistant: {reply}");
 # }
 ```
 
+### Seating turns — `Prompt::seat` (drivers)
+
+`add_message` / `push_message` are the everyday appends. `Prompt::seat` is the
+wire-legality *kernel* an agent loop wants: same-role tails **concatenate**
+(portable to strict-alternation backends, and what Anthropic does server-side),
+and mid-conversation `Role::System` notes seat the instant the tail permits —
+otherwise **buffering** (never re-attributed to the user channel) until a later
+seat opens a slot. The pending-system buffer is caller-owned, so it survives
+across rounds; the crate owns the legality. `seat` reports what it did as
+[`Seated`].
+
+```rust
+use misanthropic::{
+    Prompt,
+    prompt::{Seated, message::{Role, SystemMessage}},
+};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut prompt = Prompt::default();
+// The caller owns the buffer; code that never seats a system note passes
+// `&mut None` and just gets same-role merging.
+let mut pending: Option<SystemMessage> = None;
+
+// Same-role tails concatenate rather than pushing an (illegal-on-some-backends)
+// second turn.
+prompt.seat((Role::User, "hi"), &mut pending)?;
+prompt.seat((Role::Assistant, "one."), &mut pending)?;
+assert_eq!(prompt.seat((Role::Assistant, "two."), &mut pending)?, Seated::Merged);
+
+// An operator note can't follow this assistant tail, so it buffers...
+assert_eq!(
+    prompt.seat((Role::System, "Prefer minimal diffs."), &mut pending)?,
+    Seated::Buffered,
+);
+assert!(pending.is_some());
+
+// ...and rides the next user turn automatically. (After a system turn, the
+// caller must pass the turn to the assistant next — system→user is illegal.)
+prompt.seat((Role::User, "go on"), &mut pending)?;
+assert!(pending.is_none());
+assert_eq!(prompt.messages.last().unwrap().role, Role::System);
+# Ok(())
+# }
+```
+
+[`Seated`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.Seated.html
+
 ## Tool use — the `#[tool]` macro (preferred)
 
 The `#[tool]` macro (default `derive` feature) turns an `impl` block into a
@@ -761,6 +808,12 @@ your task — they're the most current, compiler-checked usage.
   `tool_result`s must **lead** their user turn, and every client `tool_use`
   must be answered by a matching `tool_result` in the next turn — otherwise
   `TurnOrderError::ToolResultNotLeading` / `UnansweredToolUse`.
+- **Seating kernel for drivers** — `Prompt::seat(msg, &mut Option<SystemMessage>)`
+  is the shared append used by agent loops: same-role tails merge, and
+  `Role::System` content seats when the tail permits or buffers (never on the
+  user channel) until it does, concatenating onto a system tail if it lands on
+  one. Returns `Seated::{Appended, Merged, Buffered}`. See the seating example
+  above.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.

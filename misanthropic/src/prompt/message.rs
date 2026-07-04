@@ -385,7 +385,7 @@ impl Message {
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
     /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
     /// [`UnansweredToolUse`]: crate::prompt::TurnOrderError::UnansweredToolUse
-    pub(crate) fn may_precede(
+    pub fn may_precede(
         &self,
         next: &Self,
     ) -> Result<(), crate::prompt::TurnOrderError> {

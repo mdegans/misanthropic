@@ -23,19 +23,20 @@
 //!     .await?;
 //! ```
 //!
-//! # The `System` invariant
+//! # System messages
 //!
-//! A [`System`](Role::System) turn enters [`Prompt::messages`] **only via the
-//! pre-request flush**. Wherever a system message comes from — a tool-pushed
-//! [`Notification`] or an [`on_assistant`](Chat::on_assistant) return — it is
-//! merged into one pending buffer and seated immediately before the next API
-//! call, iff the tail allows it (after a user turn, or an assistant turn
-//! [ending in a server-tool result](Message::ends_in_server_tool_result) —
-//! the wire rule, stricter than the docs). It is **never** downgraded to the
-//! user role: operator-authored content riding the user channel misattributes
-//! authorship and erodes exactly the channel-authority distinction the system
-//! role exists to provide. Buffering costs nothing: the flush precedes every
-//! request, so a pending note rides the next call the placement rules permit.
+//! Operator ([`System`](Role::System)) content — from a tool-pushed
+//! [`Notification`] or an [`on_assistant`](Chat::on_assistant) return — is
+//! seated through [`Prompt::seat`], the crate's wire-legality kernel. It places
+//! the note the moment the tail permits a system turn (after a user turn, or an
+//! assistant turn
+//! [ending in a server-tool result](Message::ends_in_server_tool_result) — the
+//! wire rule, stricter than the docs) and otherwise holds it in the driver's
+//! `pending_system` buffer until a later seat opens a slot. It is **never**
+//! downgraded to the user role: operator content riding the user channel
+//! misattributes authorship and erodes the channel-authority distinction the
+//! system role exists to provide. The buffer is the *only* state the driver
+//! keeps for this — the seat/merge/flush legality all lives in the crate.
 
 use misanthropic::{
     Client, Prompt,
@@ -294,9 +295,8 @@ impl<State> Chat<State> {
         let mut rounds = 0usize;
         loop {
             log::trace!("quiesce round {rounds}: calling the model");
-            // The one flush point: a pending system note rides every request
-            // whose tail permits it.
-            self.flush_pending_system()?;
+            // A pending system note was already seated by `seat` the moment a
+            // legal tail appeared, so the prompt is request-ready here.
             let response = self.client.message(&self.prompt).await?;
             // `pause_turn` means a server tool is still running: the turn
             // must be continued, even though there's nothing to dispatch.
@@ -395,7 +395,6 @@ impl<State> Chat<State> {
         self.synthesize_results(&calls)?;
 
         if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
-            self.flush_pending_system()?;
             let response = self.client.message(&self.prompt).await?;
             let again = self.seat_assistant(state, response.inner)?;
             // No second chance: error these too and hand back regardless.
@@ -431,84 +430,19 @@ impl<State> Chat<State> {
         self.seat((Role::User, Content(results)))
     }
 
-    /// Whether a [`System`](Role::System) turn may legally follow the current
-    /// tail: a user turn, or an assistant turn
-    /// [ending in a server-tool result](Message::ends_in_server_tool_result).
-    /// The wire rule, verified live — a *paused* assistant turn (ending in
-    /// the in-flight `server_tool_use`) does **not** qualify.
-    fn system_flushable(&self) -> bool {
-        self.prompt.messages.last().is_some_and(|tail| {
-            tail.role == Role::User
-                || (tail.role == Role::Assistant
-                    && tail.ends_in_server_tool_result())
-        })
-    }
-
-    /// Seat the pending system note when the tail allows it. Called once per
-    /// request, immediately before the model — the only place a `System` turn
-    /// enters the messages (see the module-level invariant). The seated note
-    /// either ends the array (this request) or precedes the assistant
-    /// response (every later request): legal by construction.
-    fn flush_pending_system(&mut self) -> Result<(), BoxError> {
-        if self.pending_system.is_some() && self.system_flushable() {
-            log::debug!("flushing the pending system note");
-            let note = self.pending_system.take().unwrap();
-            self.prompt.push_message(note)?;
-        }
-        Ok(())
-    }
-
-    /// Append `message`, keeping the conversation legal *and* portable to
-    /// third-party servers: consecutive same-role turns are concatenated
-    /// client-side (exactly what Anthropic does server-side) rather than
-    /// pushed as a second turn. [`System`](Role::System) messages never seat
-    /// directly — they merge into the defer buffer (see the module-level
-    /// invariant). Any other illegal placement is a programming error in the
-    /// caller's beat or hook and errors loudly ([`TurnOrderError`]).
+    /// Append `message` through [`Prompt::seat`] — the crate's wire-legality
+    /// kernel. Same-role tails concatenate (portable to strict-alternation
+    /// backends); [`System`](Role::System) content seats the moment the tail
+    /// permits and otherwise buffers in `pending_system` (never downgraded to
+    /// the user channel — see the module-level notes). A merge that would
+    /// trail a `tool_result` behind other content, or any other illegal
+    /// placement, errors loudly ([`TurnOrderError`]) — a programming error in
+    /// the caller's beat or hook.
     ///
     /// [`TurnOrderError`]: misanthropic::prompt::TurnOrderError
     fn seat(&mut self, message: impl Into<Message>) -> Result<(), BoxError> {
-        let message = message.into();
-        if message.role == Role::System {
-            self.buffer_system(message.content);
-            return Ok(());
-        }
-        if let Some(last) = self.prompt.messages.last_mut()
-            && last.role == message.role
-        {
-            // Wire rule (verified live): `tool_result` blocks must *lead*
-            // their user message. Merging a result-bearing message onto a
-            // tail that already has other content would trail them — a 400.
-            // Unreachable in this loop's own choreography (results always
-            // follow an assistant tail); a hook-authored beat can get here.
-            debug_assert!(
-                !(message
-                    .content
-                    .iter()
-                    .any(|b| matches!(b, Block::ToolResult { .. }))
-                    && last
-                        .content
-                        .iter()
-                        .any(|b| !matches!(b, Block::ToolResult { .. }))),
-                "merging tool_result blocks after other content — the API \
-                 rejects results that don't lead the user message"
-            );
-            last.content.extend(message.content);
-            return Ok(());
-        }
-        self.prompt.push_message(message)?;
+        self.prompt.seat(message, &mut self.pending_system)?;
         Ok(())
-    }
-
-    /// Merge `content` into the pending [`SystemMessage`] (consecutive system
-    /// turns are illegal on the wire, so accumulated notes must travel as
-    /// one).
-    fn buffer_system(&mut self, content: Content) {
-        log::debug!("buffering a system note for the pre-request flush");
-        match self.pending_system.as_mut() {
-            Some(pending) => pending.extend(content),
-            None => self.pending_system = Some(content.into()),
-        }
     }
 }
 
