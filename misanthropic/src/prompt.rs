@@ -342,6 +342,33 @@ pub enum ExamplesError {
 }
 static_assertions::assert_impl_all!(ExamplesError: Send, Sync);
 
+/// What [`Prompt::seat`] did with a message — the seating outcome a driver
+/// branches on instead of diffing [`messages`](Prompt::messages) lengths.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Seated {
+    /// Placed as a fresh turn (the tail was a different role, or the message
+    /// was a [`System`](message::Role::System) note the tail could legally
+    /// follow, so it seated immediately).
+    Appended,
+    /// Concatenated onto the same-role tail — what Anthropic does server-side,
+    /// and what keeps the conversation legal for strict-alternation backends.
+    Merged,
+    /// A [`System`](message::Role::System) note held in the caller's buffer
+    /// because the tail forbids a system turn; it seats on the first later
+    /// [`seat`](Prompt::seat) that opens a legal slot.
+    Buffered,
+}
+
+impl Seated {
+    /// Whether new content reached [`messages`](Prompt::messages) — true for
+    /// [`Appended`](Seated::Appended) and [`Merged`](Seated::Merged), false for
+    /// [`Buffered`](Seated::Buffered). Lets a driver skip a model call on a
+    /// beat that only buffered.
+    pub fn advanced(self) -> bool {
+        !matches!(self, Seated::Buffered)
+    }
+}
+
 impl Prompt {
     /// Turn streaming on.
     ///
@@ -553,6 +580,166 @@ impl Prompt {
             Err(e)
         } else {
             Ok(self)
+        }
+    }
+
+    /// Append `message`, keeping the conversation legal *and* portable — the
+    /// wire-seating kernel shared by every driver ([`Chat`], the agentkit
+    /// reactor). Three behaviours in one entry point, reported by [`Seated`]:
+    ///
+    /// - **same-role tail → merge.** Consecutive same-role turns concatenate
+    ///   (what Anthropic does server-side; required by strict-alternation
+    ///   backends). The merge re-checks the within-message
+    ///   [`ToolResult`](message::Block::ToolResult)-must-lead rule and errors
+    ///   [`ToolResultNotLeading`] rather than trailing a result behind other
+    ///   content.
+    /// - **[`System`](message::Role::System) content → seat when legal, else
+    ///   buffer.** Operator content never rides the user channel. It seats the
+    ///   moment the tail permits a system turn — after a user turn, or an
+    ///   assistant turn [ending in a server-tool result][ends] (checked with
+    ///   [`may_precede`], the wire rule, stricter than the docs) — concatenating
+    ///   into the tail if that tail is *itself* a system turn (consecutive
+    ///   system turns are illegal apart, legal merged). Otherwise it accumulates
+    ///   in `pending` (merged into one message) to seat on the first later
+    ///   `seat` that opens a slot. Buffering never errors.
+    /// - **anything else → append** through the full turn-order gate
+    ///   ([`push_message`]).
+    ///
+    /// After a system turn is seated the tail is [`System`], so the **caller**
+    /// must pass the turn to the assistant next; seating another user turn
+    /// there is an illegal [`BadTransition`]. `pending` is caller-owned (a
+    /// driver's per-session field) so casual code that never touches system
+    /// notes keeps [`add_message`]/[`push_message`] and passes `&mut None`.
+    ///
+    /// # Errors
+    /// [`TurnOrderError`] if the append (or merge) would break turn order.
+    /// System content is buffered, not appended, so it never errors here.
+    ///
+    /// [`Chat`]: <https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/utils/chat.rs>
+    /// [`may_precede`]: message::Message::may_precede
+    /// [ends]: message::Message::ends_in_server_tool_result
+    /// [`System`]: message::Role::System
+    /// [`ToolResultNotLeading`]: TurnOrderError::ToolResultNotLeading
+    /// [`BadTransition`]: TurnOrderError::BadTransition
+    /// [`push_message`]: Prompt::push_message
+    /// [`add_message`]: Prompt::add_message
+    pub fn seat<M>(
+        &mut self,
+        message: M,
+        pending: &mut Option<SystemMessage>,
+    ) -> Result<Seated, TurnOrderError>
+    where
+        M: Into<Message>,
+    {
+        let message: Message = message.into();
+
+        // Operator content never seats onto the user channel: accumulate into
+        // the one pending note and seat it the instant the tail allows.
+        if message.role == message::Role::System {
+            match pending.as_mut() {
+                Some(pending) => pending.extend(message.content),
+                None => *pending = Some(message.content.into()),
+            }
+            return Ok(self
+                .try_seat_pending(pending)
+                .unwrap_or(Seated::Buffered));
+        }
+
+        // A same-role tail merges; any other placement is a fresh turn through
+        // the full legality gate.
+        let outcome = match self.messages.last_mut() {
+            Some(last) if last.role == message.role => {
+                Self::merge_into(last, message)?;
+                Seated::Merged
+            }
+            _ => {
+                self.push_message(message)?;
+                Seated::Appended
+            }
+        };
+
+        // The tail just advanced — a buffered note may now have a legal slot.
+        let _ = self.try_seat_pending(pending);
+        Ok(outcome)
+    }
+
+    /// Concatenate `message` onto same-role `tail`, upholding the
+    /// within-message "[`ToolResult`](message::Block::ToolResult) blocks must
+    /// lead" rule (#102). Appending to the tail never disturbs its *leading*
+    /// result run, so the predecessor adjacency [`push_message`] already
+    /// checked is preserved — results-lead over the concatenation is the only
+    /// rule a merge can break, so it is all we re-check.
+    ///
+    /// [`push_message`]: Prompt::push_message
+    fn merge_into(
+        tail: &mut Message,
+        message: Message,
+    ) -> Result<(), TurnOrderError> {
+        // Would a result block fall behind non-result content once joined?
+        let mut seen_non_result = false;
+        let leads =
+            tail.content
+                .iter()
+                .chain(message.content.iter())
+                .all(|block| {
+                    if block.is_tool_result() {
+                        !seen_non_result
+                    } else {
+                        seen_non_result = true;
+                        true
+                    }
+                });
+        if !leads {
+            return Err(TurnOrderError::ToolResultNotLeading { message });
+        }
+        tail.content.extend(message.content);
+        Ok(())
+    }
+
+    /// Place the `pending` note when the tail allows, reporting *how* (or
+    /// `None` if it stays buffered):
+    ///
+    /// - tail already a [`System`](message::Role::System) turn →
+    ///   **concatenate** into it ([`Merged`](Seated::Merged)). Consecutive
+    ///   system turns are illegal as *separate* turns, but merged into one they
+    ///   are fine — so a note that lands on a system tail (some agentic loops
+    ///   do seat two in a row) joins it rather than waiting.
+    /// - tail may legally precede a fresh system turn ([`may_precede`], reusing
+    ///   the turn-order machinery) → **append** ([`Appended`](Seated::Appended)).
+    /// - otherwise the note is put back untouched → `None`.
+    ///
+    /// The invariant this maintains — a *separately-buffered* note lingers only
+    /// while the tail forbids a system turn — is why no pre-request flush is
+    /// needed: there is never a legal-but-unseated note at a request boundary.
+    ///
+    /// [`may_precede`]: message::Message::may_precede
+    fn try_seat_pending(
+        &mut self,
+        pending: &mut Option<SystemMessage>,
+    ) -> Option<Seated> {
+        let note = pending.take()?;
+        // Tail already a system turn → concatenate the notes into one turn.
+        if let Some(last) = self.messages.last_mut()
+            && last.role == message::Role::System
+        {
+            last.content.extend(note.content);
+            return Some(Seated::Merged);
+        }
+        // Otherwise seat as a fresh system turn iff the tail permits.
+        let note: Message = note.into();
+        match self.messages.last() {
+            Some(tail) if tail.may_precede(&note).is_ok() => {
+                self.messages.push(note);
+                Some(Seated::Appended)
+            }
+            _ => {
+                // Not legal yet — hold it, still typed, for a later seat.
+                *pending =
+                    Some(note.try_into().expect(
+                        "a System message round-trips to SystemMessage",
+                    ));
+                None
+            }
         }
     }
 
@@ -1969,6 +2156,233 @@ mod tests {
             ])
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_seat_appends_then_merges_same_role() {
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+
+        assert_eq!(
+            prompt.seat((Role::User, "hi"), &mut pending).unwrap(),
+            Seated::Appended
+        );
+        assert_eq!(
+            prompt
+                .seat((Role::Assistant, "one."), &mut pending)
+                .unwrap(),
+            Seated::Appended
+        );
+        // A second assistant turn concatenates onto the tail.
+        assert_eq!(
+            prompt
+                .seat((Role::Assistant, "two."), &mut pending)
+                .unwrap(),
+            Seated::Merged
+        );
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[1].content.len(), 2);
+        assert!(pending.is_none());
+    }
+
+    #[test]
+    fn test_seat_buffers_system_when_tail_forbids() {
+        // Tail is an assistant turn → a system turn may not follow, so the note
+        // buffers instead of erroring.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "hi"), &mut pending).unwrap();
+        prompt
+            .seat((Role::Assistant, "hello"), &mut pending)
+            .unwrap();
+
+        assert_eq!(
+            prompt
+                .seat((Role::System, "be terse"), &mut pending)
+                .unwrap(),
+            Seated::Buffered
+        );
+        assert_eq!(prompt.messages.len(), 2);
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn test_seat_eager_seats_system_after_user() {
+        // Tail is a user turn → the note seats immediately, ending the array.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "hi"), &mut pending).unwrap();
+
+        assert_eq!(
+            prompt
+                .seat((Role::System, "be terse"), &mut pending)
+                .unwrap(),
+            Seated::Appended
+        );
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[1].role, Role::System);
+        assert!(pending.is_none());
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_seat_buffered_note_flushes_on_next_user_turn() {
+        // Buffered while the tail was an assistant turn, the note rides the
+        // first later seat that produces a legal (user) tail.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "hi"), &mut pending).unwrap();
+        prompt
+            .seat((Role::Assistant, "hello"), &mut pending)
+            .unwrap();
+        prompt
+            .seat((Role::System, "be terse"), &mut pending)
+            .unwrap();
+        assert!(pending.is_some());
+
+        // A new user turn opens the slot; the note follows it.
+        prompt
+            .seat((Role::User, "still there?"), &mut pending)
+            .unwrap();
+        assert!(pending.is_none());
+        assert_eq!(prompt.messages.len(), 4);
+        assert_eq!(prompt.messages[3].role, Role::System);
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_seat_accumulates_multiple_notes_into_one_turn() {
+        // Consecutive system turns are illegal, so notes buffered across rounds
+        // travel merged into a single system turn.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "hi"), &mut pending).unwrap();
+        prompt
+            .seat((Role::Assistant, "hello"), &mut pending)
+            .unwrap();
+        prompt
+            .seat((Role::System, "be terse"), &mut pending)
+            .unwrap();
+        prompt
+            .seat((Role::System, "and polite"), &mut pending)
+            .unwrap();
+
+        prompt.seat((Role::User, "go on"), &mut pending).unwrap();
+        let system = prompt.messages.last().unwrap();
+        assert_eq!(system.role, Role::System);
+        assert_eq!(system.content.len(), 2);
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_seat_concatenates_onto_a_system_tail() {
+        // Two notes seated back-to-back (an agentic loop can do this): the
+        // second joins the seated system turn rather than buffering, since
+        // consecutive system turns merge into one.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "hi"), &mut pending).unwrap();
+        // First note seats as a fresh system turn after the user tail.
+        assert_eq!(
+            prompt
+                .seat((Role::System, "be terse"), &mut pending)
+                .unwrap(),
+            Seated::Appended
+        );
+        // Second note lands on the system tail → concatenated in place.
+        assert_eq!(
+            prompt
+                .seat((Role::System, "and polite"), &mut pending)
+                .unwrap(),
+            Seated::Merged
+        );
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[1].role, Role::System);
+        assert_eq!(prompt.messages[1].content.len(), 2);
+        assert!(pending.is_none());
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_seat_system_cannot_open() {
+        // A system note into an empty prompt stays buffered — system can never
+        // be the first message.
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        assert_eq!(
+            prompt
+                .seat((Role::System, "be terse"), &mut pending)
+                .unwrap(),
+            Seated::Buffered
+        );
+        assert!(prompt.messages.is_empty());
+        assert!(pending.is_some());
+    }
+
+    #[test]
+    fn test_seat_merge_rejects_trailing_tool_result() {
+        // Merging a `tool_result` onto a tail that already carries non-result
+        // content would trail the result — rejected constructively, tail
+        // untouched (replaces the old example loop's debug_assert).
+        use crate::prompt::message::{Block, Content};
+        let result: Block = serde_json::from_value(serde_json::json!({
+            "type": "tool_result", "tool_use_id": "toolu_1", "content": "12:00"
+        }))
+        .unwrap();
+
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt
+            .seat((Role::User, "what time is it?"), &mut pending)
+            .unwrap();
+
+        let err = prompt
+            .seat((Role::User, Content(vec![result])), &mut pending)
+            .unwrap_err();
+        assert!(matches!(err, TurnOrderError::ToolResultNotLeading { .. }));
+        // The failed merge left the tail as it was.
+        assert_eq!(prompt.messages.len(), 1);
+        assert_eq!(prompt.messages[0].content.len(), 1);
+    }
+
+    #[test]
+    fn test_seat_eager_seats_system_after_server_tool_result() {
+        // An assistant turn ending in a server-tool result is the one assistant
+        // tail a system turn may follow — the note seats immediately.
+        use crate::prompt::message::{Block, Content};
+        let fetch_use: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+        let fetch_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_fetch_result.json"
+        ))
+        .unwrap();
+
+        let mut prompt = Prompt::default();
+        let mut pending = None;
+        prompt.seat((Role::User, "fetch it"), &mut pending).unwrap();
+        prompt
+            .seat(
+                (Role::Assistant, Content(vec![fetch_use, fetch_result])),
+                &mut pending,
+            )
+            .unwrap();
+
+        assert_eq!(
+            prompt.seat((Role::System, "note"), &mut pending).unwrap(),
+            Seated::Appended
+        );
+        assert_eq!(prompt.messages.last().unwrap().role, Role::System);
+        assert!(pending.is_none());
+        prompt.check_turn_order().unwrap();
+    }
+
+    #[test]
+    fn test_seated_advanced() {
+        assert!(Seated::Appended.advanced());
+        assert!(Seated::Merged.advanced());
+        assert!(!Seated::Buffered.advanced());
     }
 
     #[test]
