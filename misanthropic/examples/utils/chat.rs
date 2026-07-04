@@ -36,7 +36,7 @@
 //! downgraded to the user role: operator content riding the user channel
 //! misattributes authorship and erodes the channel-authority distinction the
 //! system role exists to provide. The buffer is the *only* state the driver
-//! keeps for this — the seat/merge/flush legality all lives in the crate.
+//! keeps for this — the seat/merge/buffer legality all lives in the crate.
 
 use misanthropic::{
     Client, Prompt,
@@ -86,7 +86,8 @@ pub struct Chat<State> {
     toolbox: ToolBox,
     max_tool_calls: usize,
     budget_policy: BudgetPolicy,
-    /// The system-defer buffer — see the module-level `System` invariant.
+    /// Pending-system buffer threaded into [`Prompt::seat`] — see the
+    /// module-level notes on system messages.
     pending_system: Option<SystemMessage>,
     #[allow(clippy::type_complexity)]
     on_assistant: Option<
@@ -138,7 +139,8 @@ impl<State> Chat<State> {
     /// `tool_use` blocks to *force* tool calls — the driver dispatches
     /// whatever client tool calls are in the **seated** assistant turns,
     /// regardless of provenance. A returned [`System`](Role::System) message
-    /// is buffered per the module-level invariant, never seated directly.
+    /// goes through [`Prompt::seat`] like any other — seated when the tail
+    /// permits, otherwise buffered — never re-attributed to the user role.
     ///
     /// Without a hook the response is seated unchanged.
     pub fn on_assistant<I>(
@@ -255,13 +257,13 @@ impl<State> Chat<State> {
     /// Seat a pushed [`Notification`], resolving its preferred role against
     /// the model.
     ///
-    /// A note resolving to [`System`](Role::System) lands in the defer buffer
-    /// (the module-level invariant). Buffering is *not* slower than seating:
-    /// nothing reaches the model between requests, and the flush precedes
-    /// every request — the difference is that a [`User`](Role::User)-seated
-    /// note triggers an immediate model round (right for a job completion),
-    /// while a buffered system note waits for the next beat (right for an
-    /// operator fact).
+    /// A note resolving to [`System`](Role::System) goes through
+    /// [`Prompt::seat`], which places it as soon as the tail permits and
+    /// otherwise buffers it (never on the user channel) to ride the next
+    /// request. Either way it does not force a model round on its own — it is
+    /// operator context folded into the next call — whereas a
+    /// [`User`](Role::User)-resolved note appends a user turn and drives an
+    /// immediate round (right for a job completion, versus an operator fact).
     ///
     /// # Panics
     /// A `[System]`-only preference on a model with no system role is a
