@@ -501,18 +501,6 @@ pub enum Id {
     Haiku30,
 
     // ── Claude 4.x ───────────────────────────────────────────────────────
-    /// Opus 4.0 2025-05-14
-    #[serde(rename = "claude-opus-4-20250514")]
-    Opus40_20250514,
-    /// Opus 4.0 (latest)
-    #[serde(rename = "claude-opus-4-0")]
-    Opus40,
-    /// Sonnet 4.0 2025-05-14
-    #[serde(rename = "claude-sonnet-4-20250514")]
-    Sonnet40_20250514,
-    /// Sonnet 4.0 (latest)
-    #[serde(rename = "claude-sonnet-4-0")]
-    Sonnet40,
     /// Opus 4.1 2025-08-05
     #[serde(rename = "claude-opus-4-1-20250805")]
     Opus41_20250805,
@@ -587,10 +575,6 @@ impl Id {
             Id::Haiku35 => "claude-3-5-haiku-latest",
             Id::Haiku35_20241022 => "claude-3-5-haiku-20241022",
             Id::Haiku30 => "claude-3-haiku-20240307",
-            Id::Opus40_20250514 => "claude-opus-4-20250514",
-            Id::Opus40 => "claude-opus-4-0",
-            Id::Sonnet40_20250514 => "claude-sonnet-4-20250514",
-            Id::Sonnet40 => "claude-sonnet-4-0",
             Id::Opus41_20250805 => "claude-opus-4-1-20250805",
             Id::Opus41 => "claude-opus-4-1",
             Id::Haiku45_20251001 => "claude-haiku-4-5-20251001",
@@ -1002,12 +986,6 @@ mod tests {
             Id::Haiku35_20241022,
             Id::Opus30,
             Id::Opus30_20240229,
-            // Claude 4.0 dated snapshots retired 2026-06-15 (#118): the id is
-            // still recognized (404 "model: …", not an unknown-model error) but
-            // no longer served. The undated `-4-0` aliases resolve server-side
-            // and stay live.
-            Id::Opus40_20250514,
-            Id::Sonnet40_20250514,
             Id::Sonnet35,
             Id::Sonnet35_20240620,
             Id::Sonnet35_20241022,
