@@ -433,4 +433,9 @@ name = "reminder"
 required-features = ["client", "derive"]
 doc-scrape-examples = true
 
+[[example]]
+name = "swarm"
+required-features = ["client", "bash-container", "derive"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.

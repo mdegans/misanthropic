@@ -12,7 +12,7 @@ mod chat;
 // `BoxError` is part of the helper's API but not every example names it.
 #[cfg(feature = "client")]
 #[allow(unused_imports)]
-pub use chat::{BoxError, Chat};
+pub use chat::{BoxError, BudgetPolicy, Chat};
 
 // API-key acquisition; uses `BoxError`, so it rides the `client` feature too.
 #[cfg(feature = "client")]
