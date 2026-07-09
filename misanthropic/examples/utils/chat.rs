@@ -38,12 +38,14 @@
 //! system role exists to provide. The buffer is the *only* state the driver
 //! keeps for this — the seat/merge/buffer legality all lives in the crate.
 
+use std::sync::{Arc, Mutex};
+
 use misanthropic::{
     Client, Prompt,
     prompt::message::{
         AssistantMessage, Block, Content, Message, Role, SystemMessage,
     },
-    response::StopReason,
+    response::{StopReason, TokenCounts},
     tool::{self, Notification, Notifications, Tool, ToolBox, Use},
 };
 
@@ -93,6 +95,8 @@ pub struct Chat<State> {
     on_assistant: Option<
         Box<dyn FnMut(&mut State, AssistantMessage) -> Vec<Message> + Send>,
     >,
+    /// Cumulative token-usage sink — see [`track_usage`](Chat::track_usage).
+    usage: Option<Arc<Mutex<TokenCounts>>>,
 }
 
 impl<State> Chat<State> {
@@ -108,6 +112,7 @@ impl<State> Chat<State> {
             budget_policy: BudgetPolicy::default(),
             pending_system: None,
             on_assistant: None,
+            usage: None,
         }
     }
 
@@ -126,6 +131,24 @@ impl<State> Chat<State> {
     pub fn on_budget_exhausted(mut self, policy: BudgetPolicy) -> Self {
         self.budget_policy = policy;
         self
+    }
+
+    /// Accumulate every model round's token usage into `sink`. The driver
+    /// adds each response's counts as it arrives — including tool-dispatch
+    /// rounds the caller never sees — so the sink is the true per-seat cost.
+    /// Keep a clone of the `Arc` and read it whenever; [`TokenCounts`] is
+    /// `Copy` + `AddAssign` precisely for cheap accumulation.
+    pub fn track_usage(mut self, sink: Arc<Mutex<TokenCounts>>) -> Self {
+        self.usage = Some(sink);
+        self
+    }
+
+    /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
+    /// sink, if one is installed. Called at every `client.message` site.
+    fn record_usage(&self, response: &misanthropic::response::Message) {
+        if let Some(sink) = &self.usage {
+            *sink.lock().expect("usage sink poisoned") += response.usage.counts;
+        }
     }
 
     /// The assistant-turn hook: receives each assistant
@@ -300,6 +323,7 @@ impl<State> Chat<State> {
             // A pending system note was already seated by `seat` the moment a
             // legal tail appeared, so the prompt is request-ready here.
             let response = self.client.message(&self.prompt).await?;
+            self.record_usage(&response);
             // `pause_turn` means a server tool is still running: the turn
             // must be continued, even though there's nothing to dispatch.
             let paused =
@@ -398,6 +422,7 @@ impl<State> Chat<State> {
 
         if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
             let response = self.client.message(&self.prompt).await?;
+            self.record_usage(&response);
             let again = self.seat_assistant(state, response.inner)?;
             // No second chance: error these too and hand back regardless.
             self.synthesize_results(&again)?;

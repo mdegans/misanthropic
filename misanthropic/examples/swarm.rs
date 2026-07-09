@@ -22,6 +22,13 @@
 //! credits the ledger directly — the boss can *request* a refill, but no
 //! model is in the approval loop. `/stamps` shows the balances.
 //!
+//! Every prompt sets [`auto_cache`]: the API re-places a cache breakpoint
+//! at the end of each request, so five concurrent, growing conversations
+//! each read their full prefix from cache every round with no client-side
+//! marker management. When the office folds (Ctrl-D), a **payroll** prints
+//! per-agent token accounting — with caching on, the `cache r` column
+//! should dwarf `in`, and reads bill at roughly a tenth of input price.
+//!
 //! The point: the `Chat` driver is unchanged. N concurrent loops,
 //! agent-to-agent communication, role asymmetry (thinkers get words,
 //! builders get shells), and budget brakes all compose from [`Tool`],
@@ -40,6 +47,7 @@
 //! boss (workers stay on the default model — half the experiment is
 //! whether small models can argue).
 //!
+//! [`auto_cache`]: misanthropic::Prompt::auto_cache
 //! [`Mailbox`]: misanthropic::tool::Mailbox
 //! [`Notification`]: misanthropic::tool::Notification
 //! [`RichBash`]: misanthropic::tool::bash::RichBash
@@ -60,6 +68,7 @@ use misanthropic::{
     Client, Prompt,
     model::Id,
     prompt::message::{Content, Role},
+    response::TokenCounts,
     tool::{
         Mailbox, ToolBox,
         bash::{DockerSandbox, RichBash},
@@ -106,6 +115,11 @@ type Registry = Arc<Mutex<HashMap<String, Mailbox>>>;
 /// per-clone counter) so the human can credit a book mid-run via `/grant` —
 /// models spend from the ledger; only host code writes it upward.
 type Ledger = Arc<Mutex<HashMap<String, u32>>>;
+
+/// Per-agent cumulative token accounting: one `Chat::track_usage` sink per
+/// seat, filled by the driver at every model round (including tool-dispatch
+/// rounds no hook ever sees). Printed when the office folds.
+type Payroll = HashMap<&'static str, Arc<Mutex<TokenCounts>>>;
 
 /// Hands out [`Mail`] clones sharing one [`Registry`], one [`Ledger`], and
 /// one printer.
@@ -295,6 +309,12 @@ impl Mail {
 /// `wasp`) work in words; the build pair (`bee`, `moth`) each get a
 /// sandboxed bash tool.
 fn worker_prompt(name: &str) -> Prompt {
+    // `auto_cache`: the API re-places a cache breakpoint at the end of the
+    // prompt on every request, so each agent's growing conversation reads
+    // its full prefix from cache each round — five concurrent histories,
+    // zero client-side marker management. (Below the model's minimum
+    // cacheable length nothing caches — harmlessly — so early rounds may
+    // show zero cache traffic in the payroll.)
     let persona = match name {
         "ant" => {
             "You are `ant`, the architect in a tiny software company run \
@@ -350,7 +370,7 @@ fn worker_prompt(name: &str) -> Prompt {
         }
         other => unreachable!("no persona for `{other}`"),
     };
-    Prompt::default().system(persona)
+    Prompt::default().system(persona).auto_cache()
 }
 
 /// The boss's persona; the human side of the swarm.
@@ -379,6 +399,14 @@ async fn main() -> Result<(), BoxError> {
     let (mut lines, printer) = utils::spawn_readline_loop("you ▸ ")?;
     let printer: SharedPrinter = Arc::new(Mutex::new(printer));
     let office = PostOffice::new(Arc::clone(&printer));
+
+    // One usage sink per seat; each Chat's driver adds every model round.
+    let payroll: Payroll = WORKERS
+        .iter()
+        .copied()
+        .chain([BOSS])
+        .map(|name| (name, Arc::default()))
+        .collect();
 
     // Build every toolbox before any `Chat` runs: `add` fires `connect`,
     // which registers the agent's address — so the roster is complete
@@ -421,12 +449,14 @@ async fn main() -> Result<(), BoxError> {
     for (name, toolbox) in worker_boxes {
         let client = client.clone();
         let printer = Arc::clone(&printer);
+        let usage = Arc::clone(&payroll[name]);
         let mut done = quit.subscribe();
         swarm.spawn(async move {
             let outcome =
                 utils::Chat::new(client, worker_prompt(name), toolbox)
                     .max_consecutive_tool_calls(worker_rounds)
                     .on_budget_exhausted(BudgetPolicy::FinalWord)
+                    .track_usage(usage)
                     .on_assistant(move |_state: &mut (), msg| {
                         // The workers' side of the story, under `--verbose`.
                         log::debug!("{name} ▸ {}", msg.content);
@@ -456,13 +486,17 @@ async fn main() -> Result<(), BoxError> {
     let ledger = Arc::clone(&office.ledger);
     let registry = Arc::clone(&office.registry);
     let treasury = Arc::clone(&printer);
-    let boss_prompt = cli
-        .common
-        .configure(Prompt::default().model(Id::Sonnet46).system(BOSS_SYSTEM));
+    let boss_prompt = cli.common.configure(
+        Prompt::default()
+            .model(Id::Sonnet46)
+            .system(BOSS_SYSTEM)
+            .auto_cache(),
+    );
     let boss_printer = Arc::clone(&printer);
     let outcome = cli
         .chat
         .configure(utils::Chat::new(client, boss_prompt, boss_box))
+        .track_usage(Arc::clone(&payroll[BOSS]))
         .on_assistant(move |_state: &mut (), msg| {
             if msg.tool_use().is_none() {
                 boss_printer
@@ -549,6 +583,28 @@ async fn main() -> Result<(), BoxError> {
     }
     outcome?;
 
+    // The payroll: what each seat cost. With `auto_cache` on every prompt,
+    // the `cache r` column should dwarf `in` after the first round — reads
+    // bill at roughly a tenth of the input price.
+    println!("── payroll ──────────────────────────────────────────");
+    let mut total = TokenCounts::default();
+    for name in WORKERS.iter().copied().chain([BOSS]) {
+        let counts = *payroll[name].lock().expect("payroll poisoned");
+        println!("{name:<6} {}", pay_line(&counts));
+        total += counts;
+    }
+    println!("total  {}", pay_line(&total));
     println!("the office is closed");
     Ok(())
+}
+
+/// One payroll row: the four token counters that price a seat.
+fn pay_line(counts: &TokenCounts) -> String {
+    format!(
+        "in: {} | cache w: {} | cache r: {} | out: {}",
+        counts.input_tokens,
+        counts.cache_creation_input_tokens.unwrap_or(0),
+        counts.cache_read_input_tokens.unwrap_or(0),
+        counts.output_tokens,
+    )
 }

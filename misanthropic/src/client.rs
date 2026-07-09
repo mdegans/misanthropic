@@ -1731,6 +1731,63 @@ mod tests {
     #[tokio::test]
     #[cfg(feature = "client")]
     #[ignore = "This test requires a real API key."]
+    async fn test_auto_cache() {
+        use std::num::NonZeroU32;
+
+        #[cfg(feature = "log")]
+        init_log();
+
+        let key = load_api_key().await;
+        let client = Client::new(key).unwrap();
+
+        // The prefix must clear the model's minimum cacheable length (4096
+        // tokens on Haiku 4.5) or the breakpoint is silently ignored.
+        // Repetition compresses poorly for humans but not for tokenizers —
+        // each repeat is roughly one token, so this is ~6k tokens of prefix.
+        let system = format!(
+            "You are a terse test assistant. Ignore the filler: {}",
+            "filler ".repeat(6000)
+        );
+
+        let prompt = Prompt::default()
+            .model(crate::Id::Haiku45)
+            .max_tokens(NonZeroU32::new(64).unwrap())
+            .system(system)
+            .auto_cache()
+            .add_message((Role::User, "Say `one` and nothing else."))
+            .unwrap();
+
+        // First request writes the cache (or reads a warm one from a
+        // previous run within the TTL).
+        let first = client.message(&prompt).await.unwrap();
+        let wrote = first.usage.cache_creation_input_tokens.unwrap_or(0);
+        let read = first.usage.cache_read_input_tokens.unwrap_or(0);
+        assert!(
+            wrote > 0 || read > 0,
+            "first request neither wrote nor read cache: {:?}",
+            first.usage,
+        );
+
+        // Growing the conversation and re-sending must read the prefix from
+        // cache — the server re-places the breakpoint at the new end, which
+        // is the whole point of the top-level param.
+        let prompt = prompt
+            .add_message(first)
+            .unwrap()
+            .add_message((Role::User, "Now say `two` and nothing else."))
+            .unwrap();
+
+        let second = client.message(&prompt).await.unwrap();
+        assert!(
+            second.usage.cache_read_input_tokens.unwrap_or(0) > 0,
+            "second request did not read the cache: {:?}",
+            second.usage,
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "client")]
+    #[ignore = "This test requires a real API key."]
     async fn test_web_search_server_tool() {
         use crate::prompt::message::{Block, WebSearchToolResultContent};
         use crate::response::StopReason;

@@ -150,6 +150,15 @@ pub struct Prompt {
     /// Container ID to reuse across requests (used with code execution).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub container: Option<Cow<'static, str>>,
+    /// Automatic prompt caching. When set, the API places a cache breakpoint
+    /// on the *last cacheable block* of this request, server-side, at request
+    /// time. Unlike [`Self::cache`] — which stamps a marker on whatever block
+    /// is last *when called* — this tracks the end of the prompt as a
+    /// conversation grows, so every request caches its full prefix with no
+    /// client-side marker management. Counts toward the API's 4-breakpoint
+    /// budget. Set with [`Self::auto_cache`] / [`Self::auto_cache_1h`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_control: Option<message::CacheControl>,
 }
 
 impl std::fmt::Debug for Prompt {
@@ -209,6 +218,7 @@ impl Default for Prompt {
             service_tier: Default::default(),
             inference_geo: Default::default(),
             container: Default::default(),
+            cache_control: Default::default(),
         }
     }
 }
@@ -1365,6 +1375,34 @@ impl Prompt {
             return self;
         }
 
+        self
+    }
+
+    /// Enable [automatic prompt caching] with the default 5-minute TTL: the
+    /// API places the breakpoint on the last cacheable block server-side, at
+    /// request time. Prefer this over [`Self::cache`] for growing
+    /// conversations — the breakpoint follows the end of the prompt across
+    /// requests instead of going stale where it was stamped. Keep
+    /// [`Self::cache`] when a breakpoint must sit at a *specific* position
+    /// (e.g. the end of a fixed prefix followed by a varying suffix, or
+    /// multiple deliberate breakpoints).
+    ///
+    /// Prefixes below the model's minimum cacheable length are silently not
+    /// cached — no error, just a zero `cache_creation_input_tokens`.
+    ///
+    /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    pub fn auto_cache(mut self) -> Self {
+        self.cache_control =
+            Some(crate::prompt::message::CacheControl::ephemeral());
+        self
+    }
+
+    /// [`Self::auto_cache`] with a 1-hour TTL — see
+    /// [`CacheControl::one_hour`](message::CacheControl::one_hour) for when
+    /// the longer window pays for its doubled write cost.
+    pub fn auto_cache_1h(mut self) -> Self {
+        self.cache_control =
+            Some(crate::prompt::message::CacheControl::one_hour());
         self
     }
 
@@ -2575,6 +2613,35 @@ mod tests {
         assert_eq!(back.service_tier, Some(ServiceTier::StandardOnly));
         assert_eq!(back.inference_geo, Some(InferenceGeo::Eu));
         assert_eq!(back.container.as_deref(), Some("ctr_123"));
+    }
+
+    #[test]
+    fn test_auto_cache_serde() {
+        // Top-level `cache_control` — the automatic-caching request param.
+        let json =
+            serde_json::to_value(Prompt::default().auto_cache()).unwrap();
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+        assert!(json["cache_control"].get("ttl").is_none());
+
+        let json =
+            serde_json::to_value(Prompt::default().auto_cache_1h()).unwrap();
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+        assert_eq!(json["cache_control"]["ttl"], "1h");
+
+        // Omitted entirely when unset — the wire shape of every existing
+        // prompt is unchanged.
+        let bare = serde_json::to_value(Prompt::default()).unwrap();
+        assert!(bare.get("cache_control").is_none());
+
+        // Round-trip.
+        let back: Prompt = serde_json::from_value(serde_json::json!({
+            "model": "claude-haiku-4-5",
+            "messages": [],
+            "max_tokens": 4096,
+            "cache_control": {"type": "ephemeral"}
+        }))
+        .unwrap();
+        assert!(back.cache_control.is_some());
     }
 
     #[test]
