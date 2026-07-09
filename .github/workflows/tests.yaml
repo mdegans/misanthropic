@@ -91,6 +91,25 @@ jobs:
         run: cargo test -p misanthropic --features __skills --doc --verbose
 
       # This should only happen on push to main. PRs should not upload coverage.
+
+      # The coverage build compiles the whole workspace --all-features a second
+      # time with LLVM instrumentation (which roughly doubles object sizes) on
+      # top of the target dir the matrix steps already filled, and finally hit
+      # the ~14 GB runner limit (No space left on device, alpha.8). Reclaim the
+      # preinstalled bloat this job never touches (~25 GB) before that build.
+      - name: Free disk space for coverage build
+        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          sudo docker image prune --all --force || true
+          df -h /
+
       - name: Install llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
         if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
