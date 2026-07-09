@@ -410,6 +410,12 @@ async fn main() -> Result<(), BoxError> {
     // beat closure just pends until shutdown. `FinalWord` instead of the
     // default hand-back: a worker that silently hands back would sit idle
     // until the next letter, so let it wrap up (and mail onward) instead.
+    //
+    // The round cap is a runaway guard, not the budget — postage is the
+    // budget. Builders burn one round per bash command (write, run, fix,
+    // repeat), so the guard sits high; `--max-tool-calls` overrides it
+    // (and the boss's, via `ChatArgs::configure`).
+    let worker_rounds = cli.chat.max_tool_calls.unwrap_or(128);
     let (quit, _) = tokio::sync::watch::channel(false);
     let mut swarm = tokio::task::JoinSet::new();
     for (name, toolbox) in worker_boxes {
@@ -419,7 +425,7 @@ async fn main() -> Result<(), BoxError> {
         swarm.spawn(async move {
             let outcome =
                 utils::Chat::new(client, worker_prompt(name), toolbox)
-                    .max_consecutive_tool_calls(16)
+                    .max_consecutive_tool_calls(worker_rounds)
                     .on_budget_exhausted(BudgetPolicy::FinalWord)
                     .on_assistant(move |_state: &mut (), msg| {
                         // The workers' side of the story, under `--verbose`.
