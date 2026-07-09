@@ -1,9 +1,12 @@
-//! Example: a **multi-agent swarm** — one `Chat` loop per agent, wired
-//! together by a mail tool built with the [`tool`] macro. You chat with
-//! `boss`, who plans and delegates; three workers (`ant`, `bee`, `moth`)
-//! each carry a `Mail` clone plus their own sandboxed [`RichBash`], and
-//! run *headless*: their `next_beat` pends on shutdown, so incoming letters
-//! are their only stimulus.
+//! Example: a **multi-agent swarm** — a software company in miniature, one
+//! `Chat` loop per agent, wired together by a mail tool built with the
+//! [`tool`] macro. You chat with `boss`, who briefs the team and relays the
+//! deliverable; four headless workers run the pipeline: `ant` designs,
+//! `wasp` critiques (contrarian by charter — never approves a first draft),
+//! `bee` implements in a sandboxed [`RichBash`], and `moth` re-runs it in a
+//! *separate* sandbox, tries to break it, and signs off. Two peer loops do
+//! the real work — ant↔wasp argue the design to convergence, bee↔moth
+//! ping-pong code and failing cases — and neither routes through the boss.
 //!
 //! A letter is pushed into the recipient's [`ToolBox`] channel as a
 //! [`Notification`] preferring the [`User`] role — the same push path
@@ -11,13 +14,18 @@
 //! recipient's driver and drives a model round, and a worker's report races
 //! *your* typing at the boss's prompt exactly like any other notification.
 //! The sender's identity is stamped by the tool, not the model, so a
-//! `From:` line cannot be forged. Postage is the brake: each agent has
-//! finite stamps, and an empty book turns `send` into an `is_error` result
-//! telling the agent to wrap up with what it has.
+//! `From:` line cannot be forged — which is why the boss can be told to
+//! ship only what arrives signed by `moth`. Postage is the brake *and* the
+//! deadline: books draw on a shared ledger, an empty book turns `send` into
+//! an `is_error` result, and scarcity is what forces the design debate to
+//! converge. Only the human prints postage: `/grant bee 4` at the prompt
+//! credits the ledger directly — the boss can *request* a refill, but no
+//! model is in the approval loop. `/stamps` shows the balances.
 //!
 //! The point: the `Chat` driver is unchanged. N concurrent loops,
-//! agent-to-agent communication, and budget brakes all compose from
-//! [`Tool`], [`ToolBox`], and [`Mailbox`] as they already are.
+//! agent-to-agent communication, role asymmetry (thinkers get words,
+//! builders get shells), and budget brakes all compose from [`Tool`],
+//! [`ToolBox`], and [`Mailbox`] as they already are.
 //!
 //! ```sh
 //! # needs Docker; the published misan-bashd image is pulled on first run
@@ -25,9 +33,12 @@
 //! cargo run --features "client bash-container derive" --example swarm
 //! ```
 //!
-//! Try: "have each worker count the lines in a different section of
-//! /etc/services, then total them." `--verbose` shows the workers thinking;
-//! `--model` steers the boss (workers stay on the default model).
+//! Try: "I want a shell script that prints a histogram of word lengths in
+//! a text file." Watch wasp hunt the edge cases (empty file? punctuation?
+//! locales?) before bee writes a line, and moth hunt for whatever they both
+//! missed. `--verbose` shows the workers thinking; `--model` steers the
+//! boss (workers stay on the default model — half the experiment is
+//! whether small models can argue).
 //!
 //! [`Mailbox`]: misanthropic::tool::Mailbox
 //! [`Notification`]: misanthropic::tool::Notification
@@ -61,8 +72,10 @@ use utils::{BoxError, BudgetPolicy, Printer};
 
 /// The boss's address — the agent whose `Chat` loop is your readline seat.
 const BOSS: &str = "boss";
-/// The headless workers. Each gets a [`Mail`] clone and its own sandbox.
-const WORKERS: [&str; 3] = ["ant", "bee", "moth"];
+/// The headless workers, in pipeline order: `ant` designs, `wasp`
+/// critiques, `bee` implements, `moth` QAs. Each gets a [`Mail`] clone; the
+/// builders (`bee`, `moth`) also get their own sandbox.
+const WORKERS: [&str; 4] = ["ant", "wasp", "bee", "moth"];
 
 /// A boss/worker agent swarm wired together by a mail tool.
 #[derive(Parser, Debug)]
@@ -72,7 +85,8 @@ struct Cli {
     common: utils::CommonArgs,
     #[command(flatten)]
     chat: utils::ChatArgs,
-    /// Stamps per worker; the boss gets one book per worker (3x).
+    /// Stamps per worker book; the boss gets one book per worker (4x).
+    /// Refill a book at the prompt with `/grant <agent> <count>`.
     #[arg(long, default_value_t = 8)]
     stamps: u32,
 }
@@ -88,9 +102,16 @@ type SharedPrinter = Arc<Mutex<Printer>>;
 /// `Chat` guarantees a complete roster before the first letter.
 type Registry = Arc<Mutex<HashMap<String, Mailbox>>>;
 
-/// Hands out [`Mail`] clones sharing one [`Registry`] and one printer.
+/// The stamp accounts: agent name → stamps remaining. Shared (unlike a
+/// per-clone counter) so the human can credit a book mid-run via `/grant` —
+/// models spend from the ledger; only host code writes it upward.
+type Ledger = Arc<Mutex<HashMap<String, u32>>>;
+
+/// Hands out [`Mail`] clones sharing one [`Registry`], one [`Ledger`], and
+/// one printer.
 struct PostOffice {
     registry: Registry,
+    ledger: Ledger,
     printer: SharedPrinter,
 }
 
@@ -98,16 +119,22 @@ impl PostOffice {
     fn new(printer: SharedPrinter) -> Self {
         Self {
             registry: Registry::default(),
+            ledger: Ledger::default(),
             printer,
         }
     }
 
-    /// A [`Mail`] clone for `name`, with a book of `stamps`.
+    /// A [`Mail`] clone for `name`, opening its account with `stamps`.
     fn address(&self, name: impl Into<String>, stamps: u32) -> Mail {
+        let name = name.into();
+        self.ledger
+            .lock()
+            .expect("ledger poisoned")
+            .insert(name.clone(), stamps);
         Mail {
-            name: name.into(),
-            stamps,
+            name,
             registry: Arc::clone(&self.registry),
+            ledger: Arc::clone(&self.ledger),
             printer: Arc::clone(&self.printer),
         }
     }
@@ -116,11 +143,12 @@ impl PostOffice {
 /// One agent's mail client. `send` looks the recipient up in the shared
 /// [`Registry`] and pushes the letter into *their* `Chat` loop as a
 /// `[User]`-preferred notification; the envelope's `From:` is stamped from
-/// this clone's own identity, so the model cannot forge a sender.
+/// this clone's own identity, so the model cannot forge a sender. Postage
+/// draws on the shared [`Ledger`].
 struct Mail {
     name: String,
-    stamps: u32,
     registry: Registry,
+    ledger: Ledger,
     printer: SharedPrinter,
 }
 
@@ -137,6 +165,16 @@ impl Mail {
             .collect();
         names.sort();
         names
+    }
+
+    /// Stamps left in this agent's book.
+    fn balance(&self) -> u32 {
+        self.ledger
+            .lock()
+            .expect("ledger poisoned")
+            .get(&self.name)
+            .copied()
+            .unwrap_or_default()
     }
 }
 
@@ -175,11 +213,11 @@ impl Mail {
         let briefing = format!(
             "<mail>\nYou are `{}`. You can write to: {}. Mail is your only \
              channel to the other agents; results travel in the letter \
-             body. You have {} stamps and each letter costs one, so make \
-             letters count.\n</mail>",
+             body. Your book has {} stamps and each letter costs one, so \
+             make letters count. Only the human can refill a book.\n</mail>",
             self.name,
             self.roster().join(", "),
-            self.stamps,
+            self.balance(),
         );
         match prompt.system.as_mut() {
             Some(system) => {
@@ -196,13 +234,6 @@ impl Mail {
         if letter.to == self.name {
             return Err("you cannot mail yourself".into());
         }
-        if self.stamps == 0 {
-            return Err("out of stamps — no more letters. Wrap up and \
-                        report what you have through channels you already \
-                        opened (or your own reply, if you talk to the \
-                        human directly)."
-                .into());
-        }
         let recipient = self
             .registry
             .lock()
@@ -218,49 +249,123 @@ impl Mail {
             .into());
         };
 
+        // Spend the stamp first (check + debit under one lock, so parallel
+        // tool calls cannot double-spend); refund below if the recipient's
+        // loop turns out to be gone.
+        {
+            let mut ledger = self.ledger.lock().expect("ledger poisoned");
+            let balance = ledger.entry(self.name.clone()).or_default();
+            if *balance == 0 {
+                return Err("out of stamps — no more letters. If the work \
+                            is unfinished, stop here: the boss can ask the \
+                            human for a refill, and a refill will arrive \
+                            as mail. Otherwise wrap up with what you have."
+                    .into());
+            }
+            *balance -= 1;
+        }
+
         // The tool composes the envelope, so `From:` is authoritative.
         let envelope = format!(
             "From: {}\nSubject: {}\n\n{}",
             self.name, letter.subject, letter.body,
         );
         if recipient.send(envelope, vec![Role::User]).is_err() {
+            *self
+                .ledger
+                .lock()
+                .expect("ledger poisoned")
+                .entry(self.name.clone())
+                .or_default() += 1;
             return Err(
                 format!("`{}` is gone (their loop ended)", letter.to).into()
             );
         }
 
-        self.stamps -= 1;
         self.printer.lock().expect("printer poisoned").line(format!(
             "{} ✉ {} ▸ {}",
             self.name, letter.to, letter.subject
         ));
-        Ok(format!("sent ({} stamps left)", self.stamps).into())
+        Ok(format!("sent ({} stamps left)", self.balance()).into())
     }
 }
 
-/// A worker's persona. The mail briefing (identity, roster, postage) is
-/// appended by [`Mail::brief`].
+/// A worker's persona — the role charter. The mail briefing (identity,
+/// roster, postage) is appended by [`Mail::brief`]. The design pair (`ant`,
+/// `wasp`) work in words; the build pair (`bee`, `moth`) each get a
+/// sandboxed bash tool.
 fn worker_prompt(name: &str) -> Prompt {
-    Prompt::default().system(format!(
-        "You are `{name}`, a worker agent in a tiny company run by `boss`. \
-         Work arrives as letters. Do the work with your sandboxed bash \
-         tool, then mail the results back to whoever wrote to you — \
-         usually the boss. You never speak to a human; anything not sent \
-         by mail is lost. For long-running commands use `background: \
-         true` — you'll be notified when the job finishes. Be concise: \
-         letters cost stamps."
-    ))
+    let persona = match name {
+        "ant" => {
+            "You are `ant`, the architect in a tiny software company run \
+             by `boss`. A brief from the boss starts the job. Draft a \
+             design — interface first, the smallest thing that could work \
+             — and mail it to `wasp` for critique. Wasp advises; you \
+             decide; you own the spec. Expect two or three rounds: concede \
+             what wasp proves, defend the rest, revise. If a disagreement \
+             hinges on something empirical, mail `bee` a quick question — \
+             bee has a shell. When the design stabilizes (or your postage \
+             says it must), mail the final spec to `bee` to build. Make it \
+             self-contained: bee sees only your letter. You never write \
+             the implementation and never speak to the human; anything \
+             not mailed is lost."
+        }
+        "wasp" => {
+            "You are `wasp`, the design critic in a tiny software company \
+             run by `boss`. Letters from `ant` carry designs; your job is \
+             to make them survive contact with reality. Never approve a \
+             first draft. Every reply must carry at least two concrete \
+             failure scenarios, edge cases, or a sharper competing design \
+             — vague praise is a wasted stamp. Concede a point only after \
+             ant has specifically addressed it; never concede to be \
+             agreeable. You advise; ant decides. If you two disagree on a \
+             testable fact, mail `bee` to test it instead of arguing. You \
+             never write the implementation and never speak to the human; \
+             anything not mailed is lost."
+        }
+        "bee" => {
+            "You are `bee`, the implementer in a tiny software company run \
+             by `boss`. A spec from `ant` starts the real work: build it \
+             with your sandboxed bash tool, run it, fix it until it works, \
+             then mail the full source plus how you tested it to `moth` \
+             for QA. If moth mails back failures, fix and resubmit to \
+             moth. The designers (`ant`, `wasp`) may also mail you quick \
+             empirical questions mid-design — answer those with a quick \
+             test, tersely; it is not yet the build. For long-running \
+             commands use `background: true` — you'll be notified when \
+             the job finishes. You never speak to the human; anything not \
+             mailed is lost."
+        }
+        "moth" => {
+            "You are `moth`, QA in a tiny software company run by `boss`. \
+             Letters from `bee` carry code. Re-run everything fresh in \
+             your own sandboxed bash tool — trust nothing you did not run \
+             yourself. Then try to break it: empty input, missing files, \
+             weird flags, hostile edge cases. If it breaks, mail the \
+             smallest failing case back to `bee`. When it survives you, \
+             mail `boss` the deliverable with your sign-off: the final \
+             source, how to run it, and what you verified. The boss ships \
+             only what you sign, so sign nothing you have not run. You \
+             never speak to the human; anything not mailed is lost."
+        }
+        other => unreachable!("no persona for `{other}`"),
+    };
+    Prompt::default().system(persona)
 }
 
 /// The boss's persona; the human side of the swarm.
-const BOSS_SYSTEM: &str = "You are `boss`, the coordinator of a tiny agent company. The human \
-     you are chatting with is your client. Your workers each have a \
-     sandboxed bash environment; you do not — you plan, split the work, \
-     and mail each worker a clear, self-contained assignment (a worker \
-     sees only what you write in the letter). Their reports arrive \
-     between the human's messages. Synthesize and answer the human in \
-     chat — that costs no stamps. Your roster and postage are in your \
-     mail briefing.";
+const BOSS_SYSTEM: &str = "You are `boss`, the coordinator of a tiny software company. The human \
+     you are chatting with is your client. Your team: `ant` designs, \
+     `wasp` critiques the design, `bee` implements, `moth` tries to break \
+     it and then signs off. You do not design, code, or test — turn the \
+     client's ask into one clear, self-contained brief and mail it to \
+     `ant`; the pipeline does the rest, and reports arrive between the \
+     human's messages. Treat a deliverable as real only when it arrives in \
+     a letter from `moth` — the From: line cannot be forged, so nothing \
+     else counts as QA. Relay the signed deliverable to the human in chat, \
+     which costs no stamps. You cannot print postage: if a worker runs dry \
+     mid-job, tell the human, who can refill a book with `/grant <agent> \
+     <count>`.";
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -277,29 +382,34 @@ async fn main() -> Result<(), BoxError> {
 
     // Build every toolbox before any `Chat` runs: `add` fires `connect`,
     // which registers the agent's address — so the roster is complete
-    // before the first `on_init` briefing or letter.
+    // before the first `on_init` briefing or letter. The thinkers get
+    // words only; the builders each get a shell.
     let worker_boxes: Vec<(&str, ToolBox)> = WORKERS
         .iter()
         .map(|&name| {
-            let toolbox = ToolBox::new()
-                .add(office.address(name, cli.stamps))
-                .add(RichBash::new(DockerSandbox::default()));
+            let toolbox = ToolBox::new().add(office.address(name, cli.stamps));
+            let toolbox = if matches!(name, "bee" | "moth") {
+                toolbox.add(RichBash::new(DockerSandbox::default()))
+            } else {
+                toolbox
+            };
             (name, toolbox)
         })
         .collect();
     let boss_box = ToolBox::new()
         .add(office.address(BOSS, cli.stamps * WORKERS.len() as u32));
 
-    printer.lock().expect("printer poisoned").line(format!(
-        "The office is open: you ↔ boss; workers {} are booting their \
-         sandboxes. Ctrl-D folds the company.\n",
-        WORKERS.join(", "),
-    ));
+    printer.lock().expect("printer poisoned").line(
+        "The office is open: you ↔ boss; ant designs, wasp critiques, bee \
+         builds, moth QAs (bee and moth are booting sandboxes). You hold \
+         the treasury: `/grant <agent> <count>` refills a book, `/stamps` \
+         shows balances. Ctrl-D folds the company.\n",
+    );
 
     // The workers: headless Chats. Mail is their only stimulus, so the
     // beat closure just pends until shutdown. `FinalWord` instead of the
     // default hand-back: a worker that silently hands back would sit idle
-    // until the next letter, so let it wrap up (and mail the boss) instead.
+    // until the next letter, so let it wrap up (and mail onward) instead.
     let (quit, _) = tokio::sync::watch::channel(false);
     let mut swarm = tokio::task::JoinSet::new();
     for (name, toolbox) in worker_boxes {
@@ -332,8 +442,14 @@ async fn main() -> Result<(), BoxError> {
         });
     }
 
-    // The boss: your seat — the same loop as every chat example. Worker
-    // reports race your typing in the driver's `select!`.
+    // The boss: your seat — the same loop as every chat example, except
+    // the beat closure intercepts `/commands` before they become model
+    // messages. `/grant` credits the ledger directly: refills exist, but
+    // no model is in the approval loop — the same principle as the
+    // stamped `From:` line. The postmaster note wakes the refilled worker.
+    let ledger = Arc::clone(&office.ledger);
+    let registry = Arc::clone(&office.registry);
+    let treasury = Arc::clone(&printer);
     let boss_prompt = cli
         .common
         .configure(Prompt::default().model(Id::Sonnet46).system(BOSS_SYSTEM));
@@ -351,10 +467,71 @@ async fn main() -> Result<(), BoxError> {
             [msg.into()] // seat the turn unchanged
         })
         .run((), async move |_state: &mut ()| {
-            Ok(lines
-                .recv()
-                .await
-                .map(|line| vec![(Role::User, line).into()]))
+            while let Some(line) = lines.recv().await {
+                let Some(command) = line.strip_prefix('/') else {
+                    return Ok(Some(vec![(Role::User, line).into()]));
+                };
+                let print = |msg: String| {
+                    treasury.lock().expect("printer poisoned").line(msg)
+                };
+                let mut words = command.split_whitespace();
+                match (words.next(), words.next(), words.next()) {
+                    (Some("stamps"), None, None) => {
+                        let mut balances: Vec<String> = ledger
+                            .lock()
+                            .expect("ledger poisoned")
+                            .iter()
+                            .map(|(name, n)| format!("{name}: {n}"))
+                            .collect();
+                        balances.sort();
+                        print(balances.join(" | "));
+                    }
+                    (Some("grant"), Some(name), Some(count)) => {
+                        let Ok(count) = count.parse::<u32>() else {
+                            print(format!("`{count}` is not a count"));
+                            continue;
+                        };
+                        let balance = {
+                            let mut ledger =
+                                ledger.lock().expect("ledger poisoned");
+                            match ledger.get_mut(name) {
+                                Some(balance) => {
+                                    *balance += count;
+                                    *balance
+                                }
+                                None => {
+                                    print(format!("no agent named `{name}`"));
+                                    continue;
+                                }
+                            }
+                        };
+                        // Wake the recipient: an empty book left them with
+                        // no way to act, so the refill itself is mail.
+                        let mailbox = registry
+                            .lock()
+                            .expect("registry poisoned")
+                            .get(name)
+                            .cloned();
+                        if let Some(mailbox) = mailbox {
+                            let _ = mailbox.send(
+                                format!(
+                                    "From: postmaster\nSubject: postage\n\n\
+                                     The human refilled your book: +{count} \
+                                     stamps (balance: {balance}). Carry on."
+                                ),
+                                vec![Role::User],
+                            );
+                        }
+                        print(format!(
+                            "granted {name} +{count} (balance: {balance})"
+                        ));
+                    }
+                    _ => print(
+                        "commands: /grant <agent> <count>, /stamps".into(),
+                    ),
+                }
+            }
+            Ok(None)
         })
         .await;
 
