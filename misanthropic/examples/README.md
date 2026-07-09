@@ -38,7 +38,7 @@ the `Chat` loop's tracing: `RUST_LOG=debug just run-example bash_background`.
 | `programmatic_tool_calling` | The `code_execution` tool calling a custom `.programmatic()` tool from inside the container (PTC). | `client` |
 | `neologism` | A non-streaming `Client::message` call with a custom system prompt. | `client` |
 | `website_wizard` | **Streaming** with `Client::stream` — collects a generated HTML page. | `client` |
-| `swarm` | **A multi-agent swarm** — a boss and three workers, one concurrent `Chat` loop each, wired together by a `#[tool]` mail tool with postage stamps; workers carry sandboxed bash. Needs Docker. | `client, bash-container, derive` |
+| `swarm` | **A multi-agent swarm** — a dev team in miniature: boss coordinates, ant designs, wasp critiques, bee implements, moth QAs; one concurrent `Chat` loop each, wired by a `#[tool]` mail tool with a postage ledger only the human refills (`/grant`). Needs Docker. | `client, bash-container, derive` |
 
 ## Shared helpers (`utils/`)
 
