@@ -317,7 +317,7 @@ impl Client {
         #[cfg(feature = "log")]
         {
             if let Ok(json) = serde_json::to_string_pretty(&body) {
-                log::debug!("POST({}):{}", &url, json);
+                log::debug!("POST({}):{}", url, json);
             } else {
                 log::warn!("Could not serialize body. Request will fail.");
             }
