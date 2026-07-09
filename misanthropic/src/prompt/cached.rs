@@ -36,6 +36,7 @@
 //! | [`set_top_p`] | Not part of the cache key |
 //! | [`set_stop_sequences`] | Not part of the cache key |
 //! | [`set_metadata`] | Not part of the cache key |
+//! | [`set_auto_cache`] | Server-side trailing breakpoint — adds, never mutates |
 //!
 //! [`push_message`]: CachedPrompt::push_message
 //! [`cache`]: CachedPrompt::cache
@@ -45,6 +46,7 @@
 //! [`set_top_p`]: CachedPrompt::set_top_p
 //! [`set_stop_sequences`]: CachedPrompt::set_stop_sequences
 //! [`set_metadata`]: CachedPrompt::set_metadata
+//! [`set_auto_cache`]: CachedPrompt::set_auto_cache
 //!
 //! # Cache-breaking fields (immutable after construction)
 //!
@@ -399,6 +401,27 @@ impl CachedPrompt {
         metadata: serde_json::Map<String, serde_json::Value>,
     ) {
         self.inner.metadata = metadata;
+    }
+
+    /// Enable [automatic prompt caching]: the API places a breakpoint on the
+    /// last cacheable block server-side, at request time, with the default
+    /// 5-minute TTL. Cache-safe — it only ever *adds* a trailing breakpoint;
+    /// the prefix content is untouched. Composes with the wrapper's manual
+    /// breakpoints ([`cache`], [`cache_windowed`], …) under the API's shared
+    /// 4-breakpoint budget.
+    ///
+    /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    /// [`cache`]: CachedPrompt::cache
+    /// [`cache_windowed`]: CachedPrompt::cache_windowed
+    pub fn set_auto_cache(&mut self) {
+        self.inner.cache_control =
+            Some(crate::prompt::message::CacheControl::ephemeral());
+    }
+
+    /// [`set_auto_cache`](CachedPrompt::set_auto_cache) with a 1-hour TTL.
+    pub fn set_auto_cache_1h(&mut self) {
+        self.inner.cache_control =
+            Some(crate::prompt::message::CacheControl::one_hour());
     }
 }
 
@@ -931,5 +954,19 @@ mod tests {
 
         content.uncache();
         assert!(!content.has_cache());
+    }
+
+    #[test]
+    fn set_auto_cache_sets_top_level_cache_control() {
+        let mut cached = CachedPrompt::cached(Prompt::default());
+        assert!(cached.cache_control.is_none());
+
+        cached.set_auto_cache();
+        let json = serde_json::to_value(&cached).unwrap();
+        assert_eq!(json["cache_control"]["type"], "ephemeral");
+
+        cached.set_auto_cache_1h();
+        let json = serde_json::to_value(&cached).unwrap();
+        assert_eq!(json["cache_control"]["ttl"], "1h");
     }
 }
