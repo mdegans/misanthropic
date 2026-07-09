@@ -449,4 +449,9 @@ name = "batch_haiku"
 required-features = ["batch"]
 doc-scrape-examples = true
 
+[[example]]
+name = "prompt_caching"
+required-features = ["client"]
+doc-scrape-examples = true
+
 # See also the `chat` example in the root of the repository.
