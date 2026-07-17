@@ -15,7 +15,10 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
-## [1.0.0-alpha.9] — 2026-07-17
+## [1.0.0-alpha.10] — 2026-07-17
+
+Re-tag of the unpublished alpha.9 (its release check requires a bump; the
+derive path dep lacked the version requirement publishing needs).
 
 ### Added
 
