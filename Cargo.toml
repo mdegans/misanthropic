@@ -12,7 +12,7 @@ members = [
 # Shared package metadata. Members opt in per-field with `version.workspace =
 # true` etc., so the version lives in exactly one place.
 [workspace.package]
-version = "1.0.0-alpha.9"
+version = "1.0.0-alpha.10"
 edition = "2024"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 homepage = "https://github.com/mdegans/misanthropic"
@@ -29,7 +29,7 @@ rust.missing_docs = "deny"
 # and is required for publishing — bump it together with
 # `workspace.package.version` above.
 [workspace.dependencies]
-misanthropic-derive = { path = "misanthropic-derive", version = "=1.0.0-alpha.9" }
+misanthropic-derive = { path = "misanthropic-derive", version = "=1.0.0-alpha.10" }
 
 [profile.release]
 lto = true
