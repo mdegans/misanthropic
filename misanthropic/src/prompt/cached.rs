@@ -77,11 +77,6 @@ use serde::{Deserialize, Serialize};
 use super::message::CacheControl;
 use super::{Message, Prompt, TurnOrderError};
 
-/// Maximum `cache_control` markers Anthropic accepts in a single request,
-/// counted across `tools` + `system` + `messages`. See
-/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#cache-limitations>.
-const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
-
 /// A [`Prompt`] with an immutable cache prefix.
 ///
 /// # Construction
@@ -313,58 +308,10 @@ impl CachedPrompt {
         n: usize,
         cache_control: CacheControl,
     ) {
-        // 1. Mark up to `n` positions at the tail, spaced by 2:
-        //    `len-1, len-3, …, len-1 - 2(n-1)`. Skip out-of-bounds indices.
-        //    Skip positions that already carry a marker so the existing
-        //    TTL is preserved.
-        let len = self.inner.messages.len();
-        let mut tail_set: std::collections::HashSet<usize> =
-            std::collections::HashSet::with_capacity(n);
-        for k in 0..n {
-            let idx_signed = len as isize - 1 - 2 * (k as isize);
-            if idx_signed < 0 {
-                break;
-            }
-            let idx = idx_signed as usize;
-            if !self.inner.messages[idx].content.has_cache() {
-                self.inner.messages[idx]
-                    .content
-                    .cache_with(cache_control.clone());
-            }
-            tail_set.insert(idx);
-        }
-
-        // 2. Account for sticky prefix markers (system + tools) and the
-        //    tail set the caller just requested, then compute what's left
-        //    for any pre-existing non-tail message-level markers.
-        let system_count = usize::from(
-            self.inner.system.as_ref().is_some_and(|s| s.has_cache()),
-        );
-        let tool_count =
-            self.inner.tools.as_ref().map_or(0, |tools| {
-                tools.iter().filter(|t| t.is_cached()).count()
-            });
-        let used = system_count + tool_count + tail_set.len();
-        let non_tail_budget =
-            MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
-
-        // 3. Walk non-tail message-level breakpoints in document order.
-        //    Keep the earliest `non_tail_budget` (i.e. the beginning);
-        //    evict the rest (the middle stragglers).
-        let non_tail_indices: Vec<usize> = self
-            .inner
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(i, msg)| msg.content.has_cache() && !tail_set.contains(i))
-            .map(|(i, _)| i)
-            .collect();
-
-        if non_tail_indices.len() > non_tail_budget {
-            for &idx in &non_tail_indices[non_tail_budget..] {
-                self.inner.messages[idx].content.uncache();
-            }
-        }
+        // The algorithm lives on `Prompt` (promoted so plain prompts get
+        // budget-aware windowed marking too); the frozen prefix is
+        // unaffected — markers only ever move within `messages`.
+        self.inner.cache_windowed_with(n, cache_control);
     }
 
     /// Set `max_tokens`.  Not part of the cache key.
