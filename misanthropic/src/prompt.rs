@@ -41,6 +41,11 @@ pub use output::{Effort, Items, JsonSchemaFormat, OutputConfig, OutputFormat};
 pub mod index;
 pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 
+/// Maximum `cache_control` markers Anthropic accepts in a single request,
+/// counted across `tools` + `system` + `messages`. See
+/// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#cache-limitations>.
+const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
+
 /// Request for the [Anthropic Messages API].
 ///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
@@ -1404,6 +1409,135 @@ impl Prompt {
         self.cache_control =
             Some(crate::prompt::message::CacheControl::one_hour());
         self
+    }
+
+    /// Place `n` cache breakpoints in a rolling trailing window across
+    /// `messages`, spaced 2 positions apart, then enforce the API's hard
+    /// 4-marker budget by evicting older message-level breakpoints.
+    ///
+    /// The window lands on indices `[len-1, len-3, …, len-1 - 2(n-1)]`,
+    /// skipping any position that would fall before message 0. The 2-step
+    /// spacing matches the typical "push assistant + push user_results
+    /// per round" cadence: when this method is called again after another
+    /// such pair is pushed, the new `len-1 - 2k` aligns with the previous
+    /// call's `len-1 - 2(k-1)`, so an already-marked message gets re-marked
+    /// (a no-op when present) rather than the marker jumping role.
+    ///
+    /// This pins the rolling window to the role of the trailing message at
+    /// the *first* call's marker site. Subsequent calls in the same cadence
+    /// keep the marker on the same role, which is what backends that key
+    /// prefix re-use on the trailing-assistant render hash need to fire.
+    ///
+    /// # Budget enforcement
+    ///
+    /// Anthropic accepts at most **4** `cache_control` markers per request,
+    /// counted across `tools` + `system` + `messages`. This method counts
+    /// the existing `system` / tools markers as a fixed prefix-cache cost
+    /// and gives the rolling window the remaining budget. When the total
+    /// would exceed 4 it evicts the **oldest message-level** markers — the
+    /// system and tools markers are left untouched.
+    ///
+    /// A position already carrying a `cache_control` marker is left alone
+    /// (its existing TTL is preserved); only freshly marked positions take
+    /// the requested `cache_control`.
+    ///
+    /// # Typical usage
+    ///
+    /// Call [`cache`] once after building the initial prompt to mark the
+    /// `tools` / `system` prefix, then `cache_windowed(2)` after each
+    /// tool-use round. With 1 prefix marker + 2 message markers this fits
+    /// inside the 4-budget with one slot left over.
+    ///
+    /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL use
+    /// [`cache_windowed_1h`](Prompt::cache_windowed_1h), or pass
+    /// an explicit [`CacheControl`](message::CacheControl) via
+    /// [`cache_windowed_with`](Prompt::cache_windowed_with).
+    ///
+    /// [`cache`]: Prompt::cache
+    pub fn cache_windowed(&mut self, n: usize) {
+        self.cache_windowed_with(
+            n,
+            crate::prompt::message::CacheControl::ephemeral(),
+        );
+    }
+
+    /// Like [`cache_windowed`](Prompt::cache_windowed) but uses a 1-hour
+    /// TTL on the new breakpoint.
+    ///
+    /// Useful when rounds may be separated by more than the default
+    /// 5-minute window — for example, a human-driven deliberation loop
+    /// where the operator reads each response before calling the next
+    /// round.
+    pub fn cache_windowed_1h(&mut self, n: usize) {
+        self.cache_windowed_with(
+            n,
+            crate::prompt::message::CacheControl::one_hour(),
+        );
+    }
+
+    /// Like [`cache_windowed`](Prompt::cache_windowed) but lets the
+    /// caller choose the [`CacheControl`](message::CacheControl) applied
+    /// to freshly marked positions.
+    ///
+    /// Positions already carrying a marker retain whatever `CacheControl`
+    /// they were originally given. When the 4-marker budget forces
+    /// eviction, **middle** message-level markers (those not in the tail
+    /// window) are removed first, oldest-non-tail kept last — so the
+    /// earliest message-level marker the caller placed (typically the
+    /// initial prefix marker) survives as long as the budget allows.
+    pub fn cache_windowed_with(
+        &mut self,
+        n: usize,
+        cache_control: crate::prompt::message::CacheControl,
+    ) {
+        // 1. Mark up to `n` positions at the tail, spaced by 2:
+        //    `len-1, len-3, …, len-1 - 2(n-1)`. Skip out-of-bounds indices.
+        //    Skip positions that already carry a marker so the existing
+        //    TTL is preserved.
+        let len = self.messages.len();
+        let mut tail_set: std::collections::HashSet<usize> =
+            std::collections::HashSet::with_capacity(n);
+        for k in 0..n {
+            let idx_signed = len as isize - 1 - 2 * (k as isize);
+            if idx_signed < 0 {
+                break;
+            }
+            let idx = idx_signed as usize;
+            if !self.messages[idx].content.has_cache() {
+                self.messages[idx].content.cache_with(cache_control.clone());
+            }
+            tail_set.insert(idx);
+        }
+
+        // 2. Account for sticky prefix markers (system + tools) and the
+        //    tail set the caller just requested, then compute what's left
+        //    for any pre-existing non-tail message-level markers.
+        let system_count =
+            usize::from(self.system.as_ref().is_some_and(|s| s.has_cache()));
+        let tool_count = self
+            .tools
+            .as_ref()
+            .map_or(0, |tools| tools.iter().filter(|t| t.is_cached()).count());
+        let used = system_count + tool_count + tail_set.len();
+        let non_tail_budget =
+            MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
+
+        // 3. Walk non-tail message-level breakpoints in document order.
+        //    Keep the earliest `non_tail_budget` (i.e. the beginning);
+        //    evict the rest (the middle stragglers).
+        let non_tail_indices: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter(|(i, msg)| msg.content.has_cache() && !tail_set.contains(i))
+            .map(|(i, _)| i)
+            .collect();
+
+        if non_tail_indices.len() > non_tail_budget {
+            for &idx in &non_tail_indices[non_tail_budget..] {
+                self.messages[idx].content.uncache();
+            }
+        }
     }
 
     /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for
