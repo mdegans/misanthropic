@@ -446,18 +446,20 @@ impl<P> Ready<P> {
 
         let mut results = Vec::with_capacity(ids.len());
         for id in ids {
-            let succeeded =
-                match self.pending.meta.stats.succeeded.checked_sub(1) {
-                    Some(s) => s,
-                    None => {
-                        #[cfg(feature = "log")]
-                        log::error!(
-                            "meta.stats.succeeded underflowed for batch: {}",
-                            self.pending.meta.id
-                        );
-                        0
-                    }
-                };
+            let succeeded = self
+                .pending
+                .meta
+                .stats
+                .succeeded
+                .checked_sub(1)
+                .unwrap_or_else(|| {
+                    #[cfg(feature = "log")]
+                    log::error!(
+                        "meta.stats.succeeded underflowed for batch: {}",
+                        self.pending.meta.id
+                    );
+                    0
+                });
             self.pending.meta.stats.succeeded = succeeded;
 
             let prompt =
@@ -504,17 +506,20 @@ impl<P> Ready<P> {
 
         let mut results = Vec::with_capacity(ids.len());
         for id in ids {
-            let errored = match self.pending.meta.stats.errored.checked_sub(1) {
-                Some(s) => s,
-                None => {
+            let errored = self
+                .pending
+                .meta
+                .stats
+                .errored
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.errored underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
+                });
             self.pending.meta.stats.errored = errored;
 
             let prompt =
@@ -559,18 +564,20 @@ impl<P> Ready<P> {
 
         let mut results = Vec::with_capacity(ids.len());
         for id in ids {
-            let canceled = match self.pending.meta.stats.canceled.checked_sub(1)
-            {
-                Some(s) => s,
-                None => {
+            let canceled = self
+                .pending
+                .meta
+                .stats
+                .canceled
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.canceled underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
+                });
             self.pending.meta.stats.canceled = canceled;
 
             let prompt =
@@ -609,17 +616,20 @@ impl<P> Ready<P> {
 
         let mut results = Vec::with_capacity(ids.len());
         for id in ids {
-            let expired = match self.pending.meta.stats.expired.checked_sub(1) {
-                Some(s) => s,
-                None => {
+            let expired = self
+                .pending
+                .meta
+                .stats
+                .expired
+                .checked_sub(1)
+                .unwrap_or_else(|| {
                     #[cfg(feature = "log")]
                     log::error!(
                         "meta.stats.expired underflowed for batch: {}",
                         self.pending.meta.id
                     );
                     0
-                }
-            };
+                });
             self.pending.meta.stats.expired = expired;
 
             let prompt =
