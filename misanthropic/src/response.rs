@@ -6,8 +6,8 @@ use derive_more::derive::IsVariant;
 
 pub(crate) mod message;
 pub use message::{
-    CacheCreation, Container, JsonError, Kind, Message, OutputTokensDetails,
-    StopDetails, StopReason, TokenCounts, Usage,
+    Builder, CacheCreation, Container, JsonError, Kind, Message,
+    OutputTokensDetails, StopDetails, StopReason, TokenCounts, Usage,
 };
 
 use crate::prompt;

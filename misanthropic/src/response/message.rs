@@ -186,6 +186,98 @@ impl Message {
         let inner = self.inner.remove_incomplete_thought()?;
         Some(Self { inner, ..self })
     }
+
+    /// Construction path for inference *providers* — local engines and
+    /// proxies that synthesize a response rather than deserialize one off
+    /// the wire. The [`Client`] never needs this. Everything not set
+    /// defaults: a fresh UUID [`id`], [`Kind::Message`], `None` stop
+    /// metadata, [`Usage::default`].
+    ///
+    /// [`Client`]: crate::Client
+    /// [`id`]: Message::id
+    pub fn builder(
+        model: impl Into<model::Model>,
+        inner: prompt::AssistantMessage,
+    ) -> Builder {
+        Builder {
+            message: Message {
+                id: Cow::Owned(uuid::Uuid::new_v4().to_string()),
+                kind: Some(Kind::Message),
+                inner,
+                model: model.into(),
+                stop_reason: None,
+                stop_sequence: None,
+                stop_details: None,
+                usage: Usage::default(),
+                container: None,
+            },
+        }
+    }
+}
+
+/// Builder for a provider-side [`Message`] — see [`Message::builder`].
+#[derive(Clone, Debug)]
+pub struct Builder {
+    message: Message,
+}
+
+impl Builder {
+    /// Override the generated UUID [`id`](Message::id) — e.g. to correlate
+    /// the response with an out-of-band stream.
+    pub fn id(mut self, id: impl Into<Cow<'static, str>>) -> Self {
+        self.message.id = id.into();
+        self
+    }
+
+    /// The reason the model stopped. Accepts a bare [`StopReason`] or an
+    /// `Option` passed straight through.
+    pub fn stop_reason(
+        mut self,
+        stop_reason: impl Into<Option<StopReason>>,
+    ) -> Self {
+        self.message.stop_reason = stop_reason.into();
+        self
+    }
+
+    /// The stop sequence that fired, if [`stop_reason`](Self::stop_reason)
+    /// is [`StopSequence`](StopReason::StopSequence).
+    pub fn stop_sequence(
+        mut self,
+        stop_sequence: impl Into<Option<Cow<'static, str>>>,
+    ) -> Self {
+        self.message.stop_sequence = stop_sequence.into();
+        self
+    }
+
+    /// Structured stop detail — see [`StopDetails`].
+    pub fn stop_details(
+        mut self,
+        stop_details: impl Into<Option<Box<StopDetails>>>,
+    ) -> Self {
+        self.message.stop_details = stop_details.into();
+        self
+    }
+
+    /// Usage statistics. Accepts [`Usage`] or bare [`TokenCounts`].
+    pub fn usage(mut self, usage: impl Into<Usage>) -> Self {
+        self.message.usage = usage.into();
+        self
+    }
+
+    /// The code-execution container backing the turn — see
+    /// [`Container`].
+    pub fn container(
+        mut self,
+        container: impl Into<Option<Box<Container>>>,
+    ) -> Self {
+        self.message.container = container.into();
+        self
+    }
+
+    /// Finish. Infallible — every field has a sane provider-side default.
+    pub fn build(self) -> Message {
+        self.message
+    }
 }
 
 /// Reason the model stopped generating tokens.
@@ -320,6 +412,19 @@ pub struct TokenCounts {
     /// ran. See [`ServerMethodDef`](crate::tool::ServerMethodDef).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub server_tool_use: Option<ServerToolUsage>,
+}
+
+impl TokenCounts {
+    /// The two counters every completion has. The optional detail fields
+    /// stay [`Default`] — all fields are `pub`, so assign the ones you have
+    /// (e.g. `cache_read_input_tokens`) and [`Usage`] is a `.into()` away.
+    pub fn new(input_tokens: u64, output_tokens: u64) -> Self {
+        Self {
+            input_tokens,
+            output_tokens,
+            ..Default::default()
+        }
+    }
 }
 
 /// The `output_tokens_details` object in [`TokenCounts`]: how many of the
@@ -760,5 +865,40 @@ mod tests {
         let expected = "### Assistant\n\nHello, **world**!";
         let markdown = message.markdown();
         assert_eq!(markdown.as_ref(), expected);
+    }
+
+    /// The builder reproduces a wire-deserialized message exactly — the
+    /// provider-side construction path (#134) is field-for-field equivalent
+    /// to the deserialize path the `Client` uses.
+    #[test]
+    fn builder_matches_deserialize_path() {
+        let wire: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+
+        let built =
+            Message::builder(crate::Id::Sonnet35_20240620, wire.inner.clone())
+                .id("msg_013Zva2CMHLNnXjNJJKqJ2EF")
+                .stop_reason(StopReason::EndTurn)
+                .usage(TokenCounts::new(2095, 503))
+                .build();
+
+        assert_eq!(built, wire);
+    }
+
+    /// Builder defaults: fresh non-empty UUID id, `Kind::Message`, custom
+    /// model id, default usage — and the result serde round-trips.
+    #[test]
+    fn builder_defaults_round_trip() {
+        let wire: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+
+        let built = Message::builder("local-model", wire.inner).build();
+
+        assert!(!built.id.is_empty());
+        assert!(matches!(built.kind, Some(Kind::Message)));
+        assert_eq!(built.model.name(), "local-model");
+        assert!(built.stop_reason.is_none());
+
+        let json = serde_json::to_string(&built).unwrap();
+        let round: Message = serde_json::from_str(&json).unwrap();
+        assert_eq!(round, built);
     }
 }
