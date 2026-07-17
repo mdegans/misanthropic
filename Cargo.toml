@@ -24,9 +24,12 @@ rust.unsafe_code = "forbid"
 rust.missing_docs = "deny"
 
 # Shared dependency declarations. The inter-crate version/path is defined once
-# here; members use `misanthropic-derive = { workspace = true }`.
+# here; members use `misanthropic-derive = { workspace = true }`. The version
+# must be a literal (`version.workspace = true` is not allowed in this table)
+# and is required for publishing — bump it together with
+# `workspace.package.version` above.
 [workspace.dependencies]
-misanthropic-derive = { path = "misanthropic-derive" }
+misanthropic-derive = { path = "misanthropic-derive", version = "=1.0.0-alpha.9" }
 
 [profile.release]
 lto = true
