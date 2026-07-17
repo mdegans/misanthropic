@@ -26,8 +26,10 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # `--locked` so a stale committed lockfile (the alpha.10 failure —
+      # the image build's --locked tripped on it) also fails here.
       - name: cargo publish --workspace --dry-run
-        run: cargo publish --workspace --dry-run
+        run: cargo publish --workspace --dry-run --locked
 
   # Build the `bashd` daemon as a static linux-musl binary (the artifact the
   # `DockerSandbox` injects into a container) and run its unit tests.

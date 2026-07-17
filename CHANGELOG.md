@@ -15,10 +15,12 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
-## [1.0.0-alpha.10] — 2026-07-17
+## [1.0.0-alpha.11] — 2026-07-17
 
-Re-tag of the unpublished alpha.9 (its release check requires a bump; the
-derive path dep lacked the version requirement publishing needs).
+Re-tag of the unpublished alpha.9/alpha.10 (tags are immutable, so each
+failed release burns a version: alpha.9 lacked the derive path-dep version
+requirement publishing needs; alpha.10's tracked lockfile was stale against
+the bumped member versions, tripping the image build's `--locked`).
 
 ### Added
 
