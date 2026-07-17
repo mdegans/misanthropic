@@ -98,6 +98,29 @@ pub struct ModelInfo {
 }
 
 impl ModelInfo {
+    /// Construction path for inference *providers* — a local engine
+    /// advertising itself through [`Transport::models`] rather than
+    /// deserializing the `/v1/models` response. Everything not passed
+    /// defaults: [`Capabilities::default`], token ceilings `0` (meaning
+    /// "unstated" — see [`satisfies`](Self::satisfies)), [`Kind::Model`],
+    /// and a `created_at` of the Unix epoch (the provider-side "no date").
+    ///
+    /// [`Transport::models`]: crate::Transport::models
+    pub fn new(
+        id: impl Into<Model>,
+        display_name: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            display_name: display_name.into(),
+            capabilities: Capabilities::default(),
+            max_input_tokens: 0,
+            max_tokens: 0,
+            kind: Kind::default(),
+            created_at: DateTime::UNIX_EPOCH,
+        }
+    }
+
     /// Whether this *offered* model (as returned by
     /// [`Client::models`](crate::Client::models)) meets a `requested` spec:
     /// same [`id`](Self::id) and [`kind`](Self::kind), token ceilings at least
