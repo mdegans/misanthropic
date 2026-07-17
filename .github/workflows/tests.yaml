@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Prove the workspace is *publishable* before anything is tagged — the
+  # missing-version-on-path-dep class of failure (#133, repeated at
+  # alpha.9) only surfaces at `cargo publish` time otherwise. Dry-run
+  # packages and verifies every publishable member without touching
+  # crates.io.
+  publish-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: cargo publish --workspace --dry-run
+        run: cargo publish --workspace --dry-run
+
   # Build the `bashd` daemon as a static linux-musl binary (the artifact the
   # `DockerSandbox` injects into a container) and run its unit tests.
   bashd-musl:
