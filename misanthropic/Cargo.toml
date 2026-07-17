@@ -19,6 +19,7 @@ categories = [
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+features = ["chat"]
 
 [dependencies]
 # For base64 encoding/decoding, obvs.

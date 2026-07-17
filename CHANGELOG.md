@@ -15,6 +15,29 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.9] — 2026-07-17
+
+### Added
+
+- **`Transport` — the prompt→message call shape** (#126). Trait-level prompt
+  generic (`Transport<P = Prompt>`, dyn-compatible per prompt type) with
+  `send`, an order-preserving `send_batch` default bounded by
+  `max_concurrency`, `models()`, and `quirks()`. `Client` implements it for
+  `Prompt` and `CachedPrompt`. `Quirks` moves in from agentkit — endpoint
+  behavior as data, `Default` is canonical Anthropic.
+- **`Chat` promoted from the examples into the crate** (#104), behind the new
+  `chat` feature — transport-generic, tokio-free (`futures::select!`), and
+  independent of `client`. New opt-in quirk-aware cache placement
+  (`Chat::cache`): canonical endpoints get `auto_cache` semantics,
+  `breakpoint_after_assistant` transports a budget-aware rolling window
+  re-marked per assistant turn, marker-ignoring endpoints nothing.
+  Prompt-only for now — `CachedPrompt` genericity stays open on #104.
+- **`response::Message::builder` + `TokenCounts::new`** (#134). The
+  construction path for inference providers that synthesize responses rather
+  than deserialize them; field-for-field equivalent to the deserialize path.
+- **`Prompt::cache_windowed{,_1h,_with}`** — the budget-aware rolling
+  breakpoint window, promoted from `CachedPrompt` (which now delegates).
+
 ## [1.0.0-alpha.5] — 2026-06-30
 
 ### Added
