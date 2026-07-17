@@ -45,6 +45,11 @@ pub use response::Response;
 pub mod transport;
 pub use transport::{Quirks, Transport};
 
+#[cfg(feature = "chat")]
+pub mod chat;
+#[cfg(feature = "chat")]
+pub use chat::{BudgetPolicy, Chat};
+
 #[cfg(feature = "markdown")]
 /// Markdown utilities for parsing and rendering.
 pub mod markdown;
