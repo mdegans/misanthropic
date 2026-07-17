@@ -42,6 +42,9 @@ pub use tool::Tool;
 pub mod response;
 pub use response::Response;
 
+pub mod transport;
+pub use transport::{Quirks, Transport};
+
 #[cfg(feature = "markdown")]
 /// Markdown utilities for parsing and rendering.
 pub mod markdown;
