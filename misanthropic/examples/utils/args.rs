@@ -75,7 +75,10 @@ pub struct ChatArgs {
 impl ChatArgs {
     /// Apply `--max-tool-calls` onto a [`Chat`](super::Chat) if set, else leave
     /// the driver's default.
-    pub fn configure<S>(&self, chat: super::Chat<S>) -> super::Chat<S> {
+    pub fn configure<S, T: misanthropic::Transport>(
+        &self,
+        chat: super::Chat<S, T>,
+    ) -> super::Chat<S, T> {
         match self.max_tool_calls {
             Some(max) => chat.max_consecutive_tool_calls(max),
             None => chat,

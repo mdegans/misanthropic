@@ -239,7 +239,7 @@ strum = { version = "0.26", features = ["derive"] }
 # so the client's internal logs surface without an extra `--features log`. This
 # self path dev-dependency is dev/test/bench-scoped only: `cargo build` and
 # downstream consumers keep `log` opt-in. See the `run-example` just recipe.
-misanthropic = { path = ".", features = ["log"] }
+misanthropic = { path = ".", features = ["log", "chat"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -399,7 +399,7 @@ doc-scrape-examples = true
 
 [[example]]
 name = "memory"
-required-features = ["client", "memory-fs"]
+required-features = ["client", "memory-fs", "chat"]
 doc-scrape-examples = true
 
 [[example]]
@@ -434,17 +434,17 @@ doc-scrape-examples = true
 
 [[example]]
 name = "bash_background"
-required-features = ["client", "bash-container", "derive"]
+required-features = ["client", "bash-container", "derive", "chat"]
 doc-scrape-examples = true
 
 [[example]]
 name = "reminder"
-required-features = ["client", "derive"]
+required-features = ["client", "derive", "chat"]
 doc-scrape-examples = true
 
 [[example]]
 name = "swarm"
-required-features = ["client", "bash-container", "derive"]
+required-features = ["client", "bash-container", "derive", "chat"]
 doc-scrape-examples = true
 
 [[example]]

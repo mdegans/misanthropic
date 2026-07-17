@@ -6,13 +6,11 @@
 //! [`api_key`] / flatten [`CommonArgs`].
 #![allow(dead_code)]
 
-// The chat driver needs a `Client`, so it rides the same feature.
-#[cfg(feature = "client")]
-mod chat;
-// `BoxError` is part of the helper's API but not every example names it.
-#[cfg(feature = "client")]
+// The chat driver is crate API now (promoted in #104); re-exported so the
+// examples' `utils::Chat` call sites read unchanged.
+// `BoxError` is part of the driver's API but not every example names it.
 #[allow(unused_imports)]
-pub use chat::{BoxError, BudgetPolicy, Chat};
+pub use misanthropic::chat::{BoxError, BudgetPolicy, Chat};
 
 // API-key acquisition; uses `BoxError`, so it rides the `client` feature too.
 #[cfg(feature = "client")]
