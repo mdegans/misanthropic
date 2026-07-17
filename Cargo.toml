@@ -12,7 +12,7 @@ members = [
 # Shared package metadata. Members opt in per-field with `version.workspace =
 # true` etc., so the version lives in exactly one place.
 [workspace.package]
-version = "1.0.0-alpha.8"
+version = "1.0.0-alpha.9"
 edition = "2024"
 authors = ["Michael de Gans <michael.john.degans@gmail.com>"]
 homepage = "https://github.com/mdegans/misanthropic"
