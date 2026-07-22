@@ -129,6 +129,88 @@ impl Transport<crate::CachedPrompt> for crate::Client {
     }
 }
 
+// Forwarding impls for the pointers a *type-erased* transport travels in.
+// [`Transport`] is dyn-compatible per prompt type, but `dyn Transport<…>` is
+// unsized, so anything generic over `T: Transport` — [`Chat`] among them —
+// takes the pointer, not the object. Without these, erasure compiles right
+// up until the first `Chat::new`.
+//
+// `Arc` is the load-bearing one: a multi-agent driver hands N chat loops a
+// clone apiece of one shared endpoint. `Box` is here because it is what a
+// reader reaches for first when erasing a single owner.
+//
+// Every method forwards, the defaulted ones included. Inheriting the
+// defaults instead would silently downgrade an implementor's `send_batch`,
+// `quirks`, or `max_concurrency` the moment it was boxed — a native batch
+// endpoint quietly falling back to serial `send`s, or a local engine's
+// quirks reverting to canonical Anthropic behavior, with nothing at the
+// call site to suggest the pointer changed the answer.
+//
+// [`Chat`]: crate::chat::Chat
+#[async_trait::async_trait]
+impl<P, T> Transport<P> for std::sync::Arc<T>
+where
+    P: Serialize + Send + Sync,
+    T: Transport<P> + ?Sized,
+{
+    type Error = T::Error;
+
+    async fn send(&self, prompt: &P) -> Result<response::Message, Self::Error> {
+        (**self).send(prompt).await
+    }
+
+    async fn send_batch(
+        &self,
+        prompts: &[&P],
+    ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
+        (**self).send_batch(prompts).await
+    }
+
+    async fn models(&self) -> Result<model::Models, Self::Error> {
+        (**self).models().await
+    }
+
+    fn quirks(&self) -> Quirks {
+        (**self).quirks()
+    }
+
+    fn max_concurrency(&self) -> NonZeroUsize {
+        (**self).max_concurrency()
+    }
+}
+
+#[async_trait::async_trait]
+impl<P, T> Transport<P> for Box<T>
+where
+    P: Serialize + Send + Sync,
+    T: Transport<P> + ?Sized,
+{
+    type Error = T::Error;
+
+    async fn send(&self, prompt: &P) -> Result<response::Message, Self::Error> {
+        (**self).send(prompt).await
+    }
+
+    async fn send_batch(
+        &self,
+        prompts: &[&P],
+    ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
+        (**self).send_batch(prompts).await
+    }
+
+    async fn models(&self) -> Result<model::Models, Self::Error> {
+        (**self).models().await
+    }
+
+    fn quirks(&self) -> Quirks {
+        (**self).quirks()
+    }
+
+    fn max_concurrency(&self) -> NonZeroUsize {
+        (**self).max_concurrency()
+    }
+}
+
 #[cfg(feature = "client")]
 static_assertions::assert_impl_all!(crate::Client: Send, Sync, Clone);
 #[cfg(feature = "client")]
@@ -302,5 +384,59 @@ pub(crate) mod tests {
 
         assert!(results[0].is_ok());
         assert!(results[1].is_err());
+    }
+
+    /// The point of the smart-pointer impls: an *erased* transport still
+    /// satisfies `T: Transport`, so it can be handed to anything generic
+    /// over one (`Chat`, a reactor) — and `Arc` clones share the endpoint.
+    #[test]
+    fn erased_transport_sends_through_the_pointer() {
+        fn generic_send<T: Transport>(transport: T) -> String {
+            let prompt = crate::Prompt::default();
+            futures::executor::block_on(transport.send(&prompt))
+                .unwrap()
+                .to_string()
+        }
+
+        let erased: std::sync::Arc<
+            dyn Transport<crate::Prompt, Error = ScriptExhausted>,
+        > = std::sync::Arc::new(Script::new(["one", "two"].map(canned)));
+
+        assert!(generic_send(erased.clone()).ends_with("one"));
+        // The clone drew from the *same* script, not a fresh one.
+        assert!(generic_send(erased).ends_with("two"));
+
+        let boxed: Box<dyn Transport<crate::Prompt, Error = ScriptExhausted>> =
+            Box::new(Script::new([canned("boxed")]));
+        assert!(generic_send(boxed).ends_with("boxed"));
+    }
+
+    /// Forwarding covers the *defaulted* methods too. Inheriting the trait
+    /// defaults here would silently serialize a batching endpoint and
+    /// reset a local engine's quirks to canonical Anthropic behavior the
+    /// moment it was erased.
+    #[test]
+    fn erased_transport_forwards_overridden_defaults() {
+        let mut script = Script::new((0..8).map(|i| canned(&i.to_string())));
+        script.concurrency = NonZeroUsize::new(3).unwrap();
+        script.quirks.tool_choice_not_respected = true;
+
+        let erased: std::sync::Arc<
+            dyn Transport<crate::Prompt, Error = ScriptExhausted>,
+        > = std::sync::Arc::new(script);
+
+        assert_eq!(erased.max_concurrency(), NonZeroUsize::new(3).unwrap());
+        assert!(erased.quirks().tool_choice_not_respected);
+
+        // `send_batch` forwards rather than re-deriving from the pointer's
+        // own `max_concurrency` — same bound, honored through the vtable.
+        let prompts: Vec<crate::Prompt> =
+            (0..8).map(|_| crate::Prompt::default()).collect();
+        let refs: Vec<&crate::Prompt> = prompts.iter().collect();
+        let results =
+            futures::executor::block_on(erased.send_batch(&refs)).unwrap();
+
+        assert_eq!(results.len(), 8);
+        assert!(results.iter().all(|r| r.is_ok()));
     }
 }
