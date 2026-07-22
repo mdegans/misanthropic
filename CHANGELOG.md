@@ -15,6 +15,20 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.12] — 2026-07-22
+
+### Added
+
+- **`Transport` for `Arc<T>` and `Box<T>`** — forwarding impls, so a
+  type-erased transport still satisfies `T: Transport` and can be handed to
+  anything generic over one. `Transport` was already dyn-compatible per
+  prompt type, but `dyn Transport<…>` is unsized, so
+  `Arc<dyn Transport<Prompt, Error = E>>` did not itself implement the trait
+  and `Chat::new` rejected it. `Arc` is the load-bearing case: N chat loops
+  sharing one endpoint, a clone apiece. All methods forward, the defaulted
+  ones included — inheriting the defaults would silently downgrade an
+  implementor's `send_batch`, `quirks`, or `max_concurrency` on erasure.
+
 ## [1.0.0-alpha.11] — 2026-07-17
 
 Re-tag of the unpublished alpha.9/alpha.10 (tags are immutable, so each
