@@ -19,15 +19,22 @@ record; this file aggregates them.
 
 ### Added
 
-- **`Transport` for `Arc<T>` and `Box<T>`** — forwarding impls, so a
-  type-erased transport still satisfies `T: Transport` and can be handed to
-  anything generic over one. `Transport` was already dyn-compatible per
-  prompt type, but `dyn Transport<…>` is unsized, so
+- **`Transport` for `Arc<T>`** — a forwarding impl, so a type-erased
+  transport still satisfies `T: Transport` and can be handed to anything
+  generic over one. `Transport` was already dyn-compatible per prompt type,
+  but `dyn Transport<…>` is unsized, so
   `Arc<dyn Transport<Prompt, Error = E>>` did not itself implement the trait
-  and `Chat::new` rejected it. `Arc` is the load-bearing case: N chat loops
-  sharing one endpoint, a clone apiece. All methods forward, the defaulted
-  ones included — inheriting the defaults would silently downgrade an
+  and `Chat::new` rejected it. The motivating case is N chat loops sharing
+  one endpoint, a clone apiece. All methods forward, the defaulted ones
+  included — inheriting the defaults would silently downgrade an
   implementor's `send_batch`, `quirks`, or `max_concurrency` on erasure.
+
+  `Arc` only, and deliberately: it is not `#[fundamental]`, so the orphan
+  rule already forbids a downstream `impl Transport for Arc<TheirType>` and
+  this addition can conflict with nothing. The same impl over `Box<T>`
+  **would** be breaking — `Box` is `#[fundamental]`, so downstream
+  `impl Transport for Box<TheirType>` is legal today and a blanket impl
+  would collide with it.
 
 ## [1.0.0-alpha.11] — 2026-07-17
 
