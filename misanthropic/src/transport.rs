@@ -129,19 +129,25 @@ impl Transport<crate::CachedPrompt> for crate::Client {
     }
 }
 
-// Forwarding impls for the pointers a *type-erased* transport travels in.
+// Forwarding impl for the pointer a *type-erased* transport travels in.
 // [`Transport`] is dyn-compatible per prompt type, but `dyn Transport<…>` is
 // unsized, so anything generic over `T: Transport` — [`Chat`] among them —
-// takes the pointer, not the object. Without these, erasure compiles right
+// takes the pointer, not the object. Without this, erasure compiles right
 // up until the first `Chat::new`.
 //
-// `Arc` is the load-bearing one: a multi-agent driver hands N chat loops a
-// clone apiece of one shared endpoint. `Box` is here because it is what a
-// reader reaches for first when erasing a single owner.
+// `Arc` is also the *only* pointer this is safe to offer blanket. `Arc` is
+// not `#[fundamental]`, so the orphan rule already forbids a downstream
+// `impl Transport for Arc<TheirType>` — no impl can conflict with this one,
+// and adding it breaks nobody. `Box` **is** `#[fundamental]`, which makes
+// `impl Transport for Box<TheirType>` legal downstream today; a blanket
+// `Box<T>` impl here would collide with it and break that crate on upgrade.
+// A pure addition is worth more than the convenience, so `Box` is
+// deliberately absent — erase through `Arc`, or write the one-line
+// forwarding impl locally for a concrete `Box<YourTransport>`.
 //
 // Every method forwards, the defaulted ones included. Inheriting the
 // defaults instead would silently downgrade an implementor's `send_batch`,
-// `quirks`, or `max_concurrency` the moment it was boxed — a native batch
+// `quirks`, or `max_concurrency` the moment it was erased — a native batch
 // endpoint quietly falling back to serial `send`s, or a local engine's
 // quirks reverting to canonical Anthropic behavior, with nothing at the
 // call site to suggest the pointer changed the answer.
@@ -149,38 +155,6 @@ impl Transport<crate::CachedPrompt> for crate::Client {
 // [`Chat`]: crate::chat::Chat
 #[async_trait::async_trait]
 impl<P, T> Transport<P> for std::sync::Arc<T>
-where
-    P: Serialize + Send + Sync,
-    T: Transport<P> + ?Sized,
-{
-    type Error = T::Error;
-
-    async fn send(&self, prompt: &P) -> Result<response::Message, Self::Error> {
-        (**self).send(prompt).await
-    }
-
-    async fn send_batch(
-        &self,
-        prompts: &[&P],
-    ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
-        (**self).send_batch(prompts).await
-    }
-
-    async fn models(&self) -> Result<model::Models, Self::Error> {
-        (**self).models().await
-    }
-
-    fn quirks(&self) -> Quirks {
-        (**self).quirks()
-    }
-
-    fn max_concurrency(&self) -> NonZeroUsize {
-        (**self).max_concurrency()
-    }
-}
-
-#[async_trait::async_trait]
-impl<P, T> Transport<P> for Box<T>
 where
     P: Serialize + Send + Sync,
     T: Transport<P> + ?Sized,
@@ -405,10 +379,6 @@ pub(crate) mod tests {
         assert!(generic_send(erased.clone()).ends_with("one"));
         // The clone drew from the *same* script, not a fresh one.
         assert!(generic_send(erased).ends_with("two"));
-
-        let boxed: Box<dyn Transport<crate::Prompt, Error = ScriptExhausted>> =
-            Box::new(Script::new([canned("boxed")]));
-        assert!(generic_send(boxed).ends_with("boxed"));
     }
 
     /// Forwarding covers the *defaulted* methods too. Inheriting the trait
