@@ -15,6 +15,76 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.13] — 2026-07-25
+
+### Fixed
+
+- **JSON Schema `properties` now reach the wire in declaration order**, not
+  alphabetically — the behaviour this crate's docs and structured-output
+  examples have claimed all along. `schemars` builds `properties` in
+  declaration order, but `serde_json::Map` was `BTreeMap`-backed, so every
+  schema serialized sorted.
+
+  This was not cosmetic. A live probe (`live_generation_order`, in
+  `src/prompt/output.rs`) measured Anthropic's decoders against a struct
+  whose fields are strictly reverse-alphabetical, reading emission order off
+  raw stream deltas. Across Haiku 4.5, Sonnet 4.6, Sonnet 5 and Opus 5,
+  24/24 constrained samples — structured output, and tool use with `strict`
+  — followed **`properties`** order, deterministically. They ignore
+  `required`, which schemars already emitted in declaration order. So the
+  decoder was faithfully enforcing the sorted order: `structured_commit_
+  classifier` shipped `body, breaking, category, summary`, exactly inverting
+  the reasoning-before-conclusion order it documents, and `vote_intent` put
+  `confidence` ahead of `rationale`. `strict: true` made it *worse*, since it
+  hard-locks the inversion instead of leaving the model free to follow the
+  schema text. After this change the same probe reports declaration order
+  24/24.
+
+  New default-on `schema-order` feature forwards to
+  `schemars/preserve_order`. `sanitize_for_anthropic` was reworked to suit:
+  it rebuilds each object rather than calling `serde_json::Map::remove`,
+  which under `preserve_order` is `swap_remove` and moves the last entry
+  into the removed slot. (The order-preserving `shift_remove` is itself
+  gated on that feature, so it cannot be called unconditionally.) The
+  `oneOf` → `anyOf` rewrite now happens in place instead of relocating the
+  key to the end. `ToMarkdown for CustomMethodDef` switched to `Map::retain`
+  for the same reason; its rendered key order is now the struct's rather
+  than alphabetical.
+
+  `#[serde(flatten)]`ed fields are excluded from the guarantee — schemars
+  merges those subschemas through its own map surgery.
+
+### Breaking
+
+- **`schema-order` (default-on) enables `serde_json/preserve_order` for your
+  whole dependency graph.** Cargo features are additive and global: turning
+  it on here switches `serde_json::Map` to an `IndexMap` backend for *every*
+  crate in your build, not just this one. Three things to check before
+  upgrading:
+
+  1. `serde_json::Value` object keys are no longer emitted in sorted order,
+     anywhere — JSON snapshot tests in your own code may need regenerating.
+  2. `serde_json::Map::remove` becomes `swap_remove` in **your** code too. If
+     you remove keys from a `Value` and care about the order of what
+     remains, switch to `shift_remove` or `retain`.
+  3. The serialized bytes of every structured-output schema and tool
+     definition change, so prompt caches keyed on them miss once on upgrade.
+
+  `default-features = false` drops *our* edge to the feature but cannot
+  guarantee it stays off: any other crate in your graph that enables
+  `serde_json/preserve_order` re-enables the `IndexMap` backend for
+  everyone. Our schema code is order-correct under either backend, so
+  toggling is always safe — it may simply not have the effect you intend.
+
+### Added
+
+- **`Id::Sonnet5` and `Id::Opus5`** (#132). `Model::supports_system_role`
+  gains Opus 5 only, verified live. Sonnet 5 is excluded and the gate
+  matters there: unlike Sonnet 4.6, which rejects a mid-conversation
+  `role: "system"` turn with a clean 400, Sonnet 5 returns 200 and silently
+  ignores it, answering the preceding user message instead. There is no wire
+  signal to detect that.
+
 ## [1.0.0-alpha.12] — 2026-07-22
 
 ### Added

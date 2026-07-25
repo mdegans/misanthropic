@@ -575,7 +575,13 @@ let triage: Triage = client.message(&prompt).await?.json()?;
 Notes:
 
 - **Field order is generation order** — each field is context for the next,
-  so put anchoring fields (a summary, say) first.
+  so put anchoring fields (a summary, say) first. The constrained decoder
+  emits fields in schema `properties` order, and the default-on
+  `schema-order` feature makes that your struct's declaration order.
+  Measured, not assumed: the `live_generation_order` probe in
+  `src/prompt/output.rs` reports it per model. Two caveats — a *tool* call
+  without `strict` isn't grammar-constrained, so smaller models sometimes
+  wander; and `#[serde(flatten)]`ed fields carry no ordering guarantee.
 - **Few-shot**: `Prompt::add_examples([(input, output), …])` turns each
   `(impl Into<UserMessage>, T)` pair into a user/assistant exchange *and*
   seeds the schema from `T` — the constraint can't drift from the exemplars.

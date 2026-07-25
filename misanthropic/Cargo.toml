@@ -244,7 +244,7 @@ misanthropic = { path = ".", features = ["log", "chat"] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
-default = ["rustls-tls", "langsan", "client", "batch", "derive"]
+default = ["rustls-tls", "langsan", "client", "batch", "derive", "schema-order"]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself, so it almost always makes sense
 # to enable this and use the image crate.
@@ -335,6 +335,24 @@ openai = []
 # Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
 # default; turn off to drop the proc-macro (syn) compile-time cost.
 derive = ["dep:misanthropic-derive"]
+# Emit JSON Schema `properties` in *declaration* order rather than
+# alphabetically, by swapping `serde_json::Map`'s `BTreeMap` backend for an
+# `IndexMap`. On by default: Anthropic's constrained decoders (structured
+# output, and tool use with `strict`) generate fields in `properties` order,
+# so without this a schema whose fields are ordered to put reasoning before
+# conclusions gets that order enforced *backwards*. Measured, not assumed —
+# see the `live_generation_order` probe in `src/prompt/output.rs`.
+#
+# One caveat, and it is not small: `serde_json/preserve_order` is an
+# *additive, graph-global* cargo feature. `default-features = false` drops
+# *our* edge to it, but any other crate in your graph that enables it turns
+# the `IndexMap` backend back on for everyone, including us. Our schema code
+# is written to be order-correct under either backend — it never calls
+# `Map::remove`, whose `preserve_order` behaviour is `swap_remove`, nor the
+# order-preserving `shift_remove`, which exists *only* under that feature —
+# so toggling this is always safe. It may simply not have the effect you
+# intend.
+schema-order = ["schemars/preserve_order"]
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),

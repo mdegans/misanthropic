@@ -499,4 +499,49 @@ mod tests {
         assert!(!r.is_error, "{}", r.content);
         assert_eq!(tool.0.notes, vec!["hi".to_string()]);
     }
+
+    /// [`ToolArgs::schema`] calls `sanitize_for_anthropic` on its own, so it
+    /// needs order coverage independent of `OutputConfig::for_type` — a
+    /// regression could land here without touching `output.rs`.
+    ///
+    /// This matters more for tools than for structured output: Anthropic's
+    /// constrained decoder follows `properties` order under `strict`, so a
+    /// tool whose args are ordered to put reasoning before the commitment
+    /// would otherwise have that order enforced backwards.
+    #[test]
+    #[cfg(feature = "schema-order")]
+    fn tool_args_schema_preserves_declaration_order() {
+        // Strictly reverse-alphabetical: a regression to the sorted backend
+        // yields the exact reverse.
+        #[derive(Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Reversed {
+            zulu: String,
+            yankee: u32,
+            xray: bool,
+        }
+        impl ToolArgs for Reversed {
+            const NAME: &'static str = "reversed";
+            const DESCRIPTION: &'static str = "Order probe.";
+        }
+
+        fn assert_order(json: &str) {
+            let offsets: Vec<usize> = ["zulu", "yankee", "xray"]
+                .iter()
+                .map(|k| {
+                    json.find(&format!("\"{k}\":"))
+                        .unwrap_or_else(|| panic!("{k} missing in {json}"))
+                })
+                .collect();
+            assert!(
+                offsets.windows(2).all(|w| w[0] < w[1]),
+                "declaration order lost: offsets {offsets:?} in {json}"
+            );
+        }
+
+        assert_order(&serde_json::to_string(&Reversed::schema()).unwrap());
+        // And through the full definition — that is what actually ships in
+        // `Prompt::tools`.
+        assert_order(&serde_json::to_string(&Reversed::definition()).unwrap());
+    }
 }
