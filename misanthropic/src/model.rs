@@ -386,9 +386,17 @@ impl Model {
     pub fn supports_system_role(&self) -> bool {
         // Fable 5 verified live 2026-06-11 (placement grammar enforced, turn
         // honored); Mythos 5 is the same underlying model.
+        //
+        // Opus 5 verified live 2026-07-25 (honored the system turn). Sonnet 5
+        // is deliberately absent and the check matters: it does *not* 400 the
+        // way Sonnet 4.6 does ("role 'system' is not supported on this
+        // model") — it returns 200 and silently ignores the turn, answering
+        // the preceding user message instead. There is no wire signal to
+        // detect that, so this gate is the only thing standing between a
+        // caller and an instruction that vanishes.
         matches!(
             self,
-            Model::Anthropic(Id::Opus48 | Id::Fable5 | Id::Mythos5)
+            Model::Anthropic(Id::Opus48 | Id::Opus5 | Id::Fable5 | Id::Mythos5)
         )
     }
 
@@ -567,6 +575,15 @@ pub enum Id {
     Opus48,
 
     // ── Claude 5.x ───────────────────────────────────────────────────────
+    /// Sonnet 5. 1M context default, up to 128k output tokens. Unlike the
+    /// rest of the 5.x line it does *not* support
+    /// [mid-conversation system messages](crate::prompt::message::Role::System).
+    #[serde(rename = "claude-sonnet-5")]
+    Sonnet5,
+    /// Opus 5. 1M context default, up to 128k output tokens. Supports
+    /// [mid-conversation system messages](crate::prompt::message::Role::System).
+    #[serde(rename = "claude-opus-5")]
+    Opus5,
     /// Fable 5 — the first Mythos-class model (above Opus in capability).
     /// The 1M-token context window is the default (no beta header), with up
     /// to 128k output tokens.
@@ -610,6 +627,8 @@ impl Id {
             Id::Opus46 => "claude-opus-4-6",
             Id::Opus47 => "claude-opus-4-7",
             Id::Opus48 => "claude-opus-4-8",
+            Id::Sonnet5 => "claude-sonnet-5",
+            Id::Opus5 => "claude-opus-5",
             Id::Fable5 => "claude-fable-5",
             Id::Mythos5 => "claude-mythos-5",
         }
@@ -919,6 +938,8 @@ mod tests {
         assert_eq!(Id::Opus30_20240229.name(), "claude-3-opus-20240229");
         assert_eq!(Id::Haiku30.name(), "claude-3-haiku-20240307");
         assert_eq!(Id::Opus48.name(), "claude-opus-4-8");
+        assert_eq!(Id::Sonnet5.name(), "claude-sonnet-5");
+        assert_eq!(Id::Opus5.name(), "claude-opus-5");
         assert_eq!(Id::Fable5.name(), "claude-fable-5");
 
         // `Model::name` delegates to `Id::name` for known models.
