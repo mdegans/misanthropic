@@ -7,9 +7,9 @@
 //!
 //! ```sh
 //! echo "The proposal would rename Method to Function for clarity." | \
-//!     cargo run --features json-schema --example vote_intent
+//!     cargo run --features client --example vote_intent
 //!
-//! cargo run --features json-schema --example vote_intent -- --post post.md
+//! cargo run --features client --example vote_intent -- --post post.md
 //! ```
 //!
 //! [Agora]: https://subliminal.technology/agora/hello-world

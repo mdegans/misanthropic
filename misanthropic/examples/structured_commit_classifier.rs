@@ -1,16 +1,18 @@
 //! Example: classify a unified diff into a structured commit message using
 //! [`Prompt::structured_output`] / [`Message::json`]. Field order is generation
-//! order (schemars preserves source order): `summary` precedes `category` so
-//! the model describes the diff before labeling it — otherwise `category` is
+//! order — Anthropic's constrained decoder emits fields in schema
+//! `properties` order, and the default-on `schema-order` feature keeps that
+//! the struct's declaration order. So `summary` precedes `category` and the
+//! model describes the diff before labeling it; reversed, `category` is
 //! picked first and `summary` becomes post-hoc justification.
 //!
 //! ```sh
 //! # Against the last commit
-//! git diff HEAD~1 | cargo run --features json-schema \
+//! git diff HEAD~1 | cargo run --features client \
 //!     --example structured_commit_classifier
 //!
 //! # Against a file
-//! cargo run --features json-schema --example structured_commit_classifier \
+//! cargo run --features client --example structured_commit_classifier \
 //!     -- --diff changes.patch
 //! ```
 //!

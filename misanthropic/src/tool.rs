@@ -1117,11 +1117,20 @@ impl crate::markdown::ToMarkdown for CustomMethodDef {
 
         // Can't panic because derived Serialize
         let mut payload = serde_json::to_value(self).unwrap();
-        // Can't panic because we know it's an object
-        payload.as_object_mut().unwrap().remove("cache_control");
-        payload.as_object_mut().unwrap().remove("strict");
-        payload.as_object_mut().unwrap().remove("defer_loading");
-        payload.as_object_mut().unwrap().remove("allowed_callers");
+        // Can't panic because we know it's an object. `retain` rather than
+        // `remove`: the latter is `swap_remove` under `serde_json`'s
+        // `preserve_order` backend (the `schema-order` feature) and would
+        // scramble the rendered key order, including the schema's
+        // `properties`.
+        payload.as_object_mut().unwrap().retain(|key, _| {
+            !matches!(
+                key.as_str(),
+                "cache_control"
+                    | "strict"
+                    | "defer_loading"
+                    | "allowed_callers"
+            )
+        });
 
         if options.tool_use {
             Box::new(

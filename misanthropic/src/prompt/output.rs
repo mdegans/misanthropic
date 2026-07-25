@@ -337,6 +337,15 @@ impl From<OutputFormat> for OutputConfig {
 /// `const`, `anyOf`, `allOf`, `$ref`, `$defs`, `description`, `title`,
 /// string `format`, `pattern`, `default`) untouched.
 ///
+/// **Key order is preserved.** That matters: Anthropic's constrained
+/// decoders generate object fields in `properties` order, so this must not
+/// disturb it (`oneOf` is renamed in place rather than moved to the end;
+/// only `additionalProperties` is appended). With the default-on
+/// `schema-order` feature that order is the struct's declaration order.
+/// Note `#[serde(flatten)]` is excluded from the guarantee — schemars merges
+/// flattened subschemas through its own map surgery, which is not ours to
+/// promise.
+///
 /// [`schemars`]: https://docs.rs/schemars
 /// [Anthropic's limits]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#json-schema-limitations>
 pub fn sanitize_for_anthropic(value: &mut serde_json::Value) {
@@ -355,40 +364,59 @@ pub fn sanitize_for_anthropic(value: &mut serde_json::Value) {
 
     match value {
         serde_json::Value::Object(map) => {
-            for key in UNSUPPORTED {
-                map.remove(*key);
-            }
-            // `minItems` is only supported for values 0 or 1; drop it
-            // otherwise.
-            let drop_min_items = map
-                .get("minItems")
-                .and_then(|v| v.as_u64())
-                .is_some_and(|n| n > 1);
-            if drop_min_items {
-                map.remove("minItems");
-            }
-            // schemars emits `oneOf` for enum variants; Anthropic
-            // accepts `anyOf` only. For mutually-exclusive subschemas
-            // (the only shape schemars produces here) the two are
-            // equivalent. If `anyOf` is already present we keep it and
-            // drop the `oneOf`.
-            if let Some(one_of) = map.remove("oneOf") {
-                map.entry("anyOf").or_insert(one_of);
-            }
+            // Computed before the drain empties `map`. Neither `type` nor
+            // `properties` is in UNSUPPORTED, so this is equivalent to the
+            // post-removal check it replaces.
             let is_object_schema = map
                 .get("type")
                 .and_then(|t| t.as_str())
                 .is_some_and(|t| t == "object")
                 || map.contains_key("properties");
-            if is_object_schema && !map.contains_key("additionalProperties") {
-                map.insert(
+            let has_additional = map.contains_key("additionalProperties");
+            let has_any_of = map.contains_key("anyOf");
+
+            // Rebuilt rather than mutated in place, to preserve key order.
+            // `serde_json::Map::remove` is `swap_remove` under the
+            // `preserve_order` backend (see the `schema-order` feature): it
+            // moves the *last* entry into the removed slot, so stripping a
+            // keyword would scramble the surrounding properties. The
+            // order-preserving `shift_remove` is itself gated on that
+            // feature and so cannot be called unconditionally. Draining
+            // into a fresh map sidesteps both: it is order-preserving under
+            // either backend, and it lets the `oneOf` rewrite happen in
+            // place instead of relocating the key to the end.
+            let mut out = serde_json::Map::with_capacity(map.len());
+            for (key, value) in std::mem::take(map) {
+                match key.as_str() {
+                    k if UNSUPPORTED.contains(&k) => {}
+                    // `minItems` is only supported for values 0 or 1; drop
+                    // it otherwise.
+                    "minItems" if value.as_u64().is_some_and(|n| n > 1) => {}
+                    // schemars emits `oneOf` for enum variants; Anthropic
+                    // accepts `anyOf` only. For mutually-exclusive
+                    // subschemas (the only shape schemars produces here)
+                    // the two are equivalent. An `anyOf` that is already
+                    // present wins and keeps its own position.
+                    "oneOf" => {
+                        if !has_any_of {
+                            out.insert("anyOf".to_owned(), value);
+                        }
+                    }
+                    _ => {
+                        out.insert(key, value);
+                    }
+                }
+            }
+            if is_object_schema && !has_additional {
+                out.insert(
                     "additionalProperties".to_string(),
                     serde_json::Value::Bool(false),
                 );
             }
-            for v in map.values_mut() {
+            for v in out.values_mut() {
                 sanitize_for_anthropic(v);
             }
+            *map = out;
         }
         serde_json::Value::Array(items) => {
             for item in items {
@@ -403,6 +431,29 @@ pub fn sanitize_for_anthropic(value: &mut serde_json::Value) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Assert `keys` appear in `json` in the given order.
+    ///
+    /// Deliberately asserts on the *rendered string*, not on a re-parsed
+    /// [`serde_json::Value`]: under the `preserve_order` backend `Map`'s
+    /// `PartialEq` is order-*insensitive* and its iteration order depends on
+    /// the backend, so a `Value`-level assertion is structurally blind to
+    /// exactly the regression these tests exist to catch. The bytes are the
+    /// only honest evidence of wire order.
+    #[cfg(feature = "schema-order")]
+    fn assert_key_order(json: &str, keys: &[&str]) {
+        let offsets: Vec<usize> = keys
+            .iter()
+            .map(|k| {
+                json.find(&format!("\"{k}\":"))
+                    .unwrap_or_else(|| panic!("key {k:?} missing in {json}"))
+            })
+            .collect();
+        assert!(
+            offsets.windows(2).all(|w| w[0] < w[1]),
+            "expected key order {keys:?}, got offsets {offsets:?} in {json}"
+        );
+    }
 
     #[test]
     fn serde_roundtrip() {
@@ -694,7 +745,16 @@ mod tests {
         sanitize_for_anthropic(&mut schema);
         let once = schema.clone();
         sanitize_for_anthropic(&mut schema);
-        assert_eq!(schema, once, "sanitize_for_anthropic must be idempotent");
+        // Compared as strings, not `Value`s: under the `preserve_order`
+        // backend `Map: PartialEq` ignores key order, so a `Value`
+        // comparison would pass even if the second pass reshuffled the
+        // object. Byte-for-byte is the stronger claim and is correct under
+        // either backend.
+        assert_eq!(
+            schema.to_string(),
+            once.to_string(),
+            "sanitize_for_anthropic must be idempotent, byte for byte"
+        );
         // And the output should lack `minimum` and set additionalProperties.
         assert!(
             schema
@@ -725,6 +785,277 @@ mod tests {
         assert!(
             count >= 2,
             "expected additionalProperties:false on outer + inner, got {count} in {wire}"
+        );
+    }
+
+    /// Declaration order must survive `schemars` → `serde_json` → the wire.
+    /// Anthropic's constrained decoders generate fields in `properties`
+    /// order, so this is the property that makes "put the summary field
+    /// first so the model writes it first" actually work.
+    #[test]
+    #[cfg(feature = "schema-order")]
+    fn for_type_preserves_declaration_order() {
+        // Strictly reverse-alphabetical, so a regression to the sorted
+        // backend produces the exact reverse rather than a near-miss.
+        #[derive(schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Reversed {
+            zulu: String,
+            yankee: u32,
+            xray: bool,
+            whiskey: Vec<String>,
+        }
+
+        let wire = serde_json::to_string(&OutputConfig::for_type::<Reversed>())
+            .unwrap();
+        assert_key_order(&wire, &["zulu", "yankee", "xray", "whiskey"]);
+    }
+
+    /// The loud regression guard for [`sanitize_for_anthropic`]. Five
+    /// stripped keywords are interleaved *between* survivors, so a
+    /// regression to `Map::remove` (== `swap_remove` under `preserve_order`)
+    /// drags the trailing `title` forward past several of them.
+    #[test]
+    #[cfg(feature = "schema-order")]
+    fn sanitize_preserves_order_across_multiple_removals() {
+        let mut schema = json!({
+            "type": "object",
+            "maxLength": 10,
+            "properties": {
+                "zulu": { "type": "string", "maxLength": 4 },
+                "alpha": { "type": "integer", "minimum": 0 },
+            },
+            "minimum": 1,
+            "required": ["zulu", "alpha"],
+            "maxItems": 3,
+            "description": "d",
+            "uniqueItems": true,
+            "minItems": 7,
+            "title": "t",
+        });
+        sanitize_for_anthropic(&mut schema);
+        let wire = serde_json::to_string(&schema).unwrap();
+
+        assert_key_order(
+            &wire,
+            &["type", "properties", "required", "description", "title"],
+        );
+        // Order survives the recursion into nested objects too.
+        assert_key_order(&wire, &["zulu", "alpha"]);
+        for gone in [
+            "maxLength",
+            "minimum",
+            "maxItems",
+            "uniqueItems",
+            "minItems",
+        ] {
+            assert!(
+                !wire.contains(&format!("\"{gone}\":")),
+                "expected {gone:?} stripped, got {wire}"
+            );
+        }
+    }
+
+    /// `anyOf` must land where `oneOf` was, not at the end of the object.
+    #[test]
+    #[cfg(feature = "schema-order")]
+    fn sanitize_renames_one_of_in_place() {
+        let mut schema = json!({
+            "description": "a category",
+            "oneOf": [{ "const": "feat" }, { "const": "fix" }],
+            "title": "Category",
+        });
+        sanitize_for_anthropic(&mut schema);
+        let wire = serde_json::to_string(&schema).unwrap();
+        assert_key_order(&wire, &["description", "anyOf", "title"]);
+        assert!(!wire.contains("oneOf"), "oneOf survived: {wire}");
+    }
+
+    /// Probe struct for the live generation-order tests. Fields are in
+    /// strictly *reverse*-alphabetical declaration order so that "the model
+    /// followed declaration order" and "the model followed the alphabetical
+    /// order a `BTreeMap`-backed [`serde_json::Map`] emits" are maximally
+    /// distinguishable — they are exact reverses of each other.
+    #[cfg(feature = "client")]
+    #[derive(schemars::JsonSchema, serde::Deserialize, Debug)]
+    #[allow(dead_code)]
+    struct Phonetic {
+        /// A word starting with Z.
+        zulu: String,
+        /// A word starting with Y.
+        yankee: String,
+        /// A word starting with X.
+        xray: String,
+        /// A word starting with W.
+        whiskey: String,
+    }
+
+    #[cfg(feature = "client")]
+    const PHONETIC_FIELDS: [&str; 4] = ["zulu", "yankee", "xray", "whiskey"];
+
+    /// Concatenate the raw text and tool-input deltas off a stream without
+    /// ever parsing them.
+    ///
+    /// This deliberately does *not* use [`FilterExt::with_tool_use`]: that
+    /// combinator swallows `input_json_delta` events and re-parses the
+    /// accumulated input into a [`serde_json::Value`], which re-sorts the
+    /// keys through the map backend and destroys exactly the evidence we
+    /// are here to collect. The wire bytes are the only honest record of
+    /// emission order.
+    ///
+    /// [`FilterExt::with_tool_use`]: crate::stream::FilterExt::with_tool_use
+    #[cfg(feature = "client")]
+    async fn raw_deltas(stream: crate::Stream) -> String {
+        use crate::stream::{Delta, Event};
+        use futures::StreamExt;
+
+        let mut raw = String::new();
+        let mut stream = Box::pin(stream);
+        while let Some(event) = stream.next().await {
+            match event.expect("stream event") {
+                Event::ContentBlockDelta {
+                    delta: Delta::Json { partial_json },
+                    ..
+                } => raw.push_str(&partial_json),
+                Event::ContentBlockDelta {
+                    delta: Delta::Text { text },
+                    ..
+                } => raw.push_str(&text),
+                _ => {}
+            }
+        }
+        raw
+    }
+
+    /// Position of each field name in `raw`, in first-occurrence order.
+    /// Returns `None` if any field is missing.
+    #[cfg(feature = "client")]
+    fn emission_order(raw: &str) -> Option<Vec<&'static str>> {
+        let mut found: Vec<(usize, &'static str)> = Vec::new();
+        for field in PHONETIC_FIELDS {
+            found.push((raw.find(&format!("\"{field}\""))?, field));
+        }
+        found.sort_unstable();
+        Some(found.into_iter().map(|(_, f)| f).collect())
+    }
+
+    /// The sanitized schema this crate would put on the wire for `T`.
+    #[cfg(feature = "client")]
+    fn wire_schema<T: schemars::JsonSchema>() -> serde_json::Value {
+        let mut schema =
+            serde_json::to_value(schemars::schema_for!(T)).unwrap();
+        sanitize_for_anthropic(&mut schema);
+        schema
+    }
+
+    /// **Measures** whether Anthropic generates object fields in the order
+    /// the schema declares them, across the three decoding paths that
+    /// behave differently:
+    ///
+    /// 1. structured output (`output_config.format`) — constrained
+    /// 2. tool use with `strict: true` — constrained
+    /// 3. tool use without `strict` — unconstrained; the model is only
+    ///    reading the schema as text
+    ///
+    /// This asserts nothing about ordering on purpose. It is an
+    /// instrument, not a regression guard (those live in the offline tests
+    /// above), and generation order is a property of Anthropic's decoder
+    /// that they do not document — a hard assert here would redden `main`
+    /// on the push-to-`main` coverage run for a stochastic reason. It
+    /// prints a table; read it.
+    ///
+    /// Run with:
+    /// `cargo test -p misanthropic --all-features -- --ignored --nocapture generation_order`
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "live — requires API key at misanthropic/api.key"]
+    async fn live_generation_order() {
+        use crate::prompt::message::{Content, Role};
+        use crate::{Client, Id, Prompt, tool};
+
+        let client = Client::new(crate::utils::load_api_key().await).unwrap();
+        let ask = "Fill every field with a single word from the NATO \
+                   phonetic alphabet.";
+
+        // What we put on the wire, so the report is self-contained: today
+        // `properties` is alphabetical while `required` is declaration
+        // order, and that disagreement is what makes this run a
+        // discriminator between the two hypotheses.
+        let schema = wire_schema::<Phonetic>();
+        eprintln!("\n=== wire schema ===\n{schema:#}\n");
+
+        for model in [Id::Haiku45, Id::Sonnet46, Id::Sonnet5, Id::Opus5] {
+            for strict in [None, Some(true), Some(false)] {
+                let (label, prompt) = match strict {
+                    None => (
+                        "structured_output",
+                        Prompt::default()
+                            .model(model)
+                            .structured_output::<Phonetic>()
+                            .add_message((Role::User, Content::text(ask)))
+                            .unwrap(),
+                    ),
+                    Some(strict) => {
+                        let mut def =
+                            tool::CustomMethodDef::builder("phonetic")
+                                .description(
+                                    "Record four phonetic-alphabet words.",
+                                )
+                                .schema(schema.clone())
+                                .build()
+                                .expect("tool definition");
+                        def.strict(strict);
+                        (
+                            if strict {
+                                "tool strict:true "
+                            } else {
+                                "tool strict:false"
+                            },
+                            Prompt::default()
+                                .model(model)
+                                .add_tool(def)
+                                .tool_choice(tool::Choice::Method {
+                                    name: "phonetic".into(),
+                                    disable_parallel_tool_use: true,
+                                })
+                                .add_message((Role::User, Content::text(ask)))
+                                .unwrap(),
+                        )
+                    }
+                };
+
+                // Three samples: one draw from a stochastic process is not
+                // a measurement.
+                for sample in 1..=3 {
+                    let stream = crate::utils::retry_transient(
+                        "live_generation_order",
+                        || client.stream(&prompt),
+                    )
+                    .await
+                    .expect("stream");
+
+                    let raw = raw_deltas(stream).await;
+                    let name = format!("{model:?}");
+                    match emission_order(&raw) {
+                        Some(order) => eprintln!(
+                            "{name:<10} {label}  #{sample}  {}",
+                            order.join(" → ")
+                        ),
+                        None => eprintln!(
+                            "{name:<10} {label}  #{sample}  \
+                             INCOMPLETE: {raw}"
+                        ),
+                    }
+                }
+            }
+        }
+
+        let mut alphabetical = PHONETIC_FIELDS;
+        alphabetical.sort_unstable();
+        eprintln!(
+            "\ndeclaration order: {}\nalphabetical:      {}\n",
+            PHONETIC_FIELDS.join(" → "),
+            alphabetical.join(" → ")
         );
     }
 }

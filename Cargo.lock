@@ -519,7 +519,7 @@ checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bashd"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 dependencies = [
  "async-stream",
  "axum 0.8.9",
@@ -3289,7 +3289,7 @@ dependencies = [
 
 [[package]]
 name = "misanthropic"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 dependencies = [
  "arboard",
  "async-stream",
@@ -3335,7 +3335,7 @@ dependencies = [
 
 [[package]]
 name = "misanthropic-derive"
-version = "1.0.0-alpha.12"
+version = "1.0.0-alpha.13"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4785,6 +4785,7 @@ version = "1.0.150"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e8014e44b4736ed0538adeecded0fce2a272f22dc9578a7eb6b2d9993c74cfb9"
 dependencies = [
+ "indexmap 2.14.0",
  "itoa",
  "memchr",
  "serde",

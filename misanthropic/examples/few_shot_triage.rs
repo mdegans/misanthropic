@@ -22,7 +22,7 @@ use misanthropic::{Client, Id, Prompt, prompt::message::Role};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Triage severity. Generated first so it anchors the rest of the triage.
+/// Triage severity, chosen after `summary` has anchored the report.
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename_all = "snake_case")]
