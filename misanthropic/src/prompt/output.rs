@@ -928,12 +928,16 @@ mod tests {
     }
 
     /// Position of each field name in `raw`, in first-occurrence order.
-    /// Returns `None` if any field is missing.
+    /// Returns `None` if any field is missing — which for an *optional*
+    /// field is a real outcome (the model may simply omit it), not an error.
     #[cfg(feature = "client")]
-    fn emission_order(raw: &str) -> Option<Vec<&'static str>> {
+    fn emission_order(
+        raw: &str,
+        fields: &[&'static str],
+    ) -> Option<Vec<&'static str>> {
         let mut found: Vec<(usize, &'static str)> = Vec::new();
-        for field in PHONETIC_FIELDS {
-            found.push((raw.find(&format!("\"{field}\""))?, field));
+        for field in fields {
+            found.push((raw.find(&format!("\"{field}\""))?, *field));
         }
         found.sort_unstable();
         Some(found.into_iter().map(|(_, f)| f).collect())
@@ -1036,7 +1040,7 @@ mod tests {
 
                     let raw = raw_deltas(stream).await;
                     let name = format!("{model:?}");
-                    match emission_order(&raw) {
+                    match emission_order(&raw, &PHONETIC_FIELDS) {
                         Some(order) => eprintln!(
                             "{name:<10} {label}  #{sample}  {}",
                             order.join(" → ")
@@ -1056,6 +1060,134 @@ mod tests {
             "\ndeclaration order: {}\nalphabetical:      {}\n",
             PHONETIC_FIELDS.join(" → "),
             alphabetical.join(" → ")
+        );
+    }
+
+    /// An *optional* field sitting between two required ones. `schemars`
+    /// puts all three in `properties` in declaration order, but lists only
+    /// `zulu` and `mike` in `required`.
+    ///
+    /// Mirrors `zam_tool()` in drama_llama's `tests/dialect_roundtrip.rs`,
+    /// which asserts the same shape locally.
+    #[cfg(feature = "client")]
+    #[derive(schemars::JsonSchema, serde::Deserialize, Debug)]
+    #[allow(dead_code)]
+    struct Interleaved {
+        /// A word starting with Z. Always provide this.
+        zulu: String,
+        /// A word starting with A. Optional, but provide it anyway.
+        alpha: Option<String>,
+        /// A word starting with M. Always provide this.
+        mike: String,
+    }
+
+    #[cfg(feature = "client")]
+    const INTERLEAVED_FIELDS: [&str; 3] = ["zulu", "alpha", "mike"];
+
+    /// Does `required`-ness affect *position*?
+    ///
+    /// [`live_generation_order`] answers "which order" using a struct whose
+    /// fields are all required, so it cannot see this. drama_llama's
+    /// `grammar_compile.rs` module docs claim Anthropic hoists required
+    /// properties ahead of optional ones ("required properties appear
+    /// first, followed by optional properties") and flags it as a
+    /// divergence from its own in-place layout. That claim is untested on
+    /// both sides; this settles it.
+    ///
+    /// The two hypotheses are cleanly separable:
+    ///
+    /// * pure `properties` order → `zulu → alpha → mike`
+    /// * required-hoisted        → `zulu → mike → alpha`
+    ///
+    /// An omitted `alpha` is a legitimate third outcome (it *is* optional),
+    /// reported as `alpha omitted` rather than treated as a failure.
+    ///
+    /// Run with:
+    /// `cargo test -p misanthropic --all-features -- --ignored --nocapture generation_order_optional`
+    #[cfg(feature = "client")]
+    #[tokio::test]
+    #[ignore = "live — requires API key at misanthropic/api.key"]
+    async fn live_generation_order_optional() {
+        use crate::prompt::message::{Content, Role};
+        use crate::{Client, Id, Prompt, tool};
+
+        let client = Client::new(crate::utils::load_api_key().await).unwrap();
+        let ask = "Fill every field, including optional ones, with a single \
+                   word from the NATO phonetic alphabet.";
+
+        let schema = wire_schema::<Interleaved>();
+        eprintln!("\n=== wire schema (interleaved optional) ===\n{schema:#}\n");
+
+        for model in [Id::Haiku45, Id::Sonnet46, Id::Sonnet5, Id::Opus5] {
+            for strict in [None, Some(true)] {
+                let (label, prompt) = match strict {
+                    None => (
+                        "structured_output",
+                        Prompt::default()
+                            .model(model)
+                            .structured_output::<Interleaved>()
+                            .add_message((Role::User, Content::text(ask)))
+                            .unwrap(),
+                    ),
+                    Some(strict) => {
+                        let mut def =
+                            tool::CustomMethodDef::builder("interleaved")
+                                .description("Record three words.")
+                                .schema(schema.clone())
+                                .build()
+                                .expect("tool definition");
+                        def.strict(strict);
+                        (
+                            "tool strict:true ",
+                            Prompt::default()
+                                .model(model)
+                                .add_tool(def)
+                                .tool_choice(tool::Choice::Method {
+                                    name: "interleaved".into(),
+                                    disable_parallel_tool_use: true,
+                                })
+                                .add_message((Role::User, Content::text(ask)))
+                                .unwrap(),
+                        )
+                    }
+                };
+
+                for sample in 1..=3 {
+                    let stream = crate::utils::retry_transient(
+                        "live_generation_order_optional",
+                        || client.stream(&prompt),
+                    )
+                    .await
+                    .expect("stream");
+
+                    let raw = raw_deltas(stream).await;
+                    let name = format!("{model:?}");
+                    match emission_order(&raw, &INTERLEAVED_FIELDS) {
+                        Some(order) => eprintln!(
+                            "{name:<10} {label}  #{sample}  {}",
+                            order.join(" → ")
+                        ),
+                        // `alpha` is optional; the model omitting it is a
+                        // valid outcome, not a probe failure.
+                        None => match emission_order(&raw, &["zulu", "mike"]) {
+                            Some(order) => eprintln!(
+                                "{name:<10} {label}  #{sample}  {} \
+                                 (alpha omitted)",
+                                order.join(" → ")
+                            ),
+                            None => eprintln!(
+                                "{name:<10} {label}  #{sample}  \
+                                 INCOMPLETE: {raw}"
+                            ),
+                        },
+                    }
+                }
+            }
+        }
+
+        eprintln!(
+            "\nproperties order (in place): zulu → alpha → mike\n\
+             required-hoisted:            zulu → mike → alpha\n"
         );
     }
 }
