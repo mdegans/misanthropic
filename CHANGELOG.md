@@ -15,6 +15,24 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.14] — 2026-08-01
+
+### Added
+
+- **`strict` on typed tools** — [strict tool use] can now be enabled
+  declaratively. `ToolArgs` gains a `STRICT` const (default `false`) that
+  `definition()` carries onto the `CustomMethodDef`; the `#[tool]` impl macro
+  accepts `#[tool(strict)]` (every method) and `#[method(strict)]` /
+  `#[method(strict = false)]` (per-method override), and
+  `#[derive(ToolArgs)]` accepts `#[tool(strict)]`. Paired with alpha.13's
+  declaration-order schemas, this guarantees the constrained decoder emits an
+  args struct's fields in declaration order — declare a reasoning field first
+  and the model must reason before it commits. `strict` is not compatible
+  with `allowed_callers` (programmatic tool calling); the API rejects that
+  combination.
+
+  [strict tool use]: https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use
+
 ## [1.0.0-alpha.13] — 2026-07-25
 
 ### Fixed
