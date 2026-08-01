@@ -39,7 +39,7 @@ impl Calc {
     }
 
     /// Reset the accumulator.
-    #[method(defer_loading)]
+    #[method(defer_loading, strict)]
     async fn reset(&mut self, _args: Reset) -> Result<Content, Content> {
         self.acc = 0;
         Ok("reset".into())
@@ -147,6 +147,84 @@ fn method_defer_loading_attribute_flows_through() {
     };
     assert_eq!(defer("Calc__add"), None);
     assert_eq!(defer("Calc__reset"), Some(true));
+}
+
+#[test]
+// Pins compile-time consts as a regression guard, same as the
+// `defer_loading` test above.
+#[allow(clippy::assertions_on_constants)]
+fn method_strict_attribute_flows_through() {
+    // `#[method(defer_loading, strict)]` on `reset` marks only that method
+    // strict; `add` (no `strict` key, no tool-level default) is left lax.
+    assert!(!<Add as ToolArgs>::STRICT);
+    assert!(<Reset as ToolArgs>::STRICT);
+
+    let defs = Typed(Calc::default()).definitions();
+    let strict = |name: &str| {
+        defs.iter()
+            .find(|d| d.name() == name)
+            .unwrap()
+            .as_method()
+            .unwrap()
+            .strict
+    };
+    assert_eq!(strict("Calc__add"), None);
+    assert_eq!(strict("Calc__reset"), Some(true));
+}
+
+// A tool-level `strict` applies to every method; a method-level
+// `strict = false` opts one back out.
+#[derive(Deserialize, JsonSchema)]
+struct Vote {
+    ballot: String,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct Aside {
+    remark: String,
+}
+
+#[derive(Default)]
+struct Record {
+    votes: Vec<String>,
+}
+
+#[tool(name = "Record", strict)]
+impl Record {
+    /// Cast a ballot.
+    #[method]
+    async fn vote(&mut self, args: Vote) -> Result<Content, Content> {
+        self.votes.push(args.ballot);
+        Ok("recorded".into())
+    }
+
+    /// An off-the-record remark.
+    #[method(strict = false)]
+    async fn aside(&mut self, args: Aside) -> Result<Content, Content> {
+        Ok(args.remark.into())
+    }
+}
+
+#[test]
+#[allow(clippy::assertions_on_constants)]
+fn tool_level_strict_defaults_all_methods_and_is_overridable() {
+    // `#[tool(strict)]` marks every method strict by default…
+    assert!(<Vote as ToolArgs>::STRICT);
+    // …and `#[method(strict = false)]` opts a single method back out.
+    assert!(!<Aside as ToolArgs>::STRICT);
+
+    let defs = Typed(Record::default()).definitions();
+    let strict = |name: &str| {
+        defs.iter()
+            .find(|d| d.name() == name)
+            .unwrap()
+            .as_method()
+            .unwrap()
+            .strict
+    };
+    assert_eq!(strict("Record__vote"), Some(true));
+    // `false` elides on the wire (the API default), same as `defer_loading`.
+    assert_eq!(strict("Record__aside"), None);
 }
 
 #[test]

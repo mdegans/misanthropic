@@ -29,6 +29,15 @@ struct Lookup {
     query: String,
 }
 
+/// A strict tool: `#[tool(strict)]` flips [`ToolArgs::STRICT`].
+#[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
+#[allow(dead_code)]
+#[tool(strict)]
+struct Commit {
+    reasoning: String,
+    decision: String,
+}
+
 #[test]
 fn name_defaults_to_ident_and_description_from_doc() {
     assert_eq!(<Push as ToolArgs>::NAME, "Push");
@@ -53,6 +62,19 @@ fn defer_loading_defaults_false_and_is_overridable() {
     // `#[tool(defer_loading)]` flips it and carries onto the `CustomMethodDef`.
     assert!(<Lookup as ToolArgs>::DEFER_LOADING);
     assert_eq!(<Lookup as ToolArgs>::definition().defer_loading, Some(true));
+}
+
+#[test]
+// Pins compile-time consts as a regression guard, same as the
+// `defer_loading` test above.
+#[allow(clippy::assertions_on_constants)]
+fn strict_defaults_false_and_is_overridable() {
+    // Default: the const is `false` and the field elides on the wire.
+    assert!(!<Push as ToolArgs>::STRICT);
+    assert_eq!(<Push as ToolArgs>::definition().strict, None);
+    // `#[tool(strict)]` flips it and carries onto the `CustomMethodDef`.
+    assert!(<Commit as ToolArgs>::STRICT);
+    assert_eq!(<Commit as ToolArgs>::definition().strict, Some(true));
 }
 
 #[test]

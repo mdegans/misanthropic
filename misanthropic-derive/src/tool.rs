@@ -22,7 +22,7 @@ use syn::{
     Type, parse::Parser,
 };
 
-use crate::util::{doc_string, parse_allowed_callers, parse_defer_loading};
+use crate::util::{doc_string, parse_allowed_callers, parse_bool_flag};
 
 /// Marker attributes recognized (and stripped) inside a `#[tool]` impl.
 const MARKERS: &[&str] = &[
@@ -65,7 +65,11 @@ pub fn expand(attr: TokenStream, item: TokenStream) -> TokenStream {
 fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
     let self_ty = (*item_impl.self_ty).clone();
     let self_ident = self_ty_ident(&self_ty)?;
-    let ToolAttr { name, flat } = parse_tool_attr(attr)?;
+    let ToolAttr {
+        name,
+        flat,
+        strict: tool_strict,
+    } = parse_tool_attr(attr)?;
     let tool_name = name.unwrap_or_else(|| self_ident.to_string());
     // Only emit the const when set, so the trait default (`false`) stands.
     let flat = flat.then(|| quote! { const FLAT: bool = true; });
@@ -102,6 +106,11 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
         let defer = m
             .defer_loading
             .map(|v| quote! { const DEFER_LOADING: bool = #v; });
+        // Method-level `strict` overrides the tool-level default.
+        let strict = m
+            .strict
+            .or(tool_strict)
+            .map(|v| quote! { const STRICT: bool = #v; });
         // Emit `ALLOWED_CALLERS` only when the method opts in; the idents are
         // `AllowedCaller` const-fn constructor names, so they compose directly.
         let allowed = (!m.allowed_callers.is_empty()).then(|| {
@@ -124,6 +133,7 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
                 const NAME: &'static str = #name;
                 const DESCRIPTION: &'static str = #desc;
                 #defer
+                #strict
                 #allowed
             }
 
@@ -260,12 +270,14 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 }
 
 /// One `#[method]` fn: its name, doc, `Args` type, and optional
-/// `defer_loading` / `allowed_callers` overrides (from `#[method(…)]`).
+/// `defer_loading` / `strict` / `allowed_callers` overrides (from
+/// `#[method(…)]`).
 struct MethodInfo {
     ident: Ident,
     doc: String,
     args_ty: Type,
     defer_loading: Option<bool>,
+    strict: Option<bool>,
     allowed_callers: Vec<Ident>,
 }
 
@@ -273,6 +285,7 @@ impl MethodInfo {
     fn parse(f: &ImplItemFn) -> syn::Result<Self> {
         let MethodArgs {
             defer_loading,
+            strict,
             allowed_callers,
         } = parse_method_args(&f.attrs)?;
         Ok(Self {
@@ -280,6 +293,7 @@ impl MethodInfo {
             doc: doc_string(&f.attrs),
             args_ty: method_arg_type(&f.sig)?,
             defer_loading,
+            strict,
             allowed_callers,
         })
     }
@@ -289,11 +303,13 @@ impl MethodInfo {
 #[derive(Default)]
 struct MethodArgs {
     defer_loading: Option<bool>,
+    strict: Option<bool>,
     allowed_callers: Vec<Ident>,
 }
 
-/// Parse the `#[method(…)]` attribute's keys: `defer_loading` (bare or
-/// `= true|false`) and `allowed_callers(…)`. A bare `#[method]` has no keys.
+/// Parse the `#[method(…)]` attribute's keys: `defer_loading` and `strict`
+/// (bare or `= true|false`) and `allowed_callers(…)`. A bare `#[method]` has
+/// no keys.
 fn parse_method_args(attrs: &[Attribute]) -> syn::Result<MethodArgs> {
     let mut args = MethodArgs::default();
     for attr in attrs.iter().filter(|a| a.path().is_ident("method")) {
@@ -303,15 +319,18 @@ fn parse_method_args(attrs: &[Attribute]) -> syn::Result<MethodArgs> {
         }
         attr.parse_nested_meta(|meta| {
             if meta.path.is_ident("defer_loading") {
-                args.defer_loading = Some(parse_defer_loading(&meta)?);
+                args.defer_loading = Some(parse_bool_flag(&meta)?);
+                Ok(())
+            } else if meta.path.is_ident("strict") {
+                args.strict = Some(parse_bool_flag(&meta)?);
                 Ok(())
             } else if meta.path.is_ident("allowed_callers") {
                 args.allowed_callers = parse_allowed_callers(&meta)?;
                 Ok(())
             } else {
                 Err(meta.error(
-                    "unknown `method` key; expected `defer_loading` or \
-                     `allowed_callers`",
+                    "unknown `method` key; expected `defer_loading`, \
+                     `strict`, or `allowed_callers`",
                 ))
             }
         })?;
@@ -492,11 +511,13 @@ fn strip_markers(item_impl: &mut ItemImpl) {
     }
 }
 
-/// The parsed `#[tool(…)]` keys: an optional `name = "…"` and a bare `flat`.
+/// The parsed `#[tool(…)]` keys: an optional `name = "…"`, a bare `flat`, and
+/// an optional `strict` applying to every method (overridable per method).
 #[derive(Default)]
 struct ToolAttr {
     name: Option<String>,
     flat: bool,
+    strict: Option<bool>,
 }
 
 /// Parse the `#[tool(…)]` attribute tokens. See [`ToolAttr`].
@@ -512,8 +533,13 @@ fn parse_tool_attr(attr: TokenStream) -> syn::Result<ToolAttr> {
         } else if meta.path.is_ident("flat") {
             parsed.flat = true;
             Ok(())
+        } else if meta.path.is_ident("strict") {
+            parsed.strict = Some(parse_bool_flag(&meta)?);
+            Ok(())
         } else {
-            Err(meta.error("unknown `tool` key; expected `name` or `flat`"))
+            Err(meta.error(
+                "unknown `tool` key; expected `name`, `flat`, or `strict`",
+            ))
         }
     });
     parser.parse2(attr)?;

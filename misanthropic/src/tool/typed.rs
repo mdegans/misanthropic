@@ -59,6 +59,21 @@ pub trait ToolArgs:
     /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     const ALLOWED_CALLERS: &'static [crate::tool::AllowedCaller] = &[];
 
+    /// When `true`, the generated [`CustomMethodDef`] is marked
+    /// [`strict`](CustomMethodDef::strict), enabling [strict tool use] — the
+    /// API validates arguments against the schema exactly and the constrained
+    /// decoder emits fields in `properties` (declaration) order, so an args
+    /// struct that declares its reasoning field first is guaranteed to reason
+    /// before it commits. Defaults to `false`. Set it on a `#[tool]` impl with
+    /// `#[tool(strict)]` (every method) or `#[method(strict)]` (one method),
+    /// or on a `#[derive(ToolArgs)]` type with `#[tool(strict)]`.
+    ///
+    /// Not compatible with [`ALLOWED_CALLERS`](Self::ALLOWED_CALLERS)
+    /// (programmatic tool calling) — the API rejects that combination.
+    ///
+    /// [strict tool use]: <https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/strict-tool-use>
+    const STRICT: bool = false;
+
     /// JSON Schema for `Self`, sanitized for Anthropic. See
     /// [`sanitize_for_anthropic`](crate::prompt::output::sanitize_for_anthropic).
     fn schema() -> serde_json::Value {
@@ -77,6 +92,7 @@ pub trait ToolArgs:
             .build()
             .expect("a ToolArgs-derived schema is valid");
         def.defer_loading = Self::DEFER_LOADING.then_some(true);
+        def.strict = Self::STRICT.then_some(true);
         def.allowed_callers = (!Self::ALLOWED_CALLERS.is_empty())
             .then(|| Self::ALLOWED_CALLERS.to_vec());
         def
@@ -441,6 +457,23 @@ mod tests {
             <Deferred as ToolArgs>::definition().defer_loading,
             Some(true)
         );
+    }
+
+    // A `ToolArgs` whose `STRICT` is overridden to `true`.
+    #[derive(Deserialize, schemars::JsonSchema)]
+    struct Strict {}
+    impl ToolArgs for Strict {
+        const NAME: &'static str = "strict";
+        const DESCRIPTION: &'static str = "A strict method.";
+        const STRICT: bool = true;
+    }
+
+    #[test]
+    fn strict_const_flows_into_definition() {
+        // Default is `false`, so the field elides.
+        assert_eq!(<Clear as ToolArgs>::definition().strict, None);
+        // Overridden to `true`, so it is carried onto the `CustomMethodDef`.
+        assert_eq!(<Strict as ToolArgs>::definition().strict, Some(true));
     }
 
     #[test]

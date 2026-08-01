@@ -24,12 +24,10 @@ pub fn doc_string(attrs: &[Attribute]) -> String {
     lines.join("\n").trim().to_string()
 }
 
-/// Parse a `defer_loading` flag inside `#[tool(…)]` / `#[method(…)]`: accepts a
-/// bare path (`defer_loading`, meaning `true`) or `defer_loading = true|false`.
-/// `meta` is the entry already matched as `defer_loading`.
-pub fn parse_defer_loading(
-    meta: &syn::meta::ParseNestedMeta,
-) -> syn::Result<bool> {
+/// Parse a boolean flag (`defer_loading`, `strict`, …) inside `#[tool(…)]` /
+/// `#[method(…)]`: accepts a bare path (meaning `true`) or `<flag> =
+/// true|false`. `meta` is the entry already matched as the flag's ident.
+pub fn parse_bool_flag(meta: &syn::meta::ParseNestedMeta) -> syn::Result<bool> {
     if meta.input.peek(Token![=]) {
         Ok(meta.value()?.parse::<LitBool>()?.value())
     } else {
