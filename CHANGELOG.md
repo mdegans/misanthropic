@@ -15,6 +15,19 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Batch `errored` results now surface the real API error instead of
+  `"unknown error: error: "`.** The batch results JSONL wraps an errored
+  item's error in the same envelope as a top-level HTTP error —
+  `{"type":"errored","error":{"type":"error","error":{"type":"...","message":"..."}}}`
+  — but `BatchResult`'s `Deserialize` fed the whole envelope to
+  `client::AnthropicError`, whose `Deserialize` expects the inner object
+  directly. The mismatched `"type": "error"` fell through to
+  `AnthropicError::Unknown` with an empty message, discarding the actual
+  error. The `errored` arm now unwraps the inner `error` object when the
+  envelope shape is present, falling back to the bare shape otherwise.
+
 ## [1.0.0-alpha.17] — 2026-08-21
 
 ### Breaking

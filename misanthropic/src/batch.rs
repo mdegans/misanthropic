@@ -815,7 +815,8 @@ pub(crate) struct IdentifiedBatchResult {
 ///
 /// The API returns different content keys per variant:
 /// - `succeeded` → `{ "type": "succeeded", "message": { ... } }`
-/// - `errored` → `{ "type": "errored", "error": { ... } }`
+/// - `errored` → `{ "type": "errored", "error": { "type": "error", "error": { ... } } }`
+///   (the inner `error` object is the actual [`client::AnthropicError`] body)
 /// - `canceled` / `expired` → `{ "type": "canceled" }` (no content)
 ///
 /// Response data is always owned (`'static`) since it is deserialized from
@@ -824,7 +825,7 @@ pub(crate) struct IdentifiedBatchResult {
 // tax every successful result. Permanent allow, not a deferral (see the same
 // reasoning at `Stream::new`).
 #[allow(clippy::large_enum_variant)]
-#[derive(Serialize, derive_more::IsVariant)]
+#[derive(Debug, Serialize, derive_more::IsVariant)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum BatchResult {
     /// The batch was canceled and this prompt was not processed.
@@ -865,8 +866,22 @@ impl<'de> Deserialize<'de> for BatchResult {
                 let error = value
                     .get("error")
                     .ok_or_else(|| serde::de::Error::missing_field("error"))?;
+                // The API wraps an errored item's error in an envelope
+                // matching the top-level HTTP error shape:
+                // `{"type":"error","error":{"type":"...","message":"..."}}`.
+                // `client::AnthropicError`'s Deserialize expects the
+                // inner object directly, so unwrap it when present;
+                // otherwise fall back to `error` as-is (keeps
+                // envelope-free/bare-shape fixtures working).
+                let inner = match (
+                    error.get("type").and_then(|v| v.as_str()),
+                    error.get("error"),
+                ) {
+                    (Some("error"), Some(inner)) => inner,
+                    _ => error,
+                };
                 let err: client::AnthropicError =
-                    serde_json::from_value(error.clone())
+                    serde_json::from_value(inner.clone())
                         .map_err(serde::de::Error::custom)?;
                 Ok(BatchResult::Error(err))
             }
@@ -1445,5 +1460,118 @@ mod tests {
 
         let expired = Result::from(BatchResult::Expired);
         assert!(expired.is_err());
+    }
+
+    // Regression coverage for the 2026-08-29 incident: a batch item's real
+    // error ("prompt is too long: 212096 tokens > 200000 maximum") was
+    // logged only as "unknown error: error: " because the errored arm fed
+    // the whole `{"type":"error","error":{...}}` envelope to
+    // `client::AnthropicError`'s Deserialize, which expects the inner
+    // object directly and so fell through to `Unknown` with an empty
+    // message.
+
+    #[test]
+    fn test_batch_result_errored_nested_envelope() {
+        // A realistic line from the batch results JSONL download: the
+        // `error` field is the full HTTP-style envelope, not the bare
+        // error object.
+        const JSONL_LINE: &str = r#"{
+  "custom_id": "00000000-0000-0000-0000-000000000000",
+  "result": {
+    "type": "errored",
+    "error": {
+      "type": "error",
+      "error": {
+        "type": "invalid_request_error",
+        "message": "prompt is too long: 212096 tokens > 200000 maximum"
+      }
+    }
+  }
+}"#;
+
+        let identified: IdentifiedBatchResult =
+            serde_json::from_str(JSONL_LINE).unwrap();
+        assert_eq!(identified.id, ERROR_ID);
+        match identified.result {
+            BatchResult::Error(client::AnthropicError::InvalidRequest {
+                message,
+            }) => {
+                assert_eq!(
+                    message,
+                    "prompt is too long: 212096 tokens > 200000 maximum"
+                );
+            }
+            other => panic!("expected InvalidRequest error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_batch_result_errored_bare_shape_fallback() {
+        // Without the envelope (older/synthetic fixtures), the errored arm
+        // should still deserialize the error object directly.
+        const JSON: &str = r#"{
+  "type": "errored",
+  "error": {
+    "type": "invalid_request_error",
+    "message": "x"
+  }
+}"#;
+
+        let result: BatchResult = serde_json::from_str(JSON).unwrap();
+        match result {
+            BatchResult::Error(client::AnthropicError::InvalidRequest {
+                message,
+            }) => {
+                assert_eq!(message, "x");
+            }
+            other => panic!("expected InvalidRequest error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_batch_result_deserialize_succeeded() {
+        const JSON: &str = r#"{
+  "type": "succeeded",
+  "message": {
+    "content": [
+      {
+        "text": "Hi! My name is Claude.",
+        "type": "text"
+      }
+    ],
+    "id": "msg_013Zva2CMHLNnXjNJJKqJ2EF",
+    "model": "claude-3-5-sonnet-20240620",
+    "role": "assistant",
+    "stop_reason": "end_turn",
+    "stop_sequence": null,
+    "type": "message",
+    "usage": {
+      "input_tokens": 2095,
+      "output_tokens": 503
+    }
+  }
+}"#;
+
+        let result: BatchResult = serde_json::from_str(JSON).unwrap();
+        match result {
+            BatchResult::Ok(message) => {
+                assert_eq!(message.id, "msg_013Zva2CMHLNnXjNJJKqJ2EF");
+            }
+            other => panic!("expected Ok, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_batch_result_deserialize_canceled() {
+        const JSON: &str = r#"{ "type": "canceled" }"#;
+        let result: BatchResult = serde_json::from_str(JSON).unwrap();
+        assert!(result.is_canceled());
+    }
+
+    #[test]
+    fn test_batch_result_deserialize_expired() {
+        const JSON: &str = r#"{ "type": "expired" }"#;
+        let result: BatchResult = serde_json::from_str(JSON).unwrap();
+        assert!(result.is_expired());
     }
 }
