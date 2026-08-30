@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.18] — 2026-08-30
+
 ### Fixed
 
 - **Batch `errored` results now surface the real API error instead of
