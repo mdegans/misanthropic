@@ -1524,6 +1524,39 @@ pub(crate) mod tests {
         }))
     }
 
+    /// An SSE `error` event arrives after the HTTP 200, so there is no
+    /// status to take: an unrecognized `type` mid-stream stays
+    /// `Unknown { code: None }`, while known types keep their implied one.
+    #[tokio::test]
+    async fn test_mid_stream_error_has_no_http_status() {
+        use futures::StreamExt;
+
+        const SSE: &str = "event: error\n\
+            data: {\"type\":\"error\",\"error\":{\"type\":\"unknown\",\"message\":\"resample\"}}\n\
+            \n\
+            event: error\n\
+            data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\
+            \n";
+
+        let errors: Vec<_> = mock_stream(SSE)
+            .map(|r| match r {
+                Err(Error::Anthropic { error, .. }) => error,
+                other => panic!("expected Error::Anthropic, got {other:?}"),
+            })
+            .collect()
+            .await;
+
+        assert_eq!(
+            errors[0],
+            AnthropicError::Unknown {
+                code: None,
+                message: "unknown: resample".to_string(),
+            }
+        );
+        assert_eq!(errors[0].status(), None);
+        assert_eq!(errors[1].status(), std::num::NonZeroU16::new(529));
+    }
+
     /// `record(replay(fixture))` reproduces the file byte-for-byte: the
     /// recorder's wrapper concatenation is the exact inverse of `replay`'s
     /// unwrap slicing, both pure text — no trip through the crate's own

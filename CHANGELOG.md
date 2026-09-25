@@ -15,6 +15,19 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Fixed
+
+- **An error with an unrecognized `type` now keeps its HTTP status.** A
+  non-OK response whose body parses as an error of a `type` the crate
+  doesn't know (e.g. `"unknown"` from an Anthropic-compatible server) became
+  `AnthropicError::Unknown { code: None, .. }`, dropping the status, so
+  `status()` returned `None` and a caller's "retry 5xx" rule couldn't fire.
+  `Client::get`/`post` now fill `code` from the response status when the
+  body didn't supply one. Known variants are unchanged (their `status()` is
+  still the one implied by their `type`). An SSE `error` event mid-stream
+  has no HTTP status to take, so an unknown `type` there is still
+  `code: None`.
+
 ## [1.0.0-alpha.18] — 2026-08-30
 
 ### Fixed
