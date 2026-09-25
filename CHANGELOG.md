@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.19] — 2026-09-25
+
 ### Fixed
 
 - **An error with an unrecognized `type` now keeps its HTTP status.** A
