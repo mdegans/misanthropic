@@ -269,28 +269,7 @@ impl Client {
         let body = response.text().await?;
 
         if status != reqwest::StatusCode::OK {
-            // Error path: try the documented Anthropic shape first.
-            return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
-                Ok(wrapper) => {
-                    let mut error = wrapper.error;
-                    error.set_retry_after(retry_after);
-                    Err(error.into())
-                }
-                Err(_parse_err) => {
-                    #[cfg(feature = "log")]
-                    {
-                        log::error!(
-                            "ERROR:non-JSON error body (status {}): {}",
-                            status.as_u16(),
-                            truncate_body(&body),
-                        );
-                    }
-                    Err(Error::NonJsonResponse {
-                        status: status.as_u16(),
-                        body: truncate_body(&body).into_owned(),
-                    })
-                }
-            };
+            return Err(error_response(status, retry_after, &body));
         }
 
         #[cfg(feature = "log")]
@@ -350,27 +329,7 @@ impl Client {
             // Grab `retry-after` before `text()` consumes the response.
             let retry_after = parse_retry_after(response.headers());
             let body = response.text().await?;
-            return match serde_json::from_str::<AnthropicErrorWrapper>(&body) {
-                Ok(wrapper) => {
-                    let mut error = wrapper.error;
-                    error.set_retry_after(retry_after);
-                    Err(error.into())
-                }
-                Err(_parse_err) => {
-                    #[cfg(feature = "log")]
-                    {
-                        log::error!(
-                            "ERROR:non-JSON error body (status {}): {}",
-                            status.as_u16(),
-                            truncate_body(&body),
-                        );
-                    }
-                    Err(Error::NonJsonResponse {
-                        status: status.as_u16(),
-                        body: truncate_body(&body).into_owned(),
-                    })
-                }
-            };
+            return Err(error_response(status, retry_after, &body));
         }
 
         Ok(response)
@@ -825,6 +784,41 @@ where
     }
 }
 
+/// Build the [`Error`] for a non-OK response, shared by `Client::get` and
+/// [`Client::post`]. Tries the documented [`AnthropicError`] shape first,
+/// folding in the `retry-after` header and — for an unrecognized `type` —
+/// the HTTP status (see [`AnthropicError::Unknown`]); anything else becomes
+/// [`Error::NonJsonResponse`].
+#[cfg(feature = "client")]
+fn error_response(
+    status: reqwest::StatusCode,
+    retry_after: Option<u64>,
+    body: &str,
+) -> Error {
+    match serde_json::from_str::<AnthropicErrorWrapper>(body) {
+        Ok(wrapper) => {
+            let mut error = wrapper.error;
+            error.set_retry_after(retry_after);
+            error.set_status(status.as_u16());
+            error.into()
+        }
+        Err(_parse_err) => {
+            #[cfg(feature = "log")]
+            {
+                log::error!(
+                    "ERROR:non-JSON error body (status {}): {}",
+                    status.as_u16(),
+                    truncate_body(body),
+                );
+            }
+            Error::NonJsonResponse {
+                status: status.as_u16(),
+                body: truncate_body(body).into_owned(),
+            }
+        }
+    }
+}
+
 /// Parse the `retry-after` response header as a whole number of seconds.
 ///
 /// Anthropic sends seconds on `429`/`529` responses. The HTTP-date form
@@ -938,7 +932,8 @@ impl Serialize for Error {
 ///   custom [`Deserialize`] impl.
 /// - Any `type` value not matching a known variant falls through to
 ///   [`Self::Unknown`] with `code: None` and `message` carrying both
-///   the unrecognized type name and the body's `message`. This is the
+///   the unrecognized type name and the body's `message`. The client
+///   then fills `code` from the HTTP status, where there is one. This is the
 ///   genuine catch-all — previously a `type` value Anthropic hadn't
 ///   documented at crate release time (e.g. a new `gateway_timeout`
 ///   variant) would fail deserialization entirely and surface as
@@ -1005,8 +1000,10 @@ pub enum AnthropicError {
     /// was released, or a synthetic error constructed by the crate
     /// itself (e.g. batch results for cancelled/expired items).
     ///
-    /// `code` is `None` when constructed via the deserialize fallback
-    /// (no HTTP status can be inferred from a `type` string alone).
+    /// `code` carries the HTTP status when the error arrived as a non-OK
+    /// response to [`Client::get`](crate::Client)/[`Client::post`]. It is
+    /// `None` when there was no status to take: a bare deserialize, or an
+    /// SSE `error` event mid-stream (the HTTP status was already 200).
     /// Synthetic constructors can pass `Some(code)` when they have a
     /// meaningful status to carry.
     #[error("unknown error{}: {message}", code.map(|c| format!(" ({c})")).unwrap_or_default())]
@@ -1067,6 +1064,23 @@ impl AnthropicError {
         | Self::Overloaded { retry_after, .. } = self
         {
             *retry_after = seconds;
+        }
+    }
+
+    /// Fill [`Unknown`]'s `code` from the response's HTTP status when the
+    /// body didn't supply one; a no-op for every other variant, whose
+    /// status is implied by its `type`. Keeps an unrecognized error's
+    /// status visible to [`Self::status`] (e.g. a 5xx from a compatible
+    /// server that reports `"type": "unknown"`).
+    ///
+    /// [`Unknown`]: Self::Unknown
+    #[cfg(feature = "client")]
+    pub(crate) fn set_status(&mut self, status: u16) {
+        if let Self::Unknown {
+            code: code @ None, ..
+        } = self
+        {
+            *code = NonZeroU16::new(status);
         }
     }
 }
@@ -1418,6 +1432,122 @@ mod tests {
             message: "boom".to_string(),
         };
         assert_eq!(other.retry_after(), None);
+    }
+
+    // An unrecognized error `type` keeps the HTTP status it arrived with,
+    // so callers can tell a 5xx from a 4xx.
+
+    /// Body blallama (llama.cpp, Anthropic-compatible) sends with HTTP 500.
+    #[cfg(feature = "client")]
+    const BLALLAMA_500: &str = r#"{"type":"error","error":{"type":"unknown","message":"generation emitted a reserved chat-framing special token in free text; resample"}}"#;
+
+    #[cfg(feature = "client")]
+    fn anthropic(e: Error) -> AnthropicError {
+        match e {
+            Error::Anthropic(e) => e,
+            other => panic!("expected Error::Anthropic, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_error_response_unknown_type_keeps_status() {
+        let e = anthropic(error_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            None,
+            BLALLAMA_500,
+        ));
+        assert_eq!(e.status(), NonZeroU16::new(500));
+        assert!(matches!(e, AnthropicError::Unknown { .. }));
+        assert_eq!(
+            e.to_string(),
+            "unknown error (500): unknown: generation emitted a reserved \
+             chat-framing special token in free text; resample"
+        );
+
+        // A 4xx stays a 4xx.
+        let e = anthropic(error_response(
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            None,
+            r#"{"type":"error","error":{"type":"grammar_error","message":"x"}}"#,
+        ));
+        assert_eq!(e.status(), NonZeroU16::new(422));
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_error_response_known_types_unchanged() {
+        // Known variants keep the status implied by their `type`, and the
+        // `retry-after` header still folds in.
+        let e = anthropic(error_response(
+            reqwest::StatusCode::from_u16(529).unwrap(),
+            Some(7),
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#,
+        ));
+        assert_eq!(
+            e,
+            AnthropicError::Overloaded {
+                message: "Overloaded".to_string(),
+                retry_after: Some(7),
+            }
+        );
+        assert_eq!(e.status(), NonZeroU16::new(529));
+
+        let e = anthropic(error_response(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            None,
+            r#"{"type":"error","error":{"type":"api_error","message":"boom"}}"#,
+        ));
+        assert_eq!(
+            e,
+            AnthropicError::API {
+                message: "boom".to_string()
+            }
+        );
+        assert_eq!(e.status(), NonZeroU16::new(500));
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_error_response_non_json() {
+        match error_response(
+            reqwest::StatusCode::BAD_GATEWAY,
+            None,
+            "<html>bad gateway</html>",
+        ) {
+            Error::NonJsonResponse { status, body } => {
+                assert_eq!(status, 502);
+                assert_eq!(body, "<html>bad gateway</html>");
+            }
+            other => panic!("expected NonJsonResponse, got {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_set_status() {
+        // Fills a missing code on Unknown.
+        let mut e = AnthropicError::Unknown {
+            code: None,
+            message: "x".to_string(),
+        };
+        e.set_status(503);
+        assert_eq!(e.status(), NonZeroU16::new(503));
+
+        // Never overwrites a code that's already there.
+        let mut e = AnthropicError::Unknown {
+            code: NonZeroU16::new(408),
+            message: "x".to_string(),
+        };
+        e.set_status(500);
+        assert_eq!(e.status(), NonZeroU16::new(408));
+
+        // No-op on known variants: status comes from the `type`.
+        let mut e = AnthropicError::API {
+            message: "x".to_string(),
+        };
+        e.set_status(503);
+        assert_eq!(e.status(), NonZeroU16::new(500));
     }
 
     #[cfg(feature = "client")]
