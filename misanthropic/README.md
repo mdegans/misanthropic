@@ -189,6 +189,8 @@ element as it's generated.
 - [x] [Sanitization](https://crates.io/crates/langsan) of input and output to mitigate [injection attacks](https://arstechnica.com/security/2024/10/ai-chatbots-can-read-and-write-invisible-text-creating-an-ideal-covert-channel/)
 - [x] Wasm support (without the Client itself, just the data structures and stream types, extensions, tools, and so on)
 - [x] Custom request and endpoint support
+- [x] A scripted, recording `MockTransport` for offline tests (`mock`
+  feature)
 - [x] API keys zeroized on drop, optionally encrypted in memory
   (`memsecurity` feature)
 - [ ] Amazon Bedrock support

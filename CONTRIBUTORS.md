@@ -9,3 +9,4 @@ Claude (Opus 4.8) - Wire-capture fixture harness, server tools, bash tool +
 sandboxed `bashd`, lifetime removal, message unification
 Claude (Fable 5) - README as doc-tested front page, release pipeline
 (Docker Hub + crates.io), per-feature CI gate and the feature fixes it caught
+Claude (Opus 5.5) - `MockTransport`

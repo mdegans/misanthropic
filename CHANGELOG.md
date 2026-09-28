@@ -15,6 +15,37 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`MockTransport` — a scripted, recording `Transport` for offline tests**
+  (new non-default `mock` feature, meant for downstream
+  `[dev-dependencies]`; no new dependencies, runtime-agnostic). Generic over
+  the prompt type (`MockTransport<Prompt>`, `MockTransport<CachedPrompt>`),
+  it records every request as the JSON that would have hit the wire
+  (`requests()`, `last()`, `len()`), answers from a FIFO script of
+  `mock::Outcome`s — replies or `client::Error`s — and, with
+  `MockTransport::with(|prompt| …)`, from a closure once the script runs
+  out. Request *n* is always paired with the *n*th scripted outcome, however
+  sends interleave. An exhausted script with no closure **panics** rather
+  than returning an error, so retry or fallback logic under test can't
+  swallow a missing reply. `yields(n)`, `events()` and `peak_in_flight()`
+  let a test assert on overlap and ordering; `with_quirks` and
+  `with_concurrency` set what the transport reports.
+
+  `mock::Reply` builds the canned `response::Message`s — `mock::text`,
+  `tool_use` (or `.call(tool::Use)` for a chosen id), `refusal` (with
+  `StopDetails`, which downstream can't otherwise construct), `max_tokens`,
+  or `message` for a captured fixture — with synthetic usage via `.usage`,
+  `.cache_read`, `.cache_write` and `.counts`. `mock::http_error(status,
+  retry_after)` scripts the `AnthropicError` the `Client` reports for a
+  status, `retry-after` included on `429`/`529`.
+
+  ```rust
+  let mock = MockTransport::new()
+      .then(mock::text("Hello!").usage(10, 2).cache_read(100))
+      .then(mock::http_error(529, Some(3)));
+  ```
+
 ## [1.0.0-alpha.19] — 2026-09-25
 
 ### Fixed

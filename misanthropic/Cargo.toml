@@ -340,6 +340,10 @@ bash-container = [
 # OpenAI-compatible types and conversions for use with Ollama and other
 # OpenAI-compatible endpoints.
 openai = []
+# `MockTransport`: a scripted, recording `Transport` for offline tests of code
+# generic over one, plus builders for canned replies. For downstream
+# `[dev-dependencies]`; no extra dependencies, runtime-agnostic.
+mock = []
 # Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
 # default; turn off to drop the proc-macro (syn) compile-time cost.
 derive = ["dep:misanthropic-derive"]
