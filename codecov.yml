@@ -23,3 +23,10 @@ flag_management:
       carryforward: true
     - name: live
       carryforward: true
+
+# The `chat` app is a demo and test chat (example code, not published in
+# either crate, UI views not unit-testable without heavy changes), so it
+# doesn't count against the crates' coverage. The crate's own Dioxus glue,
+# misanthropic/src/dioxus.rs, ships and stays counted.
+ignore:
+  - "chat/**"
