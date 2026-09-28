@@ -23,6 +23,12 @@
 #      and every job's token is read-only except the one that edits labels.
 # This workflow file itself always runs from `main`, never from the PR.
 #
+# `workflow_dispatch` runs the same suite on demand against `main` or any
+# tag or branch in this repo (Actions -> Live tests and coverage -> Run
+# workflow). Only people with write access can dispatch, so there is no label
+# gate on that path. Use it to check a release after the fact, or `main`
+# after a merge that skipped the gate.
+#
 # Secrets: ANTHROPIC_API_KEY, CODECOV_TOKEN.
 name: Live tests and coverage
 
@@ -30,11 +36,12 @@ on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
+  workflow_dispatch:
 
 permissions: {}
 
 concurrency:
-  group: live-${{ github.event.pull_request.number }}
+  group: live-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -64,8 +71,9 @@ jobs:
       # label that `unlabel` is removing.
       - name: Require the ready-to-merge label
         if: >-
+          github.event_name == 'pull_request_target' && (
           github.event.action == 'synchronize' ||
-          !contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
+          !contains(github.event.pull_request.labels.*.name, 'ready-to-merge'))
         run: |
           echo "::error::The live suite (real API calls) and coverage run only once a maintainer adds the 'ready-to-merge' label. Add it after reviewing the current head; a new push removes it."
           exit 1
@@ -73,7 +81,8 @@ jobs:
       - name: Checkout the reviewed head
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          # The reviewed PR head, or the dispatched ref's commit.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
       - name: Set up Rust
@@ -124,6 +133,6 @@ jobs:
           flags: unittests
           name: codecov-umbrella
           fail_ci_if_error: true
-          override_commit: ${{ github.event.pull_request.head.sha }}
+          override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
           override_pr: ${{ github.event.pull_request.number }}
-          override_branch: ${{ github.event.pull_request.head.ref }}
+          override_branch: ${{ github.event.pull_request.head.ref || github.ref_name }}
