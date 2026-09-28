@@ -81,6 +81,12 @@ jobs:
       - name: Checkout the reviewed head
         uses: actions/checkout@v5
         with:
+          # actions/checkout refuses a fork PR's code under
+          # pull_request_target unless told otherwise ("pwn request" risk).
+          # This job opts in deliberately; the mitigations are in the header:
+          # a maintainer's label after review, stripped on any new push,
+          # the exact reviewed SHA, no persisted credentials, read-only token.
+          allow-unsafe-pr-checkout: true
           # The reviewed PR head, or the dispatched ref's commit.
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
