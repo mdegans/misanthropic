@@ -11,9 +11,13 @@ on:
 permissions:
   contents: read
 
+# Queue, never cancel: every main commit needs its own `unit` upload, since
+# carryforward inherits from the parent and a report-less commit would break
+# the chain for `live`. Uploads are per commit, so queued runs can't clobber
+# each other.
 concurrency:
   group: coverage-main
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   unit:
