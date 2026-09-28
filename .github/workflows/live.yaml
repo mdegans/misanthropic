@@ -1,0 +1,129 @@
+# Live tests and coverage, gated on the `ready-to-merge` label.
+#
+# The `--run-ignored all` suite calls the real Anthropic API (it costs money)
+# and the coverage build is slow, so neither runs on every PR push. They run
+# when a maintainer adds `ready-to-merge` to a PR, and the `live` job is a
+# REQUIRED check in the branch ruleset, so a PR cannot merge until they pass.
+# `main` is therefore already covered when it moves, instead of finding out
+# after the merge.
+#
+# Why the job fails (rather than skips) without the label: GitHub counts a
+# skipped job as passing a required check. Failing fast, before any secret is
+# touched, is what makes the label a gate.
+#
+# Why `pull_request_target`: PRs come from forks, and fork PRs get no secrets
+# under `pull_request`. `pull_request_target` runs with the base repo's
+# secrets, which is safe only because
+#   1. nothing is checked out or run until a maintainer has labeled the PR,
+#      i.e. has read the diff;
+#   2. any new push to the PR removes the label (`unlabel` below) and this
+#      run's `synchronize` fails the gate, so a commit added after review
+#      cannot ride the old approval;
+#   3. the checkout is the reviewed head SHA with no persisted credentials,
+#      and every job's token is read-only except the one that edits labels.
+# This workflow file itself always runs from `main`, never from the PR.
+#
+# Secrets: ANTHROPIC_API_KEY, CODECOV_TOKEN.
+name: Live tests and coverage
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+concurrency:
+  group: live-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  # A new commit on a labeled PR needs a fresh review before the paid suite
+  # runs against it.
+  unlabel:
+    if: >-
+      github.event.action == 'synchronize' &&
+      contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Remove ready-to-merge after a new push
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh pr edit ${{ github.event.pull_request.number }}
+          --repo ${{ github.repository }} --remove-label ready-to-merge
+
+  live:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The gate. `synchronize` always fails here: its payload still lists the
+      # label that `unlabel` is removing.
+      - name: Require the ready-to-merge label
+        if: >-
+          github.event.action == 'synchronize' ||
+          !contains(github.event.pull_request.labels.*.name, 'ready-to-merge')
+        run: |
+          echo "::error::The live suite (real API calls) and coverage run only once a maintainer adds the 'ready-to-merge' label. Add it after reviewing the current head; a new push removes it."
+          exit 1
+
+      - name: Checkout the reviewed head
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      # The coverage build compiles the whole workspace --all-features with
+      # LLVM instrumentation (roughly double the object sizes) and hit the
+      # ~14 GB runner limit at alpha.8. Reclaim preinstalled bloat first.
+      - name: Free disk space for coverage build
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      # load_api_key reads CRATE_ROOT/api.key — the misanthropic crate dir.
+      - name: Write API key to api.key
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: printf '%s' "$ANTHROPIC_API_KEY" > misanthropic/api.key
+
+      - name: Collect coverage data (including ignored tests)
+        run: cargo llvm-cov nextest --all-features --run-ignored all --lcov --output-path lcov.info
+
+      - name: Remove api.key
+        if: always()
+        run: rm -f misanthropic/api.key
+
+      # Attributed to the PR's head commit, so Codecov reports on the PR.
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          flags: unittests
+          name: codecov-umbrella
+          fail_ci_if_error: true
+          override_commit: ${{ github.event.pull_request.head.sha }}
+          override_pr: ${{ github.event.pull_request.number }}
+          override_branch: ${{ github.event.pull_request.head.ref }}
