@@ -9,8 +9,8 @@
 # pushed with the workflow's GITHUB_TOKEN deliberately triggers no further
 # workflows.) Pushing a `v*` tag by hand still works and must match the
 # workspace version. A main push that doesn't change the version does nothing
-# here. `main` has already passed the live suite (live.yaml, a required,
-# pre-merge check), so what gets released is what was tested.
+# here. A release re-runs the live suite (live.yaml) on the exact commit it
+# publishes and stops if it fails, so what gets released is what was tested.
 #
 # The image publishes before the crates so a freshly published crate's
 # DEFAULT_IMAGE (`mdegans/misan-bashd:<version>`) is already pullable. Each
@@ -113,12 +113,32 @@ jobs:
               ;;
           esac
 
-  # One native build per arch, pushed as an arch tag the merge job consumes.
-  build-image:
+  # The live suite (real API calls) and coverage on the exact commit being
+  # released. Nothing is built or published unless it passes: the PR gate
+  # tested the PR's head, and the squash commit on main is only the same code
+  # if the PR was up to date when it merged. One paid run per release, not
+  # per merge. It also refreshes the `live` coverage flag on main.
+  live:
     needs: version
+    if: needs.version.outputs.release == 'true'
+    uses: ./.github/workflows/live.yaml
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+    permissions:
+      contents: read
+      # Requested by live.yaml's `unlabel` job, which never runs on this path.
+      pull-requests: write
+
+  # One native build per arch, pushed as an arch tag the merge job consumes.
+  # A release needs the live suite green; a manual image rebuild skips it
+  # (and `!cancelled()` is what lets that path run past the skipped `live`).
+  build-image:
+    needs: [version, live]
     if: >-
-      needs.version.outputs.release == 'true' ||
-      github.event_name == 'workflow_dispatch'
+      !cancelled() && (
+      (needs.version.outputs.release == 'true' && needs.live.result == 'success') ||
+      github.event_name == 'workflow_dispatch')
     strategy:
       matrix:
         include:
