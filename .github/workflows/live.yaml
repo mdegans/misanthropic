@@ -40,11 +40,24 @@ on:
     branches: [main]
     types: [opened, synchronize, reopened, labeled, unlabeled]
   workflow_dispatch:
+  # release.yaml runs this on the exact commit it is about to publish and
+  # publishes only if it passes. In that context the label gate doesn't
+  # apply (it is the push to main of an already-merged change), checkout and
+  # the Codecov upload use that commit, and `live` coverage is refreshed on
+  # main with every release.
+  workflow_call:
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+      CODECOV_TOKEN:
+        required: true
 
 permissions: {}
 
 concurrency:
-  group: live-${{ github.event.pull_request.number || github.ref }}
+  # Per PR; otherwise per event and ref, so a manual run on main can't
+  # cancel a release's run (a cancelled live run would stop the release).
+  group: live-${{ github.event.pull_request.number || format('{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: true
 
 jobs:
