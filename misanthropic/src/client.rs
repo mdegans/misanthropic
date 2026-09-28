@@ -2054,7 +2054,7 @@ mod tests {
         // container, we answer each pause with a `tool_result`-only turn and
         // resume the same container. Fake data makes "West" the unique max, so
         // the final answer is a deterministic invariant.
-        use crate::prompt::message::Block;
+        use crate::prompt::message::{Block, Content, UserMessage};
         use crate::response::StopReason;
         use crate::tool::{
             self, Caller, CustomMethodDef, KnownCaller, ServerMethodDef,
@@ -2146,21 +2146,27 @@ mod tests {
             );
 
             prompt.push_message(response).unwrap();
-            for call in calls {
-                calls_made += 1;
-                let region = call.input["region"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .to_owned();
-                let payload = crate::json!({
-                    "region": region,
-                    "revenue": revenue(&region),
+            // Every call from this turn is answered in ONE user message. The
+            // model may batch them (asyncio.gather issued all five in one
+            // turn on 2026-09-28); one message per result would leave the
+            // rest unanswered, which push_message rightly refuses.
+            let results: Content = calls
+                .into_iter()
+                .map(|call| {
+                    calls_made += 1;
+                    let region = call.input["region"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned();
+                    let payload = crate::json!({
+                        "region": region,
+                        "revenue": revenue(&region),
+                    })
+                    .to_string();
+                    Block::from(tool::Result::new(call.id, payload))
                 })
-                .to_string();
-                prompt
-                    .push_message(tool::Result::new(call.id, payload))
-                    .unwrap();
-            }
+                .collect();
+            prompt.push_message(UserMessage::from(results)).unwrap();
         };
 
         assert_eq!(
@@ -2292,57 +2298,77 @@ mod tests {
         let key = load_api_key().await;
         let client = Client::new(key).unwrap();
 
-        // Drive both sub-tools deterministically: create a file with the editor,
-        // then sum its lines with bash. The sum (15) is the invariant. Needs a
-        // model that supports `code_execution_20260120` (not Haiku).
-        let mut prompt = Prompt::default()
-            .model(crate::Id::Sonnet46)
-            .add_message((
-                Role::User,
-                "Using the code execution tool: first create the file \
-                 /tmp/nums.txt with the numbers 1, 2, 3, 4, 5 one per line, \
-                 then run a bash command that sums those numbers and prints \
-                 only the total.",
-            ))
-            .unwrap()
-            .add_tool(ServerMethodDef::code_execution());
-
+        // Exercise both sub-tools: create a file with the text editor, then
+        // sum its lines with bash. The sum (15) is the invariant. The model
+        // chooses its own tools and sometimes writes the file from bash
+        // instead (2026-09-28), which would leave the editor's `Create`
+        // result untested; so the prompt names the command, and a run
+        // without it is retried fresh, up to three times, before failing.
+        // Needs a model that supports `code_execution_20260120` (not Haiku).
         let mut saw_create = false;
         let mut saw_bash = false;
-        let mut pauses = 0u32;
-        loop {
-            let response = crate::utils::retry_transient(
-                "test_code_execution_server_tool",
-                || client.message(&prompt),
-            )
-            .await
-            .unwrap();
+        for attempt in 1..=3 {
+            let mut prompt = Prompt::default()
+                .model(crate::Id::Sonnet46)
+                .add_message((
+                    Role::User,
+                    "Using the code execution tool: first use the text \
+                     editor's `create` command (not bash) to create the file \
+                     /tmp/nums.txt with the numbers 1, 2, 3, 4, 5 one per \
+                     line, then run a bash command that sums those numbers \
+                     and prints only the total.",
+                ))
+                .unwrap()
+                .add_tool(ServerMethodDef::code_execution());
 
-            for block in response.inner.content.iter() {
-                match block {
-                    Block::TextEditorCodeExecutionToolResult {
-                        content:
-                            TextEditorCodeExecutionResultContent::Create { .. },
-                        ..
-                    } => saw_create = true,
-                    Block::BashCodeExecutionToolResult {
-                        content:
-                            BashCodeExecutionResultContent::Result {
-                                stdout, ..
-                            },
-                        ..
-                    } if stdout.contains("15") => saw_bash = true,
-                    _ => {}
+            saw_create = false;
+            saw_bash = false;
+            let mut pauses = 0u32;
+            loop {
+                let response = crate::utils::retry_transient(
+                    "test_code_execution_server_tool",
+                    || client.message(&prompt),
+                )
+                .await
+                .unwrap();
+
+                for block in response.inner.content.iter() {
+                    match block {
+                        Block::TextEditorCodeExecutionToolResult {
+                            content:
+                                TextEditorCodeExecutionResultContent::Create {
+                                    ..
+                                },
+                            ..
+                        } => saw_create = true,
+                        Block::BashCodeExecutionToolResult {
+                            content:
+                                BashCodeExecutionResultContent::Result {
+                                    stdout,
+                                    ..
+                                },
+                            ..
+                        } if stdout.contains("15") => saw_bash = true,
+                        _ => {}
+                    }
                 }
+
+                if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
+                    pauses += 1;
+                    assert!(pauses <= 5, "runaway pause_turn loop: {pauses}");
+                    prompt.push_message(response).unwrap();
+                    continue;
+                }
+                break;
             }
 
-            if matches!(response.stop_reason, Some(StopReason::PauseTurn)) {
-                pauses += 1;
-                assert!(pauses <= 5, "runaway pause_turn loop: {pauses}");
-                prompt.push_message(response).unwrap();
-                continue;
+            if saw_create {
+                break;
             }
-            break;
+            eprintln!(
+                "test_code_execution_server_tool: attempt {attempt} made no \
+                 text_editor create; retrying fresh"
+            );
         }
 
         assert!(saw_create, "expected a text_editor create result");
