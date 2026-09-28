@@ -45,6 +45,11 @@ pub use response::Response;
 pub mod transport;
 pub use transport::{Quirks, Transport};
 
+#[cfg(feature = "mock")]
+pub mod mock;
+#[cfg(feature = "mock")]
+pub use mock::MockTransport;
+
 #[cfg(feature = "chat")]
 pub mod chat;
 #[cfg(feature = "chat")]
