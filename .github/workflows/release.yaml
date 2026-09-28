@@ -1,14 +1,23 @@
 # Release pipeline: multi-arch sandbox image to Docker Hub, then the crates to
-# crates.io. Triggered by a `v*` tag matching the workspace version (the single
-# source of truth — DEFAULT_IMAGE and the justfile read the same field).
+# crates.io. The workspace version is the single source of truth
+# (DEFAULT_IMAGE and the justfile read the same field).
+#
+# **Releasing is merging a version bump.** On every push to `main` the
+# `version` job reads the workspace version; if tag `v<version>` does not
+# exist yet, it creates it on that commit and this same run publishes. No
+# hand tagging, no publishing from a laptop. (It has to be one run: a tag
+# pushed with the workflow's GITHUB_TOKEN deliberately triggers no further
+# workflows.) Pushing a `v*` tag by hand still works and must match the
+# workspace version. A main push that doesn't change the version does nothing
+# here. `main` has already passed the live suite (live.yaml, a required,
+# pre-merge check), so what gets released is what was tested.
 #
 # The image publishes before the crates so a freshly published crate's
 # DEFAULT_IMAGE (`mdegans/misan-bashd:<version>`) is already pullable. Each
 # arch builds on a native runner (QEMU cross-builds of rustc are painfully
 # slow) and pushes an arch tag; a merge job stitches them into one manifest.
 #
-# `workflow_dispatch` rebuilds and pushes the image only — crates publish is
-# gated on an actual tag push.
+# `workflow_dispatch` rebuilds and pushes the image only — never the crates.
 #
 # Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN. crates.io needs no secret:
 # publish-crates uses trusted publishing (GitHub OIDC -> a short-lived
@@ -20,21 +29,35 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+
+# Two merges in quick succession must not race to tag and publish.
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 env:
   IMAGE: mdegans/misan-bashd
 
 jobs:
-  # Read the workspace version and require the tag to match it exactly, so a
-  # mistagged release fails before anything publishes.
+  # Read the workspace version and decide whether this run releases:
+  #  - a `v*` tag push releases iff the tag matches the version exactly (a
+  #    mistagged release fails before anything publishes);
+  #  - a push to main releases iff `v<version>` doesn't exist yet, and tags
+  #    the commit first;
+  #  - workflow_dispatch never releases (image rebuild only).
   version:
     runs-on: ubuntu-latest
+    permissions:
+      # Pushing the release tag.
+      contents: write
     outputs:
       version: ${{ steps.meta.outputs.version }}
       minor: ${{ steps.meta.outputs.minor }}
       prerelease: ${{ steps.meta.outputs.prerelease }}
+      release: ${{ steps.decide.outputs.release }}
     steps:
       - uses: actions/checkout@v4
 
@@ -49,17 +72,42 @@ jobs:
             *)   echo "prerelease=false" >> "$GITHUB_OUTPUT" ;;
           esac
 
-      - name: Check tag matches workspace version
-        if: github.ref_type == 'tag'
+      - name: Decide whether this run releases (and tag it if from main)
+        id: decide
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          [ "$GITHUB_REF_NAME" = "v${{ steps.meta.outputs.version }}" ] || {
-            echo "tag $GITHUB_REF_NAME != v${{ steps.meta.outputs.version }}"
-            exit 1
-          }
+          TAG="v$VERSION"
+          case "$GITHUB_EVENT_NAME:$GITHUB_REF_TYPE" in
+            push:tag)
+              [ "$GITHUB_REF_NAME" = "$TAG" ] || {
+                echo "::error::tag $GITHUB_REF_NAME != $TAG (workspace version)"
+                exit 1
+              }
+              echo "release=true" >> "$GITHUB_OUTPUT"
+              ;;
+            push:branch)
+              if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+                echo "$TAG already exists; nothing to release."
+                echo "release=false" >> "$GITHUB_OUTPUT"
+              else
+                git tag "$TAG" "$GITHUB_SHA"
+                git push origin "refs/tags/$TAG"
+                echo "Tagged $TAG at $GITHUB_SHA; releasing."
+                echo "release=true" >> "$GITHUB_OUTPUT"
+              fi
+              ;;
+            *)
+              echo "release=false" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
 
   # One native build per arch, pushed as an arch tag the merge job consumes.
   build-image:
     needs: version
+    if: >-
+      needs.version.outputs.release == 'true' ||
+      github.event_name == 'workflow_dispatch'
     strategy:
       matrix:
         include:
@@ -110,8 +158,8 @@ jobs:
   # order and skips the publish = false members). The image is live by now,
   # so the crate's DEFAULT_IMAGE resolves from the first install.
   publish-crates:
-    if: github.ref_type == 'tag'
-    needs: merge-image
+    if: needs.version.outputs.release == 'true'
+    needs: [version, merge-image]
     runs-on: ubuntu-latest
     permissions:
       contents: read

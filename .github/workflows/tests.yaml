@@ -68,8 +68,6 @@ jobs:
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: llvm-tools-preview
 
       - name: Build
         run: cargo build --all-features --verbose
@@ -107,50 +105,6 @@ jobs:
       - name: Test Skill Docs
         run: cargo test -p misanthropic --features __skills --doc --verbose
 
-      # This should only happen on push to main. PRs should not upload coverage.
-
-      # The coverage build compiles the whole workspace --all-features a second
-      # time with LLVM instrumentation (which roughly doubles object sizes) on
-      # top of the target dir the matrix steps already filled, and finally hit
-      # the ~14 GB runner limit (No space left on device, alpha.8). Reclaim the
-      # preinstalled bloat this job never touches (~25 GB) before that build.
-      - name: Free disk space for coverage build
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        run: |
-          sudo rm -rf \
-            /usr/local/lib/android \
-            /usr/share/dotnet \
-            /opt/ghc \
-            /opt/hostedtoolcache/CodeQL \
-            /usr/local/share/boost \
-            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
-          sudo docker image prune --all --force || true
-          df -h /
-
-      - name: Install llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-
-      - name: Install nextest
-        uses: taiki-e/install-action@nextest
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-
-      - name: Write API key to api.key
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        # load_api_key reads CRATE_ROOT/api.key — the misanthropic crate dir,
-        # not the workspace root (pre-workspace layout had them identical).
-        run: echo ${{ secrets.ANTHROPIC_API_KEY }} > misanthropic/api.key
-
-      - name: Collect coverage data (including ignored tests)
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        run: cargo llvm-cov nextest --all-features --run-ignored all --lcov --output-path lcov.info
-
-      - name: Upload coverage to Codecov
-        if: matrix.os == 'ubuntu-latest' && github.event_name == 'push'
-        uses: codecov/codecov-action@v5
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: lcov.info
-          flags: unittests
-          name: codecov-umbrella
-          fail_ci_if_error: true
+      # The live (--run-ignored, real API) suite and coverage are in
+      # live.yaml: they run before merge, gated on the `ready-to-merge`
+      # label, as a required check, instead of after the merge here.
