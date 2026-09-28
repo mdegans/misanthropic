@@ -1,0 +1,58 @@
+# Coverage for main on every push, without the paid live suite. Uploads the
+# `unit` flag; codecov.yml carries the `live` flag forward from the last
+# live run on main, so the badge reflects main's actual commit. Nothing
+# waits on this job: it runs after the merge.
+name: Coverage (main)
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: coverage-main
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      # The instrumented --all-features build hit the ~14 GB runner limit at
+      # alpha.8; reclaim preinstalled bloat first (same as live.yaml).
+      - name: Free disk space for coverage build
+        run: |
+          sudo rm -rf \
+            /usr/local/lib/android \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/local/share/boost \
+            "${AGENT_TOOLSDIRECTORY:-/opt/hostedtoolcache}"
+          sudo docker image prune --all --force || true
+          df -h /
+
+      - name: Install llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Install nextest
+        uses: taiki-e/install-action@nextest
+
+      # No api.key and no --run-ignored: the live tests stay ignored here.
+      - name: Collect coverage data (no live tests)
+        run: cargo llvm-cov nextest --all-features --lcov --output-path lcov.info
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov.info
+          flags: unit
+          fail_ci_if_error: true

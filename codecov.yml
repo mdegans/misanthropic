@@ -1,0 +1,25 @@
+# Two coverage flags, so main's badge stays true without a paid run per merge.
+#
+#   unit  uploaded on every push to main by coverage-main.yaml: the normal
+#         test suite under llvm-cov, no API calls, no secrets beyond the
+#         Codecov token.
+#   live  uploaded by live.yaml: the whole suite including the ignored,
+#         real-API tests. It runs on a PR once labeled `ready-to-merge`, and
+#         on main when dispatched by hand.
+#
+# Carryforward: a main commit that got only a `unit` upload inherits its
+# parent's `live` coverage, so the badge is fresh unit coverage merged with
+# the last live run on main. The PR uploads land on PR head commits, which a
+# squash merge takes out of main's history; they report on the PR, and a
+# dispatch on main refreshes `live` there.
+#
+# Carryforward is off by default so the pre-2026-09-28 `unittests` flag is
+# not inherited forever.
+flag_management:
+  default_rules:
+    carryforward: false
+  individual_flags:
+    - name: unit
+      carryforward: true
+    - name: live
+      carryforward: true

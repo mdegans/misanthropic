@@ -29,6 +29,9 @@
 # gate on that path. Use it to check a release after the fact, or `main`
 # after a merge that skipped the gate.
 #
+# Coverage uploads under the `live` flag; codecov.yml carries it forward on
+# main between live runs (coverage-main.yaml uploads `unit` on every push).
+#
 # Secrets: ANTHROPIC_API_KEY, CODECOV_TOKEN.
 name: Live tests and coverage
 
@@ -136,7 +139,7 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
-          flags: unittests
+          flags: live
           name: codecov-umbrella
           fail_ci_if_error: true
           override_commit: ${{ github.event.pull_request.head.sha || github.sha }}
