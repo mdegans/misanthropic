@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.20] — 2026-09-28
+
 ### Added
 
 - **`MockTransport` — a scripted, recording `Transport` for offline tests**
