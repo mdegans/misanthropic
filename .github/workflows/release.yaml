@@ -10,7 +10,12 @@
 # `workflow_dispatch` rebuilds and pushes the image only — crates publish is
 # gated on an actual tag push.
 #
-# Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN, CARGO_REGISTRY_TOKEN.
+# Secrets: DOCKERHUB_USERNAME, DOCKERHUB_TOKEN. crates.io needs no secret:
+# publish-crates uses trusted publishing (GitHub OIDC -> a short-lived
+# crates.io token, revoked when the job ends), so there is no long-lived
+# token to expire. One-time setup per crate on crates.io (misanthropic and
+# misanthropic-derive): Settings -> Trusted Publishing -> GitHub, owner
+# `mdegans`, repository `misanthropic`, workflow `release.yaml`.
 name: Release
 
 on:
@@ -108,12 +113,23 @@ jobs:
     if: github.ref_type == 'tag'
     needs: merge-image
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # The OIDC token crates.io exchanges for a short-lived publish token.
+      id-token: write
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Trusted publishing: the token is minted for this job and revoked by
+      # the action's post step. The previous CARGO_REGISTRY_TOKEN secret
+      # expired (403 on the alpha.19 publish), which this retires.
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --workspace
