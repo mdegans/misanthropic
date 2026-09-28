@@ -11,13 +11,11 @@ on:
 permissions:
   contents: read
 
-# Queue, never cancel: every main commit needs its own `unit` upload, since
-# carryforward inherits from the parent and a report-less commit would break
-# the chain for `live`. Uploads are per commit, so queued runs can't clobber
-# each other.
-concurrency:
-  group: coverage-main
-  cancel-in-progress: false
+# No concurrency group, on purpose: every main commit needs its own `unit`
+# upload (carryforward inherits from the parent, so a report-less commit
+# breaks the chain for `live`), and a group would still drop runs: GitHub
+# keeps one pending run per group and a newer one replaces it. Uploads are
+# per commit, so parallel runs can't clobber each other.
 
 jobs:
   unit:
