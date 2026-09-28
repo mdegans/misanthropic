@@ -87,8 +87,19 @@ jobs:
               echo "release=true" >> "$GITHUB_OUTPUT"
               ;;
             push:branch)
-              if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
-                echo "$TAG already exists; nothing to release."
+              # The commit the tag points at (the peeled `^{}` line for an
+              # annotated tag, else the lightweight tag's own line).
+              TAGGED=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}" \
+                | sort -k2 | tail -1 | cut -f1)
+              if [ -n "$TAGGED" ] && [ "$TAGGED" = "$GITHUB_SHA" ]; then
+                # A re-run of a release that already tagged this commit
+                # (cancelled or failed after tagging): carry on. The image
+                # push is idempotent; a crate version already on crates.io
+                # makes `cargo publish` fail loudly, never twice.
+                echo "$TAG already points at $GITHUB_SHA; re-running the release."
+                echo "release=true" >> "$GITHUB_OUTPUT"
+              elif [ -n "$TAGGED" ]; then
+                echo "$TAG already exists (at $TAGGED); nothing to release."
                 echo "release=false" >> "$GITHUB_OUTPUT"
               else
                 git tag "$TAG" "$GITHUB_SHA"
