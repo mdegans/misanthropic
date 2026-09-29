@@ -12,7 +12,6 @@ use crate::{
 };
 use futures::{StreamExt, pin_mut};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::{borrow::Cow, pin::Pin, task::Poll};
 
 /// Sucessful Event from the API. See [`stream::Error`] for errors.
@@ -440,7 +439,57 @@ pub enum Error {
     },
 }
 
-// Some of the error types do not implement `Serialize` so we do it manually.
+/// The serialized shape of an [`Error`], tagged by `type`. Some of the wrapped
+/// errors don't implement `Serialize`, so they ride as their message.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ErrorRepr<'a> {
+    Stream {
+        message: String,
+    },
+    Parse {
+        message: String,
+        event: EventRepr<'a>,
+    },
+    Anthropic {
+        message: String,
+        error: &'a AnthropicError,
+        event: EventRepr<'a>,
+    },
+    MessageAssembly {
+        message: String,
+        delta: &'a Option<Delta>,
+    },
+    Delta {
+        message: String,
+        error: &'a DeltaError,
+    },
+    JsonAssembly {
+        message: String,
+        index: usize,
+    },
+}
+
+/// An [`eventsource_stream::Event`], which isn't `Serialize` itself.
+#[derive(Serialize)]
+struct EventRepr<'a> {
+    event: &'a str,
+    data: &'a str,
+    id: &'a str,
+    retry: Option<std::time::Duration>,
+}
+
+impl<'a> From<&'a eventsource_stream::Event> for EventRepr<'a> {
+    fn from(event: &'a eventsource_stream::Event) -> Self {
+        Self {
+            event: &event.event,
+            data: &event.data,
+            id: &event.id,
+            retry: event.retry,
+        }
+    }
+}
+
 impl Serialize for Error {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -448,53 +497,26 @@ impl Serialize for Error {
     {
         let message = self.to_string();
         match self {
-            Error::Stream { .. } => json!({
-                "type": "stream",
-                "message": message,
-            })
-            .serialize(serializer),
-            Error::Parse { event, .. } => json!({
-                "type": "parse",
-                "message": message,
-                "event": {
-                    "event": event.event,
-                    "data": event.data,
-                    "id": event.id,
-                    "retry": event.retry,
-                },
-            })
-            .serialize(serializer),
-            Error::Anthropic { error, event } => json!({
-                "type": "anthropic",
-                "message": message,
-                "error": error,
-                "event": {
-                    "event": event.event,
-                    "data": event.data,
-                    "id": event.id,
-                    "retry": event.retry,
-                },
-            })
-            .serialize(serializer),
-            Error::MessageAssembly { delta, .. } => json!({
-                "type": "message_assembly",
-                "message": message,
-                "delta": delta,
-            })
-            .serialize(serializer),
-            Error::Delta { error } => json!({
-                "type": "delta",
-                "message": message,
-                "error": error,
-            })
-            .serialize(serializer),
-            Error::JsonAssembly { index, .. } => json!({
-                "type": "json_assembly",
-                "message": message,
-                "index": index,
-            })
-            .serialize(serializer),
+            Error::Stream { .. } => ErrorRepr::Stream { message },
+            Error::Parse { event, .. } => ErrorRepr::Parse {
+                message,
+                event: event.into(),
+            },
+            Error::Anthropic { error, event } => ErrorRepr::Anthropic {
+                message,
+                error,
+                event: event.into(),
+            },
+            Error::MessageAssembly { delta, .. } => {
+                ErrorRepr::MessageAssembly { message, delta }
+            }
+            Error::Delta { error } => ErrorRepr::Delta { message, error },
+            Error::JsonAssembly { index, .. } => ErrorRepr::JsonAssembly {
+                message,
+                index: *index,
+            },
         }
+        .serialize(serializer)
     }
 }
 

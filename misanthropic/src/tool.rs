@@ -1362,11 +1362,7 @@ impl MethodBuilder {
     ) -> Self {
         // Initialize schema if it's null
         if self.tool.schema.is_null() {
-            self.tool.schema = serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            });
+            self.tool.schema = ObjectSchema::default().into_value();
         }
 
         // Add the property
@@ -1378,10 +1374,11 @@ impl MethodBuilder {
         {
             properties.insert(
                 name.to_string(),
-                serde_json::json!({
-                    "type": param_type,
-                    "description": description
-                }),
+                Property {
+                    kind: param_type,
+                    description,
+                }
+                .into_value(),
             );
         }
 
@@ -1534,11 +1531,7 @@ impl CustomMethodDef {
         CustomMethodDef {
             name: name.into(),
             description: description.into(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {},
-                "required": []
-            }),
+            schema: ObjectSchema::default().into_value(),
             cache_control: None,
             strict: None,
             defer_loading: None,
@@ -1554,21 +1547,23 @@ impl CustomMethodDef {
         param_description: &str,
         required: bool,
     ) -> Self {
-        let required_array = if required { vec![param_name] } else { vec![] };
+        let schema = ObjectSchema {
+            kind: "object",
+            properties: [(
+                param_name,
+                Property {
+                    kind: "string",
+                    description: param_description,
+                },
+            )]
+            .into(),
+            required: if required { vec![param_name] } else { vec![] },
+        };
 
         CustomMethodDef {
             name: name.into(),
             description: description.into(),
-            schema: serde_json::json!({
-                "type": "object",
-                "properties": {
-                    param_name: {
-                        "type": "string",
-                        "description": param_description
-                    }
-                },
-                "required": required_array
-            }),
+            schema: schema.into_value(),
             cache_control: None,
             strict: None,
             defer_loading: None,
@@ -2050,6 +2045,47 @@ impl crate::markdown::ToMarkdown for Result {
         } else {
             Box::new(std::iter::empty())
         }
+    }
+}
+
+/// A flat `type: object` JSON Schema — the shape [`MethodBuilder`] and the
+/// [`CustomMethodDef`] shortcuts emit.
+#[derive(Serialize)]
+struct ObjectSchema<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    properties: std::collections::BTreeMap<&'a str, Property<'a>>,
+    required: Vec<&'a str>,
+}
+
+impl Default for ObjectSchema<'_> {
+    fn default() -> Self {
+        Self {
+            kind: "object",
+            properties: Default::default(),
+            required: Vec::new(),
+        }
+    }
+}
+
+/// One scalar property of an [`ObjectSchema`].
+#[derive(Serialize)]
+struct Property<'a> {
+    #[serde(rename = "type")]
+    kind: &'a str,
+    description: &'a str,
+}
+
+impl ObjectSchema<'_> {
+    fn into_value(self) -> serde_json::Value {
+        // Plain structs of strings: serializing to a `Value` can't fail.
+        serde_json::to_value(self).expect("an ObjectSchema is valid JSON")
+    }
+}
+
+impl Property<'_> {
+    fn into_value(self) -> serde_json::Value {
+        serde_json::to_value(self).expect("a Property is valid JSON")
     }
 }
 

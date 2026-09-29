@@ -412,10 +412,10 @@ impl FsMemoryBackend {
         for sub in subdirs {
             self.collect_dir(&sub, &mut entries).await?;
         }
-        let listing = serde_json::json!({
-            "directory": virtual_path.trim_end_matches('/'),
-            "entries": entries,
-        });
+        let listing = Listing {
+            directory: virtual_path.trim_end_matches('/'),
+            entries,
+        };
         Ok(serde_json::to_string_pretty(&listing)
             .unwrap_or_else(|_| "[]".to_string()))
     }
@@ -427,7 +427,7 @@ impl FsMemoryBackend {
     async fn collect_dir(
         &self,
         dir: &Path,
-        out: &mut Vec<serde_json::Value>,
+        out: &mut Vec<Entry>,
     ) -> Result<Vec<PathBuf>, MemoryError> {
         let mut read_dir = tokio::fs::read_dir(dir).await?;
         let mut items = Vec::new();
@@ -452,12 +452,12 @@ impl FsMemoryBackend {
             if !is_dir && !self.extension_allowed(&path) {
                 continue;
             }
-            out.push(serde_json::json!({
-                "path": self.virtual_path(&path),
-                "kind": if is_dir { "dir" } else { "file" },
-                "size": human_size(meta.len()),
-                "modified": modified_rfc3339(&meta),
-            }));
+            out.push(Entry {
+                path: self.virtual_path(&path),
+                kind: if is_dir { "dir" } else { "file" },
+                size: human_size(meta.len()),
+                modified: modified_rfc3339(&meta),
+            });
             if is_dir {
                 subdirs.push(path);
             }
@@ -649,17 +649,32 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// An RFC3339 modified time for `meta`, or `null` if unavailable.
+/// An RFC3339 modified time for `meta`, if the platform reports one.
 #[cfg(feature = "memory-fs")]
-fn modified_rfc3339(meta: &std::fs::Metadata) -> serde_json::Value {
-    meta.modified()
-        .ok()
-        .map(|t| {
-            chrono::DateTime::<chrono::Utc>::from(t)
-                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
-        })
-        .map(serde_json::Value::String)
-        .unwrap_or(serde_json::Value::Null)
+fn modified_rfc3339(meta: &std::fs::Metadata) -> Option<String> {
+    meta.modified().ok().map(|t| {
+        chrono::DateTime::<chrono::Utc>::from(t)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+    })
+}
+
+/// The JSON directory listing a memory `view` of a directory returns.
+#[cfg(feature = "memory-fs")]
+#[derive(serde::Serialize)]
+struct Listing<'a> {
+    directory: &'a str,
+    entries: Vec<Entry>,
+}
+
+/// One file or directory in a [`Listing`]; `modified` is `null` when the
+/// platform has no mtime.
+#[cfg(feature = "memory-fs")]
+#[derive(serde::Serialize)]
+struct Entry {
+    path: String,
+    kind: &'static str,
+    size: String,
+    modified: Option<String>,
 }
 
 #[cfg(test)]

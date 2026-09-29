@@ -8,7 +8,6 @@ use eventsource_stream::Eventsource;
 #[cfg(feature = "client")]
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 #[allow(unused_imports)] // because lots of conditional compilation
 use crate::{Key, Prompt, key, model::Models, response};
@@ -888,7 +887,31 @@ pub enum Error {
     UnexpectedResponse { message: &'static str },
 }
 
-/// Some of the errors don't implment `Serialize` so we need to do it manually.
+/// The serialized shape of an [`Error`], tagged by `type`. The wrapped
+/// `reqwest` and `serde_json` errors aren't `Serialize`, so they ride as their
+/// message.
+#[derive(Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ErrorRepr<'a> {
+    Http {
+        message: String,
+    },
+    Parse {
+        message: String,
+    },
+    Anthropic {
+        message: String,
+        error: &'a AnthropicError,
+    },
+    NonJsonResponse {
+        status: u16,
+        body: &'a str,
+    },
+    UnexpectedResponse {
+        message: &'static str,
+    },
+}
+
 impl Serialize for Error {
     fn serialize<S>(
         &self,
@@ -898,29 +921,27 @@ impl Serialize for Error {
         S: serde::Serializer,
     {
         match self {
-            Self::HTTP(e) => {
-                json!({ "type": "http", "message": e.to_string() })
-                    .serialize(serializer)
+            Self::HTTP(e) => ErrorRepr::Http {
+                message: e.to_string(),
+            },
+            Self::Parse(e) => ErrorRepr::Parse {
+                message: e.to_string(),
+            },
+            Self::Anthropic(error) => ErrorRepr::Anthropic {
+                message: error.to_string(),
+                error,
+            },
+            Self::NonJsonResponse { status, body } => {
+                ErrorRepr::NonJsonResponse {
+                    status: *status,
+                    body,
+                }
             }
-            Self::Parse(e) => {
-                json!({ "type": "parse", "message": e.to_string() })
-                    .serialize(serializer)
-            }
-            Self::Anthropic(e) => {
-                // With the `AnthropicError` we can serialize it directly, yay!
-                json!({ "type": "anthropic", "message": e.to_string(), "error": e,  }).serialize(serializer)
-            }
-            Self::NonJsonResponse { status, body } => json!({
-                "type": "non_json_response",
-                "status": status,
-                "body": body,
-            })
-            .serialize(serializer),
             Self::UnexpectedResponse { message } => {
-                json!({ "type": "unexpected_response", "message": message })
-                    .serialize(serializer)
+                ErrorRepr::UnexpectedResponse { message }
             }
         }
+        .serialize(serializer)
     }
 }
 
