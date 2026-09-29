@@ -346,7 +346,7 @@ mod test {
             allowed_callers: None,
         };
         let mut prompt = Prompt::default()
-            .add_tool(ServerMethodDef::memory())
+            .add_tool(ServerMethodDef::code_execution())
             .add_tool(method)
             .system(Content(vec!["sys0".into(), "sys1".into()]))
             .add_message((Role::User, "hi"))
