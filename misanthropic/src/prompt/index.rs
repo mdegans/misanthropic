@@ -330,4 +330,72 @@ mod test {
         // panicking Index trait also works.
         assert!(matches!(prompt[BlockIndex::System(0)], Block::Text { .. }));
     }
+
+    #[test]
+    fn methods_and_system_blocks_resolve() {
+        use crate::prompt::message::{Content, Role};
+        use crate::tool::{CustomMethodDef, ServerMethodDef};
+
+        let method = CustomMethodDef {
+            name: "a".into(),
+            description: "a".into(),
+            schema: serde_json::json!({}),
+            cache_control: None,
+            strict: None,
+            defer_loading: None,
+            allowed_callers: None,
+        };
+        let mut prompt = Prompt::default()
+            .add_tool(ServerMethodDef::memory())
+            .add_tool(method)
+            .system(Content(vec!["sys0".into(), "sys1".into()]))
+            .add_message((Role::User, "hi"))
+            .unwrap();
+
+        // A server tool holds a slot but isn't addressable as a method.
+        let (server, custom) = (MethodIndex(0), MethodIndex(1));
+        assert!(prompt.get(server.into()).is_none());
+        assert!(prompt.get_mut(server.into()).is_none());
+        assert!(!prompt.indices().any(|i| i == server.into()));
+        assert!(matches!(
+            prompt.get(custom.into()),
+            Some(IndexRef::Method(m)) if m.name == "a"
+        ));
+        let Some(IndexMut::Method(m)) = prompt.get_mut(custom.into()) else {
+            panic!("expected the custom method");
+        };
+        m.description = "b".into();
+        prompt[custom].name = "c".into();
+        assert_eq!(prompt[custom].description, "b");
+        assert_eq!(prompt[custom].name, "c");
+
+        // System blocks, through get, get_mut, and the Index traits.
+        let sys1 = BlockIndex::System(1);
+        assert!(matches!(prompt.get(sys1.into()), Some(IndexRef::Block(_))));
+        assert!(prompt.get(BlockIndex::System(2).into()).is_none());
+        let Some(IndexMut::Block(block)) = prompt.get_mut(sys1.into()) else {
+            panic!("expected a system block");
+        };
+        block.cache();
+        assert!(prompt[sys1].is_cached());
+        prompt[sys1].uncache();
+        assert!(!prompt[sys1].is_cached());
+        assert!(prompt.get_mut(BlockIndex::Message((0, 5)).into()).is_none());
+
+        #[cfg(feature = "markdown")]
+        {
+            use crate::markdown::ToMarkdown;
+
+            use crate::markdown::Options;
+
+            // Tool definitions render only when tool use is shown.
+            let md = |index: Index, options: Options| {
+                prompt.get(index).unwrap().markdown_custom(options)
+            };
+            assert!(md(sys1.into(), Options::default()).contains("sys1"));
+            assert!(md(custom.into(), Options::default()).is_empty());
+            let shown = md(custom.into(), Options::default().with_tool_use());
+            assert!(shown.contains(r#""name": "c""#), "{shown}");
+        }
+    }
 }
