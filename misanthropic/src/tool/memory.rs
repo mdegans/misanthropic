@@ -469,7 +469,15 @@ impl FsMemoryBackend {
     fn virtual_path(&self, real: &Path) -> String {
         match real.strip_prefix(&self.root) {
             Ok(rel) if rel.as_os_str().is_empty() => MEMORY_ROOT.to_string(),
-            Ok(rel) => format!("{MEMORY_ROOT}/{}", rel.to_string_lossy()),
+            // Joined with `/` whatever the host separator: the model only
+            // ever sees the virtual, Unix-style `/memories` tree.
+            Ok(rel) => format!(
+                "{MEMORY_ROOT}/{}",
+                rel.components()
+                    .map(|c| c.as_os_str().to_string_lossy())
+                    .collect::<Vec<_>>()
+                    .join("/")
+            ),
             Err(_) => real.to_string_lossy().into_owned(),
         }
     }
