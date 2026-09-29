@@ -691,6 +691,148 @@ mod tests {
         assert!(dir.path().join("note.py").exists());
     }
 
+    /// Dispatch one editor command through [`Tool::call`], returning whether
+    /// it errored and the raw model-facing text.
+    #[cfg(feature = "text-editor-fs")]
+    async fn call(
+        backend: &mut FsEditorBackend,
+        input: serde_json::Value,
+    ) -> (bool, String) {
+        let result = backend
+            .call(Use::new("str_replace_based_edit_tool", input).with_id("id"))
+            .await;
+        let text = match result.content.iter().next() {
+            Some(crate::prompt::message::Block::Text { text, .. }) => {
+                text.to_string()
+            }
+            other => panic!("expected one text block, got {other:?}"),
+        };
+        (result.is_error, text)
+    }
+
+    #[cfg(feature = "text-editor-fs")]
+    #[tokio::test]
+    async fn every_command_and_its_errors() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = FsEditorBackend::new(dir.path())
+            .await
+            .unwrap()
+            .with_max_characters(9);
+        assert_eq!(backend.root(), dir.path());
+        let Some(MethodDef::Server(ServerMethodDef::TextEditor(def))) =
+            backend.definitions().pop()
+        else {
+            panic!("expected the text editor def");
+        };
+        assert_eq!(def.max_characters, Some(9));
+
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "create", "path": "src/a.py",
+                "file_text": "one\ntwo\nthree\n" }),
+        )
+        .await;
+        assert!(!err && text.contains("src/a.py"), "{text}");
+
+        // Views: a directory (sorted, dirs suffixed), a ranged file view to
+        // EOF, the character cap, and a missing file.
+        std::fs::write(dir.path().join("b.txt"), "").unwrap();
+        let (err, text) =
+            call(&mut backend, json!({ "command": "view", "path": "." })).await;
+        assert!(!err);
+        assert_eq!(text, "b.txt\nsrc/");
+        let (_, text) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "src/a.py",
+                "view_range": [2, -1] }),
+        )
+        .await;
+        assert!(text.contains("2\ttwo") && !text.contains("one"), "{text}");
+        let (_, text) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "src/a.py" }),
+        )
+        .await;
+        assert!(!text.contains("three"), "capped at 9 chars: {text}");
+        let (err, text) =
+            call(&mut backend, json!({ "command": "view", "path": "x.py" }))
+                .await;
+        assert!(err && text.contains("not found"), "{text}");
+
+        // str_replace: unique, missing, ambiguous, absent file.
+        let replace = |old: &str, path: &str| {
+            json!({ "command": "str_replace", "path": path,
+                "old_str": old, "new_str": "2" })
+        };
+        let (err, text) = call(&mut backend, replace("two", "src/a.py")).await;
+        assert!(!err && text.contains("exactly one"), "{text}");
+        let (err, text) = call(&mut backend, replace("zzz", "src/a.py")).await;
+        assert!(err && text.contains("No match"), "{text}");
+        std::fs::write(dir.path().join("d.py"), "x\nx\n").unwrap();
+        let (err, text) = call(&mut backend, replace("x", "d.py")).await;
+        assert!(err && text.contains("Found 2 matches"), "{text}");
+        let (err, _) = call(&mut backend, replace("x", "gone.py")).await;
+        assert!(err);
+
+        // insert: valid, out of range, absent file.
+        let insert = |line: u64, path: &str| {
+            json!({ "command": "insert", "path": path,
+                "insert_line": line, "insert_text": "# top\n" })
+        };
+        let (err, _) = call(&mut backend, insert(0, "d.py")).await;
+        assert!(!err);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("d.py")).unwrap(),
+            "# top\nx\nx\n"
+        );
+        let (err, text) = call(&mut backend, insert(99, "d.py")).await;
+        assert!(err && text.contains("[0, 3]"), "{text}");
+        let (err, _) = call(&mut backend, insert(0, "gone.py")).await;
+        assert!(err);
+
+        // Traversal, an unmodeled command, and input that isn't a command.
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "../escape" }),
+        )
+        .await;
+        assert!(err && text.contains("outside the working"), "{text}");
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "undo_edit", "path": "d.py" }),
+        )
+        .await;
+        assert!(err && text.contains("`undo_edit`"), "{text}");
+        let (err, text) = call(&mut backend, json!("view")).await;
+        assert!(err && text.contains("could not parse"), "{text}");
+    }
+
+    #[cfg(feature = "text-editor-fs")]
+    #[test]
+    fn errors_display_for_the_model() {
+        use std::error::Error as _;
+
+        let io = EditorError::from(std::io::Error::other("disk"));
+        assert_eq!(io.to_string(), "Error: disk");
+        assert!(io.source().is_some());
+        let multiple = EditorError::MultipleMatches {
+            old_str: "x".into(),
+            lines: vec![1, 2],
+        };
+        assert!(multiple.to_string().contains("(lines: 1, 2)"));
+        assert!(multiple.source().is_none());
+    }
+
+    #[cfg(feature = "text-editor-fs")]
+    #[test]
+    fn view_ranges_normalize() {
+        assert_eq!(normalize_range(None), None);
+        assert_eq!(normalize_range(Some([0, -1])), Some([1, u64::MAX]));
+        assert_eq!(normalize_range(Some([3, 5])), Some([3, 5]));
+    }
+
     #[tokio::test]
     #[cfg(all(feature = "client", feature = "text-editor-fs"))]
     #[ignore = "This test requires a real API key."]
