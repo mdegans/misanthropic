@@ -94,7 +94,10 @@ jobs:
       #
       # Each feature links its own test binaries, which filled the runner's
       # disk by the last feature: build them without debug info, and drop the
-      # crate's own artifacts after each (dependencies stay cached).
+      # crate's own artifacts when free space runs low. Not after every
+      # feature: many features (those already in `default`, plus the dev
+      # self-dependency's `log`/`chat`) build the same feature set, and a
+      # clean would throw that reuse away (~4 min on this leg).
       - name: Test each feature individually
         if: matrix.os == 'ubuntu-latest'
         shell: bash
@@ -108,7 +111,10 @@ jobs:
           for f in $features; do
             echo "::group::feature: $f"
             cargo test -p misanthropic --features "$f" || exit 1
-            cargo clean -p misanthropic
+            # Under 4 GiB free: clear this crate's artifacts (deps stay).
+            if [ "$(df --output=avail -k . | tail -1)" -lt 4194304 ]; then
+              cargo clean -p misanthropic
+            fi
             echo "::endgroup::"
           done
 
