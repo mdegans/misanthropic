@@ -112,6 +112,24 @@ self-describing (`StopReason::EndTurn`).
   `#[cfg(feature = "log")]` blocks.
 - **`thiserror` enums with a crate-level `Result<T>` alias.**
 
+### No `json!` — typed values only
+
+**Do not use `serde_json::json!` in library code.** Build a `Serialize` type
+(a private `…Repr` mirror is fine for a hand-written `Serialize` impl), use an
+existing crate type, or `serde_json::to_value` a typed value. Reaching for
+`json!` is a strong habit — it's all over the training data, Anthropic's docs
+included — but untyped JSON is exactly where wire drift hides: rename or add a
+field and the typed code stops compiling (tests included), while `json!` keeps
+building the old shape silently.
+
+- Enforced by `misanthropic/tests/no_json_macro.rs`, which scans each library
+  crate's sources above the trailing `#[cfg(test)]` module. Not clippy's
+  `disallowed_macros`: it fires on every `#[derive(JsonSchema)]` (schemars
+  expands to `json!`) and an item-level allow can't reach a derive's impl.
+- In tests, prefer typed values and captured fixtures (see *Wire fixtures*
+  below). `json!` is tolerated there only to hand-build wire-shaped *input* to
+  deserialize, never to build what a test compares its output against.
+
 ## Key features to know about
 
 Default features: `rustls-tls`, `langsan`, `client`, `batch`.
