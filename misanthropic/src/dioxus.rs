@@ -718,3 +718,270 @@ impl IntoElement for &prompt::Prompt {
         )
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::prompt::message::{Message, Role};
+
+    /// Every server-tool block with a captured fixture.
+    const FIXTURES: &[&str] = &[
+        include_str!("../test/data/server_tools/server_tool_use.json"),
+        include_str!("../test/data/server_tools/web_search_result.json"),
+        include_str!("../test/data/server_tools/web_search_error.json"),
+        include_str!("../test/data/server_tools/web_fetch_result.json"),
+        include_str!("../test/data/server_tools/web_fetch_error.json"),
+        include_str!("../test/data/server_tools/tool_search_result.json"),
+        include_str!("../test/data/server_tools/tool_search_error.json"),
+        include_str!("../test/data/server_tools/tool_reference.json"),
+        include_str!("../test/data/server_tools/code_execution_result.json"),
+        include_str!(
+            "../test/data/server_tools/bash_code_execution_result.json"
+        ),
+        include_str!(
+            "../test/data/server_tools/text_editor_code_execution_view_result.json"
+        ),
+        include_str!(
+            "../test/data/server_tools/text_editor_code_execution_error.json"
+        ),
+    ];
+
+    fn block(value: serde_json::Value) -> Block {
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// One of every [`Block`] variant, the result kinds as both success and
+    /// failure.
+    fn every_block() -> Vec<Block> {
+        let fixtures = FIXTURES
+            .iter()
+            .map(|json| serde_json::from_str(json).unwrap());
+        [
+            json!({ "type": "text", "text": "<thinking>hmm</thinking>Hi!" }),
+            json!({ "type": "thinking", "thinking": "hmm", "signature": "s" }),
+            json!({ "type": "redacted_thinking", "data": "r" }),
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": "AAAA"
+            }}),
+            json!({ "type": "image", "source": {
+                "type": "url", "url": "https://example.com/a.png"
+            }}),
+            json!({ "type": "tool_use", "id": "toolu_1", "name": "python",
+                "input": { "script": "print(1)" } }),
+            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
+                "content": "1" }),
+            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
+                "content": "Traceback", "is_error": true }),
+            json!({ "type": "document", "source": {
+                "type": "text", "media_type": "text/plain", "data": "A doc."
+            }}),
+            json!({ "type": "bash_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": { "type": "bash_code_execution_result",
+                    "stdout": "", "stderr": "boom", "return_code": 1,
+                    "content": [] } }),
+            json!({ "type": "bash_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": { "type": "bash_code_execution_tool_result_error",
+                    "error_code": "unavailable" } }),
+        ]
+        .into_iter()
+        .map(block)
+        .chain(fixtures)
+        .collect()
+    }
+
+    fn prompt() -> prompt::Prompt {
+        let blocks = every_block();
+        prompt::Prompt {
+            system: Some("Be brief.".into()),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: "What's 1?".into(),
+                },
+                Message {
+                    role: Role::Assistant,
+                    content: blocks.clone().into(),
+                },
+                Message {
+                    role: Role::User,
+                    content: blocks.into(),
+                },
+                Message {
+                    role: Role::User,
+                    content: block(json!({ "type": "tool_result",
+                        "tool_use_id": "toolu_1", "content": "1" }))
+                    .into(),
+                },
+                Message {
+                    role: Role::System,
+                    content: "Wrap up.".into(),
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn render(opts: &Options) -> String {
+        dioxus_ssr::render_element(prompt().into_element_custom(0, opts))
+    }
+
+    fn class(name: &str) -> Cow<'static, str> {
+        Cow::Owned(name.to_string())
+    }
+
+    #[test]
+    fn default_hides_tools_and_shows_speech() {
+        let html = render(&Options::default());
+
+        assert!(html.contains("Hi!"));
+        assert!(html.contains("Thinking..."));
+        assert!(!html.contains("hmm"), "thoughts are placeholders: {html}");
+        assert!(!html.contains("print(1)"), "tools are hidden: {html}");
+        assert!(!html.contains("Be brief."), "system is hidden: {html}");
+        assert!(html.contains("data:image/png;base64,AAAA"));
+        assert!(html.contains("https://example.com/a.png"));
+        assert!(html.contains("[Document (text/plain)]"));
+    }
+
+    #[test]
+    fn show_everything() {
+        let opts = Options {
+            system: opts::System::Show {
+                class: class("system"),
+            },
+            thought: opts::Thought::Show {
+                class: class("thought"),
+            },
+            tool_use: opts::ToolUse::Show {
+                show_name: Some(opts::HeadingLevel::H2),
+                class: class("tool-use"),
+            },
+            tool_result: opts::ToolResult::Show {
+                error: class("tool-error"),
+                ok: class("tool-ok"),
+            },
+            image: opts::Image::Show {
+                class: class("image"),
+            },
+            speech: opts::Speech::Show {
+                class: class("speech"),
+            },
+        };
+        let html = render(&opts);
+
+        assert!(html.contains("Be brief."));
+        assert!(html.contains("hmm"));
+        assert!(html.contains("Anthropic redacted a thought."));
+        assert!(html.contains("print(1)"));
+        assert!(html.contains("tool-ok"));
+        assert!(html.contains("tool-error"));
+        assert!(html.contains("Traceback"));
+        assert!(html.contains("class=\"system message\""));
+        assert!(html.contains("class=\"tool message\""));
+    }
+
+    #[test]
+    fn placeholders_carry_classes_not_content() {
+        let opts = Options {
+            system: opts::System::Placeholder {
+                class: class("system-ph"),
+            },
+            thought: opts::Thought::Placeholder {
+                class: class("thought-ph"),
+            },
+            tool_use: opts::ToolUse::Placeholder {
+                show_name: Some(opts::HeadingLevel::H4),
+                class: class("tool-use-ph"),
+            },
+            tool_result: opts::ToolResult::Placeholder {
+                error: class("tool-error-ph"),
+                ok: class("tool-ok-ph"),
+            },
+            image: opts::Image::Placeholder {
+                class: class("image-ph"),
+            },
+            speech: opts::Speech::Placeholder {
+                class: class("speech-ph"),
+            },
+        };
+        let html = render(&opts);
+
+        for class in [
+            "system-ph",
+            "thought-ph",
+            "tool-use-ph",
+            "tool-error-ph",
+            "tool-ok-ph",
+            "image-ph",
+            "speech-ph",
+        ] {
+            assert!(html.contains(class), "missing {class}: {html}");
+        }
+        assert!(
+            html.contains("<h4>python</h4>"),
+            "tool name heading: {html}"
+        );
+        assert!(!html.contains("Be brief."));
+        assert!(!html.contains("print(1)"));
+        assert!(!html.contains("AAAA"));
+    }
+
+    #[test]
+    fn hidden_renders_only_documents() {
+        let opts = Options {
+            system: opts::System::Hidden,
+            thought: opts::Thought::Hidden,
+            tool_use: opts::ToolUse::Hidden,
+            tool_result: opts::ToolResult::Hidden,
+            image: opts::Image::Hidden,
+            speech: opts::Speech::Hidden,
+        };
+        let html = render(&opts);
+
+        assert!(!html.contains("Hi!"));
+        assert!(!html.contains("Thinking..."));
+        assert!(!html.contains("<img"));
+        assert!(!html.contains("<code"));
+        assert!(html.contains("[Document (text/plain)]"));
+    }
+
+    #[test]
+    fn heading_levels() {
+        use opts::HeadingLevel::*;
+
+        for (level, tag) in [
+            (H1, "h1"),
+            (H2, "h2"),
+            (H3, "h3"),
+            (H4, "h4"),
+            (H5, "h5"),
+            (H6, "h6"),
+        ] {
+            let html = dioxus_ssr::render_element(level.element("x".into()));
+            assert_eq!(html, format!("<{tag}>x</{tag}>"));
+        }
+    }
+
+    #[cfg(feature = "markdown")]
+    #[test]
+    fn heading_level_from_pulldown() {
+        use pulldown_cmark::HeadingLevel as Md;
+
+        for md in [Md::H1, Md::H2, Md::H3, Md::H4, Md::H5, Md::H6] {
+            let ours: opts::HeadingLevel = md.into();
+            let html = dioxus_ssr::render_element(ours.element("x".into()));
+            assert_eq!(html, format!("<{md}>x</{md}>"));
+        }
+    }
+
+    #[test]
+    fn options_serde_roundtrip() {
+        let json = serde_json::to_value(Options::default()).unwrap();
+        let back: Options = serde_json::from_value(json.clone()).unwrap();
+        assert_eq!(serde_json::to_value(back).unwrap(), json);
+    }
+}

@@ -239,6 +239,8 @@ strum = { version = "0.26", features = ["derive"] }
 # Offline HTTP tests of `Client`: a local server replays captured wire
 # fixtures through the real request/response path (`tests/client_http.rs`).
 wiremock = "0.6"
+# Render `dioxus` elements to strings in `src/dioxus.rs` tests.
+dioxus-ssr = "0.7"
 # Build the examples (and tests/benches) with the crate's own `log` feature on,
 # so the client's internal logs surface without an extra `--features log`. This
 # self path dev-dependency is dev/test/bench-scoped only: `cargo build` and
