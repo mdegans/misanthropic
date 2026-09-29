@@ -383,7 +383,7 @@ async fn batch_submit_poll_and_collect() {
         .tagged_batch([(Id::default(), prompt()), (Id::default(), prompt())])
         .await
         .unwrap();
-    assert_eq!(pending.status(), Status::InProgress);
+    assert!(matches!(pending.status(), Status::InProgress));
     let submitted = sent(&server, 0).await;
     assert_eq!(submitted["requests"].as_array().unwrap().len(), 2);
 
