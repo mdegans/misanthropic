@@ -82,32 +82,105 @@ struct Args {
 }
 
 #[cfg(unix)]
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = Args::parse();
-
-    // Read the mutual-TLS material from stdin (never argv/env/disk), then close.
-    // The host writes one JSON object and shuts the pipe; we wipe the raw bytes
-    // once parsed.
-    let mut raw = String::new();
-    tokio::io::stdin().read_to_string(&mut raw).await?;
-    let material: TlsServerMaterial = serde_json::from_str(&raw)?;
-    raw.zeroize();
-
-    let listener = std::net::TcpListener::bind(args.http)?;
-    listener.set_nonblocking(true)?;
-    eprintln!("bashd: serving HTTPS on {}", listener.local_addr()?);
-    server::serve(
-        listener,
-        server::ServeConfig {
+impl From<Args> for server::ServeConfig {
+    fn from(args: Args) -> Self {
+        Self {
             shell: args.shell,
             workdir: args.workdir,
             persist_cwd: args.persist_cwd,
             max_output_bytes: args.max_output_bytes,
             grace: Duration::from_secs(args.grace_secs),
-        },
-        material,
-    )
-    .await?;
+        }
+    }
+}
+
+/// Read the mutual-TLS material from `input` (stdin: never argv/env/disk). The
+/// host writes one JSON object and shuts the pipe; the raw bytes are wiped
+/// once parsed.
+#[cfg(unix)]
+async fn read_material(
+    mut input: impl tokio::io::AsyncRead + Unpin,
+) -> Result<TlsServerMaterial, Box<dyn std::error::Error>> {
+    let mut raw = String::new();
+    input.read_to_string(&mut raw).await?;
+    let material = serde_json::from_str(&raw);
+    raw.zeroize();
+    Ok(material?)
+}
+
+#[cfg(unix)]
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = Args::parse();
+    let material = read_material(tokio::io::stdin()).await?;
+
+    let listener = std::net::TcpListener::bind(args.http)?;
+    listener.set_nonblocking(true)?;
+    eprintln!("bashd: serving HTTPS on {}", listener.local_addr()?);
+    server::serve(listener, args.into(), material).await?;
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_become_the_serve_config() {
+        let args =
+            Args::try_parse_from(["bashd", "--http", "0.0.0.0:9099"]).unwrap();
+        assert_eq!(args.http.port(), 9099);
+
+        let config = server::ServeConfig::from(args);
+        assert_eq!(config.shell, PathBuf::from("/bin/bash"));
+        assert_eq!(config.workdir, PathBuf::from("."));
+        assert!(!config.persist_cwd);
+        assert_eq!(config.max_output_bytes, 10 << 20);
+        assert_eq!(config.grace, Duration::from_secs(5));
+    }
+
+    #[test]
+    fn flags_override_the_defaults() {
+        let args = Args::try_parse_from([
+            "bashd",
+            "--http",
+            "127.0.0.1:1",
+            "--persist-cwd",
+            "--workdir",
+            "/home/agent",
+            "--shell",
+            "/bin/sh",
+            "--max-output-bytes",
+            "64",
+            "--grace-secs",
+            "1",
+        ])
+        .unwrap();
+
+        let config = server::ServeConfig::from(args);
+        assert_eq!(config.shell, PathBuf::from("/bin/sh"));
+        assert_eq!(config.workdir, PathBuf::from("/home/agent"));
+        assert!(config.persist_cwd);
+        assert_eq!(config.max_output_bytes, 64);
+        assert_eq!(config.grace, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn http_is_required() {
+        assert!(Args::try_parse_from(["bashd"]).is_err());
+    }
+
+    #[tokio::test]
+    async fn material_is_read_from_input() {
+        let json = br#"{"cert_chain_pem":"c","key_pem":"k","ca_pem":"a"}"#;
+        let material = read_material(&json[..]).await.unwrap();
+        assert_eq!(material.cert_chain_pem, "c");
+        assert_eq!(material.key_pem, "k");
+        assert_eq!(material.ca_pem, "a");
+    }
+
+    #[tokio::test]
+    async fn malformed_material_is_an_error() {
+        assert!(read_material(&b"not json"[..]).await.is_err());
+    }
 }
