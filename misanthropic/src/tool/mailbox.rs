@@ -212,3 +212,47 @@ impl FusedStream for Notifications {
         self.rx.is_terminated()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use futures::StreamExt;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn notes_arrive_by_recv_and_stream() {
+        let mut mailbox = Mailbox::new("tool");
+        let mut notes = mailbox.subscribe().unwrap();
+        assert!(mailbox.subscribe().is_none(), "one consumer end");
+
+        // Clones share the channel but never the consumer end.
+        let mut clone = mailbox.clone();
+        assert!(clone.subscribe().is_none());
+        assert_eq!(clone.source(), "tool");
+
+        mailbox.send("one", vec![Role::User]).unwrap();
+        clone.send("two", vec![]).unwrap();
+        assert_eq!(notes.recv().await.unwrap().content.to_string(), "one");
+        let two = notes.next().await.unwrap();
+        assert!(two.preferred_roles.is_empty());
+        assert!(matches!(notes.try_recv(), Err(TryRecvError::Empty)));
+
+        drop((mailbox, clone));
+        assert!(notes.recv().await.is_none());
+        assert!(notes.is_terminated());
+        assert!(matches!(notes.try_recv(), Err(TryRecvError::Closed)));
+    }
+
+    #[test]
+    fn send_without_a_subscriber_hands_the_note_back() {
+        let mut mailbox = Mailbox::new("tool");
+        drop(mailbox.subscribe());
+
+        let MailboxClosed(note) = mailbox.send("lost", vec![]).unwrap_err();
+        assert_eq!(note.content.to_string(), "lost");
+        assert_eq!(
+            MailboxClosed(note).to_string(),
+            "notification channel closed (no subscriber)"
+        );
+    }
+}
