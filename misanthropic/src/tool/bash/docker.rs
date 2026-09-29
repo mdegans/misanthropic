@@ -17,7 +17,7 @@
 //! follow-up.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -210,13 +210,16 @@ impl DockerSandbox {
     }
 
     /// Run commands as this (non-root) user. The user is created during
-    /// provisioning if it does not already exist in the image.
+    /// provisioning if it does not already exist in the image. Must be a
+    /// portable username (`[a-z_][a-z0-9_-]*`, at most 32 characters) or
+    /// `start` fails.
     pub fn user(mut self, user: impl Into<String>) -> Self {
         self.user = Some(user.into());
         self
     }
 
-    /// The working directory commands start in (default `AGENT_HOME`).
+    /// The working directory commands start in (default `AGENT_HOME`). Must be
+    /// an absolute path below `/` with no `..`, or `start` fails.
     pub fn workdir(mut self, dir: impl Into<String>) -> Self {
         self.workdir = dir.into();
         self
@@ -325,6 +328,23 @@ impl DockerSandbox {
     /// Start-time invariants the fluent builders can't enforce (they return
     /// `Self`, not `Result`). Pure — called at the top of [`start`](Self::start).
     fn validate(&self) -> Result<(), BashError> {
+        // Both reach commands as data (see `provision_script`), but a hostile
+        // value could still aim them: `chown -R` of `/`, a flag for a name.
+        if let Some(user) = self.user.as_deref()
+            && !is_portable_username(user)
+        {
+            return Err(BashError::Backend(format!(
+                "user {user:?} is not a portable username \
+                 ([a-z_][a-z0-9_-]*, at most 32 characters)"
+            )));
+        }
+        if !is_container_workdir(&self.workdir) {
+            return Err(BashError::Backend(format!(
+                "workdir {:?} must be an absolute container path below `/`, \
+                 with no `..`",
+                self.workdir
+            )));
+        }
         if self.home_id.is_some() && self.home_fs == HomeFs::Tmpfs {
             return Err(BashError::Backend(
                 "home_id is persistent but home_fs(tmpfs) is ephemeral — \
@@ -356,32 +376,14 @@ impl DockerSandbox {
         }
 
         let prov = format!("misan-bashd-prov-{}", unique());
-        let mut script = String::new();
-        if let Some(user) = &self.user
-            && user != "root"
-        {
-            // Best-effort across Alpine (adduser) and Debian (useradd).
-            script.push_str(&format!(
-                "(adduser -D {user} 2>/dev/null || useradd -m {user} \
-                 2>/dev/null || true); "
-            ));
-        }
-        if let Some(setup) = &self.setup {
-            script.push_str(setup);
-            script.push_str("; ");
-        }
-        // Ensure the working directory exists and is writable by the run user.
-        script.push_str(&format!("mkdir -p {wd}; ", wd = self.workdir));
-        if let Some(user) = &self.user
-            && user != "root"
-        {
-            script.push_str(&format!(
-                "chown -R {user} {wd} 2>/dev/null || true; ",
-                wd = self.workdir
-            ));
-        }
-
-        // Provision *with* network (no --network none here).
+        // `user` and `workdir` reach the script as positional arguments, never
+        // spliced into its text, so no value can be parsed as shell. `setup`
+        // is the caller's own shell, by design.
+        let user = match self.user.as_deref() {
+            Some("root") | None => "",
+            Some(user) => user,
+        };
+        let script = provision_script(self.setup.as_deref());
         let run = capture(
             &self.runtime,
             [
@@ -392,6 +394,9 @@ impl DockerSandbox {
                 "/bin/sh",
                 "-c",
                 &script,
+                "sh", // $0
+                user,
+                &self.workdir,
             ],
         )
         .await?;
@@ -498,8 +503,8 @@ impl DockerSandbox {
             let abs = std::fs::canonicalize(path).map_err(|e| {
                 BashError::Backend(format!("bashd_path {path:?}: {e}"))
             })?;
-            args.push("-v".into());
-            args.push(format!("{}:/usr/local/bin/bashd:ro", abs.display()));
+            args.push("--mount".into());
+            args.push(bind_mount(&abs, "/usr/local/bin/bashd")?);
         }
         args.push(image.to_string());
         // Keep the container alive; we exec bashd into it separately.
@@ -1016,6 +1021,65 @@ fn unique() -> String {
     )
 }
 
+/// A POSIX portable username: `[a-z_][a-z0-9_-]*`, at most 32 characters —
+/// the set `useradd` accepts everywhere, and never mistakable for a flag.
+fn is_portable_username(user: &str) -> bool {
+    let mut chars = user.chars();
+    user.len() <= 32
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && chars.all(|c| {
+            c.is_ascii_lowercase()
+                || c.is_ascii_digit()
+                || matches!(c, '_' | '-')
+        })
+}
+
+/// An absolute Linux path naming a directory below `/`, with no `..` to climb
+/// back out of it (the container is Linux whatever the host).
+fn is_container_workdir(workdir: &str) -> bool {
+    let mut parts = workdir.split('/').filter(|p| !p.is_empty() && *p != ".");
+    workdir.starts_with('/')
+        && parts.clone().next().is_some()
+        && parts.all(|p| p != "..")
+}
+
+/// The provisioning script: create the run user (`$1`, empty for none), run
+/// `setup`, and make the working directory (`$2`) exist and belong to them.
+/// The values are only ever read from the positional parameters, quoted.
+fn provision_script(setup: Option<&str>) -> String {
+    // Best-effort user creation across Alpine (adduser) and Debian (useradd).
+    const CREATE_USER: &str = r#"if [ -n "$1" ]; then (adduser -D -- "$1" 2>/dev/null || useradd -m -- "$1" 2>/dev/null || true); fi; "#;
+    const OWN_WORKDIR: &str = r#"mkdir -p -- "$2"; if [ -n "$1" ]; then chown -R -- "$1" "$2" 2>/dev/null || true; fi"#;
+
+    let setup = setup.map(|setup| format!("{setup}; ")).unwrap_or_default();
+    [CREATE_USER, &setup, OWN_WORKDIR].concat()
+}
+
+/// A `--mount` value binding host `source` read-only at `target`. Unlike
+/// `-v source:target`, a colon in the path (a Windows drive, say) can't split
+/// it; fields holding `,` or `"` are CSV-quoted, as docker parses them.
+fn bind_mount(source: &Path, target: &str) -> Result<String, BashError> {
+    let source = source.to_str().ok_or_else(|| {
+        BashError::Backend(format!("bashd_path {source:?} is not UTF-8"))
+    })?;
+    // `canonicalize` yields `\\?\C:\…` on Windows, which docker rejects.
+    let source = source.strip_prefix(r"\\?\").unwrap_or(source);
+
+    let field = |field: String| match field.contains([',', '"']) {
+        true => format!("\"{}\"", field.replace('"', "\"\"")),
+        false => field,
+    };
+    Ok([
+        "type=bind".to_string(),
+        field(format!("source={source}")),
+        field(format!("target={target}")),
+        "readonly".to_string(),
+    ]
+    .join(","))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,6 +1122,61 @@ mod tests {
         assert!(s.container().is_none());
     }
 
+    /// Hostile `user`/`workdir` values stay data: nothing they contain runs,
+    /// and the directory is made under its literal name.
+    #[cfg(unix)]
+    #[test]
+    fn provision_script_never_parses_values_as_shell() {
+        let dir = tempfile::tempdir().unwrap();
+        let pwned = dir.path().join("pwned");
+        let workdir = dir.path().join("-a b; touch pwned");
+        let status = std::process::Command::new("/bin/sh")
+            .current_dir(dir.path())
+            .args(["-c", &provision_script(Some("true"))])
+            .args(["sh", "x; touch pwned"])
+            .arg(&workdir)
+            .status()
+            .unwrap();
+
+        assert!(status.success());
+        assert!(workdir.is_dir(), "the workdir is made by its literal name");
+        assert!(!pwned.exists(), "a value ran as shell");
+    }
+
+    #[test]
+    fn provision_script_splices_only_setup() {
+        let script = provision_script(Some("apk add git"));
+        assert!(script.contains("apk add git; "));
+        assert!(script.contains(r#"mkdir -p -- "$2""#));
+        assert!(!provision_script(None).contains("; ; "));
+    }
+
+    #[test]
+    fn bind_mounts_survive_colons_commas_and_quotes() {
+        let mount = |path: &str| bind_mount(Path::new(path), "/b").unwrap();
+        assert_eq!(
+            mount("/opt/bashd"),
+            "type=bind,source=/opt/bashd,target=/b,readonly"
+        );
+        assert_eq!(
+            mount(r"\\?\C:\dev\bashd"),
+            r"type=bind,source=C:\dev\bashd,target=/b,readonly"
+        );
+        assert_eq!(
+            mount("/a,b/say \"hi\""),
+            r#"type=bind,"source=/a,b/say ""hi""",target=/b,readonly"#
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bind_mount_rejects_non_utf8_paths() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let path = Path::new(std::ffi::OsStr::from_bytes(b"/tmp/\xff"));
+        assert!(bind_mount(path, "/b").is_err());
+    }
+
     #[test]
     fn unique_names_differ() {
         assert_ne!(unique(), unique());
@@ -1087,6 +1206,27 @@ mod tests {
         );
         assert!(DockerSandbox::default().home_fs("tmpfs").validate().is_ok());
         assert!(DockerSandbox::default().validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_unsafe_users_and_workdirs() {
+        let with = |user: &str, workdir: &str| {
+            DockerSandbox::default()
+                .user(user)
+                .workdir(workdir)
+                .validate()
+        };
+        assert!(with("agent", "/home/agent").is_ok());
+        assert!(with("root", "/work/./src").is_ok());
+        assert!(with("_svc-1", "/srv").is_ok());
+
+        for user in ["", "-rf", "Agent", "a b", "x;id", &"a".repeat(33)] {
+            assert!(with(user, "/home/agent").is_err(), "user {user:?}");
+        }
+        for workdir in ["", "/", "//", "/.", "relative", "/home/..", "/a/../b"]
+        {
+            assert!(with("agent", workdir).is_err(), "workdir {workdir:?}");
+        }
     }
 
     /// An optional dev `bashd` to bind-mount over the baked one, from
