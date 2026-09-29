@@ -884,6 +884,262 @@ mod tests {
         assert_eq!(human_size(2 * 1024 * 1024), "2.0M");
     }
 
+    /// Dispatch one memory command through [`Tool::call`], as a `ToolBox`
+    /// would, returning whether it errored and the model-facing text.
+    #[cfg(feature = "memory-fs")]
+    async fn call(
+        backend: &mut FsMemoryBackend,
+        input: serde_json::Value,
+    ) -> (bool, String) {
+        let result = backend
+            .call(crate::tool::Use::new("memory", input).with_id("id"))
+            .await;
+        // The raw text: `Display` renders markdown (escaping `[`, etc).
+        let text = match result.content.iter().next() {
+            Some(crate::prompt::message::Block::Text { text, .. }) => {
+                text.to_string()
+            }
+            other => panic!("expected one text block, got {other:?}"),
+        };
+        (result.is_error, text)
+    }
+
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn view_lists_two_levels_and_filters() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = FsMemoryBackend::new(dir.path()).await.unwrap();
+        let root = backend.root().to_path_buf();
+        std::fs::create_dir_all(root.join("a/b/c")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules")).unwrap();
+        std::fs::write(root.join("top.md"), "x".repeat(2048)).unwrap();
+        std::fs::write(root.join("skip.txt"), "no").unwrap();
+        std::fs::write(root.join(".hidden.md"), "no").unwrap();
+        std::fs::write(root.join("a/mid.md"), "y").unwrap();
+        std::fs::write(root.join("a/b/deep.md"), "z").unwrap();
+
+        let (err, listing) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "/memories/" }),
+        )
+        .await;
+        assert!(!err, "{listing}");
+        let listing: serde_json::Value =
+            serde_json::from_str(&listing).unwrap();
+        assert_eq!(listing["directory"], "/memories");
+        let paths: Vec<&str> = listing["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["path"].as_str().unwrap())
+            .collect();
+        // Two levels deep, name-sorted per level; hidden, node_modules, and
+        // disallowed extensions skipped.
+        assert_eq!(
+            paths,
+            [
+                "/memories/a",
+                "/memories/top.md",
+                "/memories/a/b",
+                "/memories/a/mid.md"
+            ]
+        );
+        assert_eq!(listing["entries"][1]["size"], "2.0K");
+        assert_eq!(listing["entries"][0]["kind"], "dir");
+        assert!(listing["entries"][1]["modified"].is_string());
+
+        // A ranged file view, and a missing path.
+        std::fs::write(root.join("r.md"), "one\ntwo\nthree\n").unwrap();
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "/memories/r.md",
+                "view_range": [2, 3] }),
+        )
+        .await;
+        assert!(!err);
+        assert!(
+            text.contains("     2\ttwo") && !text.contains("one"),
+            "{text}"
+        );
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "view", "path": "/memories/nope.md" }),
+        )
+        .await;
+        assert!(err);
+        assert!(text.contains("does not exist"), "{text}");
+    }
+
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn edits_and_their_errors() {
+        use serde_json::json;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut backend = FsMemoryBackend::new(dir.path()).await.unwrap();
+        let file = dir.path().join("n.md");
+        let create = json!({ "command": "create", "path": "/memories/n.md",
+                "file_text": "a\nb\n" });
+
+        assert!(!call(&mut backend, create.clone()).await.0);
+        let (err, text) = call(&mut backend, create).await;
+        assert!(err && text.contains("already exists"), "{text}");
+
+        // Insert after line 1; out of range; missing file.
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "insert", "path": "/memories/n.md",
+                "insert_line": 1, "insert_text": "mid\n" }),
+        )
+        .await;
+        assert!(!err, "{text}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "a\nmid\nb\n");
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "insert", "path": "/memories/n.md",
+                "insert_line": 99, "insert_text": "x" }),
+        )
+        .await;
+        assert!(err && text.contains("[0, 3]"), "{text}");
+        let (err, _) = call(
+            &mut backend,
+            json!({ "command": "insert", "path": "/memories/gone.md",
+                "insert_line": 0, "insert_text": "x" }),
+        )
+        .await;
+        assert!(err);
+
+        // str_replace with no match, and on a missing file.
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "str_replace", "path": "/memories/n.md",
+                "old_str": "zzz", "new_str": "y" }),
+        )
+        .await;
+        assert!(err && text.contains("did not appear verbatim"), "{text}");
+        let (err, _) = call(
+            &mut backend,
+            json!({ "command": "str_replace", "path": "/memories/gone.md",
+                "old_str": "a", "new_str": "y" }),
+        )
+        .await;
+        assert!(err);
+
+        // Rename: ok, missing source, existing destination, bad extension.
+        let rename = |from: &str, to: &str| json!({ "command": "rename", "old_path": from, "new_path": to });
+        let (err, text) =
+            call(&mut backend, rename("/memories/n.md", "/memories/d/m.md"))
+                .await;
+        assert!(!err, "{text}");
+        assert!(dir.path().join("d/m.md").exists());
+        let (err, text) =
+            call(&mut backend, rename("/memories/n.md", "/memories/x.md"))
+                .await;
+        assert!(err && text.contains("does not exist"), "{text}");
+        std::fs::write(dir.path().join("o.md"), "").unwrap();
+        let (err, text) =
+            call(&mut backend, rename("/memories/o.md", "/memories/d/m.md"))
+                .await;
+        assert!(err && text.contains("destination"), "{text}");
+        let (err, text) =
+            call(&mut backend, rename("/memories/o.md", "/memories/o.txt"))
+                .await;
+        assert!(err && text.contains("only these file extensions"), "{text}");
+
+        // Delete a file, a directory, and something missing.
+        let delete = |path: &str| json!({ "command": "delete", "path": path });
+        assert!(!call(&mut backend, delete("/memories/o.md")).await.0);
+        assert!(!call(&mut backend, delete("/memories/d")).await.0);
+        assert!(!dir.path().join("d").exists());
+        let (err, text) = call(&mut backend, delete("/memories/d")).await;
+        assert!(err && text.contains("does not exist"), "{text}");
+
+        // Traversal, an unmodeled command, and input that isn't a command.
+        let (err, text) = call(&mut backend, delete("/etc/passwd")).await;
+        assert!(
+            err && text.contains("outside the memory directory"),
+            "{text}"
+        );
+        let (err, text) = call(
+            &mut backend,
+            json!({ "command": "append", "path": "/memories/n.md" }),
+        )
+        .await;
+        assert!(err && text.contains("unsupported memory command"), "{text}");
+        let (err, text) = call(&mut backend, json!(42)).await;
+        assert!(err && text.contains("could not parse"), "{text}");
+    }
+
+    #[cfg(feature = "memory-fs")]
+    #[tokio::test]
+    async fn extension_allowlist_is_configurable() {
+        let dir = tempfile::tempdir().unwrap();
+        let backend = FsMemoryBackend::new(dir.path())
+            .await
+            .unwrap()
+            .with_extensions([".TXT"]);
+        assert!(backend.extension_allowed(Path::new("a.txt")));
+        assert!(!backend.extension_allowed(Path::new("a.md")));
+        assert!(!backend.extension_allowed(Path::new("noext")));
+
+        let any = backend.with_extensions(Vec::<String>::new());
+        assert!(any.extension_allowed(Path::new("a.bin")));
+        assert_eq!(any.virtual_path(Path::new("/elsewhere")), "/elsewhere");
+        assert_eq!(any.virtual_path(any.root()), MEMORY_ROOT);
+    }
+
+    #[cfg(feature = "memory-fs")]
+    #[test]
+    fn errors_display_for_the_model() {
+        use std::error::Error as _;
+
+        let io = MemoryError::from(std::io::Error::other("disk"));
+        assert_eq!(io.to_string(), "Error: disk");
+        assert!(io.source().is_some());
+
+        let cases = [
+            (MemoryError::Traversal("/x".into()), "outside"),
+            (MemoryError::NotFound("/x".into()), "does not exist"),
+            (MemoryError::AlreadyExists("/x".into()), "already exists"),
+            (
+                MemoryError::NoMatch {
+                    old_str: "o".into(),
+                    path: "/x".into(),
+                },
+                "did not appear verbatim",
+            ),
+            (
+                MemoryError::MultipleMatches {
+                    old_str: "o".into(),
+                    lines: vec![1, 3],
+                },
+                "lines: 1, 3",
+            ),
+            (
+                MemoryError::InvalidLine {
+                    insert_line: 9,
+                    n_lines: 2,
+                },
+                "[0, 2]",
+            ),
+            (MemoryError::DestExists("/x".into()), "destination"),
+            (
+                MemoryError::Extension {
+                    path: "/x".into(),
+                    allowed: vec!["md".into(), "txt".into()],
+                },
+                "md, txt",
+            ),
+            (MemoryError::UnknownCommand("zap".into()), "`zap`"),
+        ];
+        for (error, needle) in cases {
+            assert!(error.to_string().contains(needle), "{error}");
+            assert!(error.source().is_none());
+        }
+    }
+
     #[tokio::test]
     #[cfg(all(feature = "client", feature = "memory-fs"))]
     #[ignore = "This test requires a real API key."]
