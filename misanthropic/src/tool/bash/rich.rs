@@ -224,3 +224,247 @@ fn completion_note(job: u64, result: &ExecResult) -> String {
     };
     format!("background job {job} finished{exit}:\n{}", body.trim_end())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use serde_json::json;
+
+    use super::*;
+    use crate::tool::{
+        Tool, Use,
+        bash::{BashError, PROTOCOL_VERSION, Ready},
+    };
+
+    /// A scripted sandbox: `run` of a command starting with `bg` backgrounds
+    /// as job 7, `fail` makes every operation error, and `watch` (when on)
+    /// resolves at once with a finished job.
+    #[derive(Default)]
+    struct Fake {
+        fail: bool,
+        watch: bool,
+    }
+
+    impl Fake {
+        fn check(&self) -> Result<(), BashError> {
+            match self.fail {
+                true => Err(BashError::Backend("sandbox down".into())),
+                false => Ok(()),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl BashSandbox for Fake {
+        async fn start(&mut self) -> Result<Ready, BashError> {
+            self.check()?;
+            Ok(Ready {
+                protocol: PROTOCOL_VERSION,
+                bashd: "fake".into(),
+                shell: "/bin/bash".into(),
+                persist_cwd: false,
+            })
+        }
+        async fn exec(
+            &mut self,
+            command: Command,
+        ) -> Result<ExecResult, BashError> {
+            self.check()?;
+            let Command::Known(Known::Run { command, .. }) = command else {
+                unreachable!("RichBash only sends run")
+            };
+            Ok(match command.strip_prefix("bg") {
+                Some(_) => ExecResult {
+                    running: true,
+                    job: Some(7),
+                    ..Default::default()
+                },
+                None => ExecResult {
+                    stdout: command.into_owned(),
+                    exit: Some(0),
+                    ..Default::default()
+                },
+            })
+        }
+        async fn poll(&mut self, job: u64) -> Result<ExecResult, BashError> {
+            self.check()?;
+            Ok(ExecResult {
+                stdout: format!("partial {job}"),
+                running: true,
+                ..Default::default()
+            })
+        }
+        async fn wait(
+            &mut self,
+            job: u64,
+            _timeout: Option<Duration>,
+        ) -> Result<ExecResult, BashError> {
+            self.poll(job).await
+        }
+        async fn kill(&mut self, _job: u64) -> Result<(), BashError> {
+            self.check()
+        }
+        async fn restart(&mut self) -> Result<(), BashError> {
+            self.check()
+        }
+        async fn teardown(&mut self) -> Result<(), BashError> {
+            self.check()
+        }
+        fn watch(
+            &self,
+            _job: u64,
+        ) -> Option<
+            futures::future::BoxFuture<'static, Result<ExecResult, BashError>>,
+        > {
+            self.watch.then(|| {
+                Box::pin(async {
+                    Ok(ExecResult {
+                        stdout: "built".into(),
+                        stderr: "1 warning".into(),
+                        exit: Some(0),
+                        ..Default::default()
+                    })
+                }) as _
+            })
+        }
+    }
+
+    async fn call(
+        tool: &mut RichBash,
+        method: &str,
+        input: serde_json::Value,
+    ) -> (bool, String) {
+        let result = tool
+            .call(Use::new(format!("bash__{method}"), input).with_id("id"))
+            .await;
+        (result.is_error, result.content.to_string())
+    }
+
+    #[test]
+    fn one_flat_method_per_operation() {
+        let tool = RichBash::new(Fake::default());
+        let mut names: Vec<String> = tool
+            .definitions()
+            .iter()
+            .map(|def| def.name().to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            [
+                "bash__check_output",
+                "bash__kill",
+                "bash__restart",
+                "bash__run"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn background_completion_is_pushed() {
+        let mut tool = RichBash::new(Fake {
+            watch: true,
+            ..Default::default()
+        });
+        let mut notes = Tool::subscribe(&mut tool).expect("standalone");
+        let mut prompt = Prompt::default();
+        tool.on_init(&mut prompt).await.unwrap();
+
+        let (err, text) =
+            call(&mut tool, "run", json!({ "command": "echo hi" })).await;
+        assert!(!err && text.contains("echo hi"), "{text}");
+
+        let (err, _) = call(
+            &mut tool,
+            "run",
+            json!({ "command": "bg make", "background": true }),
+        )
+        .await;
+        assert!(!err);
+        let note = notes.recv().await.expect("a completion note");
+        assert_eq!(note.preferred_roles, [Role::User]);
+        assert_eq!(
+            note.content.to_string(),
+            "background job 7 finished (exit 0):\nbuilt\n1 warning"
+        );
+
+        let (err, text) =
+            call(&mut tool, "check_output", json!({ "job": 7 })).await;
+        assert!(!err && text.contains("partial 7"), "{text}");
+        let (err, text) = call(&mut tool, "kill", json!({ "job": 7 })).await;
+        assert!(!err && text.contains("killed background job 7"), "{text}");
+        let (err, text) = call(&mut tool, "restart", json!({})).await;
+        assert!(!err && text.contains("restarted"), "{text}");
+
+        tool.on_teardown(&mut prompt).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unwatchable_jobs_and_teardown_abort_watchers() {
+        // Without `watch`, a background job stays check_output-only.
+        let mut tool = RichBash::new(Fake::default());
+        let mut notes = Tool::subscribe(&mut tool).unwrap();
+        call(&mut tool, "run", json!({ "command": "bg a" })).await;
+        assert!(tool.watchers.is_empty());
+        assert!(notes.try_recv().is_err());
+
+        // Boxed: `connect` swaps in the box's mailbox, and the tool no longer
+        // hands out its own consumer end.
+        let mut shared = Mailbox::new("box");
+        let mut shared_notes = shared.subscribe().unwrap();
+        let mut tool = RichBash::new(Fake {
+            watch: true,
+            ..Default::default()
+        });
+        Tool::connect(&mut tool, shared);
+        assert!(Tool::subscribe(&mut tool).is_none());
+        call(&mut tool, "run", json!({ "command": "bg b" })).await;
+        let note = shared_notes.recv().await.unwrap();
+        assert_eq!(&*note.source, "box");
+        tool.on_teardown(&mut Prompt::default()).await.unwrap();
+        assert!(tool.watchers.is_empty());
+    }
+
+    #[tokio::test]
+    async fn sandbox_errors_reach_the_model() {
+        let mut tool = RichBash::new(Fake {
+            fail: true,
+            ..Default::default()
+        });
+        for (method, input) in [
+            ("run", json!({ "command": "ls" })),
+            ("check_output", json!({ "job": 1 })),
+            ("kill", json!({ "job": 1 })),
+            ("restart", json!({})),
+        ] {
+            let (err, text) = call(&mut tool, method, input).await;
+            assert!(err && text.contains("sandbox down"), "{method}: {text}");
+        }
+        let mut prompt = Prompt::default();
+        assert!(tool.on_init(&mut prompt).await.is_err());
+        assert!(tool.on_teardown(&mut prompt).await.is_err());
+    }
+
+    #[test]
+    fn completion_note_formats() {
+        let result = |stdout: &str, stderr: &str, exit| ExecResult {
+            stdout: stdout.into(),
+            stderr: stderr.into(),
+            exit,
+            ..Default::default()
+        };
+        assert_eq!(
+            completion_note(1, &result("out\n", "", Some(2))),
+            "background job 1 finished (exit 2):\nout"
+        );
+        assert_eq!(
+            completion_note(2, &result("", "err", None)),
+            "background job 2 finished:\nerr"
+        );
+        assert_eq!(
+            completion_note(3, &result("out\n", "err\n", Some(0))),
+            "background job 3 finished (exit 0):\nout\nerr"
+        );
+    }
+}
