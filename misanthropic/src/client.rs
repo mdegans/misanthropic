@@ -1245,6 +1245,49 @@ mod tests {
         assert_eq!(json["body"], "<html>502 Bad Gateway</html>");
     }
 
+    /// The serialized shapes, pinned to literal JSON so a change to them is
+    /// a deliberate edit here.
+    #[tokio::test]
+    async fn test_error_serializes_to_tagged_shapes() {
+        let shape = |err: &Error| serde_json::to_value(err).unwrap();
+        let literal = |json: &str| {
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        };
+
+        let parse = serde_json::from_str::<u8>("x").unwrap_err();
+        // The wrapped error's own message, not the outer `Display`.
+        let message = parse.to_string();
+        assert_eq!(
+            shape(&parse.into()),
+            literal(&format!(r#"{{"type":"parse","message":"{message}"}}"#))
+        );
+
+        let anthropic: Error = AnthropicError::NotFound {
+            message: "no".into(),
+        }
+        .into();
+        assert_eq!(
+            shape(&anthropic),
+            literal(
+                r#"{"type":"anthropic","message":"not found (404): no",
+                    "error":{"type":"not_found_error","message":"no"}}"#
+            )
+        );
+
+        let unexpected = Error::UnexpectedResponse { message: "odd" };
+        assert_eq!(
+            shape(&unexpected),
+            literal(r#"{"type":"unexpected_response","message":"odd"}"#)
+        );
+
+        // Nothing listens on port 1: a connection error.
+        let reqwest = reqwest::get("http://127.0.0.1:1").await.unwrap_err();
+        let message = reqwest.to_string();
+        let value = shape(&reqwest.into());
+        assert_eq!(value["type"], "http");
+        assert_eq!(value["message"], message);
+    }
+
     #[test]
     fn test_non_json_response_error_display() {
         let err = Error::NonJsonResponse {

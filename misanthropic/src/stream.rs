@@ -1342,6 +1342,93 @@ impl<S> FilterExt for S where
 
 #[cfg(test)]
 pub(crate) mod tests {
+    /// The serialized shapes, pinned to literal JSON so a change to them is
+    /// a deliberate edit here.
+    #[test]
+    fn error_serializes_to_tagged_shapes() {
+        let shape = |err: Error| serde_json::to_value(err).unwrap();
+        let literal = |json: &str| {
+            serde_json::from_str::<serde_json::Value>(json).unwrap()
+        };
+        let event = || eventsource_stream::Event {
+            event: "error".into(),
+            data: "{".into(),
+            id: "7".into(),
+            retry: None,
+        };
+
+        let error = serde_json::from_str::<u8>("{").unwrap_err();
+        let message = format!("JSON error: {error}");
+        assert_eq!(
+            shape(Error::Parse {
+                error,
+                event: event()
+            }),
+            literal(&format!(
+                r#"{{"type":"parse","message":"{message}",
+                    "event":{{"event":"error","data":"{{","id":"7","retry":null}}}}"#
+            ))
+        );
+
+        assert_eq!(
+            shape(Error::Anthropic {
+                error: AnthropicError::Overloaded {
+                    message: "busy".into(),
+                    retry_after: None,
+                },
+                event: event(),
+            }),
+            literal(
+                r#"{"type":"anthropic","message":"API error: overloaded (529): busy",
+                    "error":{"type":"overloaded_error","message":"busy"},
+                    "event":{"event":"error","data":"{","id":"7","retry":null}}"#
+            )
+        );
+
+        assert_eq!(
+            shape(Error::MessageAssembly {
+                message: "no start".into(),
+                delta: None,
+            }),
+            literal(
+                r#"{"type":"message_assembly",
+                    "message":"Message assembly error: no start","delta":null}"#
+            )
+        );
+
+        let delta = Delta::Text { text: "x".into() };
+        let mismatch = DeltaError::ContentMismatch {
+            error: ContentMismatch {
+                from: delta,
+                to: "Block::Thought",
+            },
+        };
+        let message = Error::from(DeltaError::Parse {
+            error: String::new(),
+        })
+        .to_string();
+        assert!(message.starts_with("Delta error"));
+        assert_eq!(
+            shape(mismatch.into())["error"],
+            literal(
+                r#"{"ContentMismatch":{"error":{
+                    "from":{"type":"text_delta","text":"x"},
+                    "to":"Block::Thought"}}}"#
+            )
+        );
+
+        assert_eq!(
+            shape(Error::JsonAssembly {
+                message: "cut off".into(),
+                index: 2,
+            }),
+            literal(
+                r#"{"type":"json_assembly",
+                    "message":"JSON assembly error: cut off","index":2}"#
+            )
+        );
+    }
+
     use futures::TryStreamExt;
 
     #[allow(unused_imports)] // because conditional compilation.
