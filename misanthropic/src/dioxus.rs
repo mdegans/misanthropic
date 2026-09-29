@@ -726,71 +726,10 @@ mod tests {
     use super::*;
     use crate::prompt::message::{Message, Role};
 
-    /// Every server-tool block with a captured fixture.
-    const FIXTURES: &[&str] = &[
-        include_str!("../test/data/server_tools/server_tool_use.json"),
-        include_str!("../test/data/server_tools/web_search_result.json"),
-        include_str!("../test/data/server_tools/web_search_error.json"),
-        include_str!("../test/data/server_tools/web_fetch_result.json"),
-        include_str!("../test/data/server_tools/web_fetch_error.json"),
-        include_str!("../test/data/server_tools/tool_search_result.json"),
-        include_str!("../test/data/server_tools/tool_search_error.json"),
-        include_str!("../test/data/server_tools/tool_reference.json"),
-        include_str!("../test/data/server_tools/code_execution_result.json"),
-        include_str!(
-            "../test/data/server_tools/bash_code_execution_result.json"
-        ),
-        include_str!(
-            "../test/data/server_tools/text_editor_code_execution_view_result.json"
-        ),
-        include_str!(
-            "../test/data/server_tools/text_editor_code_execution_error.json"
-        ),
-    ];
+    use crate::prompt::message::tests::every_block;
 
     fn block(value: serde_json::Value) -> Block {
         serde_json::from_value(value).unwrap()
-    }
-
-    /// One of every [`Block`] variant, the result kinds as both success and
-    /// failure.
-    fn every_block() -> Vec<Block> {
-        let fixtures = FIXTURES
-            .iter()
-            .map(|json| serde_json::from_str(json).unwrap());
-        [
-            json!({ "type": "text", "text": "<thinking>hmm</thinking>Hi!" }),
-            json!({ "type": "thinking", "thinking": "hmm", "signature": "s" }),
-            json!({ "type": "redacted_thinking", "data": "r" }),
-            json!({ "type": "image", "source": {
-                "type": "base64", "media_type": "image/png", "data": "AAAA"
-            }}),
-            json!({ "type": "image", "source": {
-                "type": "url", "url": "https://example.com/a.png"
-            }}),
-            json!({ "type": "tool_use", "id": "toolu_1", "name": "python",
-                "input": { "script": "print(1)" } }),
-            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
-                "content": "1" }),
-            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
-                "content": "Traceback", "is_error": true }),
-            json!({ "type": "document", "source": {
-                "type": "text", "media_type": "text/plain", "data": "A doc."
-            }}),
-            json!({ "type": "bash_code_execution_tool_result",
-                "tool_use_id": "srvtoolu_1",
-                "content": { "type": "bash_code_execution_result",
-                    "stdout": "", "stderr": "boom", "return_code": 1,
-                    "content": [] } }),
-            json!({ "type": "bash_code_execution_tool_result",
-                "tool_use_id": "srvtoolu_1",
-                "content": { "type": "bash_code_execution_tool_result_error",
-                    "error_code": "unavailable" } }),
-        ]
-        .into_iter()
-        .map(block)
-        .chain(fixtures)
-        .collect()
     }
 
     fn prompt() -> prompt::Prompt {
