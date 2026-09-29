@@ -2609,11 +2609,410 @@ impl TryFrom<image::ImageFormat> for MediaType {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[cfg(feature = "markdown")]
     use crate::markdown::ToMarkdown;
+    use crate::stream::{Delta, DeltaError};
 
     use super::*;
+
+    /// One of every [`Block`] variant — result kinds as both success and
+    /// failure — for tests that must handle them all. Server-tool blocks are
+    /// the captured fixtures.
+    pub(crate) fn every_block() -> Vec<Block> {
+        let synthetic = [
+            json!({ "type": "text", "text": "<thinking>hmm</thinking>Hi!" }),
+            json!({ "type": "thinking", "thinking": "hmm", "signature": "s" }),
+            json!({ "type": "redacted_thinking", "data": "r" }),
+            json!({ "type": "image", "source": {
+                "type": "base64", "media_type": "image/png", "data": "AAAA"
+            }}),
+            json!({ "type": "image", "source": {
+                "type": "url", "url": "https://example.com/a.png"
+            }}),
+            json!({ "type": "tool_use", "id": "toolu_1", "name": "python",
+                "input": { "script": "print(1)" } }),
+            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
+                "content": "1" }),
+            json!({ "type": "tool_result", "tool_use_id": "toolu_1",
+                "content": "Traceback", "is_error": true }),
+            json!({ "type": "document", "source": {
+                "type": "text", "media_type": "text/plain", "data": "A doc."
+            }}),
+            json!({ "type": "bash_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": { "type": "bash_code_execution_result",
+                    "stdout": "", "stderr": "boom", "return_code": 1,
+                    "content": [] } }),
+            json!({ "type": "bash_code_execution_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": { "type": "bash_code_execution_tool_result_error",
+                    "error_code": "unavailable" } }),
+        ]
+        .into_iter()
+        .map(|value| serde_json::from_value(value).unwrap());
+        let fixtures = [
+            include_str!("../../test/data/server_tools/server_tool_use.json"),
+            include_str!(
+                "../../test/data/server_tools/web_search_result.json"
+            ),
+            include_str!("../../test/data/server_tools/web_search_error.json"),
+            include_str!("../../test/data/server_tools/web_fetch_result.json"),
+            include_str!("../../test/data/server_tools/web_fetch_error.json"),
+            include_str!(
+                "../../test/data/server_tools/tool_search_result.json"
+            ),
+            include_str!("../../test/data/server_tools/tool_search_error.json"),
+            include_str!("../../test/data/server_tools/tool_reference.json"),
+            include_str!(
+                "../../test/data/server_tools/code_execution_result.json"
+            ),
+            include_str!(
+                "../../test/data/server_tools/bash_code_execution_result.json"
+            ),
+            include_str!(
+                "../../test/data/server_tools/text_editor_code_execution_view_result.json"
+            ),
+            include_str!(
+                "../../test/data/server_tools/text_editor_code_execution_error.json"
+            ),
+        ]
+        .into_iter()
+        .map(|json| serde_json::from_str(json).unwrap());
+        synthetic.chain(fixtures).collect()
+    }
+
+    use serde_json::json;
+
+    #[test]
+    fn every_block_caches_consistently() {
+        for mut block in every_block() {
+            let cacheable = block.cache();
+            assert_eq!(block.is_cached(), cacheable, "{block:?}");
+            if cacheable {
+                assert!(block.uncache());
+                assert!(!block.uncache(), "already uncached: {block:?}");
+                assert!(block.cache_1h());
+            } else {
+                assert!(!block.uncache());
+                assert!(!block.cache_1h());
+            }
+            assert_eq!(
+                block.tool_use().is_some(),
+                matches!(block, Block::ToolUse { .. })
+            );
+            let _ = block.len();
+        }
+    }
+
+    #[test]
+    fn merge_deltas_names_the_mismatched_block() {
+        for mut block in every_block() {
+            // A delta no variant accepts from this block: text for all but
+            // text itself, which refuses a signature.
+            let delta = match block {
+                Block::Text { .. } => Delta::Signature {
+                    signature: "s".into(),
+                },
+                _ => Delta::Text { text: "x".into() },
+            };
+            match block.merge_deltas([delta]) {
+                Err(DeltaError::ContentMismatch { error }) => {
+                    assert!(error.to.starts_with("Block::"), "{}", error.to);
+                }
+                other => panic!("expected a mismatch, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn merge_deltas_applies_each_kind() {
+        let mut text = Block::text("a");
+        text.merge_deltas([]).unwrap();
+        text.merge_deltas([
+            Delta::Text { text: "b".into() },
+            Delta::Text { text: "c".into() },
+        ])
+        .unwrap();
+        assert!(matches!(&text, Block::Text { text, .. } if text == "abc"));
+
+        // A citation lands on the text block.
+        let citation: crate::prompt::Citation = serde_json::from_value(json!({
+            "type": "char_location", "cited_text": "a", "document_index": 0,
+            "document_title": null, "start_char_index": 0, "end_char_index": 1
+        }))
+        .unwrap();
+        text.merge_deltas([Delta::CitationsDelta { citation }])
+            .unwrap();
+        assert!(matches!(
+            &text,
+            Block::Text { citations: Some(c), .. } if c.len() == 1
+        ));
+
+        // Json merges into a server tool's input; bad json is a parse error.
+        let mut server: Block = serde_json::from_str(include_str!(
+            "../../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+        server
+            .merge_deltas([Delta::Json {
+                partial_json: r#"{"extra":1}"#.into(),
+            }])
+            .unwrap();
+        let Block::ServerToolUse { call } = &server else {
+            unreachable!()
+        };
+        assert_eq!(call.input["extra"], 1);
+        assert!(matches!(
+            server.merge_deltas([Delta::Json {
+                partial_json: "{".into()
+            }]),
+            Err(DeltaError::Parse { .. })
+        ));
+
+        // A thought delta carrying a signature replaces the thought whole;
+        // a lone signature completes an unsigned one, but never re-signs.
+        let mut thought: Block = serde_json::from_value(
+            json!({ "type": "thinking", "thinking": "a", "signature": "" }),
+        )
+        .unwrap();
+        thought
+            .merge_deltas([Delta::Thought {
+                thinking: "b".into(),
+                signature: None,
+            }])
+            .unwrap();
+        assert!(!thought.is_complete_thought());
+        thought
+            .merge_deltas([Delta::Signature {
+                signature: "sig".into(),
+            }])
+            .unwrap();
+        assert!(thought.is_complete_thought());
+        assert!(
+            thought
+                .merge_deltas([Delta::Signature {
+                    signature: "again".into()
+                }])
+                .is_err()
+        );
+        thought
+            .merge_deltas([Delta::Thought {
+                thinking: "whole".into(),
+                signature: Some("new".into()),
+            }])
+            .unwrap();
+        assert!(matches!(
+            &thought,
+            Block::Thought { thought, signature }
+                if thought == "whole" && signature == "new"
+        ));
+
+        // Redacted thoughts take one signature, into an empty block only.
+        let mut redacted = Block::RedactedThought {
+            signature: "".into(),
+        };
+        let delta = || Delta::RedactedThought {
+            signature: "r".into(),
+        };
+        redacted.merge_deltas([delta()]).unwrap();
+        assert!(redacted.merge_deltas([delta()]).is_err());
+    }
+
+    #[test]
+    fn push_delta_refuses_lone_json() {
+        let mut content = Content::text("a");
+        content
+            .push_delta(Delta::Text { text: "b".into() })
+            .unwrap();
+        assert_eq!(content.to_string().trim(), "ab");
+        assert!(matches!(
+            content.push_delta(Delta::Json {
+                partial_json: "{}".into()
+            }),
+            Err(DeltaError::ContentMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn roles_name_and_toggle() {
+        for (role, name, lower, toggled) in [
+            (Role::User, "User", "user", Role::Assistant),
+            (Role::Assistant, "Assistant", "assistant", Role::User),
+            (Role::System, "System", "system", Role::System),
+        ] {
+            assert_eq!(role.as_str(), name);
+            assert_eq!(role.as_lowercase(), lower);
+            assert_eq!(role.toggle(), toggled);
+        }
+        assert_eq!(markers::User.to_string(), "User");
+        assert_eq!(markers::Assistant.to_string(), "Assistant");
+        assert_eq!(markers::System.to_string(), "System");
+    }
+
+    #[test]
+    fn message_accessors_and_conversions() {
+        let call = crate::tool::Use::new("python", json!({})).with_id("t");
+        let asked = Message {
+            role: Role::Assistant,
+            content: vec![Block::text("Running."), call.clone().into()].into(),
+        };
+        assert_eq!(asked.tool_use().unwrap().id, "t");
+        assert!(asked.server_tool_use().is_none());
+        assert!(asked.tool_result().is_none());
+
+        let server: Block = serde_json::from_str(include_str!(
+            "../../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+        let searched = Message {
+            role: Role::Assistant,
+            content: server.into(),
+        };
+        assert!(searched.server_tool_use().is_some());
+        assert!(searched.tool_use().is_none());
+
+        let answer: UserMessage = crate::tool::Result::new("t", "1").into();
+        let answer = Message::from(answer);
+        assert_eq!(answer.leading_tool_result_ids().collect::<Vec<_>>(), ["t"]);
+        assert!(answer.tool_result().is_some());
+
+        let owned: UserMessage = String::from("hi").into();
+        let blocks: Vec<Block> = owned.clone().into_iter().collect();
+        assert_eq!(blocks.len(), 1);
+        let content: Content = owned.into();
+        assert_eq!(content.len(), 1);
+        let text = AssistantMessage::text("prefill");
+        assert_eq!(text.len(), 1);
+
+        let response: crate::response::Message =
+            serde_json::from_str(include_str!(
+                "../../test/data/system_after_server_tool.response.json"
+            ))
+            .unwrap();
+        let assistant: AssistantMessage = response.into();
+        assert!(!assistant.is_empty());
+
+        let wrong: Cow<'static, str> = WrongRole {
+            expected: Role::User,
+            actual: Role::Assistant,
+        }
+        .into();
+        assert!(wrong.contains("User"), "{wrong}");
+
+        let parts: Content = (&["a", "b"][..]).into();
+        assert_eq!(parts.len(), 2);
+    }
+
+    #[test]
+    fn document_sources() {
+        let dir = tempfile::tempdir().unwrap();
+        let pdf = dir.path().join("a.pdf");
+        std::fs::write(&pdf, b"%PDF").unwrap();
+        assert!(DocumentSource::from_file(dir.path().join("nope")).is_err());
+
+        let content = DocumentSource::from_content(vec![ContentText {
+            text: "abc".into(),
+        }]);
+        for (source, display, len) in [
+            (
+                DocumentSource::from_file(&pdf).unwrap(),
+                "[Document (application/pdf)]",
+                8,
+            ),
+            (
+                DocumentSource::from_base64("QUJD"),
+                "[Document (application/pdf)]",
+                4,
+            ),
+            (
+                DocumentSource::from_url("https://x.io/a.pdf"),
+                "[Document (https://x.io/a.pdf)]",
+                18,
+            ),
+            (
+                DocumentSource::from_text("hello"),
+                "[Document (text/plain)]",
+                5,
+            ),
+            (content, "[Document (1 blocks)]", 3),
+            (
+                DocumentSource::from_file_id("file_1"),
+                "[Document (file:file_1)]",
+                6,
+            ),
+        ] {
+            assert_eq!(source.to_string(), display);
+            assert_eq!(source.len(), len, "{display}");
+            let block: Block = source.clone().into();
+            assert_eq!(block.len(), len);
+            assert!(matches!(
+                Block::document_with_citations(source),
+                Block::Document {
+                    citations: Some(CitationsConfig { enabled: true }),
+                    ..
+                }
+            ));
+        }
+        assert_eq!(DocumentMediaType::Pdf.to_string(), "application/pdf");
+        assert_eq!(PlainTextMediaType::Plain.to_string(), "text/plain");
+        assert_eq!(CacheTtl::FiveMinutes.to_string(), "5m");
+        assert_eq!(CacheTtl::OneHour.to_string(), "1h");
+        assert!(matches!(
+            Block::tool_reference("python"),
+            Block::ToolReference { tool_name } if tool_name == "python"
+        ));
+    }
+
+    #[test]
+    fn media_types() {
+        for (name, media_type) in [
+            ("a.jpg", MediaType::Jpeg),
+            ("a.jpeg", MediaType::Jpeg),
+            ("a.png", MediaType::Png),
+            ("a.gif", MediaType::Gif),
+            ("a.webp", MediaType::Webp),
+        ] {
+            assert_eq!(MediaType::detect(name), Some(media_type));
+            assert!(MediaType::is_supported(name));
+            assert!(media_type.to_string().starts_with("image/"));
+        }
+        assert!(!MediaType::is_supported("a.bmp"));
+        assert_eq!(
+            Image::Url {
+                url: "https://x.io/a.png".into()
+            }
+            .len(),
+            18
+        );
+    }
+
+    #[cfg(feature = "image")]
+    #[test]
+    fn media_types_convert_to_and_from_image_formats() {
+        for media_type in MediaType::SUPPORTED {
+            let format: image::ImageFormat = (*media_type).into();
+            assert_eq!(MediaType::try_from(format).unwrap(), *media_type);
+        }
+        let err = MediaType::try_from(image::ImageFormat::Bmp).unwrap_err();
+        assert!(err.to_string().contains("Bmp"));
+    }
+
+    #[cfg(feature = "png")]
+    #[test]
+    fn rgba_image_becomes_a_png_block() {
+        let block: Block = image::RgbaImage::new(1, 1).into();
+        assert!(matches!(
+            block,
+            Block::Image {
+                image: Image::Base64 {
+                    media_type: MediaType::Png,
+                    ..
+                },
+                ..
+            }
+        ));
+    }
 
     // The server-tool block round-trips replay captured wire fixtures from
     // `test/data/server_tools/` through `utils::roundtrip`, which asserts an
