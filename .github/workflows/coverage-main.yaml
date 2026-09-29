@@ -1,7 +1,8 @@
 # Coverage for main on every push, without the paid live suite. Uploads the
-# `unit` flag; codecov.yml carries the `live` flag forward from the last
-# live run on main, so the badge reflects main's actual commit. Nothing
-# waits on this job: it runs after the merge.
+# `unit` flag, and relays the merged PR's `live` report (already paid for by
+# its pre-merge live run) onto the merge commit; when there isn't one,
+# codecov.yml carries `live` forward from the parent. Nothing waits on this
+# job: it runs after the merge.
 name: Coverage (main)
 
 on:
@@ -10,6 +11,9 @@ on:
 
 permissions:
   contents: read
+  # Relay: find the merged PR and download its live run's saved coverage.
+  actions: read
+  pull-requests: read
 
 # No concurrency group, on purpose: every main commit needs its own `unit`
 # upload (carryforward inherits from the parent, so a report-less commit
@@ -57,4 +61,55 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           flags: unit
+          fail_ci_if_error: true
+
+      # A merged PR's live suite ran on its head commit, which a squash merge
+      # leaves out of main's history, so its `live` report never reaches the
+      # badge. live.yaml saves that report as an artifact; relay it onto this
+      # commit, but only when main's tree is exactly what the suite tested.
+      # Otherwise (main moved under the PR, or a direct push) skip, and
+      # codecov.yml carries `live` forward from the parent.
+      - name: Find the merged PR's live coverage
+        id: live
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          head=$(gh api "repos/$REPO/commits/$SHA/pulls" \
+            --jq '[.[] | select(.merged_at)][0].head.sha // empty')
+          if [ -z "$head" ]; then
+            echo "::notice::No merged PR for $SHA; live carries forward."
+            exit 0
+          fi
+
+          tested=$(gh api "repos/$REPO/commits/$head" --jq .commit.tree.sha)
+          if [ "$tested" != "$(git rev-parse "$SHA^{tree}")" ]; then
+            echo "::warning::main differs from what PR head $head tested;" \
+              "live carries forward."
+            exit 0
+          fi
+
+          id=$(gh api "repos/$REPO/actions/artifacts?name=lcov-live-$head" \
+            --jq '[.artifacts[] | select(.expired | not)][0].id // empty')
+          if [ -z "$id" ]; then
+            echo "::warning::No saved live coverage for $head;" \
+              "live carries forward."
+            exit 0
+          fi
+
+          gh api "repos/$REPO/actions/artifacts/$id/zip" > lcov-live.zip
+          unzip -p lcov-live.zip lcov.info > lcov-live.info
+          echo "found=true" >> "$GITHUB_OUTPUT"
+
+      # `disable_search`, or the action would sweep the unit lcov.info into
+      # the `live` flag too.
+      - name: Upload the merged PR's live coverage
+        if: steps.live.outputs.found == 'true'
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: lcov-live.info
+          disable_search: true
+          flags: live
           fail_ci_if_error: true

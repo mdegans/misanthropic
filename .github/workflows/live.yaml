@@ -30,7 +30,9 @@
 # after a merge that skipped the gate.
 #
 # Coverage uploads under the `live` flag; codecov.yml carries it forward on
-# main between live runs (coverage-main.yaml uploads `unit` on every push).
+# main between live runs (coverage-main.yaml uploads `unit` on every push,
+# and relays a merged PR's `live` report, saved here as an artifact, onto
+# the merge commit).
 #
 # Secrets: ANTHROPIC_API_KEY, CODECOV_TOKEN.
 name: Live tests and coverage
@@ -145,6 +147,17 @@ jobs:
       - name: Remove api.key
         if: always()
         run: rm -f misanthropic/api.key
+
+      # Kept for coverage-main.yaml: a squash merge takes the PR head out of
+      # main's history, so the report below never reaches main. The push to
+      # main re-uploads this one for the merge commit instead of paying for
+      # the suite twice. Named by the tested SHA, which is how it's found.
+      - name: Save coverage for the merge commit
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-live-${{ github.event.pull_request.head.sha || github.sha }}
+          path: lcov.info
+          if-no-files-found: error
 
       # Attributed to the PR's head commit, so Codecov reports on the PR.
       - name: Upload coverage to Codecov
