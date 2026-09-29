@@ -159,9 +159,11 @@ impl Client {
 
     /// Set a custom base URL for all API endpoints.
     ///
-    /// Replaces the scheme, host, and port of all endpoint URLs while
-    /// preserving their paths and query strings. Useful for pointing at
-    /// Ollama's Anthropic-compatible endpoint, proxies, or test servers.
+    /// Each endpoint's path is appended to the base's, so a gateway mounted
+    /// under a path works: `https://gw.example/anthropic` serves messages at
+    /// `https://gw.example/anthropic/v1/messages`. Endpoint query strings are
+    /// kept. Useful for pointing at Ollama's Anthropic-compatible endpoint,
+    /// proxies, or test servers.
     ///
     /// Accepts anything [`reqwest::IntoUrl`] does — `&str`, `String`, or an
     /// already-parsed [`Url`], the last of which skips a redundant reparse.
@@ -180,7 +182,12 @@ impl Client {
 
         let rebase = |endpoint: &Url| -> Arc<Url> {
             let mut new = base.clone();
-            new.set_path(endpoint.path());
+            new.path_segments_mut()
+                // `into_url` rejects URLs without a host, and only those
+                // (`mailto:`, `data:`, …) can't be a base.
+                .expect("a URL with a host can be a base")
+                .pop_if_empty()
+                .extend(endpoint.path_segments().into_iter().flatten());
             new.set_query(endpoint.query());
             Arc::new(new)
         };
@@ -604,11 +611,12 @@ impl Client {
             };
         }
 
-        // Craft the URL for the batch.
-        let url = Url::parse(self.batch_url.as_str())
-            .unwrap()
-            .join(pending.meta.id.as_str())
-            .unwrap();
+        // The batch's URL: its id as one escaped path segment.
+        let mut url = (*self.batch_url).clone();
+        url.path_segments_mut()
+            .expect("the batch URL has a host")
+            .pop_if_empty()
+            .push(&pending.meta.id);
 
         // Update the metadata with the latest status. `get` returns the
         // body as text and already surfaces non-JSON error bodies via
@@ -2465,6 +2473,37 @@ mod tests {
         // Invalid URL should error.
         let client = Client::new(FAKE_API_KEY.to_string()).unwrap();
         assert!(client.base_url("not a url").is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "client")]
+    fn test_base_url_keeps_a_path_prefix() {
+        for base in [
+            "https://gw.example/anthropic",
+            "https://gw.example/anthropic/",
+        ] {
+            let client = Client::new(FAKE_API_KEY.to_string())
+                .unwrap()
+                .base_url(base)
+                .unwrap();
+
+            assert_eq!(
+                client.messages_url.as_str(),
+                "https://gw.example/anthropic/v1/messages"
+            );
+            assert_eq!(
+                client.batch_url.as_str(),
+                "https://gw.example/anthropic/v1/messages/batches/"
+            );
+            assert_eq!(
+                client.models_url.as_str(),
+                "https://gw.example/anthropic/v1/models?limit=1000"
+            );
+            assert_eq!(
+                client.count_tokens_url.as_str(),
+                "https://gw.example/anthropic/v1/messages/count_tokens"
+            );
+        }
     }
 
     #[cfg(feature = "client")]
