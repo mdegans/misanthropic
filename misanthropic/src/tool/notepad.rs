@@ -10,7 +10,6 @@ use super::tool;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 const NOTEPAD_INSTRUCTIONS: &str = r#"<notepad_instructions>What follows in `notepad` tags are `note`s you took in other sessions using the `notepad` tool.</notepad_instructions>"#;
 
@@ -92,7 +91,8 @@ impl Notepad {
     /// Save notepad state.
     #[save_json]
     async fn save(&mut self) -> serde_json::Value {
-        json!(self)
+        // Plain notes: serializing to a `Value` can't fail.
+        serde_json::to_value(&*self).expect("a Notepad is valid JSON")
     }
 
     /// Load notepad state.
@@ -216,6 +216,8 @@ impl Notepad {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
     // `Notepad` now impls both `Tool` and `Methods` (the macro emits a concrete
     // `impl Tool`), which share lifecycle method names — so import only `Tool`
