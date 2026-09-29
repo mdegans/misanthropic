@@ -91,9 +91,15 @@ jobs:
       # the long pole on every leg (Windows 39 min, macOS 20, Ubuntu 13).
       # macOS and Windows still build and run the all-features and
       # no-default-features suites, which is where OS-specific breakage shows.
+      #
+      # Each feature links its own test binaries, which filled the runner's
+      # disk by the last feature: build them without debug info, and drop the
+      # crate's own artifacts after each (dependencies stay cached).
       - name: Test each feature individually
         if: matrix.os == 'ubuntu-latest'
         shell: bash
+        env:
+          CARGO_PROFILE_DEV_DEBUG: "0"
         run: |
           features=$(cargo metadata --no-deps --format-version 1 |
             jq -r '.packages[] | select(.name == "misanthropic")
@@ -102,6 +108,7 @@ jobs:
           for f in $features; do
             echo "::group::feature: $f"
             cargo test -p misanthropic --features "$f" || exit 1
+            cargo clean -p misanthropic
             echo "::endgroup::"
           done
 
