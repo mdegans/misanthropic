@@ -119,12 +119,14 @@ record; this file aggregates them.
   one (`tools` → `system` → `messages`, the automatic slot last); and an
   automatic slot whose TTL differs from a marker on the block it lands on
   (where Anthropic lands it: the last block that isn't thinking, a
-  server-tool result included). The placements never fail it; hand-placed markers can, so
-  `Chat` runs it before every request (unless the transport ignores
-  markers) and stops with `Stop::Cache`, and a turn its cache window can't
-  legally mark is taken back rather than seated. Also `Block::cache_control`,
-  `MethodDef::cache_control`, `CacheControl::ttl` and
-  `CachedPrompt::cache_with`.
+  server-tool result included). The placements never fail it; hand-placed
+  markers can, so `Chat` runs it before every request (unless the
+  transport ignores markers) and stops with `Stop::Cache`. A `Chat::cache`
+  strategy no request could carry (a 1-hour window under a 5-minute
+  `system` marker) is refused before the first request, and a turn its
+  cache window still can't legally mark is taken back rather than seated.
+  Also `Block::cache_control`, `MethodDef::cache_control`,
+  `CacheControl::ttl` and `CachedPrompt::cache_with`.
 
 - **`schema-order-check` (default-on) enforces required-before-optional
   property order in tool input schemas** (#141). Anthropic and local grammar

@@ -1659,13 +1659,40 @@ impl Prompt {
     /// the tail, spaced by 2 (`len-1, len-3, …`), newest first. A position
     /// already marked keeps its TTL.
     fn plan_window(&self, n: usize, cache_control: CacheControl) -> Plan {
-        let len = self.messages.len();
+        self.plan_window_over(self.messages.len(), n, cache_control)
+    }
+
+    /// Whether [`cache_windowed_with`](Prompt::cache_windowed_with) could
+    /// mark the next turn once it is appended — the window a driver places
+    /// after each assistant turn — so it can refuse before paying for one.
+    /// Every rule is checked but the automatic slot's landing, which the
+    /// turn's blocks decide.
+    #[cfg(feature = "chat")]
+    pub(crate) fn check_next_window(
+        &self,
+        n: usize,
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let len = self.messages.len() + 1;
+        let plan = self.plan_window_over(len, n, cache_control);
+        plan.unlanded().checked().map(drop)
+    }
+
+    /// [`Self::plan_window`] over `len` messages, those past the end yet to
+    /// come: each is marked on its first block, standing in for its end.
+    fn plan_window_over(
+        &self,
+        len: usize,
+        n: usize,
+        cache_control: CacheControl,
+    ) -> Plan {
         let tail: Vec<usize> =
             (0..n).map_while(|k| len.checked_sub(1 + 2 * k)).collect();
-        let fresh = tail
-            .iter()
-            .filter(|&&m| !self.messages[m].content.has_cache())
-            .filter_map(|&m| self.message_end(m));
+        let fresh = tail.iter().filter_map(|&m| match self.messages.get(m) {
+            None => Some(Breakpoint::Block(BlockIndex::Message((m, 0)))),
+            Some(message) if message.content.has_cache() => None,
+            Some(_) => self.message_end(m),
+        });
         self.plan(fresh, cache_control, &tail)
     }
 
