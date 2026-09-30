@@ -18,9 +18,11 @@ record; this file aggregates them.
 ### Added
 
 - **`Prompt::user(content)` — an infallible opening turn** (#125), plus
-  `impl From<&str> for Prompt`. A lone user turn is always legal, so the line
-  every program starts with needs no `Role` import and no `?`:
-  `client.message(Prompt::user("What is 2+2?"))`.
+  `impl From<&str> for Prompt`. A lone turn of text, image or document
+  content is always legal, so the line every program starts with needs no
+  `Role` import and no `?`: `client.message(Prompt::user("What is 2+2?"))`.
+  (`tool_result` content is the exception; `add_message` is the checked
+  path.)
 - **`response::Disposition` + `response::Message::disposition()` — what a
   driver must do next with a turn** (#125): `Paused` (`pause_turn`),
   `Clipped` (`max_tokens` — never dispatch its tool calls), `ToolUse`, or

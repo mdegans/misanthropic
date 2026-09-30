@@ -369,7 +369,7 @@ pub enum StopReason {
 /// #     client: Client,
 /// #     mut toolbox: ToolBox,
 /// # ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-/// // Infallible: a lone user turn is legal by construction — no `?`.
+/// // Infallible: a lone text turn is legal by construction — no `?`.
 /// let mut prompt = Prompt::user("Run the tests and summarize the failures.")
 ///     .system("You are a careful CI assistant.");
 /// toolbox.prepare(&mut prompt).await?;

@@ -66,13 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a Prompt (the request type) and send it. `Client::message`
     // forces `stream = false` and returns a `response::Message` directly.
-    // `Prompt::user` (or `Prompt::from("…")`) is infallible — a lone user
-    // turn is always legal. The appending builders (`messages`,
-    // `add_message`, …) validate turn order and return a `Result`, so they
-    // need a `?` — and not just for correctness: an un-unwrapped `Result`
-    // would itself satisfy `impl Serialize` and reach the wire as
-    // `{"Ok": {…}}` if the error type were serializable. It deliberately
-    // isn't.
+    // `Prompt::user` (or `Prompt::from("…")`) is infallible — a lone turn
+    // of text, image or document content is always legal. The appending
+    // builders (`messages`, `add_message`, …) validate turn order and
+    // return a `Result`, so they need a `?` — and not just for correctness:
+    // an un-unwrapped `Result` would itself satisfy `impl Serialize` and
+    // reach the wire as `{"Ok": {…}}` if the error type were serializable.
+    // It deliberately isn't.
     let message = client.message(Prompt::user("What is 2+2?")).await?;
 
     // `response::Message` implements `Display` (prints content).

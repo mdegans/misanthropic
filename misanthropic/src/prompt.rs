@@ -393,8 +393,11 @@ impl Seated {
 
 impl Prompt {
     /// A [`Prompt::default`] opening with one [`User`] turn — the line every
-    /// program starts with. Infallible: a lone user turn is always legal, so
-    /// there is no [`TurnOrderError`] to handle (unlike [`add_message`]).
+    /// program starts with. No [`TurnOrderError`] to handle: a lone turn of
+    /// text, image or document content is always legal. [`ToolResult`]
+    /// blocks are the exception (an opening turn has no `tool_use` for them
+    /// to answer, and they must lead) — [`add_message`] is the checked path;
+    /// here a debug build asserts [`check_turn_order`].
     ///
     /// ```
     /// use misanthropic::Prompt;
@@ -404,15 +407,22 @@ impl Prompt {
     /// ```
     ///
     /// [`User`]: message::Role::User
+    /// [`ToolResult`]: message::Block::ToolResult
     /// [`add_message`]: Prompt::add_message
+    /// [`check_turn_order`]: Prompt::check_turn_order
     pub fn user(content: impl Into<Content>) -> Self {
-        Self {
+        let prompt = Self {
             messages: vec![Message {
                 role: message::Role::User,
                 content: content.into(),
             }],
             ..Self::default()
-        }
+        };
+        debug_assert!(
+            prompt.check_turn_order().is_ok(),
+            "Prompt::user: tool_result blocks must lead the turn"
+        );
+        prompt
     }
 
     /// Turn streaming on.
@@ -2385,6 +2395,17 @@ mod tests {
         assert_eq!(Prompt::user("hi"), expected);
         assert_eq!(Prompt::from("hi"), expected);
         assert!(Prompt::user("hi").check_turn_order().is_ok());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tool_result blocks must lead")]
+    fn test_user_asserts_results_lead() {
+        let content = Content(vec![
+            message::Block::from("see:"),
+            message::Block::from(crate::tool::Result::new("id", "out")),
+        ]);
+        let _ = Prompt::user(content);
     }
 
     #[test]
