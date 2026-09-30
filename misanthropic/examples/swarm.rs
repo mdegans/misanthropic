@@ -67,6 +67,7 @@ use std::{
 use clap::Parser;
 use misanthropic::{
     Client, Prompt,
+    chat::Stop,
     model::Id,
     prompt::message::{Content, Role},
     response::TokenCounts,
@@ -82,6 +83,13 @@ use utils::{BoxError, BudgetPolicy, Printer};
 
 /// The boss's address — the agent whose `Chat` loop is your readline seat.
 const BOSS: &str = "boss";
+/// The most a worker's `max_tokens` grows to when its turns clip — Sonnet
+/// 4.6's output ceiling.
+const WORKER_CEILING: NonZeroU32 = NonZeroU32::new(64_000).unwrap();
+/// How many unusable turns (a refusal that still called tools) a worker
+/// resumes past before it gives up.
+const MAX_REFUSALS: usize = 3;
+
 /// The headless workers, in pipeline order: `ant` designs, `wasp`
 /// critiques, `bee` implements, `moth` QAs. Each gets a [`Mail`] clone; the
 /// builders (`bee`, `moth`) also get their own sandbox.
@@ -445,9 +453,10 @@ async fn main() -> Result<(), BoxError> {
     // repeat), so the guard sits high; `--max-tool-calls` overrides it
     // (and the boss's, via `ChatArgs::configure`).
     let worker_rounds = cli.chat.max_tool_calls.unwrap_or(128);
-    // Room for a full source listing in one letter. A worker whose turn
-    // clips at `max_tokens` stops (`chat::Stop::Clipped`) rather than mail a
-    // truncated call, so the default is generous; `--max-tokens` overrides.
+    // Room for a full source listing in one letter; `--max-tokens`
+    // overrides. A turn that clips anyway is never mailed half-written: the
+    // driver hands back (`Stop::Clipped`), and the worker resumes with twice
+    // the room, up to the model's ceiling.
     let worker_max_tokens = cli
         .common
         .max_tokens
@@ -458,10 +467,13 @@ async fn main() -> Result<(), BoxError> {
         let client = client.clone();
         let printer = Arc::clone(&printer);
         let usage = Arc::clone(&payroll[name]);
-        let mut done = quit.subscribe();
+        let done = quit.subscribe();
         swarm.spawn(async move {
-            let outcome = utils::Chat::new(
-                client,
+            let say = |line: String| {
+                printer.lock().expect("printer poisoned").line(line)
+            };
+            let mut chat = utils::Chat::new(
+                client.clone(),
                 worker_prompt(name).max_tokens(worker_max_tokens),
                 toolbox,
             )
@@ -472,19 +484,43 @@ async fn main() -> Result<(), BoxError> {
                 // The workers' side of the story, under `--verbose`.
                 log::debug!("{name} ▸ {}", msg.content);
                 [msg.into()] // seat the turn unchanged
-            })
-            .run((), async move |_state: &mut ()| {
-                // Mail drives everything; the only beat is shutdown
-                // (a closed channel counts).
-                done.changed().await.ok();
-                Ok(None)
-            })
-            .await;
-            if let Err(error) = outcome {
-                printer
-                    .lock()
-                    .expect("printer poisoned")
-                    .line(format!("☠ {name}: {error}"));
+            });
+            // A hand-back keeps the worker's tools, hook and any mail that
+            // arrived meanwhile (a sandbox reboots: every run prepares the
+            // tools afresh), and the resumed `Chat` answers the letter it
+            // stopped on first.
+            let mut refusals = 0;
+            loop {
+                // Mail drives everything; the only beat is shutdown (a
+                // closed channel counts).
+                let mut done = done.clone();
+                let beat = async move |_state: &mut ()| {
+                    done.changed().await.ok();
+                    Ok(None)
+                };
+                let Err(mut error) = chat.run((), beat).await else {
+                    break; // the office closed
+                };
+                let max_tokens = error.prompt.max_tokens;
+                let resume = match &error.kind {
+                    Stop::Clipped(_) if max_tokens < WORKER_CEILING => {
+                        let two = NonZeroU32::new(2).unwrap();
+                        let room = max_tokens.saturating_mul(two);
+                        error.prompt.max_tokens = room.min(WORKER_CEILING);
+                        true
+                    }
+                    Stop::Unusable(_) => {
+                        refusals += 1;
+                        refusals <= MAX_REFUSALS
+                    }
+                    _ => false,
+                };
+                if !resume {
+                    say(format!("☠ {name}: {error}"));
+                    break;
+                }
+                say(format!("↻ {name}: {error} — resuming"));
+                (chat, _) = error.resume(client.clone());
             }
         });
     }
