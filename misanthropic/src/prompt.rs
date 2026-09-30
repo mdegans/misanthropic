@@ -3268,41 +3268,22 @@ mod tests {
     // accepts interleaved schemas, and blallama deserializes `Json<Prompt>`.
     #[test]
     fn prompt_with_interleaved_tool_round_trips() {
-        let fixture = json!({
-            "model": "claude-haiku-4-5",
-            "max_tokens": 1024,
-            "messages": [{
-                "role": "user",
-                "content": [{ "type": "text", "text": "Hi." }],
-            }],
-            "tools": [{
-                "name": "interleaved",
-                "description": "Required, optional, required.",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "zulu": { "type": "string" },
-                        "alpha": { "type": "string" },
-                        "mike": { "type": "string" },
-                    },
-                    "required": ["zulu", "mike"],
-                },
-            }],
-        })
-        .to_string();
-
-        let prompt: Prompt = crate::utils::roundtrip(&fixture);
+        let prompt: Prompt = crate::utils::roundtrip(include_str!(
+            "../test/data/interleaved_tool.prompt.json"
+        ));
 
         let method = prompt.tools.as_ref().unwrap()[0].as_method().unwrap();
-        let keys: Vec<&str> = method.schema["properties"]
+        let mut keys: Vec<&str> = method.schema["properties"]
             .as_object()
             .unwrap()
             .keys()
             .map(String::as_str)
             .collect();
+        // Order is exact under `schema-order`; without it `preserve_order`
+        // may still be on elsewhere in the graph, so only the set is pinned.
         #[cfg(feature = "schema-order")]
         assert_eq!(keys, ["zulu", "alpha", "mike"]);
-        #[cfg(not(feature = "schema-order"))]
+        keys.sort_unstable();
         assert_eq!(keys, ["alpha", "mike", "zulu"]);
     }
 

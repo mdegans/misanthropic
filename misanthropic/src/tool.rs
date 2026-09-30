@@ -2550,21 +2550,13 @@ mod tests {
     }
 
     /// `zulu` required, `alpha` optional, `mike` required: interleaved, in an
-    /// order alphabetical sorting would scramble.
+    /// order alphabetical sorting would scramble. The fixture's one tool.
     fn interleaved_method() -> serde_json::Value {
-        serde_json::json!({
-            "name": "interleaved",
-            "description": "Required, optional, required.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "zulu": { "type": "string" },
-                    "alpha": { "type": "string" },
-                    "mike": { "type": "string" },
-                },
-                "required": ["zulu", "mike"],
-            },
-        })
+        let prompt: serde_json::Value = serde_json::from_str(include_str!(
+            "../test/data/interleaved_tool.prompt.json"
+        ))
+        .unwrap();
+        prompt["tools"][0].clone()
     }
 
     #[test]
