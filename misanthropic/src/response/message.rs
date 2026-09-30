@@ -122,6 +122,10 @@ impl Message {
     /// [`StopReason::ToolUse`] and the final message [`Content`] [`Block`] is
     /// [`ToolUse`].
     ///
+    /// Only the *last* call: complete only when parallel tool use is
+    /// disabled. Prefer [`Self::tool_uses`], answering every call in one
+    /// user turn.
+    ///
     /// [`Content`]: crate::prompt::message::Content
     /// [`Block`]: crate::prompt::message::Block
     /// [`tool::Use`]: crate::tool::Use

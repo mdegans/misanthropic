@@ -25,7 +25,7 @@ mod utils;
 use clap::Parser;
 use misanthropic::{
     Client, Prompt,
-    prompt::message::Role,
+    prompt::message::{Role, UserMessage},
     tool::{
         Tool, ToolBox,
         bash::{BashTool, DockerSandbox},
@@ -64,19 +64,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut answer = None;
     for _ in 0..MAX_TURNS {
         let message = client.message(&chat).await?;
-        match message.tool_use() {
-            None => {
-                answer = Some(message);
-                break;
-            }
-            Some(call) => {
-                let call = call.clone();
-                println!("bash ▸ {}", call.input);
-                chat.push_message(message)?;
-                let result = tools.call(call).await;
-                chat.push_message(result)?;
-            }
+        // Every call in the turn; empty unless it stopped for `tool_use`.
+        let calls: Vec<_> = message.tool_uses().cloned().collect();
+        if calls.is_empty() {
+            answer = Some(message);
+            break;
         }
+        chat.push_message(message)?;
+        let mut results = Vec::new();
+        for call in calls {
+            println!("bash ▸ {}", call.input);
+            results.push(tools.call(call).await);
+        }
+        // All results in one user turn.
+        chat.push_message(results.into_iter().collect::<UserMessage>())?;
     }
 
     // `DockerSandbox` also has a blocking `Drop` guard as a backstop.

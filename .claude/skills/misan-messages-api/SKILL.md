@@ -305,7 +305,7 @@ and validated — no hand-parsing of `serde_json::Value`.
 ```no_run
 use misanthropic::{
     Client, Prompt,
-    prompt::message::{Content, Role},
+    prompt::message::{Content, Role, UserMessage},
     tool::{Tool, tool},
 };
 use schemars::JsonSchema;
@@ -354,18 +354,22 @@ chat = chat.add_tools(weather.definitions());
 
 let message = client.message(&chat).await?;
 
-// `tool_use()` is `Some` when stop_reason is ToolUse and the last block is a
-// tool call. For parallel calls use `tool_uses()`: every call, same gate —
-// never run calls from a Refusal / MaxTokens turn (they can be cut short).
-if let Some(call) = message.tool_use() {
-    let call = call.clone();
+// `tool_uses()` yields every call in the turn (parallel calls too) and is
+// empty unless stop_reason is ToolUse — never run calls from a Refusal /
+// MaxTokens turn (they can be cut short).
+let calls: Vec<_> = message.tool_uses().cloned().collect();
+if !calls.is_empty() {
     chat.push_message(message)?;
 
     // Typed dispatch: `call.input` is deserialized into `GetWeather` and
     // validated. Bad arguments become a helpful, model-facing error
-    // automatically. Returns a `tool::Result` ready to push.
-    let result = weather.call(call).await;
-    chat.push_message(result)?;
+    // automatically. Returns a `tool::Result`.
+    let mut results = Vec::new();
+    for call in calls {
+        results.push(weather.call(call).await);
+    }
+    // Every result goes back in ONE user turn.
+    chat.push_message(results.into_iter().collect::<UserMessage>())?;
 
     let final_reply = client.message(&chat).await?;
     println!("{final_reply}");
@@ -378,8 +382,9 @@ Notes on the macro:
 
 - Each `#[method]` becomes a real inherent method you can still call directly.
 - Several calls in one turn? `message.tool_uses()` yields them all (empty
-  unless `stop_reason` is `ToolUse`); answer them in **one** user turn —
-  `let reply: UserMessage = results.into_iter().collect();`.
+  unless `stop_reason` is `ToolUse`); answer them in **one** user turn, as
+  above. `tool_use()` returns only the *last* call — complete only when
+  parallel tool use is disabled.
 - One `#[tool]` block can hold several `#[method]`s; each is namespaced
   `TypeName__method_name` (and a `ToolBox` adds its own segment:
   `toolbox__TypeName__method_name`).
@@ -413,7 +418,7 @@ previously named `MethodDef`, and before that `Method`.)
 ```no_run
 use misanthropic::{
     Client, Prompt, json,
-    prompt::{Message, message::Role},
+    prompt::{UserMessage, message::Role},
     tool::CustomMethodDef,
 };
 
@@ -444,24 +449,22 @@ let mut chat = Prompt::default()
 
 let message = client.message(&chat).await?;
 
-if let Some(call) = message.tool_use() {
-    // call.name  — tool name ("get_weather")
-    // call.id    — unique ID for this call
-    // call.input — serde_json::Value with arguments
-    let city = call.input["city"].as_str().unwrap();
-    let weather = format!("Sunny, 22C in {city}"); // your logic
+// One result per call, all in ONE user turn (empty unless ToolUse).
+let results: UserMessage = message
+    .tool_uses()
+    .map(|call| {
+        // call.name  — tool name ("get_weather")
+        // call.id    — unique ID for this call
+        // call.input — serde_json::Value with arguments
+        let city = call.input["city"].as_str().unwrap_or("?");
+        let weather = format!("Sunny, 22C in {city}"); // your logic
+        misanthropic::tool::Result::new(call.id.clone(), weather)
+    })
+    .collect();
 
-    // Build a tool result message (always Role::User under the hood).
-    let result: Message = misanthropic::tool::Result {
-        tool_use_id: call.id.to_string().into(),
-        content: weather.into(),
-        is_error: false,
-        cache_control: None,
-    }
-    .into();
-
+if !results.is_empty() {
     chat.push_message(message)?;
-    chat.push_message(result)?;
+    chat.push_message(results)?;
 
     let final_reply = client.message(&chat).await?;
     println!("{final_reply}");

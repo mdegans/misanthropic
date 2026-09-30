@@ -21,7 +21,11 @@ record; this file aggregates them.
   turn, in order (the parallel-call twin of `tool_use()`), gated the same
   way: empty unless `stop_reason` is `ToolUse`. A refusal can cut a call off
   mid-input and `max_tokens` can truncate one, so calls are only safe to run
-  once the stop reason says so.
+  once the stop reason says so. The README, skills and tool examples
+  (`strawberry`, `bash`, `text_editor`, `python`, `interleaved_thinking`)
+  now dispatch through it and answer every call in one user turn;
+  `tool_use()` returns only the last call, complete only when parallel tool
+  use is disabled.
 
 ### Fixed
 

@@ -14,7 +14,7 @@ use clap::Parser;
 use misanthropic::{
     Client, Prompt,
     markdown::ToMarkdown,
-    prompt::message::{Content, Role},
+    prompt::message::{Content, Role, UserMessage},
     tool::{Tool, tool},
 };
 use schemars::JsonSchema;
@@ -106,18 +106,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate the next message in the chat.
     let message = client.message(&chat).await?;
 
-    // Check if the Assistant called the Tool. The `stop_reason` must be
-    // `ToolUse` and the last `Content` `Block` must be `ToolUse`.
-    if let Some(call) = message.tool_use() {
-        // Own the call so we can append the assistant's message first.
-        let call = call.clone();
+    // Did the Assistant call the Tool? `tool_uses` yields every call in the
+    // turn (parallel ones too), and nothing unless `stop_reason` is `ToolUse`.
+    // Own the calls so we can append the assistant's message first.
+    let calls: Vec<_> = message.tool_uses().cloned().collect();
+    if !calls.is_empty() {
         chat.push_message(message)?;
 
         // Typed dispatch: `Use.input` is deserialized into `CountLetters` and
         // validated for us — bad arguments become a helpful, model-facing
         // error automatically, no hand-parsing required.
-        let result = strawberry.call(call).await;
-        chat.push_message(result)?;
+        let mut results = Vec::new();
+        for call in calls {
+            results.push(strawberry.call(call).await);
+        }
+        // Every result goes back in one user turn.
+        chat.push_message(results.into_iter().collect::<UserMessage>())?;
     } else {
         // The Assistant did not call the tool. This may not be an error if the
         // user did not ask for the tool to be used, in which case it could be
