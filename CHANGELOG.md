@@ -56,7 +56,7 @@ record; this file aggregates them.
   live-able rows — a plain turn, stop sequences, a clip mid-call, a forced
   tool call through a `FinalWord` wrap-up, system notes, a notification —
   and hold every response to Anthropic's shape, so a server deviation
-  surfaces as a failure. The offline table (53 rows over `MockTransport`)
+  surfaces as a failure. The offline table (55 rows over `MockTransport`)
   asserts the requests, turn shapes, calls run, usage and wire legality of
   every request and hand-back.
 

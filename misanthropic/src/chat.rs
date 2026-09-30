@@ -1862,6 +1862,9 @@ mod tests {
         assert!(matches!(error.kind, Stop::Beat(_)));
         assert_eq!(error.state, 43);
         assert_eq!(error.prompt.messages.len(), 2);
+        // `Debug` needn't see the state; `source` continues below the kind.
+        assert!(format!("{error:?}").starts_with("Error { kind: Beat("));
+        assert!(std::error::Error::source(&error).is_none());
         let boxed: BoxError = error.into();
         assert_eq!(boxed.to_string(), "stdin closed");
     }
