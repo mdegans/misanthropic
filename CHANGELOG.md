@@ -133,6 +133,9 @@ record; this file aggregates them.
   reply must match its warm twin byte for byte, from a prompt of the same
   size; a mismatch names the block and char where they part, with context
   and the warm request's reuse. Offline, a simulated stale cache must fail.
+  Start blallama with `--no-penalty` (a repetition penalty resumes warm but
+  is rebuilt cold); the test skips unless `BLALLAMA_EQUIVALENCE=1` too, which
+  only the recipe sets, since it evicts every cache slot.
 - **`just test-cache <model>`: a live multi-turn prompt-caching check.** One
   `Chat` run of ten beats (four with a tool round) over a ~6.5k-token
   system prompt, cached as a long conversation should be (`Chat::cache` plus

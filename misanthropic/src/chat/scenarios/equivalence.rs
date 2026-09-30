@@ -34,8 +34,19 @@
 //! prints each divergence's position and context, and the warm request's
 //! usage (what it restored).
 //!
+//! **Start the server with `--no-penalty`.** A repetition penalty is
+//! sampler state: warm reuse resumes it from the cached stream, while a
+//! cold prefill rebuilds it from the prompt's prose (drama_llama's
+//! `seed_prose_fold`), so the two can penalize different tokens and reply
+//! differently with no KV corruption at all. blallama reports no sampling
+//! configuration over its API, so the test can't check this; it prints a
+//! reminder instead, and so does a failure.
+//!
 //! - `blallama::replays_cold`: live, skipped unless `BLALLAMA_URL` is set
-//!   (see `live`). Run with `just test-equivalence`.
+//!   (see `live`) **and** `BLALLAMA_EQUIVALENCE=1`, since its flushes evict
+//!   every slot: an exported `BLALLAMA_URL` alone must never let the
+//!   pre-commit gate (`cargo test --all-features`) run it. Run with `just
+//!   test-equivalence`, which sets both.
 //! - `simulated_*`: offline, through a [`MockTransport`] standing in for a
 //!   healthy cache and a stale one.
 
@@ -68,6 +79,10 @@ const FLUSHES: usize = 8;
 const COLD_ATTEMPTS: u32 = 3;
 /// Characters of context printed either side of a divergence.
 const CONTEXT: usize = 60;
+/// Why a warm and a cold reply may differ with a healthy cache.
+const PENALTY: &str = "Unless the server runs with `--no-penalty`, a \
+    repetition penalty resumed warm but rebuilt cold also explains a \
+    mismatch.";
 
 /// What the forced call must copy into its input: quotes, backslashes,
 /// escapes spelled out, nested JSON, tabs, newlines, and multi-byte text,
@@ -633,7 +648,7 @@ fn assert_equivalent(warm: &[Exchange], cold: &[(response::Message, usize)]) {
         "{} of {} requests replied differently cold:\n{}\n\nA late \
          divergence between two fluent replies may be llama.cpp's \
          batch-variant kernels breaking a near-tie; one at the first \
-         token, or a garbled warm reply, points at the cache.",
+         token, or a garbled warm reply, points at the cache. {PENALTY}",
         failures.len(),
         verdicts.len(),
         failures.join("\n"),
@@ -668,11 +683,28 @@ mod blallama {
     /// Room for a local model's thinking.
     const MAX_TOKENS: NonZeroU32 = NonZeroU32::new(4096).unwrap();
 
+    /// Whether the run is opted into, with `BLALLAMA_EQUIVALENCE=1`: it
+    /// evicts every slot of the server's cache.
+    fn opted() -> bool {
+        std::env::var("BLALLAMA_EQUIVALENCE").is_ok_and(|v| v == "1")
+    }
+
     #[tokio::test]
     async fn replays_cold() {
         let Some((url, model)) = super::super::live::target() else {
             return eprintln!("skipping `replays_cold`: BLALLAMA_URL is unset");
         };
+        if !opted() {
+            return eprintln!(
+                "skipping `replays_cold`: it evicts every cache slot, and \
+                 BLALLAMA_EQUIVALENCE=1 is unset (`just test-equivalence` \
+                 sets it)"
+            );
+        }
+        eprintln!(
+            "NOTE: this check assumes blallama runs with `--no-penalty`, \
+             which it can't see. {PENALTY}"
+        );
         let client = Retrying(super::super::live::client(&url));
         let base = Prompt::default().model(model).max_tokens(MAX_TOKENS);
         let warm = converse(&client, base).await;
