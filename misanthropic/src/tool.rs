@@ -1578,8 +1578,8 @@ impl MethodBuilder {
         Self::check_order(self.build_structural()?, hint)
     }
 
-    /// This will build the [`CustomMethodDef`] and do some basic validation on the fields.
-    /// This does not guarantee that the tool will be accepted by the API.
+    /// Build the [`CustomMethodDef`], with some basic validation on the
+    /// fields. This does not guarantee that the API will accept it.
     ///
     /// With `schema-order-check` (default), a required property declared after
     /// an optional one is an error: required-first is the one layout every
@@ -1597,7 +1597,8 @@ impl MethodBuilder {
     }
 }
 
-/// Errors that can occur when building a [`CustomMethodDef`] with a [`MethodBuilder`].
+/// Why a [`CustomMethodDef`] failed to build: from a [`MethodBuilder`], or from
+/// [`CustomMethodDef::try_from_checked`].
 #[derive(Debug, thiserror::Error)]
 #[allow(missing_docs)]
 pub enum ToolBuildError {
@@ -1607,11 +1608,15 @@ pub enum ToolBuildError {
     EmptyDescription,
     #[error("Input schema unset.")]
     EmptyInputSchema,
-    #[error("Invalid input schema becuase: {message}")]
+    #[error("Invalid input schema because: {message}")]
     InvalidInputSchema {
         schema: serde_json::Value,
         message: Cow<'static, str>,
     },
+    /// The value didn't (de)serialize as a tool definition (e.g. a missing
+    /// `name`), in [`CustomMethodDef::try_from_checked`].
+    #[error("Invalid tool definition: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 impl CustomMethodDef {
@@ -1752,7 +1757,9 @@ impl CustomMethodDef {
     /// it with [`MethodBuilder::build`] — so with `schema-order-check`
     /// (default), an interleaved schema is an error. The receive paths
     /// ([`from_serializable`](Self::from_serializable), `try_from` a `Value`,
-    /// deserializing a [`Prompt`]) accept it as written.
+    /// deserializing a [`Prompt`]) accept it as written. Errors are
+    /// [`ToolBuildError`]s: [`Json`](ToolBuildError::Json) if `value` isn't
+    /// a tool definition at all.
     ///
     /// ```
     /// # use misanthropic::tool::CustomMethodDef;
@@ -1776,17 +1783,16 @@ impl CustomMethodDef {
     /// ```
     pub fn try_from_checked<T>(
         value: T,
-    ) -> std::result::Result<CustomMethodDef, serde_json::Error>
+    ) -> std::result::Result<CustomMethodDef, ToolBuildError>
     where
         T: Serialize,
     {
-        let builder: MethodBuilder =
-            serde_json::from_value(serde_json::to_value(value)?)?;
-        builder
+        serde_json::to_value(value)
+            .and_then(serde_json::from_value::<MethodBuilder>)
+            .inspect_err(|_| crate::utils::cold_path())?
             .build_checked(
                 " To accept it as written, use `CustomMethodDef::try_from`.",
             )
-            .map_err(serde::de::Error::custom)
     }
 }
 
@@ -2573,6 +2579,12 @@ mod tests {
     }
 
     #[test]
+    fn try_from_checked_types_a_malformed_definition() {
+        let err = CustomMethodDef::try_from_checked("not a tool").unwrap_err();
+        assert!(matches!(err, ToolBuildError::Json(_)), "{err:?}");
+    }
+
+    #[test]
     #[cfg(feature = "schema-order-check")]
     fn authoring_paths_reject_interleaved_schemas() {
         let wire = interleaved_method();
@@ -2580,7 +2592,7 @@ mod tests {
         let err = CustomMethodDef::try_from_checked(&wire).unwrap_err();
         let message = err.to_string();
         assert!(message.starts_with(
-            "Invalid input schema becuase: required property `mike` is \
+            "Invalid input schema because: required property `mike` is \
              declared after optional property `alpha`."
         ));
         assert!(message.ends_with("use `CustomMethodDef::try_from`."));
@@ -2599,7 +2611,7 @@ mod tests {
     #[test]
     #[cfg(feature = "schema-order-check")]
     #[should_panic(expected = "tool method `Interleaved`: Invalid input \
-                               schema becuase: required property `title` is \
+                               schema because: required property `title` is \
                                declared after optional property `note`. \
                                Declare every required property before any \
                                optional one (or disable the \

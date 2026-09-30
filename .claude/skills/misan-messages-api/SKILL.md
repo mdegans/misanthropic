@@ -484,10 +484,15 @@ Tool JSON someone else wrote (an MCP server, a saved `Prompt`) is *received*:
 `CustomMethodDef::try_from(value)`, `from_serializable`, and deserializing a
 `Prompt` check it structurally only, so it parses as written.
 `CustomMethodDef::try_from_checked` holds it to the authoring bar instead —
-with `schema-order-check`, required properties first:
+with `schema-order-check`, required properties first — and returns a typed
+`ToolBuildError` (`InvalidInputSchema` for a misorder, `Json` for a value
+that isn't a tool definition):
 
 ```
-use misanthropic::{json, tool::CustomMethodDef};
+use misanthropic::{
+    json,
+    tool::{CustomMethodDef, ToolBuildError},
+};
 
 let search = json!({
     "name": "search",
@@ -506,7 +511,10 @@ let search = json!({
 let received = CustomMethodDef::try_from(search.clone()).unwrap();
 assert_eq!(received.name, "search");
 #[cfg(feature = "schema-order-check")]
-assert!(CustomMethodDef::try_from_checked(search).is_err());
+assert!(matches!(
+    CustomMethodDef::try_from_checked(search),
+    Err(ToolBuildError::InvalidInputSchema { .. })
+));
 ```
 
 `add_tool` accepts anything `Into<MethodDef>` — a `CustomMethodDef`, a

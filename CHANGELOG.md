@@ -30,7 +30,9 @@ record; this file aggregates them.
 
 - **`CustomMethodDef::try_from_checked`** imports third-party tool JSON held
   to `MethodBuilder::build`'s authoring checks, property order included;
-  `try_from` / `from_serializable` receive it as written.
+  `try_from` / `from_serializable` receive it as written. It returns a typed
+  `ToolBuildError`: `InvalidInputSchema` for a misordered schema, the new
+  `Json` variant for a value that isn't a tool definition.
 
 ### Breaking
 
@@ -40,7 +42,7 @@ record; this file aggregates them.
   `MethodBuilder::build` (and so from `TryFrom<MethodBuilder>` /
   `try_add_tool` given a builder); and a panic from `ToolArgs::definition`.
   `#[tool]` can't see its args' fields, so it emits a `#[cfg(test)]` test per
-  method (`__misanthropic_schema_order__{Tool}__{method}`) that builds the
+  method (`__misanthropic_schema_order_{tool}_{method}`) that builds the
   definition — a misordered args struct fails your `cargo test`. Received
   schemas are checked structurally only, so a `Prompt` written elsewhere
   still deserializes: deserializing a `Prompt` / `CustomMethodDef`,
@@ -50,7 +52,11 @@ record; this file aggregates them.
   `default-features = false`. Top-level properties only; `#[serde(flatten)]`ed
   fields and `with` types are left to the runtime check. A `#[tool]` impl
   inside a fn body trips `unnameable_test_items` in test builds; allow it on
-  the enclosing fn.
+  the enclosing fn, or move the impl to module level so its tests run.
+
+- **`ToolBuildError` gains a `Json(serde_json::Error)` variant**, so an
+  exhaustive `match` on it needs an arm. Its `InvalidInputSchema` message now
+  reads "because", not "becuase".
 
 ## [1.0.0-alpha.20] — 2026-09-28
 
