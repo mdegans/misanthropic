@@ -48,6 +48,18 @@ record; this file aggregates them.
 
 ### Added
 
+- **`blallama` feature and `just test-blallama <model>`: live `Chat`
+  scenarios against a local Anthropic-compatible server** (drama_llama's
+  `blallama`, on `localhost:11435`). Local runs only: the tests skip unless
+  `BLALLAMA_URL` is set, with `BLALLAMA_MODEL` naming the model, which keeps
+  them out of CI's `--all-features` builds. They run the scenario table's
+  live-able rows — a plain turn, stop sequences, a clip mid-call, a forced
+  tool call through a `FinalWord` wrap-up, system notes, a notification —
+  and hold every response to Anthropic's shape, so a server deviation
+  surfaces as a failure. The offline table (53 rows over `MockTransport`)
+  asserts the requests, turn shapes, calls run, usage and wire legality of
+  every request and hand-back.
+
 - **`Message::unfinished_server_tool_uses()`**, **`Block::server_tool_result_id()`**
   and **`Caller::tool_id()`** — the pieces of the rule above: which server
   tool calls a turn leaves in flight, which use a server-tool result answers,

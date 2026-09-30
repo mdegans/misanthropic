@@ -32,6 +32,14 @@ doc:
 test-ignored:
     cargo test -p misanthropic --all-features -- --ignored
 
+# `model` is a file name the server lists (`curl localhost:11435/v1/models`).
+# Single-threaded: one model, one set of weights. Never run in CI.
+# Live Chat scenarios against a local blallama (drama_llama), one model.
+test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
+    BLALLAMA_URL=http://localhost:11435 BLALLAMA_MODEL='{{model}}' \
+        cargo test -p misanthropic --features blallama --lib \
+        chat::scenarios::live -- --test-threads=1
+
 # Run an example with every feature on (so logging and each example's tools are
 # available). Extra args pass through to the example, and `RUST_LOG` works, e.g.
 # `RUST_LOG=debug just run-example web_search "what did Anthropic announce?"`.

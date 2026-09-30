@@ -349,6 +349,12 @@ openai = []
 # generic over one, plus builders for canned replies. For downstream
 # `[dev-dependencies]`; no extra dependencies, runtime-agnostic.
 mock = []
+# Live `Chat` scenario tests against a local Anthropic-compatible server
+# (drama_llama's `blallama`) — local runs only, never CI. The tests skip unless
+# `BLALLAMA_URL` is set (with `BLALLAMA_MODEL` naming the model), and that env
+# gate, not this feature, is what keeps them out of CI's `--all-features`
+# builds. Run them with `just test-blallama <model>`.
+blallama = ["client", "chat", "mock"]
 # Derive macros for typed tools: `#[derive(ToolArgs)]` and `#[tool]`. On by
 # default; turn off to drop the proc-macro (syn) compile-time cost.
 derive = ["dep:misanthropic-derive"]

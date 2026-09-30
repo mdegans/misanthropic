@@ -5,6 +5,9 @@
 //! request and every hand-back. Rows marked `live` also run against a
 //! local Anthropic-compatible server — see `live`.
 
+#[cfg(feature = "blallama")]
+mod live;
+
 use std::{
     collections::VecDeque,
     num::NonZeroU32,
@@ -543,9 +546,9 @@ async fn yield_once() {
     .await
 }
 
-/// Drive `row` through `transport` on `model`, resuming as the row says,
-/// checking every hand-back and the usage sink.
-async fn drive<T>(row: &Row, transport: Checked<T>, model: Model) -> Run
+/// Drive `row` through `transport` from `base` (tuned by the row), resuming
+/// as the row says, checking every hand-back and the usage sink.
+async fn drive<T>(row: &Row, transport: Checked<T>, base: Prompt) -> Run
 where
     T: Transport + Clone,
 {
@@ -559,7 +562,7 @@ where
         beat.map(Beat::messages).transpose()
     };
 
-    let mut prompt = (row.prompt)(Prompt::default().model(model));
+    let mut prompt = (row.prompt)(base);
     let mut tally = Tally::default();
     let mut stops = Vec::new();
     loop {
@@ -660,8 +663,8 @@ fn run_mock(row: Row) {
     );
     let mock = Arc::new(mock);
     let transport = Checked::new(Arc::clone(&mock));
-    let run =
-        futures::executor::block_on(drive(&row, transport, row.model.into()));
+    let base = Prompt::default().model(row.model);
+    let run = futures::executor::block_on(drive(&row, transport, base));
     assert_eq!(mock.remaining(), 0, "every scripted reply is used");
     expect(&row, &run, false);
 }
