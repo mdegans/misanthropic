@@ -2002,8 +2002,9 @@ pub(crate) mod tests {
 
     /// `Event::ToolUse` fires before `message_delta` says why the turn
     /// stopped; only the assembled message's `tool_uses` knows whether the
-    /// call may run. The refusal is the captured fixture with its stop reason
-    /// swapped — a refusal can land after a closed `tool_use` block.
+    /// call may run. The refusal is synthetic — `sse.stream.txt` (from the
+    /// API docs) with its stop reason swapped, no live capture — standing in
+    /// for a refusal landing after a closed `tool_use` block.
     #[tokio::test]
     async fn tool_use_dispatch_waits_for_stop_reason() {
         async fn events(sse: &'static str) -> Vec<Event> {
@@ -2046,6 +2047,50 @@ pub(crate) mod tests {
         );
         // The block-close event still fires; the gate is what holds.
         assert_eq!(dispatchable(refused).await, (1, vec![]));
+    }
+
+    /// Synthetic: `sse.stream.txt` (minus its error events) cut off mid
+    /// tool input — no closing `input_json_delta` or `content_block_stop` —
+    /// then stopped for `max_tokens`. Nothing is dispatchable, and the open
+    /// block neither panics nor surfaces an error.
+    #[tokio::test]
+    async fn truncated_tool_input_is_not_dispatchable() {
+        let captured = include_str!("../test/data/sse.stream.txt");
+        let cut = captured
+            .find(r#"\"unit\""#)
+            .expect("fixture has the second input chunk");
+        let head = &captured[..captured[..cut].rfind("event: ").unwrap()];
+        let truncated: &'static str = head
+            .split_terminator("\n\n")
+            .filter(|event| !event.starts_with("event: error"))
+            .chain([
+                "event: message_delta\n\
+                 data: {\"type\":\"message_delta\",\"delta\":\
+                 {\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\
+                 \"usage\":{\"output_tokens\":89}}",
+                "event: message_stop\ndata: {\"type\":\"message_stop\"}",
+            ])
+            .map(|event| format!("{event}\n\n"))
+            .collect::<String>()
+            .leak();
+
+        let results: Vec<_> =
+            mock_stream(truncated).with_message().collect().await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert!(!results.iter().flatten().any(Event::is_tool_use));
+        let message = results
+            .into_iter()
+            .flatten()
+            .find_map(|event| match event {
+                Event::Message { message } => Some(message),
+                _ => None,
+            })
+            .expect("with_message yields the whole turn");
+        assert!(message.stop_reason.unwrap().is_max_tokens());
+        // The unclosed call never makes it into the assembled turn.
+        assert!(!message.inner.content.iter().any(|b| b.tool_use().is_some()));
+        assert_eq!(message.tool_uses().count(), 0);
+        assert!(message.tool_use().is_none());
     }
 
     #[tokio::test]

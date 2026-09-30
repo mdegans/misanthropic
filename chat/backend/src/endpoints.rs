@@ -359,7 +359,7 @@ pub async fn events_stream(
                             {
                                 let dropped = rewind(&mut prompt.messages);
                                 log::warn!(
-                                    "Dropped a {reason:?} turn and {} before it",
+                                    "Dropped a {reason:?} turn (+{} prior)",
                                     dropped.len()
                                 );
                                 continue;

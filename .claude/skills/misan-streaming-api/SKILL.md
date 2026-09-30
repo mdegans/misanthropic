@@ -356,6 +356,7 @@ while let Some(event) = stream.try_next().await? {
             // For multi-turn tool use: push `message`, then all `results` as
             // one user turn, then start a new stream. Here we just stop.
             let _ = results;
+            break;
         }
         Event::ContentBlockDelta {
             delta: misanthropic::stream::Delta::Text { text }, ..
