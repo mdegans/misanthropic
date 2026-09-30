@@ -157,7 +157,12 @@ record; this file aggregates them.
   twenty beats, nine reading ten days of a logbook — grows the conversation
   itself by many thousands of tokens: on blallama by default (`just
   test-cache <model> long` alone), on Anthropic only as `just
-  test-cache-anthropic long` (about 8 cents).
+  test-cache-anthropic long` (about 8 cents). On blallama, a run that finds
+  the server warm (nothing prefilled enough to measure a rate) is timed
+  against `BLALLAMA_PREFILL_RATE` tokens a second (420 by default, measured
+  on Qwen3.6), and every request's prompt plus `max_tokens` must fit
+  `BLALLAMA_N_CTX` (32768 by default; the long run asks for 4096 tokens, as
+  Qwen3.6 renders each turn's reasoning back into the prompt).
 
 - **`Message::unfinished_server_tool_uses()`**,
   **`Block::server_tool_result_id()`** and **`Caller::tool_id()`** — the pieces of the rule above: which server
