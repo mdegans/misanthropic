@@ -27,6 +27,7 @@ use crate::{
         AssistantMessage, Block, Content, Message, Role, SystemMessage,
     },
     response::{self, StopReason, TokenCounts},
+    stream::tests::assembled,
     tool::{self, Choice, CustomMethodDef, MethodDef, Tool, ToolBox, Use},
 };
 
@@ -136,24 +137,6 @@ impl Tool for Broken {
     }
 }
 
-/// Assemble a captured SSE fixture into its response.
-fn assembled(jsonl: &'static str) -> response::Message {
-    use crate::stream::{Event, FilterExt, tests::mock_stream_jsonl};
-    use futures::StreamExt;
-
-    let events = mock_stream_jsonl(jsonl).with_message();
-    futures::executor::block_on(
-        events
-            .filter_map(async |event| match event {
-                Ok(Event::Message { message }) => Some(message),
-                _ => None,
-            })
-            .collect::<Vec<_>>(),
-    )
-    .pop()
-    .expect("the fixture assembles a message")
-}
-
 /// A live `pause_turn`: ten `web_fetch` rounds, the eleventh in flight.
 fn paused() -> Reply {
     mock::message(assembled(include_str!(
@@ -167,6 +150,54 @@ fn resumed() -> Reply {
     mock::message(assembled(include_str!(
         "../../test/data/server_tools/pause_turn_resume.sse.stream.jsonl"
     )))
+}
+
+/// A live programmatic-tool-calling turn: a `code_execution` container
+/// calls `query_sales` — a client call it waits on — and the turn stops
+/// `tool_use`. No tool here serves `query_sales`, so the box answers each
+/// call with an error result.
+fn ptc() -> Reply {
+    mock::message(assembled(include_str!(
+        "../../test/data/server_tools/ptc.sse.stream.jsonl"
+    )))
+}
+
+/// [`ptc`]'s turn, stopped `pause_turn` instead: a paused turn carrying a
+/// client call.
+fn ptc_paused() -> Reply {
+    ptc().stop_reason(StopReason::PauseTurn)
+}
+
+/// The live continuation of [`ptc`]: the container's next call.
+fn ptc_resumed() -> Reply {
+    mock::message(assembled(include_str!(
+        "../../test/data/server_tools/ptc_resume.sse.stream.jsonl"
+    )))
+}
+
+/// The live end of [`ptc`]'s exchange: the container's result, then text.
+fn ptc_done() -> Reply {
+    mock::message(assembled(include_str!(
+        "../../test/data/server_tools/code_execution_result.sse.stream.jsonl"
+    )))
+}
+
+/// The ids of the client calls in the final prompt's `n`th turn, and of the
+/// results in the turn after it.
+fn answered(run: &Run, n: usize) -> (Vec<String>, Vec<String>) {
+    let calls = run.turn(n).tool_uses().map(|c| c.id.to_string()).collect();
+    let results = run
+        .turn(n + 1)
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            Block::ToolResult { result } => {
+                Some(result.tool_use_id.to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    (calls, results)
 }
 
 /// A paused turn whose server tool has answered — a system turn may follow
@@ -1037,6 +1068,39 @@ fn rows() -> Vec<Row> {
             .reply(mock::text("done"))
             .requests(2)
             .roles("USA"),
+        // Programmatic tool calling (captured): a container's client calls
+        // settle its `server_tool_use` until its result arrives.
+        row("ptc_round_trip")
+            .reply(ptc())
+            .reply(ptc_resumed())
+            .reply(ptc_done())
+            .requests(3)
+            .roles("UAUAUA")
+            .extra(|run| {
+                for n in [1, 3] {
+                    let (calls, results) = answered(run, n);
+                    assert_eq!(calls.len(), 1);
+                    assert_eq!(calls, results, "turn {n}'s call answered");
+                }
+                assert_settled(run.turn(5));
+            }),
+        row("ptc_paused_turn_carrying_calls")
+            .reply(ptc_paused())
+            .reply(ptc_resumed())
+            .reply(ptc_done())
+            .requests(3)
+            .roles("UAUAUA")
+            .extra(|run| {
+                assert_eq!(run.sent_roles(1), "UAU", "answered, then resumed");
+                let (calls, results) = answered(run, 1);
+                assert_eq!(calls, results);
+            }),
+        row("ptc_paused_then_refused")
+            .reply(ptc_paused())
+            .reply(calls(&["r"]).refusal("cyber", "no"))
+            .stops([Kind::Unusable])
+            .requests(2)
+            .roles("U"),
         // The budget.
         row("budget_hand_back")
             .budget(1, HandBack)

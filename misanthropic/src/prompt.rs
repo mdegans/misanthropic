@@ -2400,19 +2400,16 @@ mod tests {
             "../test/data/server_tools/web_search_result.json"
         ));
         let text = Block::text("searching…");
-        // Programmatic tool calling: a code-execution `server_tool_use` whose
-        // client call (`caller.tool_id`) awaits a `tool_result`.
-        let ptc_use: Block = serde_json::from_value(serde_json::json!({
-            "type": "server_tool_use",
-            "id": "srvtoolu_01EnSeFfRxcsNTUgLjYHD5XG",
-            "name": "code_execution",
-            "input": {"code": "await query_sales({'region': 'West'})"}
-        }))
-        .unwrap();
-        let ptc_call =
-            block(include_str!("../test/data/server_tools/ptc_tool_use.json"));
+        // Programmatic tool calling, as captured: a code-execution
+        // `server_tool_use` whose client call (`caller.tool_id`) awaits a
+        // `tool_result`.
+        let ptc = crate::stream::tests::assembled(include_str!(
+            "../test/data/server_tools/ptc.sse.stream.jsonl"
+        ));
+        let ptc_turn: Vec<Block> = ptc.inner.content.iter().cloned().collect();
+        let ptc_call = ptc.inner.content.tool_uses().next().unwrap();
         let ptc_answer = Block::from(crate::tool::Result::new(
-            "toolu_01Ep3muNAqgo6WcHSNzL7cYK",
+            ptc_call.id.clone(),
             "{\"revenue\": 1}",
         ));
 
@@ -2456,11 +2453,9 @@ mod tests {
             (Role::System, "note").into(),
         )));
         // PTC: the container waits on the client, which answers next.
-        with(
-            vec![ptc_use, ptc_call],
-            (Role::User, Content(vec![ptc_answer])).into(),
-        )
-        .unwrap();
+        let container = |b: &Block| matches!(b, Block::ServerToolUse { .. });
+        assert!(ptc_turn.iter().any(container));
+        with(ptc_turn, (Role::User, Content(vec![ptc_answer])).into()).unwrap();
     }
 
     #[test]
