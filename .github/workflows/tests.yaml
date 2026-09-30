@@ -99,14 +99,18 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --all-features
+        run: cargo clippy --all-features --all-targets
 
       # Never combined with --all-features, which overrides it (#143). The
       # lib-only clippy is the featureless build; see `just test-no-default`.
+      # Ubuntu only, like the per-feature loop below: a missing cfg-gate is
+      # not OS-specific.
       - name: Clippy Without Default Features
+        if: matrix.os == 'ubuntu-latest'
         run: cargo clippy -p misanthropic --no-default-features
 
       - name: Test Without Default Features
+        if: matrix.os == 'ubuntu-latest'
         run: cargo test -p misanthropic --verbose --no-default-features
 
       - name: Test With all Features
@@ -117,8 +121,8 @@ jobs:
       # itself (the authoritative set, per CLAUDE.md) so it can't go stale.
       # Ubuntu only: a missing cfg-gate is not OS-specific, and this loop was
       # the long pole on every leg (Windows 39 min, macOS 20, Ubuntu 13).
-      # macOS and Windows still build and run the all-features and
-      # no-default-features suites, which is where OS-specific breakage shows.
+      # macOS and Windows still build and run the all-features suite, which
+      # is where OS-specific breakage shows.
       #
       # Each feature links its own test binaries, which filled the runner's
       # disk by the last feature: build them without debug info, and drop the
