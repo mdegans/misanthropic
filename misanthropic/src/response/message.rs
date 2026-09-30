@@ -370,8 +370,6 @@ pub enum StopReason {
 /// A minimal agent loop — `Prompt::user` to start, [`Prompt::seat`] to append:
 ///
 /// ```no_run
-/// use std::num::NonZeroU32;
-///
 /// use misanthropic::{
 ///     Client, Prompt,
 ///     prompt::message::{Block, Role, SystemMessage},
@@ -389,53 +387,61 @@ pub enum StopReason {
 /// toolbox.prepare(&mut prompt).await?;
 /// // `seat`'s pending-system buffer is caller-owned; it outlives rounds.
 /// let mut pending: Option<SystemMessage> = None;
-/// // The model's output ceiling, e.g. `ModelInfo::max_tokens`.
-/// let ceiling = NonZeroU32::new(64_000).unwrap();
 ///
-/// // A round budget, so a model that clips (or calls tools) forever stops.
+/// // A round budget, so a model that calls tools forever stops.
 /// for _ in 0..8 {
 ///     let response = client.message(&prompt).await?;
 ///
 ///     match response.disposition() {
-///         // pause_turn: seat and resend to resume the in-flight server
-///         // tool. To bail out instead, pop the whole paused turn — the wire
-///         // forbids abandoning it in place.
-///         Disposition::Paused => {
-///             prompt.seat(response, &mut pending)?;
-///         }
 ///         // max_tokens: a clipped turn's tool calls can be valid JSON that
 ///         // is missing arguments the model never emitted. Never seat or
-///         // dispatch it; retry with more room, clamped to the ceiling.
-///         Disposition::Clipped => {
-///             let two = NonZeroU32::new(2).unwrap();
-///             prompt.max_tokens =
-///                 prompt.max_tokens.saturating_mul(two).min(ceiling);
-///         }
-///         // A complete turn with client tool calls: seat it, then answer
-///         // every call in one user turn (results must lead it). The
-///         // content's calls, raw: `response.tool_uses()` is gated on the
-///         // stop reason, so empty for a turn inferred without one.
-///         Disposition::ToolUse => {
-///             let calls: Vec<_> =
-///                 response.inner.content.tool_uses().cloned().collect();
+///         // dispatch it: hand back, to raise `max_tokens` (or ask for
+///         // brevity) and resend.
+///         Disposition::Clipped => break,
+///         // tool_use, or pause_turn (a server tool still running; resending
+///         // resumes it): seat the turn, then answer its client calls, if
+///         // any, in one user turn (results must lead it). The content's
+///         // calls, raw: `response.tool_uses()` is gated on `tool_use`, so
+///         // misses a paused turn's and a turn inferred without a reason.
+///         Disposition::Paused | Disposition::ToolUse => {
+///             let content = &response.inner.content;
+///             let calls: Vec<_> = content.tool_uses().cloned().collect();
 ///             prompt.seat(response, &mut pending)?;
+///             if calls.is_empty() {
+///                 continue;
+///             }
 ///             let mut results = Vec::with_capacity(calls.len());
 ///             for call in calls {
 ///                 results.push(Block::from(toolbox.call(call).await));
 ///             }
 ///             prompt.seat((Role::User, results), &mut pending)?;
 ///         }
-///         // end_turn / stop_sequence / refusal: seat it and hand back. A
-///         // refusal can cut a `tool_use` short, so a finished turn's calls
-///         // never run: drop such a turn whole (stripping the calls could
-///         // strand a server tool).
+///         // end_turn / stop_sequence / refusal: seat it and hand back —
+///         // unless it's empty (the API rejects an empty turn) or cuts a call
+///         // short: a refusal can leave a `tool_use` or a server tool
+///         // half-made, and a finished turn's calls never run. Drop such a
+///         // turn whole; stripping the calls could strand a server tool.
 ///         Disposition::Done => {
-///             if response.inner.content.tool_uses().next().is_none() {
+///             let turn = &response.inner;
+///             let usable = !turn.content.is_empty()
+///                 && turn.content.tool_uses().next().is_none()
+///                 && turn.unfinished_server_tool_uses().next().is_none();
+///             if usable {
 ///                 prompt.seat(response, &mut pending)?;
 ///             }
 ///             break;
 ///         }
 ///     }
+/// }
+///
+/// // A paused turn left in flight — out of rounds, clipped or dropped while
+/// // resuming it — admits only its continuation: pop it before a user turn
+/// // follows. (It is one message: continuations merge into it.)
+/// let in_flight = |turn: &misanthropic::prompt::message::Message| {
+///     turn.unfinished_server_tool_uses().next().is_some()
+/// };
+/// if prompt.messages.last().is_some_and(in_flight) {
+///     prompt.messages.pop();
 /// }
 /// # Ok(())
 /// # }
@@ -445,12 +451,15 @@ pub enum StopReason {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::IsVariant)]
 pub enum Disposition {
     /// [`PauseTurn`](StopReason::PauseTurn): a server tool is still running.
-    /// Seat the turn and resend to resume it; abandoning it means dropping
+    /// Seat the turn (answering any client calls it makes — [programmatic
+    /// tool calling]) and resend to resume it; abandoning it means dropping
     /// the whole paused turn.
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
     Paused,
     /// [`MaxTokens`](StopReason::MaxTokens): the turn is incomplete, and its
     /// tool calls may be missing arguments the model never emitted. Never
-    /// dispatch them.
+    /// seat it or dispatch them.
     Clipped,
     /// A complete turn carrying client tool calls
     /// ([`ToolUse`](StopReason::ToolUse)) — see [`Message::tool_uses`].
@@ -468,8 +477,9 @@ pub enum Disposition {
     /// [`StopSequence`](StopReason::StopSequence) or
     /// [`Refusal`](StopReason::Refusal) (which hands back like any finished
     /// turn), or no stop reason and no tool calls. Hand control back — and
-    /// never run client calls such a turn still carries: a refusal can cut
-    /// a `tool_use` short.
+    /// never run client calls such a turn still carries, nor seat a turn
+    /// that carries them or leaves a server tool in flight: a refusal can
+    /// cut either short. Nor an empty one: the API rejects an empty turn.
     Done,
 }
 

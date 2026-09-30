@@ -301,17 +301,16 @@ breaks the build here, not silently in a driver). `response.tool_uses()`
 iterates **every** client `tool::Use` in the turn (unlike `tool_use()`, which
 returns only a trailing one) — but, like `tool_use()`, only on a `tool_use`
 stop; the content's own `tool_uses()` (`response.inner.content`) is the raw
-view. Client calls run **only** from a `ToolUse` (or `Paused`) turn — a
-`refusal` can cut a `tool_use` short. The `chat`-feature `Chat` driver
-runs this same match; see *The `Chat` driver* below for how it hands a turn it
-can't use back.
+view, which a paused turn's calls and a turn inferred without a stop reason
+need. Client calls run **only** from a `ToolUse` (or `Paused`) turn — a
+`refusal` can cut a `tool_use` (or a server tool) short. The `chat`-feature
+`Chat` driver runs this same match; see *The `Chat` driver* below for how it
+hands a turn it can't use back.
 
 ```no_run
-use std::num::NonZeroU32;
-
 use misanthropic::{
     Client, Prompt,
-    prompt::message::{Block, Role, SystemMessage},
+    prompt::message::{Block, Message, Role, SystemMessage},
     response::Disposition,
     tool::{Tool, ToolBox},
 };
@@ -321,54 +320,59 @@ use misanthropic::{
 let mut prompt = Prompt::user("Run the tests and summarize the failures.");
 toolbox.prepare(&mut prompt).await?;
 let mut pending: Option<SystemMessage> = None;
-let ceiling = NonZeroU32::new(64_000).unwrap(); // e.g. ModelInfo::max_tokens
 
-for _ in 0..8 { // round budget: a model that clips forever still stops
+for _ in 0..8 { // round budget: a model that calls tools forever still stops
     let response = client.message(&prompt).await?;
     match response.disposition() {
-        // pause_turn: seat + resend to resume the server tool (or pop the
-        // whole paused turn — abandoning it in place is a 400).
-        Disposition::Paused => { prompt.seat(response, &mut pending)?; }
         // max_tokens: tool calls may be missing arguments. NEVER seat or
-        // dispatch; retry with more room, clamped to the model ceiling.
-        Disposition::Clipped => {
-            let two = NonZeroU32::new(2).unwrap();
-            prompt.max_tokens =
-                prompt.max_tokens.saturating_mul(two).min(ceiling);
-        }
-        // Complete turn with client tool calls: seat it, answer every call
-        // in one tool_result-led user turn.
-        Disposition::ToolUse => {
-            // Raw: a turn inferred as ToolUse (no stop reason) has none
-            // under the gated `response.tool_uses()`.
-            let calls: Vec<_> =
-                response.inner.content.tool_uses().cloned().collect();
+        // dispatch; hand back — raise max_tokens (or ask for brevity), resend.
+        Disposition::Clipped => break,
+        // tool_use, or pause_turn (resending resumes the server tool): seat
+        // it, answer any client calls in one tool_result-led user turn. Raw
+        // calls: the gated `response.tool_uses()` misses a paused turn's.
+        Disposition::Paused | Disposition::ToolUse => {
+            let content = &response.inner.content;
+            let calls: Vec<_> = content.tool_uses().cloned().collect();
             prompt.seat(response, &mut pending)?;
+            if calls.is_empty() {
+                continue;
+            }
             let mut results = Vec::new();
             for call in calls {
                 results.push(Block::from(toolbox.call(call).await));
             }
             prompt.seat((Role::User, results), &mut pending)?;
         }
-        // end_turn / stop_sequence / refusal (or no stop reason and no
-        // calls): seat and hand back — but never run a finished turn's
-        // calls; drop such a turn whole (stripping could strand a server
-        // tool).
+        // end_turn / stop_sequence / refusal: seat and hand back — unless
+        // it's empty (a 400) or cuts a call short (a refusal can leave a
+        // tool_use or a server tool half-made); drop such a turn whole
+        // (stripping could strand a server tool).
         Disposition::Done => {
-            if response.inner.content.tool_uses().next().is_none() {
+            let turn = &response.inner;
+            let usable = !turn.content.is_empty()
+                && turn.content.tool_uses().next().is_none()
+                && turn.unfinished_server_tool_uses().next().is_none();
+            if usable {
                 prompt.seat(response, &mut pending)?;
             }
             break;
         }
     }
 }
+// A paused turn left in flight admits only its continuation: pop it (one
+// message — continuations merge) before a user turn follows.
+let in_flight =
+    |turn: &Message| turn.unfinished_server_tool_uses().next().is_some();
+if prompt.messages.last().is_some_and(in_flight) {
+    prompt.messages.pop();
+}
 # Ok(())
 # }
 ```
 
-Clip handling is policy: raise-and-retry (above), or drop the clipped turn and
-nudge the model to be briefer. Continuing a partial assistant turn (prefill) is
-backend-dependent — Anthropic rejects it with thinking enabled.
+Clip handling is policy: hand back (above), then raise `max_tokens` and
+resend, or nudge the model to be briefer. Continuing a partial assistant turn
+(prefill) is backend-dependent — Anthropic rejects it with thinking enabled.
 
 ### The `Chat` driver — hand-backs and resume
 
