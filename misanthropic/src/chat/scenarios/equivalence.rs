@@ -30,9 +30,13 @@
 //! token decoded alone and the same token prefilled in a batch can land
 //! logits a rounding error apart, and greedy decoding flips on a near-tie.
 //! A late divergence between two fluent replies may be that; one at the
-//! first token, or a garbled warm reply, points at the cache. The report
-//! prints each divergence's position and context, and the warm request's
-//! usage (what it restored).
+//! first token, or a garbled warm reply, points at the cache. So a request
+//! that mismatches is replayed cold a second time ([`recheck`]), the
+//! control: if the two cold replies agree, cold is self-consistent and the
+//! cache is suspect; if they differ, the server isn't deterministic even
+//! cold (batch variance), which is no evidence of corruption. The report
+//! prints each divergence's position and context, the warm request's usage
+//! (what it restored), and the control's verdict.
 //!
 //! **Start the server with `--no-penalty`.** A repetition penalty is
 //! sampler state: warm reuse resumes it from the cached stream, while a
@@ -389,16 +393,44 @@ async fn cold<T: Transport>(
     )
 }
 
+/// A cold replay's reply, and the flushes it took.
+type Cold = (response::Message, usize);
+
 /// Every request of `warm`, replayed [`cold`], in order.
 async fn replay_cold<T: Transport>(
     transport: &T,
     warm: &[Exchange],
-) -> Vec<(response::Message, usize)> {
+) -> Vec<Cold> {
     let mut cold_replies = Vec::with_capacity(warm.len());
     for (n, exchange) in warm.iter().enumerate() {
         cold_replies.push(cold(transport, n + 1, exchange).await);
     }
     cold_replies
+}
+
+/// The control: each request of `warm` whose `cold` replay disagreed with
+/// it, replayed [`cold`] once more; `None` where they agreed.
+async fn recheck<T: Transport>(
+    transport: &T,
+    warm: &[Exchange],
+    cold_replies: &[Cold],
+) -> Vec<Option<response::Message>> {
+    let mut controls = Vec::with_capacity(warm.len());
+    for (n, (exchange, (first, _))) in warm.iter().zip(cold_replies).enumerate()
+    {
+        let control = match agree(&exchange.reply, first) {
+            true => None,
+            false => Some(cold(transport, n + 1, exchange).await.0),
+        };
+        controls.push(control);
+    }
+    controls
+}
+
+/// Whether `a` and `b` are the same reply to prompts of the same size.
+fn agree(a: &response::Message, b: &response::Message) -> bool {
+    Divergence::find(a, b).is_none()
+        && prompt_size(&a.usage.counts) == prompt_size(&b.usage.counts)
 }
 
 /// A block as the model wrote it: the prose of text and thought, a call's
@@ -506,12 +538,16 @@ struct Verdict {
     cold: response::Message,
     flushes: usize,
     divergence: Option<Divergence>,
+    /// A second cold replay, made where the first disagreed (see
+    /// [`recheck`]).
+    control: Option<response::Message>,
 }
 
 impl Verdict {
     fn new(
         exchange: &Exchange,
-        (cold, flushes): &(response::Message, usize),
+        (cold, flushes): &Cold,
+        control: Option<&response::Message>,
     ) -> Self {
         Self {
             step: exchange.step,
@@ -519,6 +555,23 @@ impl Verdict {
             cold: cold.clone(),
             flushes: *flushes,
             divergence: Divergence::find(&exchange.reply, cold),
+            control: control.cloned(),
+        }
+    }
+
+    /// Whether the two cold replays agree, where there are two.
+    fn cold_consistent(&self) -> Option<bool> {
+        self.control
+            .as_ref()
+            .map(|control| agree(&self.cold, control))
+    }
+
+    /// The control's reading, in a few words for the table.
+    fn control_brief(&self) -> &'static str {
+        match self.cold_consistent() {
+            Some(true) => "; cold2 agrees: cache suspect",
+            Some(false) => "; cold2 differs: nondeterminism",
+            None => "",
         }
     }
 
@@ -538,6 +591,20 @@ impl Verdict {
             return None;
         }
         let (warm, cold) = (self.warm.usage.counts, self.cold.usage.counts);
+        let control = match (self.cold_consistent(), &self.control) {
+            (Some(true), _) => "\n  control: a second cold replay matches \
+                the first, so cold is self-consistent and the cache is \
+                suspect"
+                .to_string(),
+            (Some(false), Some(control)) => format!(
+                "\n  control: a second cold replay differs from the first \
+                 ({}), so the server isn't deterministic even cold: \
+                 nondeterminism or batch variance, not corruption",
+                Divergence::find(&self.cold, control)
+                    .map_or("prompt sizes differ".into(), |d| d.brief())
+            ),
+            _ => "\n  control: not replayed".to_string(),
+        };
         let usage = format!(
             "request {n} (`{}`): warm prompt {} tokens, cold {}; the warm \
              one restored {} from cache, wrote {}, paid {} fresh; {} / {} \
@@ -576,7 +643,7 @@ impl Verdict {
             ),
             None => String::new(),
         };
-        Some(usage + &detail)
+        Some(usage + &detail + &control)
     }
 }
 
@@ -600,7 +667,7 @@ fn table(verdicts: &[Verdict]) -> String {
             (None, true) => "same".to_string(),
             (None, false) => "prompt sizes differ".to_string(),
             (Some(divergence), _) => divergence.brief(),
-        };
+        } + v.control_brief();
         format!(
             "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>5} {:>5} {:>5} {verdict}",
             n + 1,
@@ -623,12 +690,18 @@ fn table(verdicts: &[Verdict]) -> String {
 /// Every warm reply must equal its cold replay, byte for byte, from a
 /// prompt of the same size — and the warm run must have reused the cache
 /// at all, or the check proves nothing.
-fn assert_equivalent(warm: &[Exchange], cold: &[(response::Message, usize)]) {
+fn assert_equivalent(
+    warm: &[Exchange],
+    cold: &[Cold],
+    controls: &[Option<response::Message>],
+) {
     assert_eq!(warm.len(), cold.len(), "a cold replay per warm request");
+    assert_eq!(warm.len(), controls.len(), "a control per warm request");
     let verdicts: Vec<Verdict> = warm
         .iter()
         .zip(cold)
-        .map(|(w, c)| Verdict::new(w, c))
+        .zip(controls)
+        .map(|((w, c), control)| Verdict::new(w, c, control.as_ref()))
         .collect();
     eprintln!("{}", table(&verdicts));
 
@@ -648,7 +721,8 @@ fn assert_equivalent(warm: &[Exchange], cold: &[(response::Message, usize)]) {
         "{} of {} requests replied differently cold:\n{}\n\nA late \
          divergence between two fluent replies may be llama.cpp's \
          batch-variant kernels breaking a near-tie; one at the first \
-         token, or a garbled warm reply, points at the cache. {PENALTY}",
+         token, or a garbled warm reply, points at the cache, the more so \
+         where the control found cold self-consistent. {PENALTY}",
         failures.len(),
         verdicts.len(),
         failures.join("\n"),
@@ -709,7 +783,8 @@ mod blallama {
         let base = Prompt::default().model(model).max_tokens(MAX_TOKENS);
         let warm = converse(&client, base).await;
         let cold = replay_cold(&client, &warm).await;
-        assert_equivalent(&warm, &cold);
+        let controls = recheck(&client, &warm, &cold).await;
+        assert_equivalent(&warm, &cold, &controls);
     }
 }
 
@@ -800,20 +875,25 @@ struct ArchiveArgs {
     body: &'static str,
 }
 
-/// The warm run through [`simulated`]`(stale)`, and its cold replays.
-fn simulate(stale: bool) -> (Vec<Exchange>, Vec<(response::Message, usize)>) {
+/// The warm run through [`simulated`]`(stale)`, its cold replays, and
+/// their controls.
+type Simulated = (Vec<Exchange>, Vec<Cold>, Vec<Option<response::Message>>);
+
+/// [`simulated`]`(stale)`'s warm run, cold replays and controls.
+fn simulate(stale: bool) -> Simulated {
     let server = simulated(stale);
     futures::executor::block_on(async {
         let warm = converse(&server, Prompt::default()).await;
         let cold = replay_cold(&server, &warm).await;
-        (warm, cold)
+        let controls = recheck(&server, &warm, &cold).await;
+        (warm, cold, controls)
     })
 }
 
 /// Every step goes out as designed, and a healthy cache passes.
 #[test]
 fn simulated_healthy_cache_passes() {
-    let (warm, cold) = simulate(false);
+    let (warm, cold, controls) = simulate(false);
 
     let steps: Vec<_> = warm.iter().map(|exchange| exchange.step).collect();
     assert_eq!(
@@ -850,15 +930,20 @@ fn simulated_healthy_cache_passes() {
         })
     );
 
-    assert_equivalent(&warm, &cold);
+    assert!(controls.iter().all(Option::is_none), "nothing to recheck");
+
+    assert_equivalent(&warm, &cold, &controls);
 }
 
 /// A reply that changes when built on the cache fails, with the
 /// divergence and the warm request's reuse in the report.
 #[test]
 fn simulated_stale_cache_fails() {
-    let (warm, cold) = simulate(true);
-    let checked = std::panic::catch_unwind(|| assert_equivalent(&warm, &cold));
+    let (warm, cold, controls) = simulate(true);
+    assert!(controls[0].is_none(), "request 1 read nothing, so matched");
+    assert!(controls[1].is_some(), "request 2 is rechecked");
+    let checked =
+        std::panic::catch_unwind(|| assert_equivalent(&warm, &cold, &controls));
     let panic = checked.expect_err("a stale reply must fail");
     let message = panic.downcast_ref::<String>().expect("a message");
     assert!(
@@ -869,6 +954,42 @@ fn simulated_stale_cache_fails() {
     assert!(message.contains("turns.!"), "{message}");
     // The first request had nothing to read, so it matched.
     assert!(!message.contains("request 1 "), "{message}");
+    // The stale reply is deterministic cold, so the control blames the cache.
+    assert!(message.contains("the cache is suspect"), "{message}");
+}
+
+/// A mismatch whose second cold replay differs from its first is read as
+/// nondeterminism, not corruption; one whose replays agree, as the cache.
+#[test]
+fn the_control_tells_the_cache_from_nondeterminism() {
+    let exchange = Exchange {
+        step: "long",
+        json: String::new(),
+        reply: mock::text("warm").build(),
+    };
+    let first = (mock::text("cold").build(), FLUSHES);
+    let verdict = |control: &'static str| {
+        let control = mock::text(control).build();
+        Verdict::new(&exchange, &first, Some(&control))
+    };
+
+    let suspect = verdict("cold");
+    assert_eq!(suspect.cold_consistent(), Some(true));
+    let report = suspect.failure(1).expect("a mismatch");
+    assert!(report.contains("the cache is suspect"), "{report}");
+    assert!(table(&[suspect]).contains("cold2 agrees: cache suspect"));
+
+    let noisy = verdict("cool");
+    assert_eq!(noisy.cold_consistent(), Some(false));
+    let report = noisy.failure(1).expect("a mismatch");
+    assert!(report.contains("not corruption"), "{report}");
+    assert!(report.contains("block 0 (text) at char 2"), "{report}");
+    assert!(table(&[noisy]).contains("cold2 differs: nondeterminism"));
+
+    let unchecked = Verdict::new(&exchange, &first, None);
+    assert_eq!(unchecked.cold_consistent(), None);
+    let report = unchecked.failure(1).expect("a mismatch");
+    assert!(report.contains("control: not replayed"), "{report}");
 }
 
 /// A server whose cache never clears is reported, not trusted.
