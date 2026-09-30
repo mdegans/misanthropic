@@ -602,10 +602,15 @@ impl<State, T: Transport> Chat<State, T> {
             log::debug!("transport ignores cache markers; placing none");
         } else if quirks.breakpoint_after_assistant {
             return Ok(());
-        } else {
+        } else if self.prompt.messages.last().is_some_and(awaits_model) {
             // Canonical Anthropic: the server places the breakpoint on the
-            // last cacheable block at request time.
+            // last cacheable block at request time — for a resume, of the
+            // prompt as it is.
             self.prompt.set_auto_cache(cache_control)?;
+        } else {
+            // Otherwise on the first beat, not yet seated: `send` checks
+            // where the slot lands before each request.
+            self.prompt.set_auto_cache_unlanded(cache_control)?;
         }
         self.config.cache = None;
         Ok(())
@@ -1933,6 +1938,57 @@ mod tests {
             panic!("{error}");
         };
         assert!(matches!(error, CacheError::TtlOrder { .. }));
+        assert!(transport.requests().is_empty());
+    }
+
+    /// The automatic slot lands on the request as sent — the beat's end —
+    /// not on the seed's, so a 5-minute slot after a 1-hour system marker
+    /// is no mismatch.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn the_automatic_slot_is_checked_where_it_lands() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(MockTransport::new().then(mock::text("hi")));
+        let prompt = Prompt::default().system("manual").cache_1h().unwrap();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::ephemeral());
+
+        let (parts, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
+                .unwrap();
+
+        assert_eq!(transport.requests().len(), 1);
+        let sent = &transport.requests()[0];
+        assert_eq!(sent["system"][0]["cache_control"]["ttl"], "1h");
+        assert_eq!(sent["cache_control"]["type"], "ephemeral");
+        assert!(sent["cache_control"].get("ttl").is_none());
+        assert_eq!(parts.prompt.check_cache(), Ok(()));
+    }
+
+    /// A resumed seed is the first request as it is, so its slot is checked
+    /// there, before anything is sent.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_resumed_seed_checks_its_automatic_slot_up_front() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(MockTransport::new().then(mock::text("hi")));
+        let prompt = Prompt::default()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .cache_1h()
+            .unwrap();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::ephemeral());
+
+        let error = futures::executor::block_on(chat.run((), beats(vec![])))
+            .unwrap_err();
+
+        let Stop::Cache(error) = error.kind else {
+            panic!("{error}");
+        };
+        assert!(matches!(error, CacheError::AutoMismatch { .. }));
         assert!(transport.requests().is_empty());
     }
 

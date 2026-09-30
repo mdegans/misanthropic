@@ -1541,6 +1541,20 @@ impl Prompt {
         Ok(())
     }
 
+    /// [`Self::set_auto_cache`] for a request whose end is still to be
+    /// seated — a driver's, before its first beat. Where the slot lands, and
+    /// so whether it matches a marker there, isn't known yet: that rule is
+    /// left to [`check_cache`](Prompt::check_cache) before the request goes.
+    #[cfg(feature = "chat")]
+    pub(crate) fn set_auto_cache_unlanded(
+        &mut self,
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let plan = self.plan([Breakpoint::Auto], cache_control, &[]);
+        self.apply(plan.unlanded().checked()?);
+        Ok(())
+    }
+
     /// Place `n` cache breakpoints in a rolling trailing window across
     /// `messages`, spaced 2 positions apart, then enforce the API's hard
     /// 4-marker budget by evicting older message-level breakpoints.

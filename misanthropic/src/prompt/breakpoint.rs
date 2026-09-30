@@ -174,6 +174,16 @@ pub(super) struct Plan {
 }
 
 impl Plan {
+    /// This plan, checked with the automatic slot landing nowhere: for a
+    /// request whose end is still to come.
+    #[cfg(feature = "chat")]
+    pub(super) fn unlanded(self) -> Self {
+        Self {
+            target: None,
+            ..self
+        }
+    }
+
     /// This plan, if the request it leaves passes [`Prompt::check_cache`].
     pub(super) fn checked(self) -> Result<Self, CacheError> {
         if let Some(error) = self.nested {
