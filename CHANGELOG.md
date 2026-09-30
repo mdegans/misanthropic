@@ -15,12 +15,53 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`schema-order-check` (default-on) enforces required-before-optional
+  property order in tool input schemas** (#141). Anthropic and local grammar
+  engines like drama_llama generate in `properties` order (the live probe
+  found 0/24 optionals hoisted), while an engine following the
+  structured-outputs docs hoists required properties first — so
+  required-before-optional is the one layout every engine generates
+  identically. It matters because field order changes what the model
+  generates (reasoning must precede the answer), more so on smaller models.
+  The feature enables `schema-order` (without `preserve_order` the check
+  would see alphabetical order).
+
+- **`CustomMethodDef::try_from_checked`** imports third-party tool JSON held
+  to `MethodBuilder::build`'s authoring checks, property order included;
+  `try_from` / `from_serializable` receive it as written. It returns a typed
+  `ToolBuildError`: `InvalidInputSchema` for a misordered schema, the new
+  `Json` variant for a value that isn't a tool definition.
+
 ### Breaking
 
 - **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
   Downstream `match` on either now needs a `_` arm. Planned variants — a
   dispatch-once final word (#136) and an egress `Allowlist` (#87) — can then
   land without further breaks.
+
+- **With `schema-order-check`, an authored tool schema declaring a required
+  property after an optional one is now rejected**: a compile error under
+  `#[derive(ToolArgs)]`; `ToolBuildError::InvalidInputSchema` from
+  `MethodBuilder::build` (and so from `TryFrom<MethodBuilder>` /
+  `try_add_tool` given a builder); and a panic from `ToolArgs::definition`.
+  `#[tool]` can't see its args' fields, so it emits a `#[cfg(test)]` test per
+  method (`__misanthropic_schema_order_{tool}_{method}`) that builds the
+  definition — a misordered args struct fails your `cargo test`. Received
+  schemas are checked structurally only, so a `Prompt` written elsewhere
+  still deserializes: deserializing a `Prompt` / `CustomMethodDef`,
+  `CustomMethodDef::try_from(Value)` and `from_serializable`; opt an import
+  in with the new `CustomMethodDef::try_from_checked`. Move required fields
+  first, or reach for `MethodBuilder::build_unchecked` /
+  `default-features = false`. Top-level properties only; `#[serde(flatten)]`ed
+  fields and `with` types are left to the runtime check. A `#[tool]` impl
+  inside a fn body trips `unnameable_test_items` in test builds; allow it on
+  the enclosing fn, or move the impl to module level so its tests run.
+
+- **`ToolBuildError` gains a `Json(serde_json::Error)` variant**, so an
+  exhaustive `match` on it needs an arm. Its `InvalidInputSchema` message now
+  reads "because", not "becuase".
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

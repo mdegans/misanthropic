@@ -17,6 +17,8 @@
 
 use proc_macro::TokenStream;
 
+#[cfg(feature = "schema-order-check")]
+mod order;
 mod tool;
 mod tool_args;
 mod util;
@@ -27,6 +29,12 @@ mod util;
 /// (the `ToolArgs` supertraits). `NAME` defaults to the struct ident and
 /// `DESCRIPTION` to the struct's doc comment; override either with a
 /// `#[tool(name = "…", description = "…")]` attribute.
+///
+/// With `misanthropic`'s default `schema-order-check` feature, a required
+/// field declared after an optional one (`Option<…>` or serde `default`) is a
+/// compile error. Required-first is the one layout every engine generates in
+/// the same order, and field order changes what the model generates (reason
+/// before you answer) — subtly, and more so on smaller models.
 ///
 /// ```ignore
 /// #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
@@ -53,6 +61,15 @@ pub fn derive_tool_args(input: TokenStream) -> TokenStream {
 /// type's ident; override with `#[tool(name = "…")]`. Add `flat` to put
 /// method names on the wire bare — no `tool__` segment (sets
 /// `Methods::FLAT`; pair with a flat `ToolBox` to drop its segment too).
+///
+/// The macro can't see the `Args` fields, so with `misanthropic`'s default
+/// `schema-order-check` feature a required field after an optional one isn't
+/// a compile error here: `ToolArgs::definition` (and so `add_tool`) panics at
+/// runtime. To catch it sooner, the macro emits one `#[cfg(test)]` test per
+/// method, `__misanthropic_schema_order_{tool}_{method}` (snake-cased), that
+/// fails your `cargo test`. Inside a fn body that test can't be collected:
+/// `#[allow(unnameable_test_items)]` on the enclosing fn, or move the impl to
+/// module level so it runs.
 ///
 /// ```ignore
 /// #[tool(name = "Notepad")]

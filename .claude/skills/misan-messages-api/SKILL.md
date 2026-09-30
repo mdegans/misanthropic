@@ -36,7 +36,8 @@ serde = { version = "1", features = ["derive"] }
 
 ### Feature flags (selected)
 
-Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
+`schema-order`, `schema-inline`, `schema-order-check`.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -45,6 +46,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
 | `langsan` | yes | Output sanitization (allow-list of benign Unicode). |
 | `derive` | yes | The `#[tool]` / `#[derive(ToolArgs)]` macros. |
 | `batch` | yes | Message Batches API. Does not build on wasm32. |
+| `schema-order-check` | yes | Reject tool schemas with a required property after an optional one. |
 | `prompt-caching` | no | Anthropic prompt-caching beta headers. |
 | `markdown` | no | `ToMarkdown` trait, markdown rendering. |
 | `image` / `png` / `jpeg` / `gif` / `webp` | no | Image support via the `image` crate. |
@@ -386,6 +388,18 @@ Notes on the macro:
   un-flattening later renames the methods (prompt-cache / transcript churn).
 - `#[method(defer_loading)]` marks a method's schema as deferrable for use
   with the tool-search server tool (large tool sets).
+- **Declare required fields before optional ones** (`Option<…>` or
+  `#[serde(default)]`). It's the one layout every engine generates in the
+  same order (Anthropic keeps optionals in place; engines following the
+  structured-outputs docs hoist required first), and field order changes what
+  the model generates — put reasoning before answers. The default-on
+  `schema-order-check` feature rejects interleaving in what you author: a
+  compile error under `#[derive(ToolArgs)]`; under `#[tool]`, which can't
+  see its args' fields, a panic from `ToolArgs::definition` (so `add_tool`)
+  at runtime, plus a generated `#[cfg(test)]` test per method that fails
+  your `cargo test` first; and an `Err` from `MethodBuilder::build` (escape
+  hatch: `build_unchecked`). Received
+  schemas (a deserialized `Prompt`) are only checked structurally.
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
   state persistence.
@@ -464,6 +478,43 @@ if let Some(call) = message.tool_use() {
 }
 # Ok(())
 # }
+```
+
+Tool JSON someone else wrote (an MCP server, a saved `Prompt`) is *received*:
+`CustomMethodDef::try_from(value)`, `from_serializable`, and deserializing a
+`Prompt` check it structurally only, so it parses as written.
+`CustomMethodDef::try_from_checked` holds it to the authoring bar instead —
+with `schema-order-check`, required properties first — and returns a typed
+`ToolBuildError` (`InvalidInputSchema` for a misorder, `Json` for a value
+that isn't a tool definition):
+
+```
+use misanthropic::{
+    json,
+    tool::{CustomMethodDef, ToolBuildError},
+};
+
+let search = json!({
+    "name": "search",
+    "description": "Search the docs.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" },
+            "limit": { "type": "integer" },
+            "lang": { "type": "string" }
+        },
+        "required": ["query", "lang"]
+    }
+});
+
+let received = CustomMethodDef::try_from(search.clone()).unwrap();
+assert_eq!(received.name, "search");
+#[cfg(feature = "schema-order-check")]
+assert!(matches!(
+    CustomMethodDef::try_from_checked(search),
+    Err(ToolBuildError::InvalidInputSchema { .. })
+));
 ```
 
 `add_tool` accepts anything `Into<MethodDef>` — a `CustomMethodDef`, a

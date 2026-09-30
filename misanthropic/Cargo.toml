@@ -262,6 +262,7 @@ default = [
     "derive",
     "schema-order",
     "schema-inline",
+    "schema-order-check",
 ]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself, so it almost always makes sense
@@ -389,6 +390,28 @@ schema-order = ["schemars/preserve_order"]
 # usual Cargo additive-features caveat: opting out means `default-features =
 # false` plus re-listing every other default.
 schema-inline = []
+# Reject tool input schemas that declare a required property after an optional
+# one. Anthropic and local grammar engines like drama_llama generate in
+# `properties` order; an engine following the structured-outputs docs hoists
+# required properties first. Required-before-optional is the one layout they
+# all generate identically — and field order changes what the model generates
+# (reasoning fields must precede answer fields), an effect that isn't always
+# obvious and is stronger on smaller models.
+#
+# On by default, it checks only what you *author*: `#[derive(ToolArgs)]` fails
+# to compile; `MethodBuilder::build` (and so `try_add_tool` given a builder)
+# errors; `ToolArgs::definition` panics, and `#[tool]` — which can't see its
+# args' fields — emits a `#[cfg(test)]` test per method that calls it, failing
+# your `cargo test`. `CustomMethodDef::try_from_checked` opts an import in.
+# What you *receive* is checked structurally only, so a prompt written
+# elsewhere still parses: deserializing a `Prompt` or `CustomMethodDef`,
+# `CustomMethodDef::try_from(Value)` and `from_serializable`. Escape hatch per
+# schema: `MethodBuilder::build_unchecked`. Enables `schema-order`, without
+# which `properties` order is alphabetical and the check meaningless.
+schema-order-check = [
+    "schema-order",
+    "misanthropic-derive?/schema-order-check",
+]
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),

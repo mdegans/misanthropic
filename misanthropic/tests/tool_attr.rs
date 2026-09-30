@@ -114,6 +114,20 @@ fn name_and_namespaced_definitions() {
     assert!(names.contains(&"Calc__reset".to_string()));
 }
 
+// `#[tool]` can't see its args' fields, so under `schema-order-check` it
+// emits a test per method that builds the definition (which panics on
+// required-after-optional). They run in this suite; calling them by name pins
+// that they exist and that their names can't collide across tools.
+#[cfg(feature = "schema-order-check")]
+#[test]
+fn tool_emits_an_order_test_per_method() {
+    __misanthropic_schema_order_calc_add();
+    __misanthropic_schema_order_calc_reset();
+    __misanthropic_schema_order_holder_put();
+    __misanthropic_schema_order_sonar_ping();
+    __misanthropic_schema_order_sonar_b_ping();
+}
+
 #[test]
 fn derived_tool_args_from_fn() {
     // The `#[tool]` route generates `impl ToolArgs` from the fn ident + doc.

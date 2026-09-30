@@ -91,6 +91,12 @@ pub trait ToolArgs:
     /// `schema-inline` feature turned off. Anthropic's strict grammar
     /// compiler mis-decodes those silently; see
     /// [`schema_for`](crate::prompt::output::schema_for).
+    ///
+    /// # Panics
+    ///
+    /// If [`MethodBuilder::build`](crate::tool::MethodBuilder::build) rejects
+    /// the schema — with `schema-order-check` (default), when `Self` declares
+    /// a required field after an optional one.
     fn definition() -> CustomMethodDef {
         let schema = Self::schema();
 
@@ -112,8 +118,11 @@ pub trait ToolArgs:
         let mut def = CustomMethodDef::builder(Self::NAME)
             .description(Self::DESCRIPTION)
             .schema(schema)
-            .build()
-            .expect("a ToolArgs-derived schema is valid");
+            // No `build_unchecked` hint: the fix is reordering `Self`'s fields.
+            .build_checked("")
+            .unwrap_or_else(|err| {
+                panic!("tool method `{}`: {err}", Self::NAME)
+            });
         def.defer_loading = Self::DEFER_LOADING.then_some(true);
         def.strict = Self::STRICT.then_some(true);
         def.allowed_callers = (!Self::ALLOWED_CALLERS.is_empty())
