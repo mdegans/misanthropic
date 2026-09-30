@@ -27,7 +27,7 @@ use crate::{
         AssistantMessage, Block, Content, Message, Role, SystemMessage,
     },
     response::{self, StopReason, TokenCounts},
-    stream::tests::assembled,
+    stream::tests::{assembled, assembled_sse},
     tool::{self, Choice, CustomMethodDef, MethodDef, Tool, ToolBox, Use},
 };
 
@@ -231,6 +231,40 @@ fn cut_short(reason: StopReason) -> Reply {
             .stop_reason(reason)
             .build(),
     )
+}
+
+/// A live (Haiku 4.5) turn: a response fixture under `test/data/stop/`.
+fn captured(json: &str) -> Reply {
+    mock::message(serde_json::from_str(json).unwrap())
+}
+
+/// A live forced `write_file` call the stop sequence `print(` cut short:
+/// valid, closed JSON, truncated at the match, stopped `stop_sequence`.
+fn stopped_mid_call() -> Reply {
+    captured(include_str!(
+        "../../test/data/stop/stop_sequence_tool.response.json"
+    ))
+}
+
+/// [`stopped_mid_call`]'s shape after text, assembled from a live stream.
+fn stopped_mid_call_streamed() -> Reply {
+    mock::message(assembled_sse(include_str!(
+        "../../test/data/stop/stop_sequence_text_tool.sse.stream.txt"
+    )))
+}
+
+/// A live forced call clipped at `max_tokens`: valid JSON missing a
+/// required argument.
+fn clipped_live() -> Reply {
+    captured(include_str!("../../test/data/stop/clip_tool.response.json"))
+}
+
+/// [`clipped_live`]'s stream: the call's block never closes, so it
+/// doesn't assemble — the turn arrives empty, stopped `max_tokens`.
+fn clipped_live_streamed() -> Reply {
+    mock::message(assembled_sse(include_str!(
+        "../../test/data/stop/clip_tool.sse.stream.txt"
+    )))
 }
 
 /// A turn calling [`Echo`] once per id.
@@ -890,6 +924,20 @@ fn rows() -> Vec<Row> {
             .requests(1)
             .stops([Kind::Unusable])
             .roles("U"),
+        // Live: a stop sequence matched inside a call's input closes it
+        // truncated — a finished turn cutting a call short.
+        row("stop_sequence_cuts_a_call_short")
+            .prompt(|p| p.stop_sequences(["print("]))
+            .reply(stopped_mid_call())
+            .stops([Kind::Unusable])
+            .requests(1)
+            .roles("U"),
+        row("stop_sequence_cuts_a_streamed_call_short")
+            .prompt(|p| p.stop_sequences(["print("]))
+            .reply(stopped_mid_call_streamed())
+            .stops([Kind::Unusable])
+            .requests(1)
+            .roles("U"),
         row("refused_continuation_strands_the_pause")
             .reply(paused())
             .reply(mock::text("I can't continue.").refusal("cyber", "no"))
@@ -975,6 +1023,16 @@ fn rows() -> Vec<Row> {
                 let stop = run.log.received[0].stop_reason;
                 assert_eq!(stop, Some(StopReason::MaxTokens));
             }),
+        row("clip_captured")
+            .reply(clipped_live())
+            .stops([Kind::Clipped])
+            .requests(1)
+            .roles("U"),
+        row("clip_captured_streamed")
+            .reply(clipped_live_streamed())
+            .stops([Kind::Clipped])
+            .requests(1)
+            .roles("U"),
         row("clip_then_resume")
             .resume()
             .reply(clipped_call())
