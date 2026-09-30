@@ -15,6 +15,14 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`response::Message::tool_uses()`** — every client `tool::Use` in the
+  turn, in order (the parallel-call twin of `tool_use()`), gated the same
+  way: empty unless `stop_reason` is `ToolUse`. A refusal can cut a call off
+  mid-input and `max_tokens` can truncate one, so calls are only safe to run
+  once the stop reason says so.
+
 ## [1.0.0-alpha.20] — 2026-09-28
 
 ### Added

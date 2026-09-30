@@ -355,7 +355,8 @@ chat = chat.add_tools(weather.definitions());
 let message = client.message(&chat).await?;
 
 // `tool_use()` is `Some` when stop_reason is ToolUse and the last block is a
-// tool call.
+// tool call. For parallel calls use `tool_uses()`: every call, same gate —
+// never run calls from a Refusal / MaxTokens turn (they can be cut short).
 if let Some(call) = message.tool_use() {
     let call = call.clone();
     chat.push_message(message)?;
@@ -376,6 +377,9 @@ if let Some(call) = message.tool_use() {
 Notes on the macro:
 
 - Each `#[method]` becomes a real inherent method you can still call directly.
+- Several calls in one turn? `message.tool_uses()` yields them all (empty
+  unless `stop_reason` is `ToolUse`); answer them in **one** user turn —
+  `let reply: UserMessage = results.into_iter().collect();`.
 - One `#[tool]` block can hold several `#[method]`s; each is namespaced
   `TypeName__method_name` (and a `ToolBox` adds its own segment:
   `toolbox__TypeName__method_name`).

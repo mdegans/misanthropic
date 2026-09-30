@@ -148,7 +148,7 @@ the methods compose by chaining.
 | `.text()` | `Stream<Result<String, Error>>` | Only text deltas, as owned `String`s (built on `.deltas()`). |
 | `.with_message()` | `Stream<Result<Event, Error>>` | Assembles a complete `response::Message` and yields it as `Event::Message` at stream end (implies `with_tool_use`). |
 | `.with_message_ip(&mut Option<Message>)` | `Stream<Result<Event, Error>>` | Same, but assembles *in place* so you can break early and keep the partial message. |
-| `.with_tool_use()` | `Stream<Result<Event, Error>>` | Assembles complete `tool::Use` from JSON deltas and yields it as `Event::ToolUse` (skips raw `input_json_delta` events). |
+| `.with_tool_use()` | `Stream<Result<Event, Error>>` | Assembles complete `tool::Use` from JSON deltas and yields it as `Event::ToolUse` (skips raw `input_json_delta` events). Fires *before* the stop reason — display only; dispatch from `Event::Message` (below). |
 | `.with_json()` | `Stream<Result<Event, Error>>` | Incrementally scans text / tool-input JSON and yields each completed element of the outermost array as `Event::JsonObject`, as its bytes arrive. Apply *upstream* of `with_tool_use` / `with_message`. |
 | `.json_items::<T>()` | `Stream<Result<T, Error>>` | Typed `with_json`: each element deserialized to `T`. Pair with `structured_output::<Items<T>>()`. |
 
@@ -165,7 +165,7 @@ let text_stream = stream.text();
 ```rust
 # use misanthropic::stream::FilterExt;
 # fn f(stream: impl misanthropic::stream::FilterExt) {
-// Assembled tool-use events:
+// Assembled tool-use events (for display — see "Streaming with tool use"):
 let events = stream.with_tool_use();
 # }
 ```
@@ -225,7 +225,7 @@ match event {
     Event::MessageStop => {}
     // Synthetic — assembled by FilterExt, never sent by the API:
     Event::Message { message } => {}                   // via with_message()
-    Event::ToolUse { tool_use } => {}                  // via with_tool_use(); tool::Use
+    Event::ToolUse { tool_use } => {}                  // via with_tool_use(); display only
     Event::ServerToolUse { tool_use } => {}            // via with_tool_use(); server tool (e.g. web_search)
     Event::JsonObject { index, value } => {}           // via with_json(); element of the outermost array
 }
@@ -278,9 +278,14 @@ match error {
 ## Streaming with tool use
 
 Use the `#[tool]` macro (default `derive` feature) to declare a typed tool,
-then `with_tool_use()` to receive a fully assembled `Event::ToolUse` instead
-of raw JSON deltas. See the misan-messages-api skill for the full macro walk-
-through; the runnable example is `misanthropic/examples/strawberry.rs`.
+then `with_message()` and dispatch from the final `Event::Message`. **Never run
+a call on `Event::ToolUse`**: it fires as the block closes, *before*
+`message_delta` carries the stop reason, and a `Refusal` can cut a call off
+mid-input (or `MaxTokens` truncate one). `response::Message::tool_uses()`
+yields every call in the turn — parallel calls included — and is empty unless
+the stop reason is `ToolUse`. See the misan-messages-api skill for the full
+macro walk-through; the runnable example is
+`misanthropic/examples/strawberry.rs`.
 
 ```no_run
 use futures::TryStreamExt;
@@ -331,19 +336,26 @@ let mut stream = Box::pin(
     client
         .stream(&chat)
         .await?
-        .with_tool_use(),
+        .with_message(),
 );
 
 while let Some(event) = stream.try_next().await? {
     match event {
         Event::ToolUse { tool_use } => {
-            // Complete tool::Use (already `'static`), assembled from the JSON
-            // deltas. Dispatch through the typed tool (validates args for you):
-            let result = calculator.call(tool_use).await;
-            // For multi-turn tool use: drop the stream, push the assistant
-            // message + `result`, then start a new stream. Here we just stop.
-            let _ = result;
-            break;
+            // Assembled, but the turn's stop reason isn't in yet: show it,
+            // don't run it.
+            println!("\n[calling {}]", tool_use.name);
+        }
+        Event::Message { message } => {
+            // The whole turn, stop reason included. Empty on a refusal.
+            let mut results = Vec::new();
+            for call in message.tool_uses().cloned() {
+                // Typed dispatch (validates args for you).
+                results.push(calculator.call(call).await);
+            }
+            // For multi-turn tool use: push `message`, then all `results` as
+            // one user turn, then start a new stream. Here we just stop.
+            let _ = results;
         }
         Event::ContentBlockDelta {
             delta: misanthropic::stream::Delta::Text { text }, ..

@@ -134,6 +134,25 @@ impl Message {
         self.inner.content.last()?.tool_use()
     }
 
+    /// Every client [`tool::Use`] in the turn, in order — the parallel-call
+    /// twin of [`Self::tool_use`], and the same gate: empty unless the
+    /// [`StopReason`] is [`StopReason::ToolUse`]. A [`Refusal`] can cut a call
+    /// off mid-input and [`MaxTokens`] can truncate one, so a turn's calls are
+    /// only safe to run once its stop reason says so.
+    ///
+    /// [`tool::Use`]: crate::tool::Use
+    /// [`Refusal`]: StopReason::Refusal
+    /// [`MaxTokens`]: StopReason::MaxTokens
+    pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
+        let dispatchable =
+            matches!(self.stop_reason, Some(StopReason::ToolUse));
+        self.inner
+            .content
+            .iter()
+            .filter(move |_| dispatchable)
+            .filter_map(prompt::message::Block::tool_use)
+    }
+
     /// Parse the first [`Text`] [`Block`] as JSON into `T`, skipping any
     /// leading [`Thought`] / [`RedactedThought`] blocks produced by
     /// [Extended Thinking]. Intended for use with
@@ -684,6 +703,38 @@ mod tests {
             crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
         );
         assert!(message.tool_use().is_some());
+    }
+
+    /// Parallel calls all surface, but only under `stop_reason: tool_use` —
+    /// a refused or truncated turn's calls never reach dispatch.
+    #[test]
+    fn tool_uses_gated_on_stop_reason() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let call = |id| {
+            crate::tool::Use::new("n", serde_json::Value::Null).with_id(id)
+        };
+        message.inner.content.push(call("a"));
+        message.inner.content.push("between");
+        message.inner.content.push(call("b"));
+
+        let ids = |m: &Message| -> Vec<String> {
+            m.tool_uses().map(|call| call.id.to_string()).collect()
+        };
+        for reason in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::StopSequence,
+            StopReason::PauseTurn,
+            StopReason::Refusal,
+        ] {
+            message.stop_reason = Some(reason);
+            assert!(ids(&message).is_empty(), "{reason:?} dispatched");
+        }
+        message.stop_reason = None;
+        assert!(ids(&message).is_empty());
+
+        message.stop_reason = Some(StopReason::ToolUse);
+        assert_eq!(ids(&message), ["a", "b"]);
     }
 
     #[test]
