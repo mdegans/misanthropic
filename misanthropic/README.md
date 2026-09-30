@@ -17,14 +17,8 @@ as a doc-test.
 
 ## Usage
 
-```toml
-[dependencies]
-misanthropic = "1.0.0-alpha.2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Tool argument and structured output structs derive these:
-schemars = "0.8"
-serde = { version = "1", features = ["derive"] }
-```
+Tool argument and structured output structs derive `schemars::JsonSchema`,
+which needs `schemars` 1.x.
 
 ### Streaming
 
