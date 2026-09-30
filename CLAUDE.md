@@ -132,7 +132,8 @@ building the old shape silently.
 
 ## Key features to know about
 
-Default features: `rustls-tls`, `langsan`, `client`, `batch`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
+`schema-order`, `schema-inline`, `schema-order-check`.
 
 Notable optional features: `prompt-caching`, `markdown`, `html`, `memsecurity`,
 `dioxus`, `notepad`, `cot`.

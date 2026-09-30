@@ -36,7 +36,8 @@ serde = { version = "1", features = ["derive"] }
 
 ### Feature flags (selected)
 
-Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
+`schema-order`, `schema-inline`, `schema-order-check`.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
