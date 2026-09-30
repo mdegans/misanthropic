@@ -16,7 +16,10 @@
 //! - the time a request spends beyond decoding fits prefilling only its
 //!   uncached tokens (`input + creation`), at the rate the run's coldest
 //!   request measured — not the whole prompt. A server that reports reads
-//!   but re-prefills anyway fails here.
+//!   but re-prefills anyway fails here. When no request prefilled enough
+//!   to measure (the server was warm from an earlier run), a backend's
+//!   fallback rate stands in (blallama's: `BLALLAMA_PREFILL_RATE` tokens a
+//!   second, 420 by default), and the table says which.
 //!
 //! A broken cache fails the first and last: the whole prompt is re-prefilled
 //! every turn, which is what makes a long conversation crawl.
@@ -106,6 +109,10 @@ struct Backend {
     /// scheduling; `None` prints the latency without holding it (Anthropic's
     /// accounting is ground truth, its latency noise and retries).
     latency_slack_ms: Option<f64>,
+    /// The prefill rate, in tokens per second, to hold latency to when no
+    /// request of a run prefilled enough to measure one (a server still
+    /// warm from an earlier run); `None` leaves such a run unchecked.
+    prefill_rate: Option<f64>,
 }
 
 /// Anthropic: `read` is the previous prompt less the framing after its
@@ -115,6 +122,7 @@ const ANTHROPIC: Backend = Backend {
     after_assistant: false,
     slack: 16,
     latency_slack_ms: None,
+    prefill_rate: None,
 };
 
 /// A local blallama, configured as for Anthropic. Its template may render
@@ -125,7 +133,16 @@ const BLALLAMA: Backend = Backend {
     after_assistant: false,
     slack: 64,
     latency_slack_ms: Some(1500.0),
+    prefill_rate: Some(BLALLAMA_PREFILL_RATE),
 };
+
+/// blallama's fallback [`prefill_rate`](Backend::prefill_rate), in tokens
+/// per second, unless `BLALLAMA_PREFILL_RATE` sets one: on 2026-09-30,
+/// Qwen3.6-35B-A3B (`UD-Q4_K_S`) prefilled about 7,500 tokens cold in
+/// about 18 s, some 420 a second. Set it for other models and machines; a
+/// re-prefill costs tens of times the budget, so it needn't be exact.
+#[cfg(feature = "blallama")]
+const BLALLAMA_PREFILL_RATE: f64 = 420.0;
 
 /// [`simulated`]: Anthropic's accounting, with a mock's latency (a second
 /// of slack rides out a loaded CI runner).
@@ -462,7 +479,7 @@ where
     let log = std::mem::take(&mut *transport.log());
     if let Err(error) = outcome {
         let requests = requests(&log, None);
-        let latency = Latency::fit(&requests);
+        let latency = Latency::fit(&requests, backend.prefill_rate);
         eprintln!("{}", table(&requests, backend, &latency));
         panic!("the scenario stopped: {error}");
     }
@@ -560,44 +577,84 @@ fn reused(before: &Request, now: &Request) -> u64 {
 
 /// What a request's wall time should be, fitted to the run itself.
 struct Latency {
-    /// The request calibrated on: the one that prefilled the most.
-    calibration: usize,
-    /// Milliseconds per prefilled token, from `calibration`'s wall time
-    /// less its decode.
+    /// Where [`prefill_ms`](Self::prefill_ms) came from.
+    prefill: Prefill,
+    /// Milliseconds per prefilled token.
     prefill_ms: f64,
     /// Milliseconds per output token: the fastest other request's, as close
     /// to pure decode as the run gets.
     decode_ms: f64,
 }
 
+/// Where [`Latency`]'s prefill rate came from.
+#[derive(Debug, PartialEq)]
+enum Prefill {
+    /// Measured on request `n` (from zero), the one that prefilled the
+    /// most: its wall time less its decode.
+    Measured(usize),
+    /// No request prefilled [`CALIBRATION_FLOOR`] tokens (the server was
+    /// warm from an earlier run; the most was `most`), so the backend's
+    /// [`prefill_rate`](Backend::prefill_rate), in tokens per second.
+    Fallback { rate: f64, most: u64 },
+}
+
+impl std::fmt::Display for Prefill {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Measured(n) => write!(f, "measured on request {}", n + 1),
+            Self::Fallback { rate, most } => write!(
+                f,
+                "the backend's fallback of {rate:.0} tokens/s: no request \
+                 prefilled {CALIBRATION_FLOOR} tokens (the most was {most})"
+            ),
+        }
+    }
+}
+
 impl Latency {
     /// The model, or `None` (with the reason) when the run can't calibrate
     /// one: no request prefilled [`CALIBRATION_FLOOR`] tokens (all warm from
-    /// an earlier run), or none else decoded [`DECODE_FLOOR`].
-    fn fit(requests: &[Request]) -> Result<Self, String> {
+    /// an earlier run) and there's no `fallback` rate (tokens per second),
+    /// or none else decoded [`DECODE_FLOOR`].
+    fn fit(
+        requests: &[Request],
+        fallback: Option<f64>,
+    ) -> Result<Self, String> {
         let (calibration, cold) = requests
             .iter()
             .enumerate()
             .max_by_key(|(_, r)| r.prefilled())
             .ok_or("no requests")?;
-        if cold.prefilled() < CALIBRATION_FLOOR {
-            return Err(format!(
-                "no request prefilled {CALIBRATION_FLOOR} tokens (the most \
-                 was {}): nothing to calibrate on",
-                cold.prefilled()
-            ));
-        }
+        let most = cold.prefilled();
+        let prefill = match (most >= CALIBRATION_FLOOR, fallback) {
+            (true, _) => Prefill::Measured(calibration),
+            (false, Some(rate)) => Prefill::Fallback { rate, most },
+            (false, None) => {
+                return Err(format!(
+                    "no request prefilled {CALIBRATION_FLOOR} tokens (the \
+                     most was {most}), and there's no fallback rate: nothing \
+                     to calibrate on"
+                ));
+            }
+        };
         let decode_ms = requests
             .iter()
             .enumerate()
-            .filter(|&(n, r)| n != calibration && r.output >= DECODE_FLOOR)
+            .filter(|&(n, _)| prefill != Prefill::Measured(n))
+            .filter(|(_, r)| r.output >= DECODE_FLOOR)
             .map(|(_, r)| r.millis / r.output as f64)
             .min_by(f64::total_cmp)
             .ok_or("no other request decoded enough to time decoding")?;
-        let rest = cold.millis - decode_ms * cold.output as f64;
+        let prefill_ms = match prefill {
+            Prefill::Measured(_) => {
+                let rest = cold.millis - decode_ms * cold.output as f64;
+                rest.max(0.0) / most as f64
+            }
+            Prefill::Fallback { rate, .. } => 1e3 / rate,
+        };
         Ok(Self {
-            calibration,
-            prefill_ms: rest.max(0.0) / cold.prefilled() as f64,
+            prefill,
+            prefill_ms,
             decode_ms,
         })
     }
@@ -676,11 +733,9 @@ fn table(
     });
     let model = match latency {
         Ok(l) => format!(
-            "latency: {:.2} ms per prefilled token (request {}), {:.1} ms per \
+            "latency: {:.2} ms per prefilled token ({}), {:.1} ms per \
              output token; `rest` is wall time less decode",
-            l.prefill_ms,
-            l.calibration + 1,
-            l.decode_ms,
+            l.prefill_ms, l.prefill, l.decode_ms,
         ),
         Err(why) => format!("latency: not checked: {why}"),
     };
@@ -711,7 +766,7 @@ fn assert_caches(
     backend: Backend,
 ) {
     let requests = requests(log, counted);
-    let latency = Latency::fit(&requests);
+    let latency = Latency::fit(&requests, backend.prefill_rate);
     eprintln!("{}", table(&requests, backend, &latency));
 
     let beats = script.beats.len();
@@ -841,13 +896,13 @@ fn check_latency(requests: &[Request], latency: &Latency, slack_ms: f64) {
             rest <= budget,
             "request {} spent {rest:.0} ms beyond decoding, over the \
              {budget:.0} ms that prefilling its {} uncached tokens allows \
-             ({:.2} ms per token, from request {}); re-prefilling all {} \
+             ({:.2} ms per token, {}); re-prefilling all {} \
              would take about {:.0} ms: the reported cache read didn't save \
              the time",
             n + 1,
             r.prefilled(),
             latency.prefill_ms,
-            latency.calibration + 1,
+            latency.prefill,
             r.prompt(),
             latency.full(r),
         );
@@ -900,6 +955,16 @@ impl Transport for AfterAssistant {
     }
 }
 
+/// `key` parsed from the environment, or `default` when it's unset.
+#[cfg(feature = "blallama")]
+fn from_env<T: std::str::FromStr>(key: &str, default: T) -> T {
+    std::env::var(key).map_or(default, |value| {
+        value
+            .parse()
+            .unwrap_or_else(|_| panic!("{key}={value:?} isn't a number"))
+    })
+}
+
 /// The scenario against a local blallama; see the module docs.
 #[cfg(feature = "blallama")]
 mod blallama {
@@ -919,6 +984,13 @@ mod blallama {
             return eprintln!("skipping `{name}`: BLALLAMA_URL is unset");
         };
         let client = super::super::live::client(&url);
+        let backend = Backend {
+            prefill_rate: Some(from_env(
+                "BLALLAMA_PREFILL_RATE",
+                BLALLAMA_PREFILL_RATE,
+            )),
+            ..backend
+        };
         // Room for a local model's thinking, and for the prompt beside it.
         let base = Prompt::default()
             .model(model)
@@ -1198,13 +1270,13 @@ fn synthetic_run(lag: f64) -> Vec<Request> {
 #[test]
 fn latency_catches_reads_that_save_no_time() {
     let healthy = synthetic_run(0.0);
-    let latency = Latency::fit(&healthy).unwrap();
-    assert_eq!(latency.calibration, 0);
+    let latency = Latency::fit(&healthy, None).unwrap();
+    assert_eq!(latency.prefill, Prefill::Measured(0));
     check_latency(&healthy, &latency, 1500.0);
 
     // Reads reported, but each turn re-prefills the ~7k-token prompt.
     let lying = synthetic_run(2.5 * 7000.0);
-    let latency = Latency::fit(&lying).unwrap();
+    let latency = Latency::fit(&lying, None).unwrap();
     let checked = std::panic::catch_unwind(|| {
         check_latency(&lying, &latency, 1500.0);
     });
@@ -1333,7 +1405,7 @@ fn a_missing_cache_field_prints_the_table_then_fails() {
     let mut log = simulate(&SHORT, true);
     log.received[3].usage.counts.cache_creation_input_tokens = None;
     let rows = requests(&log, None);
-    let printed = table(&rows, SIMULATED, &Latency::fit(&rows));
+    let printed = table(&rows, SIMULATED, &Latency::fit(&rows, None));
     let row = printed.lines().nth(4).expect("request 4's row");
     assert_eq!(row.split_whitespace().nth(5), Some("-"), "{row}");
 
@@ -1354,7 +1426,7 @@ fn a_missing_cache_field_prints_the_table_then_fails() {
         .collect();
     counted[2] = Err("connection refused".into());
     let rows = requests(&log, Some(&counted));
-    let printed = table(&rows, SIMULATED, &Latency::fit(&rows));
+    let printed = table(&rows, SIMULATED, &Latency::fit(&rows, None));
     let row = printed.lines().nth(3).expect("request 3's row");
     assert_eq!(row.split_whitespace().nth(3), Some("err"), "{row}");
     let checked = std::panic::catch_unwind(|| {
@@ -1366,4 +1438,32 @@ fn a_missing_cache_field_prints_the_table_then_fails() {
         message.contains("request 3: count_tokens failed: connection refused"),
         "{message}"
     );
+}
+
+/// A run that found the server warm prefilled too little to measure a
+/// rate; with a fallback it's still checked, and still fails re-prefills.
+#[test]
+fn a_warm_run_falls_back_to_the_backends_rate() {
+    let warm = |lag| synthetic_run(lag).split_off(1);
+    let unmeasured = Latency::fit(&warm(0.0), None);
+    let why = unmeasured.err().expect("nothing to measure on");
+    assert!(why.contains("no fallback rate"), "{why}");
+
+    // blallama-like: 2.5 ms a token.
+    let latency = Latency::fit(&warm(0.0), Some(400.0)).unwrap();
+    assert!(matches!(
+        latency.prefill,
+        Prefill::Fallback { most: 400, .. }
+    ));
+    assert!(latency.prefill.to_string().contains("400 tokens/s"));
+    check_latency(&warm(0.0), &latency, 1500.0);
+
+    let lying = warm(2.5 * 7000.0);
+    let latency = Latency::fit(&lying, Some(400.0)).unwrap();
+    let checked = std::panic::catch_unwind(|| {
+        check_latency(&lying, &latency, 1500.0);
+    });
+    let panic = checked.expect_err("a re-prefill's time must fail");
+    let message = panic.downcast_ref::<String>().expect("a message");
+    assert!(message.contains("fallback of 400 tokens/s"), "{message}");
 }

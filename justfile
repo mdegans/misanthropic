@@ -63,7 +63,9 @@ test-equivalence model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
 
 # Prints a table of each request's input / written / read / tip tokens and
 # latency, and fails when the prefix isn't reused turn to turn, or a turn takes
-# a re-prefill's time anyway. Never run in CI.
+# a re-prefill's time anyway. Never run in CI. A run that finds the server warm
+# (no request prefills 1024 tokens to measure the rate on) is timed against
+# BLALLAMA_PREFILL_RATE tokens/s instead: 420 by default, measured on Qwen3.6.
 # `which` picks one run: canonical, after_assistant or long (the default runs
 # all three; long needs a context of about 32k).
 # Live multi-turn prompt-caching check against a local blallama, one model.
