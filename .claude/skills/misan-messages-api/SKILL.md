@@ -45,6 +45,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
 | `langsan` | yes | Output sanitization (allow-list of benign Unicode). |
 | `derive` | yes | The `#[tool]` / `#[derive(ToolArgs)]` macros. |
 | `batch` | yes | Message Batches API. Does not build on wasm32. |
+| `schema-order-check` | yes | Reject tool schemas with a required property after an optional one. |
 | `prompt-caching` | no | Anthropic prompt-caching beta headers. |
 | `markdown` | no | `ToMarkdown` trait, markdown rendering. |
 | `image` / `png` / `jpeg` / `gif` / `webp` | no | Image support via the `image` crate. |
@@ -386,6 +387,11 @@ Notes on the macro:
   un-flattening later renames the methods (prompt-cache / transcript churn).
 - `#[method(defer_loading)]` marks a method's schema as deferrable for use
   with the tool-search server tool (large tool sets).
+- **Declare required fields before optional ones** (`Option<…>` or
+  `#[serde(default)]`). Anthropic moves required properties first, so the
+  default-on `schema-order-check` feature rejects interleaving: a compile
+  error under `#[derive(ToolArgs)]`, a panic building a `#[tool]` method's
+  definition, and an `Err` from `MethodBuilder::build`.
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
   state persistence.

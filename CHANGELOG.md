@@ -15,6 +15,28 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`schema-order-check` (default-on) enforces required-before-optional
+  property order in tool input schemas** (#141). Anthropic moves required
+  properties ahead of optional ones, so an interleaved schema reaches the
+  model in a different order than it was declared — and in yet another
+  order on engines that honour declaration order. The feature enables
+  `schema-order` (without `preserve_order` the check would see alphabetical
+  order). Turn it off for servers that keep declaration order as sent.
+
+### Breaking
+
+- **With `schema-order-check`, a required property declared after an
+  optional one is now rejected**: a compile error under
+  `#[derive(ToolArgs)]`; `ToolBuildError::InvalidInputSchema` from
+  `MethodBuilder::build` (and so from `try_add_tool`); and a panic from
+  `ToolArgs::definition` — which is how a `#[tool]` method's args, invisible
+  to the macro, are checked. Move required fields first, or reach for
+  `MethodBuilder::build_unchecked` / `default-features = false`. Top-level
+  properties only; `#[serde(flatten)]`ed fields and `with` types are left to
+  the runtime check.
+
 ## [1.0.0-alpha.20] — 2026-09-28
 
 ### Added
