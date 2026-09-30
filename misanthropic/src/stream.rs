@@ -1061,8 +1061,10 @@ fn close_partial(json: &str) -> Option<serde_json::Value> {
             b if b.is_ascii_whitespace() => {}
             _ => {
                 let start = *scalar.get_or_insert(i);
-                // A literal can't grow: complete on its last byte.
-                if matches!(&json[start..=i], "true" | "false" | "null")
+                // A literal can't grow: complete on its last byte. Bytes,
+                // not `str`: `i` may sit inside a multi-byte char.
+                let literal = &json.as_bytes()[start..=i];
+                if matches!(literal, b"true" | b"false" | b"null")
                     && completes(&stack)
                 {
                     scalar = None;
@@ -1072,6 +1074,7 @@ fn close_partial(json: &str) -> Option<serde_json::Value> {
         }
     }
 
+    // `end` follows an ASCII byte or sits on one: a char boundary.
     let (end, closers) = cut?;
     serde_json::from_str(&format!("{}{closers}", &json[..end])).ok()
 }
@@ -2538,10 +2541,53 @@ pub(crate) mod tests {
             (r#"{"#, Some("{}")),
             ("", None),
             ("tru", None),
+            // Non-ASCII outside a string: dropped, never sliced mid-char.
+            (r#"{"a": é"#, Some("{}")),
+            (r#"{"a": 1é"#, Some("{}")),
+            (r#"{"a": tré"#, Some("{}")),
+            (r#"{é"#, Some("{}")),
+            (r#"[é"#, Some("[]")),
+            ("é", None),
+            // Inside a string it's just text.
+            (r#"{"a": "é""#, Some(r#"{"a": "é"}"#)),
         ];
         for (partial, closed) in cases {
             let closed = closed.map(|c| serde_json::from_str(c).unwrap());
             assert_eq!(close_partial(partial), closed, "{partial}");
+        }
+    }
+
+    /// [`close_partial`] never panics: every prefix of realistic inputs
+    /// (non-ASCII, escapes, nesting), and every short string over a
+    /// structural alphabet. A whole input closes to itself.
+    #[test]
+    fn close_partial_never_panics() {
+        let payloads = [
+            r#"{"path": "café/naïve.txt", "line": 42, "ok": true}"#,
+            r#"{"s": "a\"b\\cé\n", "n": [1.5e3, -2, null, false]}"#,
+            r#"{"a": {"b": [{"c": "日本語"}, "🦀"]}, "d": {}}"#,
+            r#"[{"é": 1}, ["x", [ ]], "\\"]"#,
+        ];
+        for payload in payloads {
+            let whole: serde_json::Value =
+                serde_json::from_str(payload).unwrap();
+            assert_eq!(close_partial(payload), Some(whole), "{payload}");
+            payload
+                .char_indices()
+                .map(|(i, _)| &payload[..i])
+                .for_each(|prefix| drop(close_partial(prefix)));
+        }
+
+        // Every string up to four chars over the bytes that steer the scan.
+        let alphabet =
+            ['{', '}', '[', ']', '"', '\\', ':', ',', ' ', '1', 't', 'é'];
+        let mut strings = vec![String::new()];
+        for _ in 0..4 {
+            strings = strings
+                .iter()
+                .flat_map(|s| alphabet.iter().map(move |c| format!("{s}{c}")))
+                .collect();
+            strings.iter().for_each(|s| drop(close_partial(s)));
         }
     }
 
