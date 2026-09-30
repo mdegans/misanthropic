@@ -177,7 +177,6 @@ record; this file aggregates them.
   trailing scalar kept; failing that, completed members only (a member cut
   mid-value is dropped whole) — which matches the twin's `tool_use` input
   exactly in both captures (`test/data/stop/clip_*`).
-
 - **A streamed turn's assembled usage double-counted.** `with_message` added
   the `message_delta` usage to `message_start`'s, but the delta's is
   cumulative for the turn — so a captured turn billed 685 in / 34 out
