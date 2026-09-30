@@ -46,6 +46,10 @@ record; this file aggregates them.
   clip) — counted against `max_consecutive_tool_calls`, so a model that clips
   forever hands back. A clipped `BudgetPolicy::FinalWord` wrap-up is likewise
   not seated. The raised `max_tokens` persists on the returned prompt.
+- **`Chat` drives a round on a beat that merges into the tail.** It skipped
+  the model call whenever a beat left `messages.len()` unchanged, so a user
+  beat merging into a user tail (e.g. the synthetic results a budget hand-back
+  leaves) was silently never answered. It now asks `Seated::advanced`.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

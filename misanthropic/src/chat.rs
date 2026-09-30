@@ -76,9 +76,12 @@ use futures::FutureExt;
 
 use crate::{
     Prompt, Transport,
-    prompt::message::{
-        AssistantMessage, Block, CacheControl, Content, Message, Role,
-        SystemMessage,
+    prompt::{
+        Seated,
+        message::{
+            AssistantMessage, Block, CacheControl, Content, Message, Role,
+            SystemMessage,
+        },
     },
     response::{Disposition, TokenCounts},
     tool::{self, Notification, Notifications, Tool, ToolBox, Use},
@@ -324,7 +327,6 @@ impl<State, T: Transport> Chat<State, T> {
             // buffered for the next round. The result is computed in an inner
             // scope so the racing futures' borrows (`state`, `notifications`)
             // end before the driver acts on it.
-            let seated_before = self.prompt.messages.len();
             let turn = {
                 let beat = next_beat(state).fuse();
                 let note = recv_note(&mut notifications).fuse();
@@ -334,12 +336,16 @@ impl<State, T: Transport> Chat<State, T> {
                     note = note => Turn::Note(note),
                 }
             };
-            match turn {
+            // Whether anything reached the prompt — a merge into the tail
+            // counts (lengths don't show it), a buffered system note doesn't.
+            let advanced = match turn {
                 Turn::Beat(None) => return Ok(()), // graceful stop (Ctrl-D)
                 Turn::Beat(Some(beat)) => {
-                    for message in beat {
-                        self.seat(message)?;
-                    }
+                    beat.into_iter().try_fold(false, |advanced, message| {
+                        Ok::<_, BoxError>(
+                            self.seat(message)?.advanced() || advanced,
+                        )
+                    })?
                 }
                 // The channel closed (all tools torn down): stop selecting
                 // it and carry on with caller input alone.
@@ -349,14 +355,14 @@ impl<State, T: Transport> Chat<State, T> {
                 }
                 Turn::Note(Some(note)) => {
                     log::debug!("interleaving a tool-pushed notification");
-                    self.seat_note(note)?;
+                    self.seat_note(note)?.advanced()
                 }
-            }
+            };
 
             // A beat that seated nothing (all-System → buffered, or empty)
             // gives the model nothing new: don't call it. The buffer flushes
             // with the next beat that does.
-            if self.prompt.messages.len() == seated_before {
+            if !advanced {
                 continue;
             }
 
@@ -380,7 +386,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// programming error in the tool itself — there is nothing legal to seat,
     /// ever — so this panics naming the offender rather than silently
     /// re-attributing operator content.
-    fn seat_note(&mut self, note: Notification) -> Result<(), BoxError> {
+    fn seat_note(&mut self, note: Notification) -> Result<Seated, BoxError> {
         let role = self.prompt.resolve_role(&note.preferred_roles);
         let downgraded = role != Role::System
             && note.preferred_roles.contains(&Role::System);
@@ -564,7 +570,7 @@ impl<State, T: Transport> Chat<State, T> {
         for call in calls {
             results.push(Block::from(self.toolbox.call(call).await));
         }
-        self.seat((Role::User, Content(results)))
+        self.seat((Role::User, Content(results))).map(drop)
     }
 
     /// The beat hit [`max_consecutive_tool_calls`]: answer every dangling
@@ -623,7 +629,7 @@ impl<State, T: Transport> Chat<State, T> {
                 )
             })
             .collect();
-        self.seat((Role::User, Content(results)))
+        self.seat((Role::User, Content(results))).map(drop)
     }
 
     /// Append `message` through [`Prompt::seat`] — the crate's wire-legality
@@ -636,9 +642,11 @@ impl<State, T: Transport> Chat<State, T> {
     /// the caller's beat or hook.
     ///
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
-    fn seat(&mut self, message: impl Into<Message>) -> Result<(), BoxError> {
-        self.prompt.seat(message, &mut self.pending_system)?;
-        Ok(())
+    fn seat(
+        &mut self,
+        message: impl Into<Message>,
+    ) -> Result<Seated, BoxError> {
+        Ok(self.prompt.seat(message, &mut self.pending_system)?)
     }
 }
 
@@ -804,6 +812,29 @@ mod tests {
             last.content.iter().last().unwrap(),
             Block::ToolResult { result } if result.is_error
         ));
+    }
+
+    /// A beat that merges into the tail (the synthetic results a budget
+    /// hand-back leaves) is new content, so it still drives a round.
+    #[test]
+    fn beat_merged_into_the_tail_drives_a_round() {
+        let script = Script::new([
+            tool_response("call_1"),
+            tool_response("call_2"),
+            text_response("ok"),
+        ]);
+        let toolbox = ToolBox::new().add(Echo::default());
+        let chat = Chat::new(script, Prompt::default(), toolbox)
+            .max_consecutive_tool_calls(1);
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("go"), user("carry on")])),
+        )
+        .unwrap();
+
+        let last = prompt.messages.last().unwrap();
+        assert_eq!(last.role, Role::Assistant);
+        assert_eq!(last.content.to_string(), "ok");
     }
 
     /// FinalWord grants exactly one wrap-up call after the cap.
