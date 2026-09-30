@@ -393,9 +393,11 @@ Notes on the macro:
   same order (Anthropic keeps optionals in place; engines following the
   structured-outputs docs hoist required first), and field order changes what
   the model generates — put reasoning before answers. The default-on
-  `schema-order-check` feature rejects interleaving: a compile error under
-  `#[derive(ToolArgs)]`, a panic building a `#[tool]` method's definition, and
-  an `Err` from `MethodBuilder::build` (escape hatch: `build_unchecked`).
+  `schema-order-check` feature rejects interleaving in what you author: a
+  compile error under `#[derive(ToolArgs)]`; under `#[tool]`, a generated
+  `#[cfg(test)]` test per method that fails your `cargo test`; and an `Err`
+  from `MethodBuilder::build` (escape hatch: `build_unchecked`). Received
+  schemas (a deserialized `Prompt`) are only checked structurally.
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
   state persistence.
@@ -474,6 +476,35 @@ if let Some(call) = message.tool_use() {
 }
 # Ok(())
 # }
+```
+
+Tool JSON someone else wrote (an MCP server, a saved `Prompt`) is *received*:
+`CustomMethodDef::try_from(value)`, `from_serializable`, and deserializing a
+`Prompt` check it structurally only, so it parses as written.
+`CustomMethodDef::try_from_checked` holds it to the authoring bar instead —
+with `schema-order-check`, required properties first:
+
+```
+use misanthropic::{json, tool::CustomMethodDef};
+
+let search = json!({
+    "name": "search",
+    "description": "Search the docs.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" },
+            "limit": { "type": "integer" },
+            "lang": { "type": "string" }
+        },
+        "required": ["query", "lang"]
+    }
+});
+
+let received = CustomMethodDef::try_from(search.clone()).unwrap();
+assert_eq!(received.name, "search");
+#[cfg(feature = "schema-order-check")]
+assert!(CustomMethodDef::try_from_checked(search).is_err());
 ```
 
 `add_tool` accepts anything `Into<MethodDef>` — a `CustomMethodDef`, a

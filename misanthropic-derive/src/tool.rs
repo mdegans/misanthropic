@@ -7,6 +7,8 @@
 //!   it (`state.push(args).await`) — no body rewriting, so nothing is fragile;
 //! - an `impl ToolArgs` for each method's `Args` type (name from the fn ident,
 //!   description from its doc comment);
+//! - with `schema-order-check`, a `#[cfg(test)]` test per method that builds
+//!   its definition, catching required-after-optional args at `cargo test`;
 //! - one `impl Methods` collecting the wrappers and delegating any tagged
 //!   lifecycle hooks
 //!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`),
@@ -123,7 +125,10 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
             }
         });
 
+        let order_test = order_test(&self_ident, m);
         wrappers.push(quote! {
+            #order_test
+
             #[doc(hidden)]
             #[allow(non_camel_case_types)]
             struct #wrapper;
@@ -267,6 +272,33 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
             }
         }
     })
+}
+
+/// With `schema-order-check`, a `#[cfg(test)]` test that builds `m`'s
+/// definition, so args declaring a required field after an optional one fail
+/// the author's own `cargo test` — `#[tool]` can't see the struct's fields to
+/// reject it at compile time the way `#[derive(ToolArgs)]` does. The name's
+/// `__` separators keep two tools' tests apart in one module.
+///
+/// Inside a fn body the test can't be collected, so rustc warns
+/// (`unnameable_test_items`); `#[allow]` that on the enclosing fn.
+fn order_test(self_ident: &Ident, m: &MethodInfo) -> TokenStream {
+    if !cfg!(feature = "schema-order-check") {
+        return TokenStream::new();
+    }
+    let test = Ident::new(
+        &format!("__misanthropic_schema_order__{self_ident}__{}", m.ident),
+        Span::call_site(),
+    );
+    let args_ty = &m.args_ty;
+    quote! {
+        #[cfg(test)]
+        #[test]
+        #[allow(non_snake_case, dead_code)]
+        fn #test() {
+            let _ = <#args_ty as ::misanthropic::tool::ToolArgs>::definition();
+        }
+    }
 }
 
 /// One `#[method]` fn: its name, doc, `Args` type, and optional

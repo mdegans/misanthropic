@@ -393,13 +393,16 @@ schema-inline = []
 # (reasoning fields must precede answer fields), an effect that isn't always
 # obvious and is stronger on smaller models.
 #
-# On by default: `#[derive(ToolArgs)]` fails to compile; `MethodBuilder::build`
-# errors, and with it `try_add_tool`, `CustomMethodDef::try_from(Value)` and
-# `CustomMethodDef::from_serializable`; `ToolArgs::definition` (and so a
-# `#[tool]` method, whose args the macro can't see) panics. Use
-# `MethodBuilder::build_unchecked` per schema, or turn this off to accept
-# third-party tool JSON as written. Enables `schema-order`, without which
-# `properties` order is alphabetical and the check meaningless.
+# On by default, it checks only what you *author*: `#[derive(ToolArgs)]` fails
+# to compile; `MethodBuilder::build` (and so `try_add_tool` given a builder)
+# errors; `ToolArgs::definition` panics, and `#[tool]` — which can't see its
+# args' fields — emits a `#[cfg(test)]` test per method that calls it, failing
+# your `cargo test`. `CustomMethodDef::try_from_checked` opts an import in.
+# What you *receive* is checked structurally only, so a prompt written
+# elsewhere still parses: deserializing a `Prompt` or `CustomMethodDef`,
+# `CustomMethodDef::try_from(Value)` and `from_serializable`. Escape hatch per
+# schema: `MethodBuilder::build_unchecked`. Enables `schema-order`, without
+# which `properties` order is alphabetical and the check meaningless.
 schema-order-check = [
     "schema-order",
     "misanthropic-derive?/schema-order-check",

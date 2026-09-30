@@ -28,18 +28,29 @@ record; this file aggregates them.
   The feature enables `schema-order` (without `preserve_order` the check
   would see alphabetical order).
 
+- **`CustomMethodDef::try_from_checked`** imports third-party tool JSON held
+  to `MethodBuilder::build`'s authoring checks, property order included;
+  `try_from` / `from_serializable` receive it as written.
+
 ### Breaking
 
-- **With `schema-order-check`, a required property declared after an
-  optional one is now rejected**: a compile error under
+- **With `schema-order-check`, an authored tool schema declaring a required
+  property after an optional one is now rejected**: a compile error under
   `#[derive(ToolArgs)]`; `ToolBuildError::InvalidInputSchema` from
-  `MethodBuilder::build` (and so from `try_add_tool`); a `serde_json::Error`
-  from `CustomMethodDef::try_from(Value)` and `from_serializable` — i.e.
-  third-party tool JSON; and a panic from `ToolArgs::definition` — which is
-  how a `#[tool]` method's args, invisible to the macro, are checked. Move required fields first, or reach for
-  `MethodBuilder::build_unchecked` / `default-features = false`. Top-level
-  properties only; `#[serde(flatten)]`ed fields and `with` types are left to
-  the runtime check.
+  `MethodBuilder::build` (and so from `TryFrom<MethodBuilder>` /
+  `try_add_tool` given a builder); and a panic from `ToolArgs::definition`.
+  `#[tool]` can't see its args' fields, so it emits a `#[cfg(test)]` test per
+  method (`__misanthropic_schema_order__{Tool}__{method}`) that builds the
+  definition — a misordered args struct fails your `cargo test`. Received
+  schemas are checked structurally only, so a `Prompt` written elsewhere
+  still deserializes: deserializing a `Prompt` / `CustomMethodDef`,
+  `CustomMethodDef::try_from(Value)` and `from_serializable`; opt an import
+  in with the new `CustomMethodDef::try_from_checked`. Move required fields
+  first, or reach for `MethodBuilder::build_unchecked` /
+  `default-features = false`. Top-level properties only; `#[serde(flatten)]`ed
+  fields and `with` types are left to the runtime check. A `#[tool]` impl
+  inside a fn body trips `unnameable_test_items` in test builds; allow it on
+  the enclosing fn.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 
