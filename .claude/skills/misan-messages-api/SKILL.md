@@ -53,7 +53,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
 ## Quick start — single message
 
 ```no_run
-use misanthropic::{Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Prompt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,16 +66,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a Prompt (the request type) and send it. `Client::message`
     // forces `stream = false` and returns a `response::Message` directly.
-    // `messages` validates turn order, so the `?` is required — and not
-    // just for correctness: an un-unwrapped `Result` would itself satisfy
-    // `impl Serialize` and reach the wire as `{"Ok": {…}}` if the error
-    // type were serializable. It deliberately isn't.
-    let message = client
-        .message(
-            Prompt::default()
-                .messages([(Role::User, "What is 2+2?")])?,
-        )
-        .await?;
+    // `Prompt::user` (or `Prompt::from("…")`) is infallible — a lone user
+    // turn is always legal. The appending builders (`messages`,
+    // `add_message`, …) validate turn order and return a `Result`, so they
+    // need a `?` — and not just for correctness: an un-unwrapped `Result`
+    // would itself satisfy `impl Serialize` and reach the wire as
+    // `{"Ok": {…}}` if the error type were serializable. It deliberately
+    // isn't.
+    let message = client.message(Prompt::user("What is 2+2?")).await?;
 
     // `response::Message` implements `Display` (prints content).
     println!("{message}");

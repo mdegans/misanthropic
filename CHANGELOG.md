@@ -15,6 +15,13 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`Prompt::user(content)` — an infallible opening turn** (#125), plus
+  `impl From<&str> for Prompt`. A lone user turn is always legal, so the line
+  every program starts with needs no `Role` import and no `?`:
+  `client.message(Prompt::user("What is 2+2?"))`.
+
 ## [1.0.0-alpha.20] — 2026-09-28
 
 ### Added

@@ -228,6 +228,13 @@ impl Default for Prompt {
     }
 }
 
+/// The one-liner: `Prompt::from("…")` is [`Prompt::user`].
+impl From<&str> for Prompt {
+    fn from(text: &str) -> Self {
+        Self::user(text)
+    }
+}
+
 /// Capacity tier for a request. Set via [`Prompt::service_tier`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
@@ -385,6 +392,29 @@ impl Seated {
 }
 
 impl Prompt {
+    /// A [`Prompt::default`] opening with one [`User`] turn — the line every
+    /// program starts with. Infallible: a lone user turn is always legal, so
+    /// there is no [`TurnOrderError`] to handle (unlike [`add_message`]).
+    ///
+    /// ```
+    /// use misanthropic::Prompt;
+    ///
+    /// let prompt = Prompt::user("What is 2+2?").system("Be terse.");
+    /// assert_eq!(prompt.messages.len(), 1);
+    /// ```
+    ///
+    /// [`User`]: message::Role::User
+    /// [`add_message`]: Prompt::add_message
+    pub fn user(content: impl Into<Content>) -> Self {
+        Self {
+            messages: vec![Message {
+                role: message::Role::User,
+                content: content.into(),
+            }],
+            ..Self::default()
+        }
+    }
+
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -2342,6 +2372,16 @@ mod tests {
             ])
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_user_matches_add_message() {
+        let expected =
+            Prompt::default().add_message((Role::User, "hi")).unwrap();
+
+        assert_eq!(Prompt::user("hi"), expected);
+        assert_eq!(Prompt::from("hi"), expected);
+        assert!(Prompt::user("hi").check_turn_order().is_ok());
     }
 
     #[test]
