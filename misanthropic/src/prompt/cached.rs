@@ -68,8 +68,9 @@
 //! too. (Probed against the free `count_tokens` endpoint, 2026-09-30.)
 //!
 //! So the wrapper keeps count: [`cache`] and [`cache_windowed`] never take a
-//! request past 4. They slide a window over the messages — evicting the
-//! oldest 5-minute message markers first, a 1-hour one only when no 5-minute
+//! request past 4. They slide a window over the messages — keeping the
+//! newest marker (the one the next request hits), then evicting the oldest
+//! 5-minute message markers first, a 1-hour one only when no other 5-minute
 //! one is left — and never touch the `tools` / `system` markers or the
 //! automatic slot. Calling [`cache`] every turn is safe. An evicted marker
 //! costs no cache hits while a kept one sits within the API's lookback
@@ -237,9 +238,9 @@ impl CachedPrompt {
     ///
     /// Call this after appending messages to extend the cached region.
     /// Calling this every turn is safe: it never takes the request past
-    /// Anthropic's 4-marker limit (see the [module docs](self)), evicting the
-    /// oldest 5-minute message markers (a 1-hour one only when no 5-minute
-    /// one is left) to make room.
+    /// Anthropic's 4-marker limit (see the [module docs](self)): the new
+    /// marker stays, and the oldest 5-minute message markers (a 1-hour one
+    /// only when no other 5-minute one is left) make room.
     ///
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL (useful
     /// for cache priming across an hourly batch cadence), use
@@ -349,8 +350,8 @@ impl CachedPrompt {
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
     /// eviction, the window slides as [`Prompt::cache_windowed_with`]'s
-    /// does: 5-minute message markers before 1-hour ones, the oldest
-    /// outside the window first.
+    /// does: never the newest position's marker, then 5-minute message
+    /// markers before 1-hour ones, the oldest outside the window first.
     ///
     /// # Errors
     /// [`CacheError`] if the request would break a rule
@@ -1008,6 +1009,27 @@ mod tests {
         });
 
         assert_eq!(marked(&cached), [5, 7, 9, 11]);
+    }
+
+    /// A window full of 1-hour anchors doesn't freeze the tail: `cache`
+    /// keeps the newest position marked every turn, evicting the oldest
+    /// anchor to make room, then the 5-minute tail it slides past.
+    #[test]
+    fn cache_after_a_full_one_hour_window_marks_the_tail() {
+        let mut cached = CachedPrompt::from(Prompt::default());
+        converse(&mut cached, 4, |cached| {
+            cached.cache_1h().unwrap();
+        });
+        assert_eq!(marked(&cached), [1, 3, 5, 7]);
+
+        converse(&mut cached, 3, |cached| {
+            cached.cache();
+            let tail = cached.messages.last().unwrap();
+            assert!(tail.content.has_cache(), "the tail is marked");
+            assert_eq!(cached.check_cache(), Ok(()));
+        });
+
+        assert_eq!(marked(&cached), [3, 5, 7, 13]);
     }
 
     /// The automatic slot counts: with it and a system marker, `cache`

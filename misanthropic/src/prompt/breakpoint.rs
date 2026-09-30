@@ -335,9 +335,10 @@ impl Prompt {
     }
 
     /// Plan marking `targets` with `cache_control`, then sliding the message
-    /// window to fit the budget: `kept` says which markers stay, the
-    /// messages in `keep` ranking first within a TTL. `tools`, `system` and
-    /// the automatic slot are never evicted.
+    /// window to fit the budget: `kept` says which markers stay — the
+    /// newest position's (`keep[0]`) always, then the messages in `keep`
+    /// ranking first within a TTL. `tools`, `system` and the automatic slot
+    /// are never evicted.
     ///
     /// A 5-minute block marker yields to a 1-hour marker at or after its
     /// place that the request keeps, which already caches that prefix, for
@@ -378,8 +379,9 @@ impl Prompt {
 
         // Then against the 1-hour message markers the fit keeps, not every
         // one there is: an evicted one covers nothing. The fit ranks them
-        // before any 5-minute marker, so leaving one of those out changes
-        // nothing about which.
+        // before any 5-minute marker but the newest position's — which
+        // never yields: nothing marked follows it in its message — so
+        // leaving one of those out changes nothing about which.
         let lasting = kept(&marks, keep);
         let skipped: Vec<Breakpoint> = fresh
             .iter()
@@ -469,11 +471,13 @@ impl Prompt {
 }
 
 /// The markers a request keeps within Anthropic's 4-marker budget: every one
-/// outside `messages`, then the message markers in rank. 1-hour markers rank
-/// first — theirs are the entries still there after a pause of more than
-/// five minutes, and they must come first on the wire anyway — then, within
-/// a TTL, those of the messages in `keep` (in its order, a message's last
-/// block first), then the newest.
+/// outside `messages`, then the message markers in rank. First the newest
+/// position's — `keep[0]`, its last marked block — whatever its TTL: the
+/// tail marker is what the next request hits. Then 1-hour markers — theirs
+/// are the entries still there after a pause of more than five minutes,
+/// and they must come first on the wire anyway — then, within a TTL, those
+/// of the other messages in `keep` (in its order, a message's last block
+/// first), then the newest.
 fn kept(marks: &[Mark], keep: &[usize]) -> Vec<Breakpoint> {
     let (messages, prefix): (Vec<&Mark>, Vec<&Mark>) =
         marks.iter().partition(|mark| mark.message().is_some());
@@ -484,8 +488,13 @@ fn kept(marks: &[Mark], keep: &[usize]) -> Vec<Breakpoint> {
         at.unwrap_or(keep.len())
     };
     let mut ranked: Vec<&Mark> = messages.into_iter().rev().collect();
+    let tail = keep.first().and_then(|&newest| {
+        let mark = ranked.iter().find(|mark| mark.message() == Some(newest));
+        mark.map(|mark| mark.at)
+    });
     // Stable, so the newest go first within a rank.
-    ranked.sort_by_key(|mark| (!mark.hour, window(mark)));
+    ranked
+        .sort_by_key(|mark| (Some(mark.at) != tail, !mark.hour, window(mark)));
     let ranked = ranked.into_iter().take(budget);
     prefix
         .into_iter()
