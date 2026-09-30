@@ -48,10 +48,13 @@ const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
 
 /// Request for the [Anthropic Messages API].
 ///
+/// Like the API, deserializing requires `model`, `messages` and `max_tokens`
+/// (a missing one is a `missing field` error); every other field defaults.
+/// [`Prompt::default`] still fills all three for builder use.
+///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[serde(default)]
 pub struct Prompt {
     /// [`Model`](model::Model) to use for inference.
     pub model: model::Model,
@@ -78,26 +81,26 @@ pub struct Prompt {
     /// the completion will stop with [`StopReason::StopSequence`].
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<Cow<'static, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the
     /// response will be a single [`response::Message`].
     ///
     /// [`Event`]: crate::stream::Event
     /// [`response::Message`]: crate::response::Message
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     /// System prompt as [`Content`].
     ///
     /// [`Content`]: message::Content
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<message::Content>,
     /// Temperature for sampling. Must be between 0 and 1. Higher values mean
     /// more randomness. Note that 0.0 is not fully deterministic.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// [`tool::Choice`] for the model.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<tool::Choice>,
     /// Tool definitions for the model — the [`CustomMethodDef`]s you execute
     /// and [`ServerMethodDef`]s the API runs, intermixed via [`MethodDef`].
@@ -105,10 +108,10 @@ pub struct Prompt {
     /// [`ServerMethodDef`]: crate::tool::ServerMethodDef
     /// [`CustomMethodDef`]: crate::tool::CustomMethodDef
     /// [`MethodDef`]: crate::tool::MethodDef
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<tool::MethodDef>>,
     /// Top K tokens to consider for each token.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
     /// Top P nucleus sampling. The probabilities of each token are added in
     /// order from most to least likely until the probability mass exceeds
@@ -116,13 +119,13 @@ pub struct Prompt {
     ///
     /// This is a float between 0 and 1 where higher values mean more
     /// randomness.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// Extended thinking support, for Anthropic's built-in chain-of-thought on
     /// Sonnet 3.7 and later. Use [`Thinking::adaptive`] on current models. The
     /// `cot` feature works with all models instead, provided the system prompt
     /// instructs the Assistant to use `<thinking>` tags.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     /// Structured output configuration. When set, the response is
     /// constrained by grammar-based decoding to a single [`Text`] [`Block`]
@@ -144,16 +147,16 @@ pub struct Prompt {
     /// [streaming]: <https://docs.anthropic.com/en/docs/build-with-claude/streaming>
     /// [batching]: <https://docs.anthropic.com/en/docs/build-with-claude/batch-processing>
     /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
     /// Capacity tier for the request. See [`ServiceTier`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
     /// Geographic region constraint for inference. See [`InferenceGeo`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference_geo: Option<InferenceGeo>,
     /// Container ID to reuse across requests (used with code execution).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<Cow<'static, str>>,
     /// Automatic prompt caching. When set, the API places a cache breakpoint
     /// on the *last cacheable block* of this request, server-side, at request
@@ -162,7 +165,7 @@ pub struct Prompt {
     /// conversation grows, so every request caches its full prefix with no
     /// client-side marker management. Counts toward the API's 4-breakpoint
     /// budget. Set with [`Self::auto_cache`] / [`Self::auto_cache_1h`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<message::CacheControl>,
 }
 
@@ -3150,18 +3153,49 @@ mod tests {
         );
     }
 
+    /// The smallest body the API accepts: `model`, `messages`, `max_tokens`.
+    const MINIMAL: &str = r#"{
+        "model": "claude-haiku-4-5",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Hi"}]}
+        ],
+        "max_tokens": 32
+    }"#;
+
     #[test]
-    fn test_serde() {
-        // Test default deserialization.
-        const JSON: &str = r#"{}"#;
+    fn test_serde_minimal_roundtrips() {
+        let prompt = crate::utils::roundtrip::<Prompt>(MINIMAL);
+        assert_eq!(prompt.max_tokens.get(), 32);
+        assert_eq!(prompt.messages.len(), 1);
+        assert!(prompt.system.is_none());
+        assert!(prompt.metadata.is_empty());
 
-        let defaults = serde_json::from_str::<Prompt>(JSON).unwrap();
+        // And the builder's default serializes all three, so it loads back.
+        let json = serde_json::to_string(&Prompt::default()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Prompt>(&json).unwrap(),
+            Prompt::default()
+        );
+    }
 
-        // Another round trip to ensure serialization works.
-        let json = serde_json::to_string(&defaults).unwrap();
-        let _ = serde_json::from_str::<Prompt>(&json).unwrap();
+    #[test]
+    fn test_serde_requires_model_messages_max_tokens() {
+        // Anthropic 400s with "<field>: Field required"; we fail to
+        // deserialize, naming the same field.
+        for field in ["model", "messages", "max_tokens"] {
+            let mut body: serde_json::Value =
+                serde_json::from_str(MINIMAL).unwrap();
+            body.as_object_mut().unwrap().remove(field);
+            let err = serde_json::from_value::<Prompt>(body).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("missing field `{field}`"),
+                "{field}"
+            );
+        }
 
-        // TODO: impl Default and PartialEq when `cfg(test)`
+        // An empty body no longer silently becomes a 4096-token request.
+        assert!(serde_json::from_str::<Prompt>("{}").is_err());
     }
 
     #[test]

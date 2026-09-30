@@ -17,6 +17,15 @@ record; this file aggregates them.
 
 ### Breaking
 
+- **Deserializing a `Prompt` requires `model`, `messages` and `max_tokens`**,
+  matching Anthropic, which 400s with `<field>: Field required`. The
+  container-level `#[serde(default)]` is gone (every other field still
+  defaults), so a body missing one is a serde `missing field` error instead
+  of silently becoming e.g. a 4096-token request. This lets drama_llama's
+  blallama return the same 400 as Anthropic. Anything a `Prompt` serialized
+  (the chat demo's exports, persisted prompts) already has all three and
+  still loads; add them to hand-written bodies. `CachedPrompt` follows.
+
 - **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
   Downstream `match` on either now needs a `_` arm. Planned variants — a
   dispatch-once final word (#136) and an egress `Allowlist` (#87) — can then
