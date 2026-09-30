@@ -278,13 +278,15 @@ record; this file aggregates them.
   however many of its blocks were marked, ignored the automatic slot, and
   never trimmed its own window. Now `cache`, `cache_windowed*` and
   `auto_cache` / `set_auto_cache` (and so `Chat::cache`) never take a
-  request past 4: they slide a window over the messages, keeping the newest
-  message markers and evicting the oldest — never the `tools` / `system`
-  ones or the automatic slot — and place nothing when those already hold
-  every slot. Eviction costs no cache hits: the evicted marker's entry stays
-  on the server for its TTL, within reach of the newer markers' ~20-block
-  lookback. The docs also note the TTL rule: a 1-hour marker after a
-  5-minute one is a 400.
+  request past 4: they slide a window over the messages, evicting the
+  oldest 5-minute message markers first and a 1-hour one only when no
+  5-minute one is left — never the `tools` / `system` ones or the automatic
+  slot — and place nothing when those already hold every slot. An evicted
+  marker costs no cache hits while a kept one sits within the API's
+  ~20-block lookback after it and its entry is alive (its TTL, refreshed by
+  each hit); a 1-hour anchor is kept because, after a pause of more than
+  five minutes, its entry is the one left. The docs also note the TTL rule:
+  a 1-hour marker after a 5-minute one is a 400.
 - **`ToolBox` offered its tools in a per-instance order.** Tools lead the
   cached prefix, but `definitions()` iterated a `HashMap`, so two boxes
   holding the same tools (identical agents, or one agent across a restart)

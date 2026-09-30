@@ -1409,9 +1409,10 @@ impl Prompt {
     ///   nothing is cached, silently: from 512 tokens (Opus 5.5) up to 4096
     ///   (Haiku 4.5, Opus 4.5 and 4.6). See [prompt caching].
     /// * Calling it every turn is safe: like [`cache_windowed`], it never
-    ///   takes the request past Anthropic's 4-marker limit, keeping the newest
-    ///   message markers and evicting the oldest, and it places nothing when
-    ///   `tools`, `system` and the automatic slot hold every slot.
+    ///   takes the request past Anthropic's 4-marker limit. It evicts the
+    ///   oldest 5-minute message markers first — a 1-hour one only when no
+    ///   5-minute one is left — and places nothing when `tools`, `system`
+    ///   and the automatic slot hold every slot.
     /// * It never builds a request [`check_cache`] refuses. Under a 1-hour
     ///   marker at or after the end (a 1-hour [`auto_cache_1h`] slot, say) a
     ///   5-minute one would be a 400 and adds nothing — the 1-hour entry
@@ -1494,8 +1495,8 @@ impl Prompt {
     /// cached — no error, just a zero `cache_creation_input_tokens`.
     ///
     /// The automatic slot is one of the request's 4 markers, even when the
-    /// last block is marked too; if all 4 are already placed, the oldest
-    /// message marker makes way for it.
+    /// last block is marked too; if all 4 are already placed, a message
+    /// marker makes way for it, as for [`cache`](Prompt::cache).
     ///
     /// # Errors
     /// [`CacheError::AutoMismatch`] when the last block carries a 1-hour
@@ -1614,11 +1615,17 @@ impl Prompt {
     ///
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
-    /// eviction, the window slides: the oldest message-level markers go
-    /// first, and if the window alone doesn't fit, its oldest positions go
-    /// too. An evicted marker's cache entry outlives it on the server (for
-    /// its TTL), and the newer markers still reach it through the API's
-    /// ~20-block lookback, so eviction costs no cache hits.
+    /// eviction, the window slides: 5-minute message markers go before
+    /// 1-hour ones, and within a TTL the oldest outside the window go
+    /// first, then the window's own oldest positions.
+    ///
+    /// An evicted marker costs no cache hits while a kept marker sits within
+    /// the API's lookback (about 20 blocks) after it and its entry is still
+    /// alive: the entry outlives the marker on the server for its TTL
+    /// (refreshed by each hit), and the lookback from the kept marker finds
+    /// it. Further back, or once that TTL lapses, its prefix is written
+    /// again. That is why 1-hour markers go last: after a pause of more than
+    /// five minutes, theirs are the entries left.
     ///
     /// # Errors
     /// [`CacheError`] if the request would break a rule

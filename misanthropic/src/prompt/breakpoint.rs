@@ -243,30 +243,39 @@ impl Prompt {
     }
 
     /// Plan marking `targets` with `cache_control`, then sliding the message
-    /// window to fit the budget: the markers of the messages in `keep` first
-    /// (in `keep`'s order, a message's last block first), then the newest of
-    /// the rest. `tools`, `system` and the automatic slot are never evicted.
+    /// window to fit the budget: `kept` says which markers stay, the
+    /// messages in `keep` ranking first within a TTL. `tools`, `system` and
+    /// the automatic slot are never evicted.
     ///
     /// A 5-minute block marker yields to a 1-hour marker at or after its
-    /// place, which already caches that prefix, for longer: placing it
-    /// would break the TTL order (or the automatic slot's match), so it is
-    /// left out. That makes a 5-minute block placement never the cause of
-    /// a [`CacheError`].
+    /// place that the request keeps, which already caches that prefix, for
+    /// longer: placing it would break the TTL order (or the automatic slot's
+    /// match), so it is left out. That makes a 5-minute block placement
+    /// never the cause of a [`CacheError`].
     pub(super) fn plan(
         &self,
         targets: impl IntoIterator<Item = Breakpoint>,
         cache_control: CacheControl,
         keep: &[usize],
     ) -> Plan {
-        let mut marks = self.marks();
         let hour = matches!(cache_control.ttl(), CacheTtl::OneHour);
-        let fresh: Vec<Breakpoint> = targets
+        let yields = |at: Breakpoint, over: &Mark| {
+            !hour && at != Breakpoint::Auto && over.hour && over.at >= at
+        };
+        let mut marks = self.marks();
+        // Markers outside `messages` stay, and a 1-hour one is never
+        // replaced by a 5-minute one, so both decide before the fit.
+        let mut fresh: Vec<Breakpoint> = targets
             .into_iter()
             .filter(|&at| {
-                hour || at == Breakpoint::Auto
-                    || !marks.iter().any(|mark| mark.hour && mark.at >= at)
+                !marks.iter().any(|mark| {
+                    yields(at, mark)
+                        && (mark.at == at || mark.message().is_none())
+                })
             })
             .collect();
+        let placed: Vec<Breakpoint> =
+            marks.iter().map(|mark| mark.at).collect();
         for &at in &fresh {
             let mark = Mark { at, hour };
             match marks.binary_search_by_key(&at, |mark| mark.at) {
@@ -275,13 +284,38 @@ impl Prompt {
             }
         }
 
-        let evicted = fit(&marks, keep);
-        marks.retain(|mark| !evicted.contains(&mark.at));
-        let fresh = fresh.into_iter().filter(|at| !evicted.contains(at));
+        // Then against the 1-hour message markers the fit keeps, not every
+        // one there is: an evicted one covers nothing. The fit ranks them
+        // before any 5-minute marker, so leaving one of those out changes
+        // nothing about which.
+        let lasting = kept(&marks, keep);
+        let skipped: Vec<Breakpoint> = fresh
+            .iter()
+            .copied()
+            .filter(|&at| {
+                marks
+                    .iter()
+                    .filter(|mark| lasting.contains(&mark.at))
+                    .any(|mark| yields(at, mark))
+            })
+            .collect();
+        fresh.retain(|at| !skipped.contains(at));
+        marks.retain(|mark| {
+            !skipped.contains(&mark.at) || placed.contains(&mark.at)
+        });
+
+        let kept = kept(&marks, keep);
+        let evicted: Vec<Breakpoint> = marks
+            .iter()
+            .map(|mark| mark.at)
+            .filter(|at| !kept.contains(at))
+            .collect();
+        marks.retain(|mark| kept.contains(&mark.at));
+        fresh.retain(|at| kept.contains(at));
         Plan {
             marks,
             target: self.auto_target(),
-            fresh: fresh.collect(),
+            fresh,
             evicted,
             cache_control,
         }
@@ -334,23 +368,29 @@ impl Prompt {
     }
 }
 
-/// The message markers to evict so `marks` fits the budget, keeping the
-/// markers of the messages in `keep` first, then the newest.
-fn fit(marks: &[Mark], keep: &[usize]) -> Vec<Breakpoint> {
-    let prefix = marks.iter().filter(|mark| mark.message().is_none());
-    let budget = MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(prefix.count());
-    let newest_first = marks
-        .iter()
-        .rev()
-        .filter_map(|mark| Some((mark.message()?, mark.at)));
-    let kept_first = keep
-        .iter()
-        .flat_map(|&k| newest_first.clone().filter(move |&(m, _)| m == k));
-    let rest = newest_first.clone().filter(|(m, _)| !keep.contains(m));
-    kept_first
-        .chain(rest)
-        .skip(budget)
-        .map(|(_, at)| at)
+/// The markers a request keeps within Anthropic's 4-marker budget: every one
+/// outside `messages`, then the message markers in rank. 1-hour markers rank
+/// first — theirs are the entries still there after a pause of more than
+/// five minutes, and they must come first on the wire anyway — then, within
+/// a TTL, those of the messages in `keep` (in its order, a message's last
+/// block first), then the newest.
+fn kept(marks: &[Mark], keep: &[usize]) -> Vec<Breakpoint> {
+    let (messages, prefix): (Vec<&Mark>, Vec<&Mark>) =
+        marks.iter().partition(|mark| mark.message().is_some());
+    let budget = MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(prefix.len());
+    let window = |mark: &Mark| {
+        let m = mark.message();
+        let at = keep.iter().position(|&k| Some(k) == m);
+        at.unwrap_or(keep.len())
+    };
+    let mut ranked: Vec<&Mark> = messages.into_iter().rev().collect();
+    // Stable, so the newest go first within a rank.
+    ranked.sort_by_key(|mark| (!mark.hour, window(mark)));
+    let ranked = ranked.into_iter().take(budget);
+    prefix
+        .into_iter()
+        .chain(ranked)
+        .map(|mark| mark.at)
         .collect()
 }
 

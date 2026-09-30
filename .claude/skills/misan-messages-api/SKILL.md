@@ -252,13 +252,14 @@ println!("Assistant: {reply}");
 
 `cache()` marks the end of the prompt (5-minute TTL). Call it every turn: it
 keeps Anthropic's 4-marker limit (the automatic slot counts) by sliding a
-window — the newest message markers stay, the oldest go, and their entries
-stay reachable server-side. `auto_cache()` lets the API place the marker
-instead. Anthropic 400s a 1-hour marker after a 5-minute one (`tools` →
-`system` → `messages`, automatic slot last), so the 1-hour and automatic
-placements return a `CacheError` instead of building one; `check_cache()`
-checks hand-placed markers the same way (the `Chat` driver runs it before
-every request).
+window — the oldest 5-minute message markers go first, a 1-hour anchor only
+when no 5-minute one is left, and an evicted entry stays reachable while a
+kept marker is within ~20 blocks after it. `auto_cache()` lets the API place
+the marker instead. Anthropic 400s a 1-hour marker after a 5-minute one
+(`tools` → `system` → `messages`, automatic slot last), so the 1-hour and
+automatic placements return a `CacheError` instead of building one;
+`check_cache()` checks hand-placed markers the same way (the `Chat` driver
+runs it before every request).
 
 ```rust
 use misanthropic::{Prompt, prompt::{CacheError, message::Role}};
