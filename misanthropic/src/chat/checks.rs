@@ -155,6 +155,16 @@ impl<T> Checked<T> {
     }
 }
 
+impl<T> Checked<T> {
+    /// Assert `prompt` is legal, then log it as sent.
+    fn check(&self, prompt: &Prompt) {
+        assert_request_legal(prompt);
+        self.log().sent.push(prompt.clone());
+    }
+}
+
+/// Every method forwards to the inner transport — a default left in place
+/// would test the trait's behavior, not the transport's.
 #[async_trait::async_trait]
 impl<T: Transport> Transport for Checked<T> {
     type Error = T::Error;
@@ -163,11 +173,21 @@ impl<T: Transport> Transport for Checked<T> {
         &self,
         prompt: &Prompt,
     ) -> Result<response::Message, Self::Error> {
-        assert_request_legal(prompt);
-        self.log().sent.push(prompt.clone());
+        self.check(prompt);
         let response = self.inner.send(prompt).await?;
         self.log().received.push(response.clone());
         Ok(response)
+    }
+
+    async fn send_batch(
+        &self,
+        prompts: &[&Prompt],
+    ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
+        prompts.iter().for_each(|prompt| self.check(prompt));
+        let responses = self.inner.send_batch(prompts).await?;
+        let received = responses.iter().filter_map(|r| r.as_ref().ok());
+        self.log().received.extend(received.cloned());
+        Ok(responses)
     }
 
     async fn models(&self) -> Result<model::Models, Self::Error> {
@@ -176,6 +196,10 @@ impl<T: Transport> Transport for Checked<T> {
 
     fn quirks(&self) -> Quirks {
         self.inner.quirks()
+    }
+
+    fn max_concurrency(&self) -> std::num::NonZeroUsize {
+        self.inner.max_concurrency()
     }
 }
 
@@ -219,4 +243,34 @@ fn checks_catch_illegal_shapes() {
     empty.messages[1].content.clear();
     empty.messages.push(user());
     assert!(panics(&|| assert_request_legal(&empty)));
+}
+
+#[cfg(feature = "mock")]
+#[test]
+fn checked_forwards_every_method() {
+    use crate::mock::{self, MockTransport};
+
+    let quirks = Quirks {
+        tool_choice_not_respected: true,
+        ..Quirks::default()
+    };
+    let three = std::num::NonZeroUsize::new(3).unwrap();
+    let mock = MockTransport::new()
+        .with_quirks(quirks)
+        .with_concurrency(three)
+        .then(mock::text("one"))
+        .then(mock::text("two"));
+    let checked = Checked::new(mock);
+    let prompts = [Prompt::user("a"), Prompt::user("b")];
+
+    let replies = futures::executor::block_on(
+        checked.send_batch(&prompts.iter().collect::<Vec<_>>()),
+    )
+    .unwrap();
+
+    assert_eq!(replies.len(), 2);
+    let log = checked.log();
+    assert_eq!((log.sent.len(), log.received.len()), (2, 2));
+    assert_eq!(checked.quirks(), quirks);
+    assert_eq!(checked.max_concurrency(), three);
 }
