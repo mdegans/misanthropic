@@ -14,8 +14,9 @@
 //! Each response is classified by its [`Disposition`], and client tool calls
 //! run only from a complete [`ToolUse`](Disposition::ToolUse) turn (or a
 //! [paused](Disposition::Paused) one). A turn the driver can't use is never
-//! seated and its calls never run — it stops with an [`Error`] that hands the
-//! [`Prompt`] and `State` back, so the caller can adjust and resume:
+//! seated and its calls never run — it stops with an [`Error`] that hands
+//! everything back (the [`Prompt`], the tools, the configuration, the
+//! `State`), so the caller can adjust and [resume](Error::resume):
 //!
 //! - [`Clipped`](Stop::Clipped) (`max_tokens`): its tool calls can be valid
 //!   JSON missing arguments the model never emitted.
@@ -52,7 +53,8 @@
 //! downgraded to the user role: operator content riding the user channel
 //! misattributes authorship and erodes the channel-authority distinction the
 //! system role exists to provide. The buffer is the *only* state the driver
-//! keeps for this — the seat/merge/buffer legality all lives in the crate.
+//! keeps for this — the seat/merge/buffer legality all lives in the crate —
+//! and a hand-back returns it ([`Parts::pending`]) rather than drop a note.
 //!
 //! # Caching
 //!
@@ -158,16 +160,43 @@ pub enum Stop {
     TurnOrder(#[from] TurnOrderError),
 }
 
-/// [`Chat::run`] stopped early — see [`Stop`]. Carries the [`Prompt`] and
-/// `State` back out so the caller can adjust and resume: a fresh [`Chat`] on
-/// that `prompt` answers it before asking for the next beat.
+/// A [`Chat`] without its transport — what [`run`](Chat::run) hands back
+/// (inside an [`Error`] when it stops early), and what [`Chat::from_parts`]
+/// resumes from, configured (hook, budget, caching, usage sink) as the
+/// `Chat` that made them.
+pub struct Parts<State = ()> {
+    /// The conversation — see [`Stop`] for what an early stop dropped.
+    pub prompt: Prompt,
+    /// System content the tail doesn't admit yet (see the module-level
+    /// notes). A `Chat` from these parts seats it after the next beat.
+    pub pending: Option<SystemMessage>,
+    /// The tools, torn down. A `Chat` from these parts prepares them again —
+    /// a reload, so [`on_init`](Tool::on_init) runs once per run — and
+    /// delivers the notifications they pushed in between.
+    pub toolbox: ToolBox,
+    config: Config<State>,
+}
+
+impl<State> std::fmt::Debug for Parts<State> {
+    /// [`Prompt`]'s own `Debug` hides the conversation; the rest is opaque.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Parts")
+            .field("prompt", &self.prompt)
+            .finish_non_exhaustive()
+    }
+}
+
+/// [`Chat::run`] stopped early — see [`Stop`]. Hands back everything a
+/// resume needs: the [`Prompt`], legal to resend; the pending system notes;
+/// the `State`; and the rest of the [`Parts`]. [`resume`](Error::resume)
+/// answers the prompt before asking for the next beat.
 ///
 /// ```
 /// use std::num::NonZeroU32;
 ///
 /// use misanthropic::{
 ///     Prompt, Transport,
-///     chat::{self, BoxError, Chat, Stop},
+///     chat::{BoxError, Chat, Stop},
 ///     prompt::message::{Message, Role},
 ///     tool::ToolBox,
 /// };
@@ -180,28 +209,26 @@ pub enum Stop {
 ///     let mut lines = lines.into_iter();
 ///     let mut next_beat = async |_: &mut ()| {
 ///         let line = lines.next();
-///         Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
+///         let beat = line.map(|l| vec![Message::from((Role::User, l))]);
+///         Ok::<_, BoxError>(beat)
 ///     };
 ///
-///     let mut prompt = Prompt::default();
+///     let prompt = Prompt::default();
+///     let mut chat = Chat::new(transport.clone(), prompt, ToolBox::new());
 ///     loop {
-///         let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
-///         match chat.run((), &mut next_beat).await {
-///             Ok((prompt, ())) => return Ok(prompt),
-///             // Nothing was seated or run. Raise the limit and resume: the
-///             // next `Chat` answers the un-advanced prompt first.
-///             Err(chat::Error {
-///                 kind: Stop::Clipped(_),
-///                 prompt: clipped,
-///                 ..
-///             }) => {
-///                 let two = NonZeroU32::new(2).unwrap();
-///                 let max_tokens = clipped.max_tokens.saturating_mul(two);
-///                 prompt = clipped.max_tokens(max_tokens);
-///             }
-///             // Anything else still converts with `?` (or `.into()`).
-///             Err(error) => return Err(error.into()),
-///         }
+///         let mut error = match chat.run((), &mut next_beat).await {
+///             Ok((parts, ())) => return Ok(parts.prompt),
+///             Err(error) => error,
+///         };
+///         // Anything else still converts with `?` (or `.into()`).
+///         let Stop::Clipped(_) = error.kind else {
+///             return Err(error.into());
+///         };
+///         // Nothing was seated or run: raise the limit and resume.
+///         let two = NonZeroU32::new(2).unwrap();
+///         let max_tokens = error.prompt.max_tokens.saturating_mul(two);
+///         error.prompt.max_tokens = max_tokens;
+///         (chat, _) = error.resume(transport.clone());
 ///     }
 /// }
 /// ```
@@ -211,8 +238,61 @@ pub struct Error<State = ()> {
     /// The prompt, legal to resend as is — see [`Stop`] for what (if
     /// anything) was dropped.
     pub prompt: Prompt,
+    /// See [`Parts::pending`].
+    pub pending: Option<SystemMessage>,
     /// The caller's state, as the driver last left it.
     pub state: State,
+    /// The rest of the [`Parts`]. A `Mutex` — never locked — only so an
+    /// `Error` stays `Sync`, as a [`BoxError`] must be: neither a
+    /// [`ToolBox`] nor the hook is.
+    rest: Mutex<(ToolBox, Config<State>)>,
+}
+
+impl<State> Error<State> {
+    fn new(kind: Stop, parts: Parts<State>, state: State) -> Self {
+        let Parts {
+            prompt,
+            pending,
+            toolbox,
+            config,
+        } = parts;
+        Self {
+            kind,
+            prompt,
+            pending,
+            state,
+            rest: Mutex::new((toolbox, config)),
+        }
+    }
+
+    /// See [`Parts::toolbox`].
+    pub fn toolbox_mut(&mut self) -> &mut ToolBox {
+        let rest = self.rest.get_mut();
+        &mut rest.unwrap_or_else(std::sync::PoisonError::into_inner).0
+    }
+
+    /// The [`Parts`] (with any edits made to `prompt` or `pending`) and the
+    /// state.
+    pub fn into_parts(self) -> (Parts<State>, State) {
+        let rest = self.rest.into_inner();
+        let (toolbox, config) =
+            rest.unwrap_or_else(std::sync::PoisonError::into_inner);
+        let parts = Parts {
+            prompt: self.prompt,
+            pending: self.pending,
+            toolbox,
+            config,
+        };
+        (parts, self.state)
+    }
+
+    /// A [`Chat`] over `transport` that picks up where this one stopped —
+    /// [`Chat::from_parts`] on [`into_parts`](Self::into_parts) — with the
+    /// state to [`run`](Chat::run) it with.
+    pub fn resume<T: Transport>(self, transport: T) -> (Chat<State, T>, State) {
+        let (parts, state) = self.into_parts();
+        (Chat::from_parts(transport, parts), state)
+    }
 }
 
 impl<State> std::fmt::Debug for Error<State> {
@@ -238,6 +318,8 @@ impl<State> std::error::Error for Error<State> {
         std::error::Error::source(&self.kind)
     }
 }
+// `?` into a `BoxError` needs both.
+static_assertions::assert_impl_all!(Error<()>: Send, Sync);
 
 /// The prompt's length and tail, and the pending buffer, before a seating
 /// that may need undoing.
@@ -265,22 +347,41 @@ enum Turn {
 pub struct Chat<State, T: Transport> {
     transport: T,
     prompt: Prompt,
+    /// Pending-system buffer threaded into [`Prompt::seat`] — see the
+    /// module-level notes on system messages.
+    pending_system: Option<SystemMessage>,
     toolbox: ToolBox,
+    config: Config<State>,
+}
+
+/// The `on_assistant` hook, boxed.
+type Hook<State> =
+    Box<dyn FnMut(&mut State, AssistantMessage) -> Vec<Message> + Send>;
+
+/// A [`Chat`]'s tuning, carried through its [`Parts`] so a resumed run is
+/// configured as the one that stopped.
+struct Config<State> {
     max_tool_calls: usize,
     budget_policy: BudgetPolicy,
     /// `Some` while the driver owns cache placement — see [`Chat::cache`].
     /// [`run`](Chat::run) resolves the strategy against the transport's
     /// [`Quirks`](crate::Quirks) once, up front.
     cache: Option<CacheControl>,
-    /// Pending-system buffer threaded into [`Prompt::seat`] — see the
-    /// module-level notes on system messages.
-    pending_system: Option<SystemMessage>,
-    #[allow(clippy::type_complexity)]
-    on_assistant: Option<
-        Box<dyn FnMut(&mut State, AssistantMessage) -> Vec<Message> + Send>,
-    >,
+    on_assistant: Option<Hook<State>>,
     /// Cumulative token-usage sink — see [`track_usage`](Chat::track_usage).
     usage: Option<Arc<Mutex<TokenCounts>>>,
+}
+
+impl<State> Default for Config<State> {
+    fn default() -> Self {
+        Self {
+            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
+            budget_policy: BudgetPolicy::default(),
+            cache: None,
+            on_assistant: None,
+            usage: None,
+        }
+    }
 }
 
 impl<State, T: Transport> Chat<State, T> {
@@ -291,13 +392,28 @@ impl<State, T: Transport> Chat<State, T> {
         Self {
             transport,
             prompt,
-            toolbox,
-            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-            budget_policy: BudgetPolicy::default(),
-            cache: None,
             pending_system: None,
-            on_assistant: None,
-            usage: None,
+            toolbox,
+            config: Config::default(),
+        }
+    }
+
+    /// A driver for `transport` that resumes `parts` — what a
+    /// [`run`](Chat::run) handed back — configured as the `Chat` that made
+    /// them. A prompt that awaits the model is answered first.
+    pub fn from_parts(transport: T, parts: Parts<State>) -> Self {
+        let Parts {
+            prompt,
+            pending,
+            toolbox,
+            config,
+        } = parts;
+        Self {
+            transport,
+            prompt,
+            pending_system: pending,
+            toolbox,
+            config,
         }
     }
 
@@ -305,7 +421,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap triggers the
     /// [`BudgetPolicy`].
     pub fn max_consecutive_tool_calls(mut self, max: usize) -> Self {
-        self.max_tool_calls = max;
+        self.config.max_tool_calls = max;
         self
     }
 
@@ -314,7 +430,7 @@ impl<State, T: Transport> Chat<State, T> {
     ///
     /// [`max_consecutive_tool_calls`]: Chat::max_consecutive_tool_calls
     pub fn on_budget_exhausted(mut self, policy: BudgetPolicy) -> Self {
-        self.budget_policy = policy;
+        self.config.budget_policy = policy;
         self
     }
 
@@ -322,7 +438,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// module-level notes on caching. Without this the driver stays out of
     /// caching (the prior behavior: callers pre-configure the prompt).
     pub fn cache(mut self, cache_control: CacheControl) -> Self {
-        self.cache = Some(cache_control);
+        self.config.cache = Some(cache_control);
         self
     }
 
@@ -332,7 +448,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// Keep a clone of the `Arc` and read it whenever; [`TokenCounts`] is
     /// `Copy` + `AddAssign` precisely for cheap accumulation.
     pub fn track_usage(mut self, sink: Arc<Mutex<TokenCounts>>) -> Self {
-        self.usage = Some(sink);
+        self.config.usage = Some(sink);
         self
     }
 
@@ -359,14 +475,14 @@ impl<State, T: Transport> Chat<State, T> {
     where
         I: IntoIterator<Item = Message>,
     {
-        self.on_assistant = Some(Box::new(move |state, msg| {
+        self.config.on_assistant = Some(Box::new(move |state, msg| {
             hook(state, msg).into_iter().collect()
         }));
         self
     }
 
-    /// Drive the conversation until `next_beat` returns `None`, then return the
-    /// final [`Prompt`] and `State`.
+    /// Drive the conversation until `next_beat` returns `None`, then hand
+    /// back the [`Parts`] — the final [`Prompt`] among them — and `State`.
     ///
     /// A seeded `prompt` that awaits the model — ending in a user or system
     /// turn, or a paused one — is answered first; that is how a run resumes
@@ -387,76 +503,84 @@ impl<State, T: Transport> Chat<State, T> {
     /// `next_beat` cancel-safe (await a channel `recv`, don't hold
     /// non-restartable state across the await) — the canonical stdin reader is.
     ///
+    /// The [`ToolBox`] is prepared at the start of every run and torn down at
+    /// the end, whatever the outcome: async teardown can't ride `Drop`, so a
+    /// caller that gives up on an [`Error`] leaks nothing.
+    ///
     /// # Errors
-    /// An [`Error`] carrying the prompt and state back — see [`Stop`].
-    // The `Err` arm is large because it hands the `Prompt` back — as the
-    // `Ok` arm does.
+    /// An [`Error`] handing everything back for a resume — see [`Stop`].
+    // The `Err` arm is large because it hands the `Parts` back — as the `Ok`
+    // arm does.
     #[allow(clippy::result_large_err)]
     pub async fn run<H>(
         mut self,
         mut state: State,
         next_beat: H,
-    ) -> Result<(Prompt, State), Error<State>>
+    ) -> Result<(Parts<State>, State), Error<State>>
     where
         H: AsyncFnMut(&mut State) -> Result<Option<Vec<Message>>, BoxError>,
     {
-        // Resolve the caching strategy against the transport's quirks once.
-        // `self.cache` stays `Some` only for the per-assistant-turn windowed
-        // marking path; the other strategies act here (or never).
-        if let Some(cache_control) = self.cache.take() {
-            let quirks = self.transport.quirks();
-            if quirks.cache_markers_ignored {
-                log::debug!("transport ignores cache markers; placing none");
-            } else if quirks.breakpoint_after_assistant {
-                self.cache = Some(cache_control);
-            } else {
-                // Canonical Anthropic: the server places the breakpoint on
-                // the last cacheable block at request time.
-                self.prompt.cache_control = Some(cache_control);
-            }
-        }
-
-        // Install the box's method definitions and run each tool's `on_init`.
-        if let Err(error) = self.toolbox.prepare(&mut self.prompt).await {
-            cold_path();
-            return Err(Error {
-                kind: Stop::Tool(error),
-                prompt: self.prompt,
-                state,
-            });
-        }
+        self.resolve_cache();
 
         // The driver owns notification interleaving: subscribe to the box once
-        // and race pushes against the caller's input inside `drive`.
-        let notifications = self.toolbox.subscribe();
+        // (a resumed box hands back the stream a previous run parked) and race
+        // pushes against the caller's input inside `drive`.
+        let mut notifications = self.toolbox.subscribe();
 
-        // Drive to completion, then tear down *even on the error path* — async
-        // teardown can't ride `Drop`, so we sequence it by hand and don't let
-        // it mask the original outcome.
-        let outcome = self.drive(&mut state, next_beat, notifications).await;
+        // Install the box's method definitions and run each tool's `on_init`,
+        // then drive to completion.
+        let outcome = match self.toolbox.prepare(&mut self.prompt).await {
+            Ok(()) => {
+                self.drive(&mut state, next_beat, &mut notifications).await
+            }
+            Err(error) => {
+                cold_path();
+                Err(Stop::Tool(error))
+            }
+        };
+
+        // Tear down *even on the error path*, without letting it mask the
+        // outcome. The stream goes back to the box, pushes still queued in
+        // it included, for a `Chat` from the parts to deliver.
         if let Err(error) = self.toolbox.teardown_tools(&mut self.prompt).await
         {
             log::warn!("tool teardown failed: {error}");
         }
-        // A note the tail still forbids has no legal place in the prompt
-        // handed back, and a resumed `Chat` starts with an empty buffer.
-        if let Some(note) = &self.pending_system {
-            log::warn!(
-                "handing back with {} buffered system block(s): dropped",
-                note.content.len()
-            );
+        if let Some(notifications) = notifications {
+            self.toolbox.park(notifications);
         }
 
+        let parts = Parts {
+            prompt: self.prompt,
+            pending: self.pending_system,
+            toolbox: self.toolbox,
+            config: self.config,
+        };
         match outcome {
-            Ok(()) => Ok((self.prompt, state)),
+            Ok(()) => Ok((parts, state)),
             Err(kind) => {
                 cold_path();
-                Err(Error {
-                    kind,
-                    prompt: self.prompt,
-                    state,
-                })
+                Err(Error::new(kind, parts, state))
             }
+        }
+    }
+
+    /// Resolve the caching strategy against the transport's quirks, once per
+    /// run: `config.cache` stays `Some` only for the per-assistant-turn
+    /// windowed marking; the other strategies act here (or never).
+    fn resolve_cache(&mut self) {
+        let Some(cache_control) = self.config.cache.take() else {
+            return;
+        };
+        let quirks = self.transport.quirks();
+        if quirks.cache_markers_ignored {
+            log::debug!("transport ignores cache markers; placing none");
+        } else if quirks.breakpoint_after_assistant {
+            self.config.cache = Some(cache_control);
+        } else {
+            // Canonical Anthropic: the server places the breakpoint on the
+            // last cacheable block at request time.
+            self.prompt.cache_control = Some(cache_control);
         }
     }
 
@@ -467,7 +591,7 @@ impl<State, T: Transport> Chat<State, T> {
         &mut self,
         state: &mut State,
         mut next_beat: H,
-        mut notifications: Option<Notifications>,
+        notifications: &mut Option<Notifications>,
     ) -> Result<(), Stop>
     where
         H: AsyncFnMut(&mut State) -> Result<Option<Vec<Message>>, BoxError>,
@@ -498,7 +622,7 @@ impl<State, T: Transport> Chat<State, T> {
             // end before the driver acts on it.
             let turn = {
                 let beat = next_beat(state).fuse();
-                let note = recv_note(&mut notifications).fuse();
+                let note = recv_note(notifications).fuse();
                 futures::pin_mut!(beat, note);
                 futures::select! {
                     result = beat => Turn::Beat(result.map_err(Stop::Beat)?),
@@ -519,7 +643,7 @@ impl<State, T: Transport> Chat<State, T> {
                 // The channel closed (all tools torn down): stop selecting
                 // it and carry on with caller input alone.
                 Turn::Note(None) => {
-                    notifications = None;
+                    *notifications = None;
                     continue;
                 }
                 Turn::Note(Some(note)) => {
@@ -663,7 +787,7 @@ impl<State, T: Transport> Chat<State, T> {
                 return Ok(()); // assistant is done; back to the caller
             }
 
-            if rounds >= self.max_tool_calls {
+            if rounds >= self.config.max_tool_calls {
                 if paused {
                     // The wire forbids abandoning an in-flight server tool:
                     // a `server_tool_use` without its result 400s the moment
@@ -711,7 +835,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
     /// sink, if one is installed.
     fn record_usage(&self, response: &response::Message) {
-        if let Some(sink) = &self.usage {
+        if let Some(sink) = &self.config.usage {
             *sink.lock().expect("usage sink poisoned") += response.usage.counts;
         }
     }
@@ -810,7 +934,7 @@ impl<State, T: Transport> Chat<State, T> {
         state: &mut State,
         message: AssistantMessage,
     ) -> Result<Vec<Use>, Stop> {
-        let seated: Vec<Message> = match self.on_assistant.as_mut() {
+        let seated: Vec<Message> = match self.config.on_assistant.as_mut() {
             Some(hook) => hook(state, message),
             None => vec![message.into()],
         }
@@ -835,7 +959,7 @@ impl<State, T: Transport> Chat<State, T> {
         }
         outcome?;
 
-        if let Some(cache_control) = &self.cache {
+        if let Some(cache_control) = &self.config.cache {
             self.prompt.cache_windowed_with(2, cache_control.clone());
         }
 
@@ -884,12 +1008,14 @@ impl<State, T: Transport> Chat<State, T> {
     ) -> Result<(), Stop> {
         log::warn!(
             "beat exhausted {} consecutive model rounds ({:?})",
-            self.max_tool_calls,
-            self.budget_policy,
+            self.config.max_tool_calls,
+            self.config.budget_policy,
         );
         self.synthesize_results(&calls)?;
 
-        if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
+        if self.config.budget_policy == BudgetPolicy::FinalWord
+            && !calls.is_empty()
+        {
             self.final_word(state).await?;
         }
         // Seating the results may have flushed a buffered system note.
@@ -952,7 +1078,7 @@ impl<State, T: Transport> Chat<State, T> {
                             "Not run: this turn already used {} consecutive \
                              tool-call rounds (the loop's budget). Stop \
                              calling tools and wait for the user.",
-                            self.max_tool_calls
+                            self.config.max_tool_calls
                         ),
                     )
                     .error(),
@@ -1122,7 +1248,7 @@ mod tests {
         let script = Script::new([text_response("hello")]);
         let chat = Chat::new(script, Prompt::default(), ToolBox::new());
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
                 .unwrap();
 
@@ -1138,7 +1264,7 @@ mod tests {
         let toolbox = ToolBox::new().add(Echo::default());
         let chat = Chat::new(script, Prompt::default(), toolbox);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1164,7 +1290,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), toolbox)
             .max_consecutive_tool_calls(1);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1189,7 +1315,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), toolbox)
             .max_consecutive_tool_calls(1);
 
-        let (prompt, ()) = futures::executor::block_on(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
             chat.run((), beats(vec![user("go"), user("carry on")])),
         )
         .unwrap();
@@ -1212,7 +1338,7 @@ mod tests {
             .max_consecutive_tool_calls(1)
             .on_budget_exhausted(BudgetPolicy::FinalWord);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1228,7 +1354,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), ToolBox::new())
             .max_consecutive_tool_calls(0);
 
-        let (prompt, ()) = futures::executor::block_on(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
             chat.run((), beats(vec![user("search")])),
         )
         .unwrap();
@@ -1280,7 +1406,7 @@ mod tests {
                 msg.server_tool_use().is_none().then(|| msg.into())
             });
 
-        let (prompt, ()) = futures::executor::block_on(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
             chat.run((), beats(vec![user("hi"), user("search")])),
         )
         .unwrap();
@@ -1299,7 +1425,7 @@ mod tests {
             .max_consecutive_tool_calls(0)
             .on_assistant(note_after_first());
 
-        let (prompt, ()) = futures::executor::block_on(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
             chat.run((), beats(vec![user("search"), user("next")])),
         )
         .unwrap();
@@ -1324,7 +1450,7 @@ mod tests {
             .max_consecutive_tool_calls(1)
             .on_assistant(note_after_first());
 
-        let (prompt, ()) = futures::executor::block_on(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
             chat.run((), beats(vec![user("search"), user("next")])),
         )
         .unwrap();
@@ -1357,7 +1483,7 @@ mod tests {
         .max_consecutive_tool_calls(1)
         .on_budget_exhausted(BudgetPolicy::FinalWord);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1402,7 +1528,7 @@ mod tests {
         .max_consecutive_tool_calls(1)
         .on_budget_exhausted(BudgetPolicy::FinalWord);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1441,7 +1567,7 @@ mod tests {
         .max_consecutive_tool_calls(1)
         .on_budget_exhausted(BudgetPolicy::FinalWord);
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
                 .unwrap();
 
@@ -1521,7 +1647,7 @@ mod tests {
             [msg.into()]
         });
 
-        let (prompt, ()) = futures::executor::block_on(chat.run(
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(chat.run(
             (),
             async move |_: &mut ()| {
                 if queue.len() < 2 {
@@ -1583,7 +1709,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), ToolBox::new())
             .cache(CacheControl::ephemeral());
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
                 .unwrap();
 
@@ -1601,7 +1727,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), ToolBox::new())
             .cache(CacheControl::ephemeral());
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
                 .unwrap();
 
@@ -1621,7 +1747,7 @@ mod tests {
         let chat = Chat::new(script, Prompt::default(), ToolBox::new())
             .cache(CacheControl::ephemeral());
 
-        let (prompt, ()) =
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
                 .unwrap();
 
@@ -1666,9 +1792,10 @@ mod tests {
         assert_eq!(transport.len(), 1);
 
         // Resume with more room: answered at once, no beat needed.
-        let prompt = error.prompt.max_tokens(NonZeroU32::new(8192).unwrap());
-        let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
-        let (prompt, ()) =
+        let mut error = error;
+        error.prompt.max_tokens = NonZeroU32::new(8192).unwrap();
+        let (chat, ()) = error.resume(transport.clone());
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();
 
         assert_eq!(prompt.messages.len(), 2);
@@ -1704,8 +1831,8 @@ mod tests {
             error.prompt.messages.iter().map(|m| m.role).collect();
         assert_eq!(roles, [Role::User, Role::Assistant]);
 
-        let chat = Chat::new(transport.clone(), error.prompt, ToolBox::new());
-        let (prompt, ()) =
+        let (chat, ()) = error.resume(transport.clone());
+        let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();
 
         // The continuation merged into the paused turn.

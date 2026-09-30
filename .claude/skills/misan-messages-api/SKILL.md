@@ -374,19 +374,24 @@ backend-dependent — Anthropic rejects it with thinking enabled.
 
 `Chat` (feature `chat`) runs the loop above over any `Transport`. A turn it
 can't use is never seated and its calls never run: `run` returns a
-`chat::Error { kind, prompt, state }` — `Stop::Clipped` (`max_tokens`) or
-`Stop::Unusable` (a finished turn, e.g. a refusal, that still calls tools;
-dropped whole) — alongside transport, beat, tool and turn-order failures. The
-prompt comes back legal to resend, and a fresh `Chat` on it answers it before
-asking for a beat, so resuming is a loop. Pass the beat closure as `&mut` to
-keep it across resumes. `chat::Error` converts into a `BoxError` with `?`.
+`chat::Error { kind, prompt, pending, state, .. }` — `Stop::Clipped`
+(`max_tokens`) or `Stop::Unusable` (a finished turn, e.g. a refusal, that
+still calls tools or cuts a server tool short; dropped whole) — alongside
+transport, beat, tool and turn-order failures. It hands back everything a
+resume needs: the prompt (legal to resend), buffered system notes, the state,
+and the torn-down toolbox and configuration (hook, budget, caching, usage
+sink). `error.resume(transport)` rebuilds the same `Chat` (re-preparing the
+tools), which answers the prompt before asking for a beat — so resuming is a
+loop. A finished run hands back the same `chat::Parts`; `Chat::from_parts`
+carries on from them. Pass the beat closure as `&mut` to keep it across
+resumes. `chat::Error` converts into a `BoxError` with `?`.
 
 ```no_run
 use std::num::NonZeroU32;
 
 use misanthropic::{
     Prompt, Transport,
-    chat::{self, BoxError, Chat, Stop},
+    chat::{BoxError, Chat, Stop},
     prompt::message::{Message, Role},
     tool::ToolBox,
 };
@@ -401,23 +406,26 @@ let mut next_beat = async |_: &mut ()| {
     Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
 };
 
-let mut prompt = Prompt::default();
+let mut chat = Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
 loop {
-    let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
-    match chat.run((), &mut next_beat).await {
-        Ok((prompt, ())) => return Ok(prompt),
+    let mut error = match chat.run((), &mut next_beat).await {
+        Ok((parts, ())) => return Ok(parts.prompt),
+        Err(error) => error,
+    };
+    match &error.kind {
         // Nothing seated or run: raise the limit, resume.
-        Err(chat::Error { kind: Stop::Clipped(_), prompt: clipped, .. }) => {
+        Stop::Clipped(_) => {
             let two = NonZeroU32::new(2).unwrap();
-            let max_tokens = clipped.max_tokens.saturating_mul(two);
-            prompt = clipped.max_tokens(max_tokens);
+            error.prompt.max_tokens =
+                error.prompt.max_tokens.saturating_mul(two);
         }
         // A refusal (or other finished turn) that called tools: nothing ran.
-        Err(chat::Error { kind: Stop::Unusable(response), .. }) => {
+        Stop::Unusable(response) => {
             return Err(format!("unusable: {:?}", response.stop_reason).into());
         }
-        Err(error) => return Err(error.into()),
+        _ => return Err(error.into()),
     }
+    (chat, _) = error.resume(transport.clone());
 }
 # }
 ```

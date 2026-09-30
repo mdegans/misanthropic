@@ -16,14 +16,16 @@ use std::{
 };
 
 use super::{
-    BoxError, BudgetPolicy, Chat, Error, Stop,
+    BoxError, BudgetPolicy, Chat, Stop,
     checks::{self, Checked, Log},
 };
 use crate::{
     Id, Prompt, Quirks, Transport,
     mock::{self, MockTransport, Reply},
     model::Model,
-    prompt::message::{AssistantMessage, Block, Content, Message, Role},
+    prompt::message::{
+        AssistantMessage, Block, Content, Message, Role, SystemMessage,
+    },
     response::{self, StopReason, TokenCounts},
     tool::{self, Choice, CustomMethodDef, MethodDef, Tool, ToolBox, Use},
 };
@@ -506,10 +508,12 @@ impl Row {
 /// What a row's run produced.
 struct Run {
     prompt: Prompt,
+    /// The system notes handed back still buffered.
+    pending: Option<SystemMessage>,
     log: Log,
     calls: Vec<Use>,
     tally: Tally,
-    stops: Vec<Stop>,
+    stops: Vec<Kind>,
 }
 
 impl Run {
@@ -562,51 +566,45 @@ where
         beat.map(Beat::messages).transpose()
     };
 
-    let mut prompt = (row.prompt)(base);
+    // One toolbox and one configuration for the whole row: a resume carries
+    // both through the hand-back.
+    let slot = Slot::default();
+    let mut toolbox =
+        ToolBox::new().add(echo.clone()).add(Pusher(slot.clone()));
+    if row.broken {
+        toolbox = toolbox.add(Broken);
+    }
+    let mut chat = Chat::new(transport.clone(), (row.prompt)(base), toolbox)
+        .track_usage(Arc::clone(&sink));
+    if let Some((max, policy)) = row.budget {
+        chat = chat
+            .max_consecutive_tool_calls(max)
+            .on_budget_exhausted(policy);
+    }
+    let mut chat = row.hook.install(chat, slot);
+
     let mut tally = Tally::default();
     let mut stops = Vec::new();
-    loop {
-        let slot = Slot::default();
-        let mut toolbox =
-            ToolBox::new().add(echo.clone()).add(Pusher(slot.clone()));
-        if row.broken {
-            toolbox = toolbox.add(Broken);
-        }
-        let mut chat = Chat::new(transport.clone(), prompt, toolbox)
-            .track_usage(Arc::clone(&sink));
-        if let Some((max, policy)) = row.budget {
-            chat = chat
-                .max_consecutive_tool_calls(max)
-                .on_budget_exhausted(policy);
-        }
-        let chat = row.hook.install(chat, slot);
-
-        match chat.run(tally, &mut next_beat).await {
-            Ok((handed, state)) => {
-                checks::assert_handback_legal(&handed);
-                (prompt, tally) = (handed, state);
-                break;
+    let (prompt, pending, tally) = loop {
+        let mut error = match chat.run(tally, &mut next_beat).await {
+            Ok((parts, state)) => {
+                checks::assert_handback_legal(&parts.prompt);
+                break (parts.prompt, parts.pending, state);
             }
-            Err(Error {
-                kind,
-                prompt: handed,
-                state,
-            }) => {
-                checks::assert_handback_legal(&handed);
-                let clipped = matches!(kind, Stop::Clipped(_));
-                (prompt, tally) = (handed, state);
-                stops.push(kind);
-                if !row.resume || stops.len() > 2 {
-                    break;
-                }
-                if clipped {
-                    let two = NonZeroU32::new(2).unwrap();
-                    let max_tokens = prompt.max_tokens.saturating_mul(two);
-                    prompt = prompt.max_tokens(max_tokens);
-                }
-            }
+            Err(error) => error,
+        };
+        checks::assert_handback_legal(&error.prompt);
+        stops.push(Kind::of(&error.kind));
+        if !row.resume || stops.len() > 2 {
+            break (error.prompt, error.pending, error.state);
         }
-    }
+        if let Stop::Clipped(_) = error.kind {
+            let two = NonZeroU32::new(2).unwrap();
+            error.prompt.max_tokens =
+                error.prompt.max_tokens.saturating_mul(two);
+        }
+        (chat, tally) = error.resume(transport.clone());
+    };
 
     let consumed = row.beats.len() - queue.len();
     assert_eq!(tally.beats, consumed, "the state threads through each run");
@@ -615,6 +613,7 @@ where
     let calls = echo.calls.lock().unwrap().clone();
     Run {
         prompt,
+        pending,
         log,
         calls,
         tally,
@@ -625,8 +624,7 @@ where
 /// Assert `run` is what `row` expects. A `live` run checks only what a
 /// real model can't vary: dispatch counts, not ids or text.
 fn expect(row: &Row, run: &Run, live: bool) {
-    let stops: Vec<Kind> = run.stops.iter().map(Kind::of).collect();
-    assert_eq!(stops, row.stops, "hand-backs");
+    assert_eq!(run.stops, row.stops, "hand-backs");
     assert_eq!(run.log.sent.len(), row.requests, "requests sent");
     assert_eq!(checks::roles(&run.prompt), row.roles, "final turn roles");
     let ids: Vec<&str> = run.calls.iter().map(|c| c.id.as_ref()).collect();
@@ -1071,15 +1069,15 @@ fn rows() -> Vec<Row> {
             .reply(mock::text("ok"))
             .requests(1)
             .roles("USA"),
-        // Today a note still buffered at a hand-back is dropped (with a
-        // warning): the prompt has no legal place for it, and a resumed
-        // `Chat` starts with an empty buffer. These pin that.
-        row("trailing_note_is_dropped")
+        // A note still buffered at a hand-back comes back in the parts, and
+        // a resume seats it after the next beat.
+        row("trailing_note_is_handed_back")
             .hook(Hook::NoteAfterFirst)
             .reply(mock::text("hi"))
             .requests(1)
-            .roles("UA"),
-        row("buffered_note_is_dropped_by_a_resume")
+            .roles("UA")
+            .extra(|run| assert_eq!(pending(run), "note")),
+        row("buffered_note_survives_a_resume")
             .resume()
             .hook(Hook::NoteAfterFirst)
             .beats(["search", "next"])
@@ -1089,7 +1087,20 @@ fn rows() -> Vec<Row> {
             .reply(mock::text("ok"))
             .stops([Kind::Transport])
             .requests(4)
-            .roles("UAUA"),
+            .roles("UAUSA")
+            .extra(|run| assert_eq!(run.sent_roles(3), "UAUS")),
+        row("notification_survives_a_resume")
+            .resume()
+            .hook(Hook::Push(&[Role::User]))
+            .reply(calls(&["a"]))
+            .status(529)
+            .reply(mock::text("done"))
+            .reply(mock::text("noted"))
+            .stops([Kind::Transport])
+            .requests(4)
+            .roles("UAUAUA")
+            .dispatched(["a"])
+            .extra(|run| assert_eq!(text(run.turn(4)), "job done")),
         // The on_assistant hook.
         row("hook_pass_through")
             .hook(Hook::PassThrough)
@@ -1205,6 +1216,12 @@ fn text(turn: &Message) -> String {
             _ => None,
         })
         .collect()
+}
+
+/// The handed-back pending notes' text.
+fn pending(run: &Run) -> String {
+    let pending = run.pending.as_ref().expect("a pending note");
+    pending.content.to_string()
 }
 
 /// `turn` has no server tool in flight.

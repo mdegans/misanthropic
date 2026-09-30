@@ -26,25 +26,35 @@ record; this file aggregates them.
   programmatic call's container awaiting client `tool_result`s is not in
   flight, and a system turn after a result still needs that result to answer
   every use in the turn.
-- **`Chat::run` returns `chat::Error<State>`, handing the prompt and state
-  back** (was a bare `BoxError`, which dropped both). `chat::Error { kind,
-  prompt, state }` implements `std::error::Error`, so `?` into a `BoxError`
-  still works; `kind` is the new `chat::Stop`: `Clipped` and `Unusable` (see
-  *Fixed*), or `Transport` / `Beat` / `Tool` / `TurnOrder` wrapping what used
-  to be the bare error. The returned prompt is legal to resend, and a `Chat`
-  seeded with a prompt that awaits the model (ending in a user or system
-  turn, or a paused one) now **answers it before asking for a beat** — so
-  resuming is a loop:
+- **`Chat::run` hands everything back: `Ok((chat::Parts, State))` or
+  `Err(chat::Error<State>)`** (was `Ok((Prompt, State))` or a bare
+  `BoxError`, which dropped the prompt, the state, the tools and any
+  buffered system note). `Parts { prompt, pending, toolbox, .. }` also
+  carries the `Chat`'s configuration (hook, budget, caching, usage sink), and
+  `Chat::from_parts(transport, parts)` rebuilds the same `Chat` from it — a
+  note still buffered is seated after the next beat instead of lost. The
+  `Error` carries the same (`kind`, `prompt`, `pending`, `state`, plus
+  `toolbox_mut()` / `into_parts()`), implements `std::error::Error`, and
+  stays `Send + Sync`, so `?` into a `BoxError` still works; `kind` is the
+  new `chat::Stop`: `Clipped` and `Unusable` (see *Fixed*), or `Transport` /
+  `Beat` / `Tool` / `TurnOrder` wrapping what used to be the bare error. The
+  prompt is legal to resend, and a `Chat` whose prompt awaits the model
+  (ending in a user or system turn, or a paused one) now **answers it before
+  asking for a beat** — so resuming is a loop:
 
   ```rust
-  match chat.run((), &mut next_beat).await {
-      Ok((prompt, ())) => { /* … */ }
-      Err(chat::Error { kind: Stop::Clipped(_), prompt, state }) => {
-          // Nothing was seated or run: raise max_tokens, resume.
-      }
-      Err(error) => return Err(error.into()),
-  }
+  let mut error = match chat.run((), &mut next_beat).await {
+      Ok((parts, ())) => return Ok(parts.prompt),
+      Err(error) => error,
+  };
+  // Clipped: nothing was seated or run — raise max_tokens, resume.
+  error.prompt.max_tokens = error.prompt.max_tokens.saturating_mul(two);
+  (chat, _) = error.resume(transport.clone());
   ```
+
+  The toolbox is still torn down at the end of every run (so giving up on
+  an `Error` leaks nothing) and prepared again by the next — `on_init` runs
+  once per run — and what its tools pushed in between is delivered then.
 
 ### Added
 
@@ -93,11 +103,6 @@ record; this file aggregates them.
   instead of letting the model call tools only to answer them with synthetic
   errors. A transport with `Quirks::tool_choice_not_respected` gets the prompt
   unchanged, and calls a wrap-up makes anyway are still errored.
-- **`Chat` warns when a hand-back drops a buffered system note.** A note the
-  tail still forbids (after an assistant turn, or a paused one) has no legal
-  place in the prompt handed back, and a resumed `Chat` starts with an empty
-  buffer, so it is lost — at the end of a run, or across an error and
-  resume. That was silent; it now logs a warning.
 
 ### Fixed
 
