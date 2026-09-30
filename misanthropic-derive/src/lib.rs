@@ -32,7 +32,9 @@ mod util;
 ///
 /// With `misanthropic`'s default `schema-order-check` feature, a required
 /// field declared after an optional one (`Option<…>` or serde `default`) is a
-/// compile error: Anthropic moves required properties first.
+/// compile error. Required-first is the one layout every engine generates in
+/// the same order, and field order changes what the model generates (reason
+/// before you answer) — subtly, and more so on smaller models.
 ///
 /// ```ignore
 /// #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]

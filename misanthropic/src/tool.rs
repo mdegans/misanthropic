@@ -1464,11 +1464,13 @@ impl MethodBuilder {
         Ok(())
     }
 
-    /// Reject a required property declared after an optional one. Anthropic
-    /// moves required properties first, so an interleaved schema reaches the
-    /// model in a different order than it was written. Top-level only, and
-    /// only faithful under `preserve_order` (which `schema-order-check`
-    /// enables via `schema-order`).
+    /// Reject a required property declared after an optional one: Anthropic
+    /// generates in `properties` order, an engine following the
+    /// structured-outputs docs hoists required properties first, so only
+    /// required-first reads the same everywhere — and order changes what the
+    /// model generates. Top-level only, and only faithful under
+    /// `preserve_order` (which `schema-order-check` enables via
+    /// `schema-order`).
     #[cfg(feature = "schema-order-check")]
     fn check_property_order(
         properties: &serde_json::Map<String, serde_json::Value>,
@@ -1483,9 +1485,12 @@ impl MethodBuilder {
             None => Ok(()),
             Some(late) => Err(format!(
                 "required property `{late}` is declared after optional \
-                 property `{optional}`. Anthropic moves required properties \
-                 first, so declare every required property before any \
-                 optional one (or disable the `schema-order-check` feature)."
+                 property `{optional}`. Declare every required property \
+                 before any optional one: it's the one layout every engine \
+                 generates in the same order, and field order changes what \
+                 the model generates. To send it as-is, use \
+                 `MethodBuilder::build_unchecked()`, or disable the \
+                 `schema-order-check` feature."
             )
             .into()),
         }
@@ -1493,6 +1498,12 @@ impl MethodBuilder {
 
     /// This will build the [`CustomMethodDef`] and do some basic validation on the fields.
     /// This does not guarantee that the tool will be accepted by the API.
+    ///
+    /// With `schema-order-check` (default), a required property declared after
+    /// an optional one is an error: required-first is the one layout every
+    /// engine generates in the same order, and field order changes what the
+    /// model generates — subtly, and more so on smaller models. See
+    /// [`Self::build_unchecked`] to send a schema as-is.
     pub fn build(self) -> std::result::Result<CustomMethodDef, ToolBuildError> {
         if self.tool.name.is_empty() {
             return Err(ToolBuildError::EmptyName);

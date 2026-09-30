@@ -18,21 +18,25 @@ record; this file aggregates them.
 ### Added
 
 - **`schema-order-check` (default-on) enforces required-before-optional
-  property order in tool input schemas** (#141). Anthropic moves required
-  properties ahead of optional ones, so an interleaved schema reaches the
-  model in a different order than it was declared — and in yet another
-  order on engines that honour declaration order. The feature enables
-  `schema-order` (without `preserve_order` the check would see alphabetical
-  order). Turn it off for servers that keep declaration order as sent.
+  property order in tool input schemas** (#141). Anthropic and local grammar
+  engines like drama_llama generate in `properties` order (the live probe
+  found 0/24 optionals hoisted), while an engine following the
+  structured-outputs docs hoists required properties first — so
+  required-before-optional is the one layout every engine generates
+  identically. It matters because field order changes what the model
+  generates (reasoning must precede the answer), more so on smaller models.
+  The feature enables `schema-order` (without `preserve_order` the check
+  would see alphabetical order).
 
 ### Breaking
 
 - **With `schema-order-check`, a required property declared after an
   optional one is now rejected**: a compile error under
   `#[derive(ToolArgs)]`; `ToolBuildError::InvalidInputSchema` from
-  `MethodBuilder::build` (and so from `try_add_tool`); and a panic from
-  `ToolArgs::definition` — which is how a `#[tool]` method's args, invisible
-  to the macro, are checked. Move required fields first, or reach for
+  `MethodBuilder::build` (and so from `try_add_tool`); a `serde_json::Error`
+  from `CustomMethodDef::try_from(Value)` and `from_serializable` — i.e.
+  third-party tool JSON; and a panic from `ToolArgs::definition` — which is
+  how a `#[tool]` method's args, invisible to the macro, are checked. Move required fields first, or reach for
   `MethodBuilder::build_unchecked` / `default-features = false`. Top-level
   properties only; `#[serde(flatten)]`ed fields and `with` types are left to
   the runtime check.

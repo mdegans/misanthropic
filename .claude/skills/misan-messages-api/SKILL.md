@@ -388,10 +388,13 @@ Notes on the macro:
 - `#[method(defer_loading)]` marks a method's schema as deferrable for use
   with the tool-search server tool (large tool sets).
 - **Declare required fields before optional ones** (`Option<…>` or
-  `#[serde(default)]`). Anthropic moves required properties first, so the
-  default-on `schema-order-check` feature rejects interleaving: a compile
-  error under `#[derive(ToolArgs)]`, a panic building a `#[tool]` method's
-  definition, and an `Err` from `MethodBuilder::build`.
+  `#[serde(default)]`). It's the one layout every engine generates in the
+  same order (Anthropic keeps optionals in place; engines following the
+  structured-outputs docs hoist required first), and field order changes what
+  the model generates — put reasoning before answers. The default-on
+  `schema-order-check` feature rejects interleaving: a compile error under
+  `#[derive(ToolArgs)]`, a panic building a `#[tool]` method's definition, and
+  an `Err` from `MethodBuilder::build` (escape hatch: `build_unchecked`).
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
   state persistence.
