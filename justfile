@@ -39,13 +39,31 @@ doc:
 test-ignored:
     cargo test -p misanthropic --all-features -- --ignored
 
-# `model` is a file name the server lists (`curl localhost:11435/v1/models`).
+# The local blallama (drama_llama) the live recipes drive: `BLALLAMA_URL`, or
+# port 11436 (VS Code's port forwarding can squat blallama's own 11435).
+blallama_url := env_var_or_default("BLALLAMA_URL", "http://127.0.0.1:11436")
+
+# `model` is a file name the server lists (`curl $BLALLAMA_URL/v1/models`).
 # Single-threaded: one model, one set of weights. Never run in CI.
 # Live Chat scenarios against a local blallama (drama_llama), one model.
 test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
-    BLALLAMA_URL=http://localhost:11435 BLALLAMA_MODEL='{{model}}' \
+    BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
         cargo test -p misanthropic --features blallama --lib \
         chat::scenarios::live -- --test-threads=1
+
+# Prints a table of each request's input / written / read tokens and latency,
+# and fails when the prefix isn't reused turn to turn. Never run in CI.
+# Live multi-turn prompt-caching check against a local blallama, one model.
+test-cache model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
+    BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
+        cargo test -p misanthropic --features blallama --lib \
+        chat::scenarios::cache::blallama -- --test-threads=1 --nocapture
+
+# The same caching check against Anthropic, for reference numbers.
+# PAID: about 3 cents on claude-haiku-4-5, via misanthropic/api.key.
+test-cache-anthropic:
+    cargo test -p misanthropic --all-features --lib \
+        chat::scenarios::cache::anthropic -- --ignored --nocapture
 
 # Run an example with every feature on (so logging and each example's tools are
 # available). Extra args pass through to the example, and `RUST_LOG` works, e.g.

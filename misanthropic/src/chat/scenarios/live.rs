@@ -23,13 +23,21 @@ use super::{Checked, Row, Run, StopReason, drive, expect, rows};
 use crate::{Client, Prompt};
 
 /// The server and model under test, or `None` to skip.
-fn target() -> Option<(String, String)> {
+pub(super) fn target() -> Option<(String, String)> {
     let url = std::env::var("BLALLAMA_URL")
         .ok()
         .filter(|u| !u.is_empty())?;
     let model = std::env::var("BLALLAMA_MODEL")
         .expect("BLALLAMA_MODEL names the model when BLALLAMA_URL is set");
     Some((url, model))
+}
+
+/// A [`Client`] for the server at `url`, with a placeholder key.
+pub(super) fn client(url: &str) -> Client {
+    Client::new("x".repeat(108))
+        .unwrap()
+        .base_url(url)
+        .expect("BLALLAMA_URL is a URL")
 }
 
 /// Run the live row `name`, unless no server is configured.
@@ -44,10 +52,7 @@ async fn run(name: &str) {
         .expect("a row by that name");
     assert!(row.live, "`{name}` isn't marked live");
 
-    let client = Client::new("x".repeat(108))
-        .unwrap()
-        .base_url(url.as_str())
-        .expect("BLALLAMA_URL is a URL");
+    let client = client(&url);
     // Room for a local model's thinking; a row may still tighten it.
     let base = Prompt::default()
         .model(model)

@@ -6,6 +6,8 @@
 //! local Anthropic-compatible server — see `live` — where a row with
 //! [`Leeway`] is held to its bounds instead of the mock's exact counts.
 
+#[cfg(feature = "client")]
+mod cache;
 #[cfg(feature = "blallama")]
 mod live;
 

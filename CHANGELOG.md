@@ -114,15 +114,25 @@ record; this file aggregates them.
 
 - **`blallama` feature and `just test-blallama <model>`: live `Chat`
   scenarios against a local Anthropic-compatible server** (drama_llama's
-  `blallama`, on `localhost:11435`). Local runs only: the tests skip unless
-  `BLALLAMA_URL` is set, with `BLALLAMA_MODEL` naming the model, which keeps
-  them out of CI's `--all-features` builds. They run the scenario table's
+  `blallama`; the recipes default to `http://127.0.0.1:11436`, overridden by
+  `BLALLAMA_URL`). Local runs only: the tests skip unless `BLALLAMA_URL` is
+  set, with `BLALLAMA_MODEL` naming the model, which keeps them out of CI's
+  `--all-features` builds. They run the scenario table's
   live-able rows — a plain turn, stop sequences, a clip mid-call, a forced
   tool call through a `FinalWord` wrap-up, system notes, a notification —
   and hold every response to Anthropic's shape, so a server deviation
   surfaces as a failure. The offline table (68 rows over `MockTransport`)
   asserts the requests, turn shapes, calls run, usage and wire legality of
   every request and hand-back.
+- **`just test-cache <model>`: a live multi-turn prompt-caching check.** One
+  `Chat` run of ten beats (four with a tool round) over a ~6.5k-token
+  system prompt, cached as a long conversation should be (`Chat::cache` plus
+  a system marker). Every request prints its input / written / read tokens
+  and latency, and must read the previous request's whole prompt back from
+  cache, keep `input` small and latency per output token flat. The same
+  beats run against Anthropic as the paid, `#[ignore]`d reference (`just
+  test-cache-anthropic`, about 3 cents on Haiku 4.5), and offline against a
+  simulated healthy and broken cache.
 
 - **`Message::unfinished_server_tool_uses()`**,
   **`Block::server_tool_result_id()`** and **`Caller::tool_id()`** — the pieces of the rule above: which server
