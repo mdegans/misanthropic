@@ -148,3 +148,41 @@ mod hand_written_method {
         assert_eq!(result.content.to_string(), "Hello, world!");
     }
 }
+
+/// The compile-time `schema-order-check` and the runtime one in
+/// `MethodBuilder::build` agree on what's required: `#[schemars(required)]`
+/// keeps an `Option` required, and a skipped field leaves the schema.
+#[cfg(feature = "schema-order-check")]
+mod schema_order {
+    use misanthropic::tool::ToolArgs;
+
+    /// Required first, then optional.
+    #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]
+    #[allow(dead_code)]
+    struct Grouped {
+        #[schemars(required)]
+        title: Option<String>,
+        body: String,
+        #[serde(skip)]
+        cache: u32,
+        note: Option<String>,
+        #[serde(default)]
+        count: u32,
+    }
+
+    #[test]
+    fn grouped_fields_build_in_declaration_order() {
+        let def = Grouped::definition();
+        let properties: Vec<_> = def.schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(properties, ["title", "body", "note", "count"]);
+        assert_eq!(
+            def.schema["required"],
+            serde_json::Value::from(["title", "body"])
+        );
+    }
+}

@@ -17,6 +17,8 @@
 
 use proc_macro::TokenStream;
 
+#[cfg(feature = "schema-order-check")]
+mod order;
 mod tool;
 mod tool_args;
 mod util;
@@ -27,6 +29,10 @@ mod util;
 /// (the `ToolArgs` supertraits). `NAME` defaults to the struct ident and
 /// `DESCRIPTION` to the struct's doc comment; override either with a
 /// `#[tool(name = "…", description = "…")]` attribute.
+///
+/// With `misanthropic`'s default `schema-order-check` feature, a required
+/// field declared after an optional one (`Option<…>` or serde `default`) is a
+/// compile error: Anthropic moves required properties first.
 ///
 /// ```ignore
 /// #[derive(serde::Deserialize, schemars::JsonSchema, ToolArgs)]

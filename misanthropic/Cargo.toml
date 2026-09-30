@@ -388,11 +388,15 @@ schema-inline = []
 # Reject tool input schemas that declare a required property after an optional
 # one. Anthropic moves required properties first, so an interleaved schema
 # reaches the model in a different order than it was written. On by default:
-# `MethodBuilder::build` errors, so `ToolArgs::definition` (and with it a
-# `#[tool]` method) panics. Turn off for servers that keep declaration order as
-# sent. Enables `schema-order`, without which `properties` order is
-# alphabetical and the check meaningless.
-schema-order-check = ["schema-order"]
+# `#[derive(ToolArgs)]` fails to compile; `MethodBuilder::build` errors, so
+# `ToolArgs::definition` (and with it a `#[tool]` method, whose args the macro
+# can't see) panics. Turn off for servers that keep declaration order as sent.
+# Enables `schema-order`, without which `properties` order is alphabetical and
+# the check meaningless.
+schema-order-check = [
+    "schema-order",
+    "misanthropic-derive?/schema-order-check",
+]
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),
