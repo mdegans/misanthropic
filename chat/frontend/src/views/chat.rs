@@ -322,41 +322,19 @@ pub fn Chat() -> Element {
                             // forwarded from Anthropic. We handle tool use on
                             // the client side.
                             Ok(Success::Stream(event)) => {
-                                // If the event is a tool use event, we handle
-                                // things differently. The tools run on the
-                                // client side.
-                                if let misanthropic::stream::Event::ToolUse {
-                                    tool_use,
-                                } = &event
-                                {
-                                    log::info!("Tool use: {:?}", tool_use);
-                                    // A tool has been used.
-                                    let result = toolbox
-                                        .write()
-                                        .call(tool_use.clone())
-                                        .await;
-                                    persist_tool_state(toolbox).await;
-                                    log::info!("Tool result: {:?}", result);
-
-                                    // We send the result back to the server.
-                                    if let Err(e) = CLIENT
-                                        .read()
-                                        .send(Request::UserMessage(
-                                            result.clone().into(),
-                                        ))
-                                        .await
-                                    {
-                                        connected.set(false);
-                                        log::error!(
-                                            "Failed to set prompt after tool use: {}",
-                                            e
-                                        );
-                                    } else {
-                                        // Sucessfully sent. The server will
-                                        // send it back in a UserMessage.
-                                    }
-                                }
-
+                                // Tools run on the client, but only once the
+                                // whole turn is in: `Event::ToolUse` fires as
+                                // each block closes, *before* `message_delta`
+                                // says why the turn stopped, and a refusal or
+                                // `max_tokens` stop means the calls must not
+                                // run. `tool_uses` is empty unless the stop
+                                // reason is `tool_use`.
+                                let calls: Vec<_> = match &event {
+                                    misanthropic::stream::Event::Message {
+                                        message,
+                                    } => message.tool_uses().cloned().collect(),
+                                    _ => Vec::new(),
+                                };
                                 if let Err(e) =
                                     // A Prompt and Vec<Message> both implement
                                     // `HandleStreamEvent`. In a real app, the
@@ -375,6 +353,34 @@ pub fn Chat() -> Element {
                                         "Failed to handle stream event: {}",
                                         e
                                     );
+                                }
+
+                                if !calls.is_empty() {
+                                    let mut results = Vec::new();
+                                    for call in calls {
+                                        log::info!("Tool use: {:?}", call);
+                                        let result =
+                                            toolbox.write().call(call).await;
+                                        log::info!("Tool result: {:?}", result);
+                                        results.push(result);
+                                    }
+                                    persist_tool_state(toolbox).await;
+
+                                    // Every result goes back in one user turn;
+                                    // the server echoes it as a UserMessage.
+                                    let reply: UserMessage =
+                                        results.into_iter().collect();
+                                    if let Err(e) = CLIENT
+                                        .read()
+                                        .send(Request::UserMessage(reply))
+                                        .await
+                                    {
+                                        connected.set(false);
+                                        log::error!(
+                                            "Failed to set prompt after tool use: {}",
+                                            e
+                                        );
+                                    }
                                 }
                             }
                             Ok(Success::Prompt(mut new)) => {

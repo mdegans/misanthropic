@@ -23,6 +23,16 @@ record; this file aggregates them.
   mid-input and `max_tokens` can truncate one, so calls are only safe to run
   once the stop reason says so.
 
+### Fixed
+
+- **Chat demo ran tool calls before the turn's stop reason arrived.** The
+  frontend dispatched on `stream::Event::ToolUse`, which fires as the block
+  closes — before `message_delta` — so a refused or truncated call could
+  run. It now dispatches from the assembled `Event::Message` via
+  `tool_uses()`, and answers parallel calls in one user turn instead of one
+  turn per result. The `with_tool_use` / `Event::ToolUse` docs and the
+  streaming skill now say to display from that event, not dispatch.
+
 ## [1.0.0-alpha.20] — 2026-09-28
 
 ### Added
