@@ -624,7 +624,7 @@ impl<State, T: Transport> Chat<State, T> {
                     );
                     return Err(Stop::Clipped(Box::new(response)));
                 }
-                Disposition::Done if response.tool_uses().next().is_some() => {
+                Disposition::Done if calls_tools(&response) => {
                     return Err(self.unusable(response, paused_at));
                 }
                 Disposition::Paused => true,
@@ -919,7 +919,7 @@ impl<State, T: Transport> Chat<State, T> {
                 log::warn!("final word clipped at max_tokens: handing back");
                 Err(Stop::Clipped(Box::new(response)))
             }
-            Disposition::Done if response.tool_uses().next().is_some() => {
+            Disposition::Done if calls_tools(&response) => {
                 Err(self.unusable(response, None))
             }
             // A paused wrap-up would leave its server tool in flight with no
@@ -973,6 +973,12 @@ impl<State, T: Transport> Chat<State, T> {
     fn seat(&mut self, message: impl Into<Message>) -> Result<Seated, Stop> {
         Ok(self.prompt.seat(message, &mut self.pending_system)?)
     }
+}
+
+/// Whether `response` carries client calls — raw, whatever its stop reason:
+/// [`response::Message::tool_uses`] is empty off a `tool_use` stop.
+fn calls_tools(response: &response::Message) -> bool {
+    response.inner.content.tool_uses().next().is_some()
 }
 
 /// Whether a seeded prompt's tail awaits the model: anything but an

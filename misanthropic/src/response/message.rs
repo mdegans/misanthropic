@@ -134,15 +134,23 @@ impl Message {
         self.inner.content.last()?.tool_use()
     }
 
-    /// Every client [`tool::Use`] in the turn, in order — regardless of
-    /// [`stop_reason`](Self::stop_reason). Pair with
-    /// [`disposition`](Self::disposition) to decide whether to dispatch them:
-    /// only a [`ToolUse`](Disposition::ToolUse) (or
-    /// [`Paused`](Disposition::Paused)) turn's calls may run.
+    /// Every client [`tool::Use`] in the turn, in order — the parallel-call
+    /// twin of [`Self::tool_use`], and the same gate: empty unless the
+    /// [`StopReason`] is [`StopReason::ToolUse`]. A [`Refusal`] can cut a call
+    /// off mid-input and [`MaxTokens`] can truncate one, so a turn's calls are
+    /// only safe to run once its stop reason says so.
     ///
     /// [`tool::Use`]: crate::tool::Use
+    /// [`Refusal`]: StopReason::Refusal
+    /// [`MaxTokens`]: StopReason::MaxTokens
     pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
-        self.inner.tool_uses()
+        let dispatchable =
+            matches!(self.stop_reason, Some(StopReason::ToolUse));
+        self.inner
+            .content
+            .iter()
+            .filter(move |_| dispatchable)
+            .filter_map(prompt::message::Block::tool_use)
     }
 
     /// What a driver must do next with this turn — see [`Disposition`].
@@ -157,8 +165,10 @@ impl Message {
                 | StopReason::Refusal,
             ) => Disposition::Done,
             // No stop reason (a provider that doesn't report one): the
-            // content is all there is to go on.
-            None if self.tool_uses().next().is_some() => Disposition::ToolUse,
+            // content is all there is to go on — raw, as `tool_uses` is gated.
+            None if self.inner.content.tool_uses().next().is_some() => {
+                Disposition::ToolUse
+            }
             None => Disposition::Done,
         }
     }
@@ -402,9 +412,12 @@ pub enum StopReason {
 ///                 prompt.max_tokens.saturating_mul(two).min(ceiling);
 ///         }
 ///         // A complete turn with client tool calls: seat it, then answer
-///         // every call in one user turn (results must lead it).
+///         // every call in one user turn (results must lead it). The
+///         // content's calls, raw: `response.tool_uses()` is gated on the
+///         // stop reason, so empty for a turn inferred without one.
 ///         Disposition::ToolUse => {
-///             let calls: Vec<_> = response.tool_uses().cloned().collect();
+///             let calls: Vec<_> =
+///                 response.inner.content.tool_uses().cloned().collect();
 ///             prompt.seat(response, &mut pending)?;
 ///             let mut results = Vec::with_capacity(calls.len());
 ///             for call in calls {
@@ -417,7 +430,7 @@ pub enum StopReason {
 ///         // never run: drop such a turn whole (stripping the calls could
 ///         // strand a server tool).
 ///         Disposition::Done => {
-///             if response.tool_uses().next().is_none() {
+///             if response.inner.content.tool_uses().next().is_none() {
 ///                 prompt.seat(response, &mut pending)?;
 ///             }
 ///             break;
@@ -445,7 +458,11 @@ pub enum Disposition {
     /// calls tools — which trusts the provider: a transport that omits
     /// `stop_reason` on a truncated turn bypasses the
     /// [`Clipped`](Self::Clipped) guard. Transports (and mocks) should always
-    /// set it.
+    /// set it. An inferred turn's calls are its content's
+    /// ([`Content::tool_uses`]): [`Message::tool_uses`] is gated on the
+    /// reported stop reason.
+    ///
+    /// [`Content::tool_uses`]: crate::prompt::message::Content::tool_uses
     ToolUse,
     /// Quiescent: [`EndTurn`](StopReason::EndTurn),
     /// [`StopSequence`](StopReason::StopSequence) or
@@ -868,22 +885,36 @@ mod tests {
         );
     }
 
+    /// Parallel calls all surface, but only under `stop_reason: tool_use` —
+    /// a refused or truncated turn's calls never reach dispatch.
     #[test]
-    fn test_tool_uses() {
+    fn tool_uses_gated_on_stop_reason() {
         let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
-        assert_eq!(message.tool_uses().count(), 0);
-
-        // Every call, in order — not just a trailing one, and whatever the
-        // stop reason.
-        message.inner.content.push(
-            crate::tool::Use::new("a", serde_json::json!({})).with_id("1"),
-        );
+        let call = |id| {
+            crate::tool::Use::new("n", serde_json::Value::Null).with_id(id)
+        };
+        message.inner.content.push(call("a"));
         message.inner.content.push("between");
-        message.inner.content.push(
-            crate::tool::Use::new("b", serde_json::json!({})).with_id("2"),
-        );
-        let ids: Vec<_> = message.tool_uses().map(|c| c.id.as_ref()).collect();
-        assert_eq!(ids, ["1", "2"]);
+        message.inner.content.push(call("b"));
+
+        let ids = |m: &Message| -> Vec<String> {
+            m.tool_uses().map(|call| call.id.to_string()).collect()
+        };
+        for reason in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::StopSequence,
+            StopReason::PauseTurn,
+            StopReason::Refusal,
+        ] {
+            message.stop_reason = Some(reason);
+            assert!(ids(&message).is_empty(), "{reason:?} dispatched");
+        }
+        message.stop_reason = None;
+        assert!(ids(&message).is_empty());
+
+        message.stop_reason = Some(StopReason::ToolUse);
+        assert_eq!(ids(&message), ["a", "b"]);
     }
 
     #[test]

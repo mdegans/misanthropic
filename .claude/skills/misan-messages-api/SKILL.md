@@ -297,10 +297,12 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 
 `response.disposition()` classifies a turn by what the loop must do next — the
 pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
-breaks the build here, not silently in a driver). `tool_uses()` iterates
-**every** client `tool::Use` in the turn (unlike `tool_use()`, which returns
-only a trailing one). Client calls run **only** from a `ToolUse` (or `Paused`)
-turn — a `refusal` can cut a `tool_use` short. The `chat`-feature `Chat` driver
+breaks the build here, not silently in a driver). `response.tool_uses()`
+iterates **every** client `tool::Use` in the turn (unlike `tool_use()`, which
+returns only a trailing one) — but, like `tool_use()`, only on a `tool_use`
+stop; the content's own `tool_uses()` (`response.inner.content`) is the raw
+view. Client calls run **only** from a `ToolUse` (or `Paused`) turn — a
+`refusal` can cut a `tool_use` short. The `chat`-feature `Chat` driver
 runs this same match; see *The `Chat` driver* below for how it hands a turn it
 can't use back.
 
@@ -337,7 +339,10 @@ for _ in 0..8 { // round budget: a model that clips forever still stops
         // Complete turn with client tool calls: seat it, answer every call
         // in one tool_result-led user turn.
         Disposition::ToolUse => {
-            let calls: Vec<_> = response.tool_uses().cloned().collect();
+            // Raw: a turn inferred as ToolUse (no stop reason) has none
+            // under the gated `response.tool_uses()`.
+            let calls: Vec<_> =
+                response.inner.content.tool_uses().cloned().collect();
             prompt.seat(response, &mut pending)?;
             let mut results = Vec::new();
             for call in calls {
@@ -350,7 +355,7 @@ for _ in 0..8 { // round budget: a model that clips forever still stops
         // calls; drop such a turn whole (stripping could strand a server
         // tool).
         Disposition::Done => {
-            if response.tool_uses().next().is_none() {
+            if response.inner.content.tool_uses().next().is_none() {
                 prompt.seat(response, &mut pending)?;
             }
             break;

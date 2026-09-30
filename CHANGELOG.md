@@ -81,7 +81,10 @@ record; this file aggregates them.
   a transport that omits it on a truncated turn bypasses the `Clipped` guard.
 - **`tool_uses()` on `response::Message` and `Content`** — every client
   `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
-  trailing one, and only on `stop_reason: tool_use`).
+  trailing one). The response's is gated like `tool_use()`: empty unless
+  `stop_reason` is `tool_use`, so a refused or truncated turn's calls never
+  reach dispatch. `Content::tool_uses()` is the raw view (what `disposition`
+  infers a stop-reason-less `ToolUse` from).
 
 ### Changed
 

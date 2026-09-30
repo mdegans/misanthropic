@@ -62,7 +62,7 @@ fn assert_anthropic_shaped(run: &Run) {
             .stop_reason
             .unwrap_or_else(|| panic!("response {n} has no stop_reason"));
         assert!(!reply.id.is_empty(), "response {n} has no id");
-        let calls = reply.tool_uses().count();
+        let calls = reply.inner.content.tool_uses().count();
         match stop {
             StopReason::ToolUse => {
                 assert!(calls > 0, "response {n}: tool_use without a call")

@@ -861,6 +861,10 @@ impl Content {
 
     /// Every client [`tool::Use`] ([`Block::ToolUse`]), in order. Server tool
     /// calls ([`Block::ServerToolUse`]) are not included — the API runs those.
+    /// Raw: a response's [`tool_uses`] is the stop-reason-gated view, the one
+    /// to dispatch from.
+    ///
+    /// [`tool_uses`]: crate::response::Message::tool_uses
     pub fn tool_uses(&self) -> impl Iterator<Item = &tool::Use> {
         self.0.iter().filter_map(Block::tool_use)
     }
