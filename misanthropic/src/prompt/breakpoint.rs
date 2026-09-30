@@ -255,8 +255,13 @@ impl Prompt {
         tools.chain(system).chain(messages).chain(auto).collect()
     }
 
-    /// Where the automatic slot lands: the last block that can carry a
-    /// marker, the last tool when there is none.
+    /// Where the automatic slot lands: the last block that isn't thinking,
+    /// the last tool when there is none. A server-tool result counts, though
+    /// the crate can't mark one: Anthropic lands the slot on it, and then a
+    /// marker on the `server_tool_use` before it doesn't have to match
+    /// (probed on `count_tokens`, 2026-09-30, with `web_search`,
+    /// `web_fetch` and `bash_code_execution` results). Thinking it skips,
+    /// matching the block before it.
     fn auto_target(&self) -> Option<Breakpoint> {
         let messages = self.messages.iter().enumerate().rev();
         let messages = messages.flat_map(|(m, message)| {
@@ -269,7 +274,9 @@ impl Prompt {
         });
         messages
             .chain(system)
-            .find(|(_, block)| block.cache_slot().is_some())
+            .find(|(_, block)| {
+                !block.is_thought() && !block.is_redacted_thought()
+            })
             .map(|(at, _)| Breakpoint::Block(at))
             .or_else(|| {
                 let last = self.tools.as_ref()?.len().checked_sub(1)?;
@@ -541,6 +548,23 @@ mod tests {
         prompt
     }
 
+    /// The probes' `web_search` round: a user turn, then an assistant turn
+    /// ending in the search's `server_tool_use` (marked 1-hour) and result.
+    fn server_round() -> Prompt {
+        let fixture = |json: &str| serde_json::from_str::<Block>(json).unwrap();
+        let mut call = fixture(include_str!(
+            "../../test/data/server_tools/server_tool_use.json"
+        ));
+        call.cache_1h();
+        let result = fixture(include_str!(
+            "../../test/data/server_tools/web_search_result.json"
+        ));
+        let mut prompt = prompt(&[], &[&[None]]);
+        let turn = Message::from((Role::Assistant, vec![call, result]));
+        prompt.messages.push(turn);
+        prompt
+    }
+
     fn with_tool(
         mut prompt: Prompt,
         cache_control: Option<CacheControl>,
@@ -760,6 +784,31 @@ mod tests {
                     at: message(2, 0),
                     block: 0,
                 }),
+            ),
+            (
+                "1h server_tool_use, its result last, 5m auto",
+                with_auto(server_round(), five()),
+                Ok(()),
+            ),
+            (
+                "1h user, thinking last, 5m auto",
+                with_auto(
+                    Prompt {
+                        messages: vec![
+                            Message::from((Role::User, vec![text(hour())])),
+                            Message::from((
+                                Role::Assistant,
+                                vec![Block::Thought {
+                                    thought: "hmm".into(),
+                                    signature: "sig".into(),
+                                }],
+                            )),
+                        ],
+                        ..Default::default()
+                    },
+                    five(),
+                ),
+                Err(AutoMismatch { at: message(0, 0) }),
             ),
             (
                 "four 5m blocks and a 5m auto",

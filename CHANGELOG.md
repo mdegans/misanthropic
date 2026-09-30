@@ -117,7 +117,9 @@ record; this file aggregates them.
   a tool result marked twice (on itself and in its content); more than 4
   markers (the automatic slot counted); a 1-hour marker after a 5-minute
   one (`tools` → `system` → `messages`, the automatic slot last); and an
-  automatic slot whose TTL differs from a marker on the block it lands on. The placements never fail it; hand-placed markers can, so
+  automatic slot whose TTL differs from a marker on the block it lands on
+  (where Anthropic lands it: the last block that isn't thinking, a
+  server-tool result included). The placements never fail it; hand-placed markers can, so
   `Chat` runs it before every request (unless the transport ignores
   markers) and stops with `Stop::Cache`, and a turn its cache window can't
   legally mark is taken back rather than seated. Also `Block::cache_control`,
