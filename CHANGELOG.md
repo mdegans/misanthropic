@@ -24,7 +24,8 @@ record; this file aggregates them.
   of silently becoming e.g. a 4096-token request. This lets drama_llama's
   blallama return the same 400 as Anthropic. Anything a `Prompt` serialized
   (the chat demo's exports, persisted prompts) already has all three and
-  still loads; add them to hand-written bodies. `CachedPrompt` follows.
+  still loads; add them to hand-written bodies. `CachedPrompt` deserializes
+  through `Prompt`, so it is stricter the same way.
 
 - **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
   Downstream `match` on either now needs a `_` arm. Planned variants — a
