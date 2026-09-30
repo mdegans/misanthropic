@@ -153,7 +153,7 @@ pub enum Stop {
     #[error(transparent)]
     Tool(BoxError),
     /// A beat, hook return or notification broke turn order — a programming
-    /// error in the caller.
+    /// error in the caller. A hook's return is seated whole or not at all.
     #[error(transparent)]
     TurnOrder(#[from] TurnOrderError),
 }
@@ -237,6 +237,14 @@ impl<State> std::error::Error for Error<State> {
         // Display is the kind's, so the chain continues below it.
         std::error::Error::source(&self.kind)
     }
+}
+
+/// The prompt's length and tail, and the pending buffer, before a seating
+/// that may need undoing.
+struct Checkpoint {
+    len: usize,
+    tail: Option<Message>,
+    pending: Option<SystemMessage>,
 }
 
 /// What the round's `select!` produced — computed first, acted on after, so
@@ -806,15 +814,44 @@ impl<State, T: Transport> Chat<State, T> {
             .filter(|m| m.role == Role::Assistant)
             .flat_map(|m| m.tool_uses().cloned())
             .collect();
-        for message in seated {
-            self.seat(message)?;
+        // All or nothing: a hook's turns that break turn order part-way
+        // mustn't leave the earlier ones seated — a `tool_use` turn nothing
+        // answers. A single turn seats atomically already.
+        let checkpoint = (seated.len() > 1).then(|| self.checkpoint());
+        let outcome =
+            seated.into_iter().try_for_each(|m| self.seat(m).map(drop));
+        if let (Err(error), Some(checkpoint)) = (&outcome, checkpoint) {
+            cold_path();
+            log::warn!("on_assistant returned turns out of order: {error}");
+            self.rollback(checkpoint);
         }
+        outcome?;
 
         if let Some(cache_control) = &self.cache {
             self.prompt.cache_windowed_with(2, cache_control.clone());
         }
 
         Ok(calls)
+    }
+
+    /// Enough to undo one round's seating — see [`Checkpoint`].
+    fn checkpoint(&self) -> Checkpoint {
+        Checkpoint {
+            len: self.prompt.messages.len(),
+            tail: self.prompt.messages.last().cloned(),
+            pending: self.pending_system.clone(),
+        }
+    }
+
+    /// Put the prompt and the pending buffer back as `checkpoint` found them.
+    fn rollback(&mut self, checkpoint: Checkpoint) {
+        self.prompt.messages.truncate(checkpoint.len);
+        if let (Some(last), Some(tail)) =
+            (self.prompt.messages.last_mut(), checkpoint.tail)
+        {
+            *last = tail; // a merge edits the tail in place
+        }
+        self.pending_system = checkpoint.pending;
     }
 
     /// Dispatch each call through the [`ToolBox`] and seat all results as one

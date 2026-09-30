@@ -115,6 +115,10 @@ record; this file aggregates them.
   the API rejects an empty turn — so the next request 400'd. Such a turn now
   reaches the `on_assistant` hook (which may still seat something) but is
   otherwise dropped, and the caller's next beat follows the previous tail.
+- **An `on_assistant` return that breaks turn order is seated whole or not at
+  all.** A hook returning, say, a `tool_use` turn followed by a user turn got
+  `Stop::TurnOrder` with the `tool_use` turn already seated and unanswered —
+  a hand-back no beat could legally follow. The seating now rolls back.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

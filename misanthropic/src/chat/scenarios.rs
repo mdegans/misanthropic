@@ -282,6 +282,9 @@ enum Hook {
     NoteAfterFirst,
     /// On the first turn, push a notification preferring these roles.
     Push(&'static [Role]),
+    /// Seat a user turn after the first — a caller bug when that turn calls
+    /// tools.
+    Stray,
 }
 
 impl Hook {
@@ -329,6 +332,9 @@ impl Hook {
                 let mailbox = mailbox.as_ref().expect("the box connected");
                 mailbox.send("job done", roles.to_vec()).unwrap();
                 vec![turn.into()]
+            }
+            Hook::Stray if first => {
+                vec![turn.into(), (Role::User, "stray").into()]
             }
             _ => vec![turn.into()],
         }
@@ -1093,6 +1099,12 @@ fn rows() -> Vec<Row> {
             .roles("UAUA")
             .dispatched(["forced"])
             .last("done"),
+        row("hook_strays_onto_the_user_channel")
+            .hook(Hook::Stray)
+            .reply(calls(&["a"]))
+            .stops([Kind::TurnOrder])
+            .requests(1)
+            .roles("U"),
         // Notifications: a seated note drives a round.
         row("user_note_drives_a_round")
             .live()
