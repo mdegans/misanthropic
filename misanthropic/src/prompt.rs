@@ -351,7 +351,12 @@ pub enum TurnOrderError {
     /// place is a 400 on the wire.
     ///
     /// [`Assistant`]: crate::prompt::message::Role::Assistant
-    #[error("{} server_tool_use block(s) are still in flight; only an assistant continuation may follow: {}", .unfinished.len(), .unfinished.join(", "))]
+    #[error(
+        "{} server_tool_use block(s) are still in flight; only an assistant \
+         continuation may follow: {}",
+        .unfinished.len(),
+        .unfinished.join(", ")
+    )]
     UnfinishedServerToolUse {
         /// The assistant message with the in-flight server tool call(s).
         message: Message,
