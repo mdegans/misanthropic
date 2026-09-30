@@ -9,6 +9,8 @@
 #[cfg(feature = "client")]
 mod cache;
 #[cfg(feature = "blallama")]
+mod equivalence;
+#[cfg(feature = "blallama")]
 mod live;
 
 use std::{
