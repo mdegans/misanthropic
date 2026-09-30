@@ -78,9 +78,13 @@ pub struct Prompt {
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub metadata: serde_json::Map<String, serde_json::Value>,
     /// Optional stop sequences. If the model generates any of these sequences,
-    /// the completion will stop with [`StopReason::StopSequence`].
+    /// the completion will stop with [`StopReason::StopSequence`] — even
+    /// mid tool call, cutting its input short (so the call is never
+    /// dispatchable; see [`Disposition::Done`]). The API rejects a
+    /// whitespace-only sequence (e.g. `"\n"`) with a 400.
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
+    /// [`Disposition::Done`]: crate::response::Disposition::Done
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<Cow<'static, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the

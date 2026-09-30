@@ -1150,11 +1150,15 @@ pub trait FilterExt:
     /// # Note
     /// A call is yielded when its block closes, *before* the
     /// [`MessageDelta`] carrying the turn's [`StopReason`]. For display only:
-    /// a [`Refusal`] or [`MaxTokens`] stop can still follow, and such a call
-    /// must not run. To dispatch, use [`with_message`] and take
+    /// a [`Refusal`], [`StopSequence`] or [`MaxTokens`] stop can still
+    /// follow, and such a call must not run — a stop sequence matched inside
+    /// the input closes the block truncated. A block that never closes (a
+    /// call clipped at `max_tokens`) is never yielded, and never errors. To
+    /// dispatch, use [`with_message`] and take
     /// [`response::Message::tool_uses`] from the final [`Event::Message`].
     ///
     /// [`Refusal`]: StopReason::Refusal
+    /// [`StopSequence`]: StopReason::StopSequence
     /// [`MaxTokens`]: StopReason::MaxTokens
     /// [`with_message`]: FilterExt::with_message
     fn with_tool_use(

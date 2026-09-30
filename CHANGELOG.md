@@ -185,11 +185,14 @@ record; this file aggregates them.
   nudging the model, or giving up is the caller's policy.
 - **`Chat` runs client tool calls only from a `tool_use` turn** (or a paused
   one). It dispatched by content, whatever the stop reason — but a
-  `refusal` can cut a `tool_use` short. A finished (`Done`) turn that still
-  calls client tools is now `Stop::Unusable`: none run, and the whole turn is
-  dropped (with any paused turn it continued), never stripped — stripping
-  could strand a `server_tool_use`. Calls an `on_assistant` hook seats still
-  run.
+  `refusal` can cut a `tool_use` short, and so can a `stop_sequence`
+  matched inside the call's input: captured live, the API closes the block
+  as valid JSON truncated at the match, stopped `stop_sequence`, in both
+  the non-streaming and SSE paths (`test/data/stop/`). A finished (`Done`)
+  turn that still calls client tools is now `Stop::Unusable`: none run, and
+  the whole turn is dropped (with any paused turn it continued), never
+  stripped — stripping could strand a `server_tool_use`. Calls an
+  `on_assistant` hook seats still run.
 - **`Chat` never seats a finished turn that cuts a server tool short.** A
   refusal (or `end_turn`) leaving a `server_tool_use` unanswered — in its
   own content, or in the paused turn it continued — was seated as a dead

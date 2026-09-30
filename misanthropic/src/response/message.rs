@@ -140,12 +140,14 @@ impl Message {
 
     /// Every client [`tool::Use`] in the turn, in order — the parallel-call
     /// twin of [`Self::tool_use`], and the same gate: empty unless the
-    /// [`StopReason`] is [`StopReason::ToolUse`]. A [`Refusal`] can cut a call
-    /// off mid-input and [`MaxTokens`] can truncate one, so a turn's calls are
-    /// only safe to run once its stop reason says so.
+    /// [`StopReason`] is [`StopReason::ToolUse`]. A [`Refusal`] or a
+    /// [`StopSequence`] can cut a call off mid-input and [`MaxTokens`] can
+    /// truncate one, so a turn's calls are only safe to run once its stop
+    /// reason says so.
     ///
     /// [`tool::Use`]: crate::tool::Use
     /// [`Refusal`]: StopReason::Refusal
+    /// [`StopSequence`]: StopReason::StopSequence
     /// [`MaxTokens`]: StopReason::MaxTokens
     pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
         let dispatchable =
@@ -424,9 +426,10 @@ pub enum StopReason {
 ///         }
 ///         // end_turn / stop_sequence / refusal: seat it and hand back —
 ///         // unless it's empty (the API rejects an empty turn) or cuts a call
-///         // short: a refusal can leave a `tool_use` or a server tool
-///         // half-made, and a finished turn's calls never run. Drop such a
-///         // turn whole; stripping the calls could strand a server tool.
+///         // short: a refusal or a stop sequence can leave a `tool_use`
+///         // half-made, a refusal a server tool too, and a finished turn's
+///         // calls never run. Drop such a turn whole; stripping the calls
+///         // could strand a server tool.
 ///         Disposition::Done => {
 ///             let turn = &response.inner;
 ///             let usable = !turn.content.is_empty()
@@ -485,7 +488,9 @@ pub enum Disposition {
     /// turn), or no stop reason and no tool calls. Hand control back — and
     /// never run client calls such a turn still carries, nor seat a turn
     /// that carries them or leaves a server tool in flight: a refusal can
-    /// cut either short. Nor an empty one: the API rejects an empty turn.
+    /// cut either short, and a stop sequence matched inside a call's input
+    /// closes it truncated (valid JSON, arguments missing — captured live).
+    /// Nor an empty one: the API rejects an empty turn.
     Done,
 }
 

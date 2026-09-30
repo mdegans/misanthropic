@@ -346,9 +346,9 @@ for _ in 0..8 { // round budget: a model that calls tools forever still stops
             prompt.seat((Role::User, results), &mut pending)?;
         }
         // end_turn / stop_sequence / refusal: seat and hand back — unless
-        // it's empty (a 400) or cuts a call short (a refusal can leave a
-        // tool_use or a server tool half-made); drop such a turn whole
-        // (stripping could strand a server tool).
+        // it's empty (a 400) or cuts a call short (a refusal or a stop
+        // sequence can leave a tool_use half-made, a refusal a server tool
+        // too); drop such a turn whole (stripping could strand a server tool).
         Disposition::Done => {
             let turn = &response.inner;
             let usable = !turn.content.is_empty()

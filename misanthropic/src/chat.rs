@@ -136,12 +136,13 @@ pub enum Stop {
          (raise max_tokens and resume)"
     )]
     Clipped(Box<response::Message>),
-    /// A finished ([`Done`](Disposition::Done)) turn — a `refusal` above all
-    /// — that still calls client tools, or leaves a server tool in flight
-    /// (its own, or the paused turn's it continued): a refusal can cut
-    /// either short. Nothing runs and the whole turn is dropped (with any
-    /// paused turn it continued), never stripped — stripping could strand a
-    /// `server_tool_use`. Inspect its
+    /// A finished ([`Done`](Disposition::Done)) turn — a `refusal` or a
+    /// `stop_sequence` above all — that still calls client tools, or leaves
+    /// a server tool in flight (its own, or the paused turn's it continued):
+    /// a refusal can cut either short, and a stop sequence matched in a
+    /// call's input truncates it. Nothing runs and the whole turn is
+    /// dropped (with any paused turn it continued), never stripped —
+    /// stripping could strand a `server_tool_use`. Inspect its
     /// [`stop_reason`](response::Message::stop_reason) and resume.
     #[error(
         "the model finished its turn ({:?}) with a tool call unanswerable; \
