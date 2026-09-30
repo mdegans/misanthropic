@@ -156,16 +156,22 @@ jobs:
       # label, as a required check, instead of after the merge here.
 
   # The one check to require in the ruleset (#150): a matrix's job names are
-  # awkward to require one by one. `always()` so it reports even when a
-  # dependency fails; skipped jobs (the other event's) count as passing.
-  # Keep `needs` listing every other job in this file.
+  # awkward to require one by one. Event-aware, so a skipped job only passes
+  # when it belongs to the other event: a PR needs every PR job to succeed,
+  # a push needs `main-lint`. `!cancelled()` rather than `always()` so a run
+  # superseded by the concurrency group doesn't post red.
+  # Keep `needs` and the checks below listing every other job in this file.
   ci-ok:
-    if: always()
+    if: ${{ !cancelled() }}
     needs: [main-lint, publish-dry-run, bashd-musl, build]
     runs-on: ubuntu-latest
     steps:
-      - name: Fail if any job failed or was cancelled
+      - name: Require this event's jobs to succeed
         if: >-
-          contains(needs.*.result, 'failure') ||
-          contains(needs.*.result, 'cancelled')
+          (github.event_name == 'pull_request' && (
+            needs.build.result != 'success' ||
+            needs.publish-dry-run.result != 'success' ||
+            needs.bashd-musl.result != 'success')) ||
+          (github.event_name == 'push' &&
+            needs.main-lint.result != 'success')
         run: exit 1
