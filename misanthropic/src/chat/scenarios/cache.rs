@@ -593,11 +593,19 @@ fn tip(before: &Request, now: &Request) -> u64 {
     now.read().saturating_sub(before.cached())
 }
 
-/// How much of what `before` generated `now` read back: its read past
-/// `before`'s whole prompt, `read_k - T_{k-1}`, which only a server reusing
-/// generated KV (blallama's tip) reaches.
+/// How much of what `before` generated `now` read back (see
+/// [`read_past`]).
 fn reused(before: &Request, now: &Request) -> u64 {
-    now.read().saturating_sub(before.prompt())
+    read_past(before.prompt(), now.read())
+}
+
+/// How much of what the request before generated the next one read back:
+/// its read past the earlier whole prompt, `read_k - T_{k-1}`. blallama
+/// counts restored cells as read, and a turn's generated cells follow its
+/// prompt's, so only a server reusing generated KV (blallama's tip) reads
+/// past `T_{k-1}`.
+pub(super) fn read_past(prompt_before: u64, read_now: u64) -> u64 {
+    read_now.saturating_sub(prompt_before)
 }
 
 /// What a request's wall time should be, fitted to the run itself.

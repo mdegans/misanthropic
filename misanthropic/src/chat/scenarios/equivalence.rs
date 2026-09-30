@@ -31,24 +31,43 @@
 //! server.
 //!
 //! **Reading a mismatch.** llama.cpp's kernels aren't batch-invariant: a
-//! token decoded alone and the same token prefilled in a batch can land
-//! logits a rounding error apart, and greedy decoding flips on a near-tie.
-//! A late divergence between two fluent replies may be that; one at the
-//! first token, or a garbled warm reply, points at the cache. So a request
-//! that mismatches is replayed cold a second time ([`recheck`]), the
-//! control: if the two cold replies agree, cold is self-consistent and the
-//! cache is suspect; if they differ, the server isn't deterministic even
-//! cold (batch variance), which is no evidence of corruption. The report
-//! prints each divergence's position and context, the warm request's usage
-//! (what it restored), and the control's verdict.
+//! logit depends on the schedule that computed the KV behind it — where
+//! the ubatch boundaries fell, whether a token was decoded alone or
+//! prefilled in a batch, which other sequences shared the unified KV cache
+//! — and greedy decoding flips on a near-tie. Restoring a breakpoint costs
+//! nothing here (its cells were prefilled on the same ubatch grid a cold
+//! prefill uses), but a request that reads back the previous turn's
+//! generated tokens (the **tip**: `read_k > T_{k-1}`, counted as the
+//! `cache` scenario's `read_past` counts it) restores cells warm decoded
+//! one at a time, where cold prefills them in a batch. A mismatching
+//! request is also replayed cold a second time ([`recheck`]), the control,
+//! and each mismatch is classed ([`Mismatch`]):
 //!
-//! **Start the server with `--no-penalty`.** A repetition penalty is
-//! sampler state: warm reuse resumes it from the cached stream, while a
-//! cold prefill rebuilds it from the prompt's prose (drama_llama's
-//! `seed_prose_fold`), so the two can penalize different tokens and reply
-//! differently with no KV corruption at all. blallama reports no sampling
-//! configuration over its API, so the test can't check this; it prints a
-//! reminder instead, and so does a failure.
+//! - **tip schedule**: the warm request read the tip. Expected (see
+//!   drama_llama's `logits_determinism` TIP experiment), so warned about,
+//!   not failed — which also hides a real fault on that request, so read
+//!   the warning: a divergence at the first token, or a garbled warm
+//!   reply, still points at the cache.
+//! - **cache suspect**: no tip, and the two cold replies agree, so cold is
+//!   self-consistent and the cache is to blame. Fails.
+//! - **nondeterminism**: the two cold replies differ, so the server isn't
+//!   deterministic even cold, which is no evidence of corruption. Warned
+//!   about loudly, not failed, with a reminder to run one slot.
+//!
+//! A mismatch with no control fails, as does any difference in prompt
+//! size, which no schedule explains. The report prints each divergence's
+//! position and context, the warm request's usage (what it restored, and
+//! how much of it was tip), and the control's verdict.
+//!
+//! **Start the server with `--no-penalty` and `--cache-slots 1`.** A
+//! repetition penalty is sampler state: warm reuse resumes it from the
+//! cached stream, while a cold prefill rebuilds it from the prompt's prose
+//! (drama_llama's `seed_prose_fold`), so the two can penalize different
+//! tokens and reply differently with no KV corruption at all. And other
+//! sequences in the unified KV cache change a request's logits, so a
+//! second slot is a neighbor one run has and the other doesn't; one slot
+//! removes it. blallama reports neither setting over its API, so the test
+//! can't check them; it prints a reminder instead, and so does a failure.
 //!
 //! - `blallama::replays_cold`: live, skipped unless `BLALLAMA_URL` is set
 //!   (see `live`) **and** `BLALLAMA_EQUIVALENCE=1`, since its flushes evict
@@ -56,9 +75,11 @@
 //!   pre-commit gate (`cargo test --all-features`) run it. Run with `just
 //!   test-equivalence`, which sets both.
 //! - `simulated_*`: offline, through a [`MockTransport`] standing in for a
-//!   healthy cache and a stale one.
+//!   healthy cache, a stale one, a server whose tip reuse shifts replies,
+//!   and one that isn't deterministic even cold.
 
 use std::{
+    collections::HashMap,
     num::{NonZeroU16, NonZeroU32},
     panic::AssertUnwindSafe,
     sync::Mutex,
@@ -91,6 +112,14 @@ const CONTEXT: usize = 60;
 const PENALTY: &str = "Unless the server runs with `--no-penalty`, a \
     repetition penalty resumed warm but rebuilt cold also explains a \
     mismatch.";
+/// Why a run should have one slot.
+const SLOTS: &str = "Start blallama with `--cache-slots 1`: other sequences \
+    in its unified KV cache change a request's logits, so a second slot is \
+    a neighbor one replay has and another doesn't.";
+/// What a [`Mismatch::Tip`] means.
+const TIP_SCHEDULE: &str = "tip schedule (expected: warm decoded the tip \
+    one token at a time, cold prefills it in a batch; see drama_llama's \
+    logits_determinism TIP experiment)";
 
 /// What the forced call must copy into its input: quotes, backslashes,
 /// escapes spelled out, nested JSON, tabs, newlines, and multi-byte text,
@@ -601,12 +630,69 @@ impl Divergence {
     }
 }
 
+/// What a mismatch means, read from the warm request's reuse and the
+/// control (see the module docs).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Mismatch {
+    /// The warm request read back the previous request's generated tokens
+    /// (the tip), which cold prefills on another schedule. Warned about.
+    Tip,
+    /// No tip, and the two cold replies agree. Fails.
+    Cache,
+    /// The two cold replies differ. Warned about.
+    Nondeterminism,
+    /// No tip, and no control to read it by. Fails.
+    Unchecked,
+}
+
+impl Mismatch {
+    /// Whether this fails the check by itself.
+    fn fails(self) -> bool {
+        matches!(self, Self::Cache | Self::Unchecked)
+    }
+
+    /// A few words for the table.
+    fn brief(self) -> String {
+        let outcome = if self.fails() { "FAIL" } else { "warn" };
+        format!("{} ({outcome})", self.name())
+    }
+
+    /// The class's name.
+    fn name(self) -> &'static str {
+        match self {
+            Self::Tip => "tip schedule",
+            Self::Cache => "cache suspect",
+            Self::Nondeterminism => "nondeterminism",
+            Self::Unchecked => "unchecked",
+        }
+    }
+
+    /// The reading, in full, for the report.
+    fn explain(self) -> String {
+        match self {
+            Self::Tip => TIP_SCHEDULE.to_string(),
+            Self::Cache => "cache suspect: the warm request reused no \
+                generated tokens and cold is self-consistent"
+                .to_string(),
+            Self::Nondeterminism => "nondeterminism: cold disagrees with \
+                itself, so this is no evidence of corruption"
+                .to_string(),
+            Self::Unchecked => "unchecked: no tip, and no control replay \
+                to tell the cache from nondeterminism"
+                .to_string(),
+        }
+    }
+}
+
 /// How a warm reply and its cold replay compare.
 struct Verdict {
     step: &'static str,
     warm: response::Message,
     cold: response::Message,
     flushes: usize,
+    /// Tokens of the previous request's generation the warm request read
+    /// back (the tip): `read_k - T_{k-1}`, or zero.
+    reused: u64,
     divergence: Option<Divergence>,
     /// A second cold replay, made where the first disagreed (see
     /// [`recheck`]).
@@ -616,16 +702,24 @@ struct Verdict {
 }
 
 impl Verdict {
+    /// `exchange`, sent after `before` (if any), against its `cold` replay
+    /// and `control`.
     fn new(
         exchange: &Exchange,
+        before: Option<&Exchange>,
         (cold, flushes): &Cold,
         control: Option<&response::Message>,
     ) -> Self {
+        let reused = before.map_or(0, |before| {
+            let prompt = prompt_size(&before.reply.usage.counts);
+            super::cache::read_past(prompt, read(&exchange.reply))
+        });
         Self {
             step: exchange.step,
             warm: exchange.reply.clone(),
             cold: cold.clone(),
             flushes: *flushes,
+            reused,
             divergence: Divergence::find(&exchange.reply, cold),
             control: control.cloned(),
             dropped: exchange.dropped,
@@ -642,8 +736,8 @@ impl Verdict {
     /// The control's reading, in a few words for the table.
     fn control_brief(&self) -> &'static str {
         match self.cold_consistent() {
-            Some(true) => "; cold2 agrees: cache suspect",
-            Some(false) => "; cold2 differs: nondeterminism",
+            Some(true) => "; cold2 agrees",
+            Some(false) => "; cold2 differs",
             None => "",
         }
     }
@@ -658,21 +752,37 @@ impl Verdict {
         self.divergence.is_none() && self.sizes_agree()
     }
 
-    /// The failure report for request `n`, if it failed.
-    fn failure(&self, n: usize) -> Option<String> {
+    /// What the mismatch means, if the replies differ.
+    fn mismatch(&self) -> Option<Mismatch> {
         if self.passed() {
             return None;
         }
+        Some(match (self.reused > 0, self.cold_consistent()) {
+            (true, _) => Mismatch::Tip,
+            (false, Some(true)) => Mismatch::Cache,
+            (false, Some(false)) => Mismatch::Nondeterminism,
+            (false, None) => Mismatch::Unchecked,
+        })
+    }
+
+    /// Whether this request fails the check: a mismatch that
+    /// [fails](Mismatch::fails), or prompts of different sizes, which no
+    /// schedule explains.
+    fn fails(&self) -> bool {
+        !self.sizes_agree() || self.mismatch().is_some_and(Mismatch::fails)
+    }
+
+    /// The report for request `n`, if its replies differ.
+    fn report(&self, n: usize) -> Option<String> {
+        let mismatch = self.mismatch()?;
         let (warm, cold) = (self.warm.usage.counts, self.cold.usage.counts);
         let control = match (self.cold_consistent(), &self.control) {
             (Some(true), _) => "\n  control: a second cold replay matches \
-                the first, so cold is self-consistent and the cache is \
-                suspect"
+                the first, so cold is self-consistent"
                 .to_string(),
             (Some(false), Some(control)) => format!(
                 "\n  control: a second cold replay differs from the first \
-                 ({}), so the server isn't deterministic even cold: \
-                 nondeterminism or batch variance, not corruption",
+                 ({}), so the server isn't deterministic even cold",
                 Divergence::find(&self.cold, control)
                     .map_or("prompt sizes differ".into(), |d| d.brief())
             ),
@@ -680,12 +790,14 @@ impl Verdict {
         };
         let usage = format!(
             "request {n} (`{}`): warm prompt {} tokens, cold {}; the warm \
-             one restored {} from cache, wrote {}, paid {} fresh; {} / {} \
-             output tokens (warm / cold), stops {:?} / {:?}",
+             one restored {} from cache ({} of them the previous request's \
+             generated tokens), wrote {}, paid {} fresh; {} / {} output \
+             tokens (warm / cold), stops {:?} / {:?}",
             self.step,
             prompt_size(&warm),
             prompt_size(&cold),
             read(&self.warm),
+            self.reused,
             warm.cache_creation_input_tokens.unwrap_or_default(),
             warm.input_tokens,
             warm.output_tokens,
@@ -716,19 +828,27 @@ impl Verdict {
             ),
             None => String::new(),
         };
-        Some(usage + &detail + &control)
+        let sizes = match self.sizes_agree() {
+            true => String::new(),
+            false => "\n  FAIL: the prompt sizes differ, which no schedule \
+                explains"
+                .to_string(),
+        };
+        let class = format!("\n  class: {}", mismatch.explain());
+        Some(usage + &detail + &control + &class + &sizes)
     }
 }
 
 /// The per-request table.
 fn table(verdicts: &[Verdict]) -> String {
     let header = format!(
-        "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>8} {:>8} {:>5} {:<10} \
-         verdict",
+        "{:>3} {:<11} {:>7} {:>7} {:>5} {:>6} {:>7} {:>8} {:>8} {:>5} \
+         {:<10} verdict",
         "req",
         "step",
         "prompt",
         "read",
+        "tip",
         "input",
         "written",
         "warm_out",
@@ -742,14 +862,17 @@ fn table(verdicts: &[Verdict]) -> String {
             (None, true) => "same".to_string(),
             (None, false) => "prompt sizes differ".to_string(),
             (Some(divergence), _) => divergence.brief(),
-        } + v.control_brief();
+        } + v.control_brief()
+            + &v.mismatch()
+                .map_or(String::new(), |m| format!("; {}", m.brief()));
         format!(
-            "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>8} {:>8} {:>5} {:<10} \
-             {verdict}",
+            "{:>3} {:<11} {:>7} {:>7} {:>5} {:>6} {:>7} {:>8} {:>8} {:>5} \
+             {:<10} {verdict}",
             n + 1,
             v.step,
             prompt_size(&counts),
             read(&v.warm),
+            v.reused,
             counts.input_tokens,
             counts.cache_creation_input_tokens.unwrap_or_default(),
             counts.output_tokens,
@@ -768,9 +891,10 @@ fn table(verdicts: &[Verdict]) -> String {
         false => format!("dropped steps: {}", dropped.join(", ")),
     };
     let legend = "prompt / read / input / written: the warm request's \
-        tokens; warm_out / cold_out: output tokens of the warm reply and of \
-        its cold replay; flush: flushes before that replay; dropped: why the \
-        step's turns weren't seated"
+        tokens; tip: how many of those read were the previous request's \
+        generated tokens; warm_out / cold_out: output tokens of the warm \
+        reply and of its cold replay; flush: flushes before that replay; \
+        dropped: why the step's turns weren't seated"
         .to_string();
     std::iter::once(header)
         .chain(rows)
@@ -779,22 +903,72 @@ fn table(verdicts: &[Verdict]) -> String {
         .join("\n")
 }
 
+/// Each request of `warm` against its `cold` replay and `controls`.
+fn verdicts(
+    warm: &[Exchange],
+    cold: &[Cold],
+    controls: &[Option<response::Message>],
+) -> Vec<Verdict> {
+    assert_eq!(warm.len(), cold.len(), "a cold replay per warm request");
+    assert_eq!(warm.len(), controls.len(), "a control per warm request");
+    let before = std::iter::once(None).chain(warm.iter().map(Some));
+    warm.iter()
+        .zip(before)
+        .zip(cold.iter().zip(controls))
+        .map(|((w, b), (c, control))| Verdict::new(w, b, c, control.as_ref()))
+        .collect()
+}
+
+/// The mismatches that don't fail the check, each a `WARN` block, and
+/// [`SLOTS`] after them where cold disagreed with itself.
+fn warnings(verdicts: &[Verdict]) -> Vec<String> {
+    let warned: Vec<(Mismatch, String)> = verdicts
+        .iter()
+        .enumerate()
+        .filter(|(_, verdict)| !verdict.fails())
+        .filter_map(|(n, verdict)| {
+            let report = verdict.report(n + 1)?;
+            let mismatch = verdict.mismatch()?;
+            Some((mismatch, format!("WARN {}: {report}", mismatch.name())))
+        })
+        .collect();
+    let noisy = warned
+        .iter()
+        .any(|(mismatch, _)| *mismatch == Mismatch::Nondeterminism);
+    let advice = noisy.then(|| {
+        format!(
+            "WARN nondeterminism: cold replays of the same request \
+             disagreed, so this run can't vouch for the cache on those \
+             requests. {SLOTS}"
+        )
+    });
+    warned
+        .into_iter()
+        .map(|(_, warning)| warning)
+        .chain(advice)
+        .collect()
+}
+
+/// The reports of the requests that fail the check.
+fn failures(verdicts: &[Verdict]) -> Vec<String> {
+    verdicts
+        .iter()
+        .enumerate()
+        .filter(|(_, verdict)| verdict.fails())
+        .filter_map(|(n, verdict)| verdict.report(n + 1))
+        .collect()
+}
+
 /// Every warm reply must equal its cold replay, byte for byte, from a
-/// prompt of the same size — and the warm run must have reused the cache
-/// at all, or the check proves nothing.
+/// prompt of the same size, unless a [`Mismatch`] explains the difference
+/// without the cache — and the warm run must have reused the cache at all,
+/// or the check proves nothing.
 fn assert_equivalent(
     warm: &[Exchange],
     cold: &[Cold],
     controls: &[Option<response::Message>],
 ) {
-    assert_eq!(warm.len(), cold.len(), "a cold replay per warm request");
-    assert_eq!(warm.len(), controls.len(), "a control per warm request");
-    let verdicts: Vec<Verdict> = warm
-        .iter()
-        .zip(cold)
-        .zip(controls)
-        .map(|((w, c), control)| Verdict::new(w, c, control.as_ref()))
-        .collect();
+    let verdicts = verdicts(warm, cold, controls);
     eprintln!("{}", table(&verdicts));
 
     assert!(
@@ -803,18 +977,22 @@ fn assert_equivalent(
             .any(|exchange| read(&exchange.reply) > 0),
         "no warm request read from the cache, so the check proves nothing"
     );
-    let failures: Vec<String> = verdicts
-        .iter()
-        .enumerate()
-        .filter_map(|(n, verdict)| verdict.failure(n + 1))
-        .collect();
+    let warned = warnings(&verdicts);
+    if !warned.is_empty() {
+        eprintln!(
+            "\n=== WARNING: requests replied differently cold without \
+             failing the check. A divergence at the first token, or a \
+             garbled warm reply, still points at the cache: read them. ==="
+        );
+    }
+    warned.iter().for_each(|warning| eprintln!("\n{warning}"));
+    let failures = failures(&verdicts);
     assert!(
         failures.is_empty(),
-        "{} of {} requests replied differently cold:\n{}\n\nA late \
-         divergence between two fluent replies may be llama.cpp's \
-         batch-variant kernels breaking a near-tie; one at the first \
-         token, or a garbled warm reply, points at the cache, the more so \
-         where the control found cold self-consistent. {PENALTY}",
+        "{} of {} requests replied differently cold, and neither a tip \
+         schedule nor nondeterminism explains it:\n{}\n\nA divergence at \
+         the first token, or a garbled warm reply, points at the cache the \
+         more surely. {PENALTY} {SLOTS}",
         failures.len(),
         verdicts.len(),
         failures.join("\n"),
@@ -868,8 +1046,8 @@ mod blallama {
             );
         }
         eprintln!(
-            "NOTE: this check assumes blallama runs with `--no-penalty`, \
-             which it can't see. {PENALTY}"
+            "NOTE: this check assumes blallama runs with `--no-penalty` and \
+             `--cache-slots 1`, which it can't see. {PENALTY} {SLOTS}"
         );
         let client = Retrying(super::super::live::client(&url));
         let base = Prompt::default().model(model).max_tokens(MAX_TOKENS);
@@ -884,12 +1062,34 @@ mod blallama {
 /// The system prompt's first line, which marks a [`flush`].
 const FLUSH_MARK: &str = ": cache flush.";
 
+/// How [`simulated`] departs from a healthy cache.
+#[derive(Clone, Copy, PartialEq)]
+enum Fault {
+    /// None: every reply is a function of its prompt alone.
+    Healthy,
+    /// A reply built on a read comes back a char longer, as from a corrupt
+    /// KV cache.
+    Stale,
+    /// A read reaches into the previous reply where the prompt seats it
+    /// (blallama's tip), and a reply built on one comes back a char longer,
+    /// as from a tip decoded token by token rather than in a batch.
+    Tip,
+    /// A reply that read nothing gains a `~` for each earlier sight of its
+    /// prompt, as from a server that isn't deterministic even cold.
+    Noisy,
+}
+
+/// Output tokens of every [`simulated`] reply.
+const SIM_OUTPUT: u64 = 12;
+
 /// A stand-in for blallama with a one-slot cache and a deterministic
-/// model. A request reads the previous one's size back when it extends
-/// it; when `stale`, a reply built on a read comes back a char longer, as
-/// from a corrupt KV cache.
-fn simulated(stale: bool) -> MockTransport {
-    let last: Mutex<Option<(Vec<String>, u64)>> = Mutex::default();
+/// model, but for its `fault`. A request reads the previous one's size back
+/// when it extends it (and, for [`Fault::Tip`], the previous reply's
+/// output when it seats that reply).
+fn simulated(fault: Fault) -> MockTransport {
+    // The last prompt's turns and size, and the reply to it.
+    let last: Mutex<Option<(Vec<String>, u64, String)>> = Mutex::default();
+    let seen: Mutex<HashMap<String, usize>> = Mutex::default();
     MockTransport::with(move |prompt: &Prompt| {
         let system = prompt.system.as_ref().map(ToString::to_string);
         let turns: Vec<String> = system
@@ -897,28 +1097,44 @@ fn simulated(stale: bool) -> MockTransport {
             .cloned()
             .chain(prompt.messages.iter().map(|m| m.content.to_string()))
             .collect();
-        let size = serde_json::to_string(prompt).unwrap().len() as u64 / 4;
+        let json = serde_json::to_string(prompt).unwrap();
+        let size = json.len() as u64 / 4;
+        let sightings = {
+            let mut seen = seen.lock().unwrap();
+            let sightings = seen.entry(json).or_default();
+            *sightings += 1;
+            *sightings - 1
+        };
         let mut last = last.lock().unwrap();
-        let read = match last.as_ref() {
-            Some((before, size)) if turns.starts_with(before) => *size,
-            _ => 0,
-        }
-        .min(size - 3);
-        *last = Some((turns, size));
+        let (read, tip) = match last.as_ref() {
+            Some((before, size, reply)) if turns.starts_with(before) => {
+                let seated = turns.get(before.len()) == Some(reply);
+                let tip = fault == Fault::Tip && seated;
+                (size + if tip { SIM_OUTPUT } else { 0 }, tip)
+            }
+            _ => (0, false),
+        };
+        let read = read.min(size - 3);
 
-        let mut counts = TokenCounts::new(3, 12);
+        let mut counts = TokenCounts::new(3, SIM_OUTPUT);
         counts.cache_read_input_tokens = Some(read);
         counts.cache_creation_input_tokens = Some(size - read - 3);
         let mut reply = simulated_reply(prompt, system.as_deref())
             .counts(counts)
             .build();
-        // A late slip, as from a stale cell: one char past the first text.
-        let first = reply.inner.content.0.first_mut();
+        // A late slip: past the first text.
+        let slip = match fault {
+            Fault::Stale if read > 0 => "!".to_string(),
+            Fault::Tip if tip => "!".to_string(),
+            Fault::Noisy if read == 0 => "~".repeat(sightings),
+            _ => String::new(),
+        };
         if let Some(Block::Text { text, .. }) =
-            first.filter(|_| stale && read > 0)
+            reply.inner.content.0.first_mut()
         {
-            *text = format!("{text}!").into();
+            *text = format!("{text}{slip}").into();
         }
+        *last = Some((turns, size, reply.inner.content.to_string()));
         reply
     })
 }
@@ -968,13 +1184,13 @@ struct ArchiveArgs {
     body: &'static str,
 }
 
-/// The warm run through [`simulated`]`(stale)`, its cold replays, and
-/// their controls.
+/// The warm run through [`simulated`], its cold replays, and their
+/// controls.
 type Simulated = (Vec<Exchange>, Vec<Cold>, Vec<Option<response::Message>>);
 
-/// [`simulated`]`(stale)`'s warm run, cold replays and controls.
-fn simulate(stale: bool) -> Simulated {
-    let server = simulated(stale);
+/// [`simulated`]`(fault)`'s warm run, cold replays and controls.
+fn simulate(fault: Fault) -> Simulated {
+    let server = simulated(fault);
     futures::executor::block_on(async {
         let warm = converse(&server, Prompt::default()).await;
         let cold = replay_cold(&server, &warm).await;
@@ -986,7 +1202,7 @@ fn simulate(stale: bool) -> Simulated {
 /// Every step goes out as designed, and a healthy cache passes.
 #[test]
 fn simulated_healthy_cache_passes() {
-    let (warm, cold, controls) = simulate(false);
+    let (warm, cold, controls) = simulate(Fault::Healthy);
 
     let steps: Vec<_> = warm.iter().map(|exchange| exchange.step).collect();
     assert_eq!(
@@ -1029,12 +1245,7 @@ fn simulated_healthy_cache_passes() {
     let clip = Some(Dropped::MaxTokens);
     assert_eq!(dropped[5], clip, "the clip step");
     assert_eq!(dropped.iter().filter(|d| d.is_some()).count(), 1);
-    let verdicts: Vec<Verdict> = warm
-        .iter()
-        .zip(&cold)
-        .map(|(w, c)| Verdict::new(w, c, None))
-        .collect();
-    let printed = table(&verdicts);
+    let printed = table(&verdicts(&warm, &cold, &controls));
     assert!(printed.contains("dropped steps: `clip` (max_tokens)"));
     assert!(printed.lines().nth(6).unwrap().contains(" max_tokens "));
 
@@ -1045,7 +1256,7 @@ fn simulated_healthy_cache_passes() {
 /// divergence and the warm request's reuse in the report.
 #[test]
 fn simulated_stale_cache_fails() {
-    let (warm, cold, controls) = simulate(true);
+    let (warm, cold, controls) = simulate(Fault::Stale);
     assert!(controls[0].is_none(), "request 1 read nothing, so matched");
     assert!(controls[1].is_some(), "request 2 is rechecked");
     let checked =
@@ -1057,46 +1268,153 @@ fn simulated_stale_cache_fails() {
         "{message}"
     );
     assert!(message.contains("restored"), "{message}");
+    assert!(message.contains("(0 of them the previous"), "{message}");
     assert!(message.contains("turns.!"), "{message}");
     // The first request had nothing to read, so it matched.
     assert!(!message.contains("request 1 "), "{message}");
     // The stale reply is deterministic cold, so the control blames the cache.
-    assert!(message.contains("the cache is suspect"), "{message}");
+    assert!(message.contains("cold is self-consistent"), "{message}");
+    assert!(message.contains("class: cache suspect"), "{message}");
+    assert!(message.contains("--cache-slots 1"), "{message}");
+    let verdicts = verdicts(&warm, &cold, &controls);
+    assert!(warnings(&verdicts).is_empty(), "every mismatch failed");
 }
 
-/// A mismatch whose second cold replay differs from its first is read as
-/// nondeterminism, not corruption; one whose replays agree, as the cache.
+/// A reply that changes only where the warm request read back the
+/// previous request's generated tokens is a tip schedule: warned about,
+/// not failed.
 #[test]
-fn the_control_tells_the_cache_from_nondeterminism() {
-    let exchange = Exchange {
+fn simulated_tip_schedule_warns() {
+    let (warm, cold, controls) = simulate(Fault::Tip);
+    let verdicts = verdicts(&warm, &cold, &controls);
+    let classes: Vec<_> = verdicts.iter().map(Verdict::mismatch).collect();
+    let tip = Some(Mismatch::Tip);
+    assert_eq!(classes, [None, tip, tip, tip, tip, tip, None, tip]);
+    assert_eq!(verdicts[1].reused, SIM_OUTPUT, "the long reply, read back");
+    // The retry re-sends the clipped prompt, whose reply was never seated:
+    // it read the cache, but none of the clip's output.
+    assert!(read(&warm[6].reply) > 0, "the retry read the cache");
+    assert_eq!(verdicts[6].reused, 0, "but no tip");
+    // The cold replies agree, which alone would blame the cache.
+    assert_eq!(verdicts[1].cold_consistent(), Some(true));
+
+    assert!(failures(&verdicts).is_empty());
+    let warned = warnings(&verdicts);
+    assert_eq!(warned.len(), 6, "{warned:#?}");
+    assert!(
+        warned
+            .iter()
+            .all(|w| w.starts_with("WARN tip schedule")
+                && w.contains(TIP_SCHEDULE)),
+        "{warned:#?}"
+    );
+    let generated = format!("({SIM_OUTPUT} of them the previous request's");
+    assert!(warned[0].contains(&generated), "{warned:#?}");
+    let printed = table(&verdicts);
+    assert!(printed.contains("cold2 agrees; tip schedule (warn)"));
+
+    assert_equivalent(&warm, &cold, &controls);
+}
+
+/// Cold replays that disagree with each other are nondeterminism: warned
+/// about loudly, with the one-slot advice, not failed.
+#[test]
+fn simulated_nondeterminism_warns() {
+    let (warm, cold, controls) = simulate(Fault::Noisy);
+    let verdicts = verdicts(&warm, &cold, &controls);
+    assert!(
+        verdicts
+            .iter()
+            .all(|v| v.mismatch() == Some(Mismatch::Nondeterminism)),
+        "{}",
+        table(&verdicts)
+    );
+
+    assert!(failures(&verdicts).is_empty());
+    let warned = warnings(&verdicts);
+    assert_eq!(warned.len(), verdicts.len() + 1, "{warned:#?}");
+    assert!(warned[0].starts_with("WARN nondeterminism"), "{warned:#?}");
+    assert!(warned[0].contains("isn't deterministic even cold"));
+    let advice = warned.last().unwrap();
+    assert!(advice.contains("--cache-slots 1"), "{advice}");
+    let printed = table(&verdicts);
+    assert!(printed.contains("cold2 differs; nondeterminism (warn)"));
+
+    assert_equivalent(&warm, &cold, &controls);
+}
+
+/// A mismatch is a tip schedule wherever the warm request read the
+/// previous request's output, whatever the control says; elsewhere the
+/// cache when the cold replies agree, nondeterminism when they don't, and
+/// unchecked without a control. The cache, unchecked, and any difference
+/// in prompt size fail; the rest only warn.
+#[test]
+fn mismatches_are_classed() {
+    let exchange = |reply: Reply| Exchange {
         step: "long",
         json: String::new(),
-        reply: mock::text("warm").build(),
+        reply: reply.build(),
         dropped: None,
     };
-    let first = (mock::text("cold").build(), FLUSHES);
-    let verdict = |control: &'static str| {
-        let control = mock::text(control).build();
-        Verdict::new(&exchange, &first, Some(&control))
+    // A 100-token prompt, then one reading 97 of it, or 10 past it.
+    let before = exchange(mock::text("before").usage(100, 20));
+    let (breakpoint, past) = (
+        exchange(mock::text("warm").usage(3, 1).cache_read(97)),
+        exchange(mock::text("warm").usage(3, 1).cache_read(110)),
+    );
+    let cold = |text: &'static str, size| mock::text(text).usage(size, 1);
+    let verdict = |warm: &Exchange, control: Option<&'static str>| {
+        let size = prompt_size(&warm.reply.usage.counts);
+        let first = (cold("cold", size).build(), FLUSHES);
+        let control = control.map(|text| cold(text, size).build());
+        Verdict::new(warm, Some(&before), &first, control.as_ref())
     };
 
-    let suspect = verdict("cold");
+    let suspect = verdict(&breakpoint, Some("cold"));
+    assert_eq!(suspect.reused, 0);
     assert_eq!(suspect.cold_consistent(), Some(true));
-    let report = suspect.failure(1).expect("a mismatch");
-    assert!(report.contains("the cache is suspect"), "{report}");
-    assert!(table(&[suspect]).contains("cold2 agrees: cache suspect"));
+    assert_eq!(suspect.mismatch(), Some(Mismatch::Cache));
+    assert!(suspect.fails());
+    let report = suspect.report(1).expect("a mismatch");
+    assert!(report.contains("class: cache suspect"), "{report}");
+    assert!(table(&[suspect]).contains("cold2 agrees; cache suspect (FAIL)"));
 
-    let noisy = verdict("cool");
+    let noisy = verdict(&breakpoint, Some("cool"));
     assert_eq!(noisy.cold_consistent(), Some(false));
-    let report = noisy.failure(1).expect("a mismatch");
-    assert!(report.contains("not corruption"), "{report}");
+    assert_eq!(noisy.mismatch(), Some(Mismatch::Nondeterminism));
+    assert!(!noisy.fails());
+    let report = noisy.report(1).expect("a mismatch");
+    assert!(report.contains("no evidence of corruption"), "{report}");
     assert!(report.contains("block 0 (text) at char 2"), "{report}");
-    assert!(table(&[noisy]).contains("cold2 differs: nondeterminism"));
+    assert!(table(&[noisy]).contains("cold2 differs; nondeterminism"));
 
-    let unchecked = Verdict::new(&exchange, &first, None);
+    let unchecked = verdict(&breakpoint, None);
     assert_eq!(unchecked.cold_consistent(), None);
-    let report = unchecked.failure(1).expect("a mismatch");
+    assert_eq!(unchecked.mismatch(), Some(Mismatch::Unchecked));
+    assert!(unchecked.fails());
+    let report = unchecked.report(1).expect("a mismatch");
     assert!(report.contains("control: not replayed"), "{report}");
+
+    for control in [Some("cold"), Some("cool"), None] {
+        let tip = verdict(&past, control);
+        assert_eq!(tip.reused, 10, "read 110 of a 100-token prompt");
+        assert_eq!(tip.mismatch(), Some(Mismatch::Tip), "{control:?}");
+        assert!(!tip.fails(), "{control:?}");
+        let report = tip.report(1).expect("a mismatch");
+        assert!(report.contains(TIP_SCHEDULE), "{report}");
+    }
+    // The first request has nothing before it, so no tip.
+    let first = (cold("cold", 110).build(), FLUSHES);
+    assert_eq!(Verdict::new(&past, None, &first, None).reused, 0);
+
+    // No schedule explains a prompt of another size, tip or not.
+    let resized = (cold("warm", 111).build(), FLUSHES);
+    let resized = Verdict::new(&past, Some(&before), &resized, None);
+    assert_eq!(resized.mismatch(), Some(Mismatch::Tip));
+    assert!(resized.fails());
+    let report = resized.report(1).expect("a mismatch");
+    assert!(report.contains("no schedule explains"), "{report}");
+    assert!(failures(&[resized]).len() == 1);
 }
 
 /// A server whose cache never clears is reported, not trusted.
@@ -1186,7 +1504,7 @@ fn an_unseated_forced_call_fails() {
         let message = panic.downcast_ref::<String>().expect("a message");
         assert!(message.contains("went unexercised"), "{message}");
     };
-    let warm = || simulate(false).0;
+    let warm = || simulate(Fault::Healthy).0;
 
     let mut clipped = warm();
     clipped[2].dropped = Some(Dropped::MaxTokens);
