@@ -54,21 +54,29 @@ test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
 # Runs a greedy multi-turn conversation with cache reuse, then replays each
 # request cold (after evicting every prefix-cache slot, so don't run it beside
 # other cache-sensitive work) and fails unless every reply matches its warm
-# twin byte for byte, or the mismatch is explained: a request that reused the
-# previous turn's generated tokens (the tip, decoded one at a time warm but
-# prefilled in a batch cold), or cold replays that disagree with each other,
-# only warn. Start blallama with `--no-penalty --cache-slots 1`: a repetition
-# penalty resumes warm but is rebuilt cold, and other sequences in the unified
-# KV cache change logits, so either can split the replies with no KV
-# corruption, and the server reports neither. The test also skips unless
+# twin byte for byte, or a control explains the mismatch. A request that read
+# back the previous turn's generated tokens (the tip) gets the matched-schedule
+# control: request k-1 replayed cold must match warm k-1, then request k, sent
+# with no flush on that fresh tip, must match warm k. Both match: tip schedule
+# (explained), passed with a note; only k-1 matches: cache failure. k-1 doesn't:
+# upstream nondeterminism, which fails when cold disagrees with itself and
+# `slots` is 1, and warns otherwise. Any other request is replayed cold again:
+# the replies agree (cache suspect) and it fails, or they don't
+# (nondeterminism) and it warns. A tip longer than the previous turn's output
+# (plus a stop sequence's slack) fails. Start blallama with `--no-penalty
+# --cache-slots 1`, and pass `slots` if you didn't: a repetition penalty
+# resumes warm but is rebuilt cold, and other sequences in the unified KV
+# cache change logits, so either can split the replies with no KV corruption,
+# and the server reports neither. The test also skips unless
 # BLALLAMA_EQUIVALENCE=1, which only this recipe sets, so an exported
 # BLALLAMA_URL never lets the pre-commit gate evict the slots. Never run in CI.
 # Live warm-vs-cold KV-cache equivalence check against a local blallama.
-test-equivalence model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
+test-equivalence model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf" slots="1":
     BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
-        BLALLAMA_EQUIVALENCE=1 cargo test -p misanthropic \
-        --features blallama --lib chat::scenarios::equivalence::blallama -- \
-        --test-threads=1 --nocapture
+        BLALLAMA_EQUIVALENCE=1 BLALLAMA_CACHE_SLOTS='{{slots}}' \
+        cargo test -p misanthropic --features blallama --lib \
+        chat::scenarios::equivalence::blallama -- --test-threads=1 \
+        --nocapture
 
 # Prints a table of each request's input / written / read / tip tokens and
 # latency, and fails when the prefix isn't reused turn to turn, or a turn takes
