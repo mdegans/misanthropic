@@ -41,8 +41,12 @@ pub use output::{Effort, Items, JsonSchemaFormat, OutputConfig, OutputFormat};
 pub mod index;
 pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 
-/// Maximum `cache_control` markers Anthropic accepts in a single request,
-/// counted across `tools` + `system` + `messages`. See
+/// Maximum `cache_control` markers Anthropic accepts in a single request:
+/// one per marked block across `tools` + `system` + `messages`, plus the
+/// top-level automatic slot ([`Prompt::cache_control`]) when set, even if
+/// the last block is marked too. A fifth is a 400 ("A maximum of 4 blocks
+/// with cache_control may be provided. Found 5."), not a silent drop —
+/// probed against `count_tokens` on 2026-09-30. See
 /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#cache-limitations>.
 const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
 
@@ -1422,6 +1426,12 @@ impl Prompt {
     /// [`CacheControl`](message::CacheControl) on
     /// the last cacheable block. Shared implementation for
     /// [`cache`](Prompt::cache) and [`cache_1h`](Prompt::cache_1h).
+    ///
+    /// Never takes the request past Anthropic's 4-marker limit (see
+    /// [`cache_windowed_with`](Prompt::cache_windowed_with) for what
+    /// counts): a new message marker evicts older message markers, the
+    /// earliest kept longest, and a marker with no room left — every slot
+    /// held by `tools`, `system` or the automatic one — isn't placed.
     pub fn cache_with(
         mut self,
         cache_control: crate::prompt::message::CacheControl,
@@ -1429,13 +1439,21 @@ impl Prompt {
         // If there are messages, add a cache breakpoint to the last one.
         if let Some(last) = self.messages.last_mut() {
             last.content.cache_with(cache_control);
+            let tail = self.messages.len() - 1;
+            self.fit_cache_budget(&[tail]);
             return self;
         }
+
+        // Otherwise the prefix, when a slot is free (re-marking an already
+        // marked block adds none).
+        let full = self.cache_markers() >= MAX_CACHE_CONTROLS_PER_REQUEST;
 
         // If there are no messages, add a cache breakpoint to the system prompt
         // if it exists.
         if let Some(system) = self.system.as_mut() {
-            system.cache_with(cache_control);
+            if !full || system.last().is_some_and(message::Block::is_cached) {
+                system.cache_with(cache_control);
+            }
             return self;
         }
 
@@ -1443,12 +1461,61 @@ impl Prompt {
         // the tools if they exist.
         if let Some(tool) =
             self.tools.as_mut().and_then(|tools| tools.last_mut())
+            && (!full || tool.is_cached())
         {
             tool.cache_with(cache_control);
-            return self;
         }
 
         self
+    }
+
+    /// The `cache_control` markers this request carries, as Anthropic counts
+    /// them against `MAX_CACHE_CONTROLS_PER_REQUEST`: the prefix's (see
+    /// `prefix_cache_markers`) plus each marked message block.
+    fn cache_markers(&self) -> usize {
+        self.prefix_cache_markers() + self.message_cache_markers().count()
+    }
+
+    /// The markers outside `messages`: each marked tool and `system` block,
+    /// plus the automatic slot.
+    fn prefix_cache_markers(&self) -> usize {
+        let tools = self.tools.iter().flatten().filter(|t| t.is_cached());
+        let system = self.system.iter().flat_map(|system| system.iter());
+        usize::from(self.cache_control.is_some())
+            + tools.count()
+            + system.filter(|block| block.is_cached()).count()
+    }
+
+    /// Every marked message block as `(message, block)`, in document order.
+    fn message_cache_markers(&self) -> impl Iterator<Item = (usize, usize)> {
+        self.messages.iter().enumerate().flat_map(|(m, message)| {
+            let blocks = message.content.iter().enumerate();
+            blocks
+                .filter(|(_, block)| block.is_cached())
+                .map(move |(b, _)| (m, b))
+        })
+    }
+
+    /// Evict message-level markers until the request fits Anthropic's
+    /// 4-marker limit. The markers of the messages in `tail` are kept first
+    /// (in `tail`'s order, a message's last block first), then the earliest
+    /// of the rest. `tools`, `system` and the automatic slot are never
+    /// touched, so a prefix holding every slot leaves no message markers.
+    fn fit_cache_budget(&mut self, tail: &[usize]) {
+        let budget = MAX_CACHE_CONTROLS_PER_REQUEST
+            .saturating_sub(self.prefix_cache_markers());
+        let marked: Vec<(usize, usize)> =
+            self.message_cache_markers().collect();
+        let in_tail = |&(m, _): &(usize, usize)| tail.contains(&m);
+        let tail_first = tail.iter().flat_map(|&t| {
+            marked.iter().rev().filter(move |&&(m, _)| m == t).copied()
+        });
+        let rest = marked.iter().filter(|mark| !in_tail(mark)).copied();
+        let evicted: Vec<(usize, usize)> =
+            tail_first.chain(rest).skip(budget).collect();
+        for (m, b) in evicted {
+            self.messages[m].content[b].uncache();
+        }
     }
 
     /// Enable [automatic prompt caching] with the default 5-minute TTL: the
@@ -1463,19 +1530,32 @@ impl Prompt {
     /// Prefixes below the model's minimum cacheable length are silently not
     /// cached — no error, just a zero `cache_creation_input_tokens`.
     ///
+    /// The automatic slot is one of the request's 4 markers, even when the
+    /// last block is marked too; if all 4 are already placed, the newest
+    /// message marker makes way for it.
+    ///
     /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    pub fn auto_cache(mut self) -> Self {
-        self.cache_control =
-            Some(crate::prompt::message::CacheControl::ephemeral());
-        self
+    pub fn auto_cache(self) -> Self {
+        self.auto_cache_with(crate::prompt::message::CacheControl::ephemeral())
     }
 
     /// [`Self::auto_cache`] with a 1-hour TTL — see
     /// [`CacheControl::one_hour`](message::CacheControl::one_hour) for when
-    /// the longer window pays for its doubled write cost.
-    pub fn auto_cache_1h(mut self) -> Self {
-        self.cache_control =
-            Some(crate::prompt::message::CacheControl::one_hour());
+    /// the longer window pays for its doubled write cost. The automatic
+    /// slot counts as the request's last marker, and Anthropic rejects a
+    /// 1-hour marker after a 5-minute one, so any block markers must be
+    /// 1-hour too.
+    pub fn auto_cache_1h(self) -> Self {
+        self.auto_cache_with(crate::prompt::message::CacheControl::one_hour())
+    }
+
+    /// Set the automatic slot, making room for it under the 4-marker limit.
+    pub(crate) fn auto_cache_with(
+        mut self,
+        cache_control: crate::prompt::message::CacheControl,
+    ) -> Self {
+        self.cache_control = Some(cache_control);
+        self.fit_cache_budget(&[]);
         self
     }
 
@@ -1498,12 +1578,14 @@ impl Prompt {
     ///
     /// # Budget enforcement
     ///
-    /// Anthropic accepts at most **4** `cache_control` markers per request,
-    /// counted across `tools` + `system` + `messages`. This method counts
-    /// the existing `system` / tools markers as a fixed prefix-cache cost
-    /// and gives the rolling window the remaining budget. When the total
-    /// would exceed 4 it evicts the **oldest message-level** markers — the
-    /// system and tools markers are left untouched.
+    /// Anthropic rejects a request with more than **4** `cache_control`
+    /// markers (a 400, not a silent drop), counting each marked block across
+    /// `tools` + `system` + `messages` plus the top-level automatic slot
+    /// ([`auto_cache`](Prompt::auto_cache)). The markers outside `messages`
+    /// are a fixed cost this method never touches; the window gets what is
+    /// left, newest position first, and older message-level markers are
+    /// evicted to fit. A prefix already holding all 4 leaves no room, so no
+    /// message marker survives.
     ///
     /// A position already carrying a `cache_control` marker is left alone
     /// (its existing TTL is preserved); only freshly marked positions take
@@ -1552,60 +1634,30 @@ impl Prompt {
     /// eviction, **middle** message-level markers (those not in the tail
     /// window) are removed first, oldest-non-tail kept last — so the
     /// earliest message-level marker the caller placed (typically the
-    /// initial prefix marker) survives as long as the budget allows.
+    /// initial prefix marker) survives as long as the budget allows. If the
+    /// window alone doesn't fit, its oldest positions go too.
+    ///
+    /// Mixing TTLs: Anthropic rejects a 1-hour marker anywhere after a
+    /// 5-minute one, in `tools` → `system` → `messages` order with the
+    /// automatic slot last. A window marking 1-hour after 5-minute markers
+    /// (or under a 5-minute [`auto_cache`](Prompt::auto_cache)) is a 400.
     pub fn cache_windowed_with(
         &mut self,
         n: usize,
         cache_control: crate::prompt::message::CacheControl,
     ) {
-        // 1. Mark up to `n` positions at the tail, spaced by 2:
-        //    `len-1, len-3, …, len-1 - 2(n-1)`. Skip out-of-bounds indices.
-        //    Skip positions that already carry a marker so the existing
-        //    TTL is preserved.
+        // Up to `n` positions at the tail, spaced by 2 (`len-1, len-3, …`),
+        // newest first. A position already marked keeps its TTL.
         let len = self.messages.len();
-        let mut tail_set: std::collections::HashSet<usize> =
-            std::collections::HashSet::with_capacity(n);
-        for k in 0..n {
-            let idx_signed = len as isize - 1 - 2 * (k as isize);
-            if idx_signed < 0 {
-                break;
-            }
-            let idx = idx_signed as usize;
-            if !self.messages[idx].content.has_cache() {
-                self.messages[idx].content.cache_with(cache_control.clone());
-            }
-            tail_set.insert(idx);
-        }
-
-        // 2. Account for sticky prefix markers (system + tools) and the
-        //    tail set the caller just requested, then compute what's left
-        //    for any pre-existing non-tail message-level markers.
-        let system_count =
-            usize::from(self.system.as_ref().is_some_and(|s| s.has_cache()));
-        let tool_count = self
-            .tools
-            .as_ref()
-            .map_or(0, |tools| tools.iter().filter(|t| t.is_cached()).count());
-        let used = system_count + tool_count + tail_set.len();
-        let non_tail_budget =
-            MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
-
-        // 3. Walk non-tail message-level breakpoints in document order.
-        //    Keep the earliest `non_tail_budget` (i.e. the beginning);
-        //    evict the rest (the middle stragglers).
-        let non_tail_indices: Vec<usize> = self
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(i, msg)| msg.content.has_cache() && !tail_set.contains(i))
-            .map(|(i, _)| i)
-            .collect();
-
-        if non_tail_indices.len() > non_tail_budget {
-            for &idx in &non_tail_indices[non_tail_budget..] {
-                self.messages[idx].content.uncache();
+        let tail: Vec<usize> =
+            (0..n).map_while(|k| len.checked_sub(1 + 2 * k)).collect();
+        for &idx in &tail {
+            let content = &mut self.messages[idx].content;
+            if !content.has_cache() {
+                content.cache_with(cache_control.clone());
             }
         }
+        self.fit_cache_budget(&tail);
     }
 
     /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for

@@ -586,7 +586,8 @@ impl<State, T: Transport> Chat<State, T> {
         } else {
             // Canonical Anthropic: the server places the breakpoint on the
             // last cacheable block at request time.
-            self.prompt.cache_control = Some(cache_control);
+            let prompt = std::mem::take(&mut self.prompt);
+            self.prompt = prompt.auto_cache_with(cache_control);
         }
     }
 

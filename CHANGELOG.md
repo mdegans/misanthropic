@@ -179,6 +179,19 @@ record; this file aggregates them.
 
 ### Fixed
 
+- **Cache markers past Anthropic's limit of 4.** A fifth `cache_control` is
+  a 400 ("A maximum of 4 blocks with cache_control may be provided"), not
+  the silent keep-the-last-4 the `CachedPrompt` docs promised, and the
+  top-level automatic slot counts as one (probed on the free
+  `count_tokens`). `Prompt::cache` / `CachedPrompt::cache` every turn used to
+  pile up one marker per call; `cache_windowed*` counted a message once
+  however many of its blocks were marked, ignored the automatic slot, and
+  never trimmed its own window. Now `cache`, `cache_windowed*` and
+  `auto_cache` / `set_auto_cache` (and so `Chat::cache`) never take a
+  request past 4: they evict older message markers (the earliest kept
+  longest), never the `tools` / `system` ones or the automatic slot, and
+  place nothing when those already hold every slot. The docs also note the
+  TTL rule: a 1-hour marker after a 5-minute one is a 400.
 - **`ToolBox` offered its tools in a per-instance order.** Tools lead the
   cached prefix, but `definitions()` iterated a `HashMap`, so two boxes
   holding the same tools (identical agents, or one agent across a restart)
