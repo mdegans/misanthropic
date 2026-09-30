@@ -458,6 +458,7 @@ enum Kind {
     Beat,
     Tool,
     TurnOrder,
+    Cache,
 }
 
 impl Kind {
@@ -469,6 +470,7 @@ impl Kind {
             Stop::Beat(_) => Kind::Beat,
             Stop::Tool(_) => Kind::Tool,
             Stop::TurnOrder(_) => Kind::TurnOrder,
+            Stop::Cache(_) => Kind::Cache,
         }
     }
 }

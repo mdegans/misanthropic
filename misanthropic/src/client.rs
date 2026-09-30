@@ -2006,6 +2006,7 @@ mod tests {
             .max_tokens(NonZeroU32::new(64).unwrap())
             .system(system)
             .auto_cache()
+            .unwrap()
             .add_message((Role::User, "Say `one` and nothing else."))
             .unwrap();
 

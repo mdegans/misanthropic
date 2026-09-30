@@ -872,6 +872,16 @@ impl MethodDef {
         }
     }
 
+    /// This tool's cache breakpoint, if it carries one.
+    pub fn cache_control(
+        &self,
+    ) -> Option<&crate::prompt::message::CacheControl> {
+        match self {
+            Self::Custom(method) => method.cache_control.as_ref(),
+            Self::Server(server) => server.cache_control(),
+        }
+    }
+
     /// Returns true if this tool has a cache breakpoint set.
     pub fn is_cached(&self) -> bool {
         match self {

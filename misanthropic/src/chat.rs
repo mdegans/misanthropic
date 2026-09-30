@@ -69,7 +69,9 @@
 //! re-marked after each assistant turn; a transport that
 //! [ignores markers](crate::Quirks::cache_markers_ignored) gets none. Without the
 //! knob the driver stays out of caching entirely — pre-configured markers
-//! on the prompt are untouched either way.
+//! on the prompt are untouched either way. Unless the transport ignores
+//! markers, every request is checked first ([`Prompt::check_cache`]): one
+//! Anthropic would 400 stops the run with [`Stop::Cache`] instead.
 //!
 //! [auto caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
 //! [`Client`]: crate::Client
@@ -81,7 +83,7 @@ use futures::FutureExt;
 use crate::{
     Prompt, Transport,
     prompt::{
-        Seated, TurnOrderError,
+        CacheError, Seated, TurnOrderError,
         message::{
             AssistantMessage, Block, CacheControl, Content, Message, Role,
             SystemMessage,
@@ -164,6 +166,13 @@ pub enum Stop {
     /// at all, so the prompt is as it was before it.
     #[error(transparent)]
     TurnOrder(#[from] TurnOrderError),
+    /// The prompt's `cache_control` markers break a rule Anthropic 400s on
+    /// (see [`Prompt::check_cache`]) — a programming error in the caller,
+    /// like a 1-hour [`Chat::cache`] under a seeded 5-minute marker. Nothing
+    /// was sent: the check runs before every request, and a turn the cache
+    /// window can't legally mark isn't seated, so the prompt is as it was.
+    #[error(transparent)]
+    Cache(#[from] CacheError),
 }
 
 /// A [`Chat`] without its transport — what [`run`](Chat::run) hands back
@@ -526,7 +535,11 @@ impl<State, T: Transport> Chat<State, T> {
     where
         H: AsyncFnMut(&mut State) -> Result<Option<Vec<Message>>, BoxError>,
     {
-        self.resolve_cache();
+        if let Err(error) = self.resolve_cache() {
+            cold_path();
+            let parts = self.into_parts();
+            return Err(Error::new(Stop::Cache(error), parts, state));
+        }
 
         // The driver owns notification interleaving: subscribe to the box once
         // (a resumed box hands back the stream a previous run parked) and race
@@ -556,12 +569,7 @@ impl<State, T: Transport> Chat<State, T> {
             self.toolbox.park(notifications);
         }
 
-        let parts = Parts {
-            prompt: self.prompt,
-            pending: self.pending_system,
-            toolbox: self.toolbox,
-            config: self.config,
-        };
+        let parts = self.into_parts();
         match outcome {
             Ok(()) => Ok((parts, state)),
             Err(kind) => {
@@ -571,24 +579,36 @@ impl<State, T: Transport> Chat<State, T> {
         }
     }
 
+    /// The `Chat` without its transport.
+    fn into_parts(self) -> Parts<State> {
+        Parts {
+            prompt: self.prompt,
+            pending: self.pending_system,
+            toolbox: self.toolbox,
+            config: self.config,
+        }
+    }
+
     /// Resolve the caching strategy against the transport's quirks, once per
     /// run: `config.cache` stays `Some` only for the per-assistant-turn
-    /// windowed marking; the other strategies act here (or never).
-    fn resolve_cache(&mut self) {
-        let Some(cache_control) = self.config.cache.take() else {
-            return;
+    /// windowed marking; the other strategies act here (or never). On error
+    /// nothing changes, so a fixed prompt resumes with the same strategy.
+    fn resolve_cache(&mut self) -> Result<(), CacheError> {
+        let Some(cache_control) = self.config.cache.clone() else {
+            return Ok(());
         };
         let quirks = self.transport.quirks();
         if quirks.cache_markers_ignored {
             log::debug!("transport ignores cache markers; placing none");
         } else if quirks.breakpoint_after_assistant {
-            self.config.cache = Some(cache_control);
+            return Ok(());
         } else {
             // Canonical Anthropic: the server places the breakpoint on the
             // last cacheable block at request time.
-            let prompt = std::mem::take(&mut self.prompt);
-            self.prompt = prompt.auto_cache_with(cache_control);
+            self.prompt.set_auto_cache(cache_control)?;
         }
+        self.config.cache = None;
+        Ok(())
     }
 
     /// The loop body: per round, let the tools see the turn, take the next beat
@@ -853,6 +873,11 @@ impl<State, T: Transport> Chat<State, T> {
     /// One model call, its usage recorded. (`&mut self`: a `&self` held
     /// across the await would need `Chat: Sync` for the future to be `Send`.)
     async fn send(&mut self) -> Result<response::Message, Stop> {
+        // Markers set by hand, a beat or a hook may break Anthropic's rules
+        // even though the driver's own placements never do.
+        if !self.transport.quirks().cache_markers_ignored {
+            self.prompt.check_cache()?;
+        }
         let response =
             self.transport.send(&self.prompt).await.map_err(|error| {
                 cold_path();
@@ -992,7 +1017,8 @@ impl<State, T: Transport> Chat<State, T> {
     /// transport, the seated assistant tail is (re-)marked here with a
     /// 2-deep rolling window — the end-of-assistant render is what such
     /// backends hash, and the second trailing breakpoint is what keeps a
-    /// later tail merge re-paying only the last segment.
+    /// later tail merge re-paying only the last segment. A turn the window
+    /// can't legally mark is taken back ([`Stop::Cache`]).
     fn seat_assistant(
         &mut self,
         state: &mut State,
@@ -1010,10 +1036,18 @@ impl<State, T: Transport> Chat<State, T> {
             .filter(|m| m.role == Role::Assistant)
             .flat_map(|m| m.tool_uses().cloned())
             .collect();
-        self.seat_all(seated)?;
+        let Some(cache_control) = self.config.cache.clone() else {
+            self.seat_all(seated)?;
+            return Ok(calls);
+        };
 
-        if let Some(cache_control) = &self.config.cache {
-            self.prompt.cache_windowed_with(2, cache_control.clone());
+        // A turn the window can't legally mark is taken back, unrun.
+        let checkpoint = self.checkpoint();
+        self.seat_all(seated)?;
+        if let Err(error) = self.prompt.cache_windowed_with(2, cache_control) {
+            cold_path();
+            self.rollback(checkpoint);
+            return Err(error.into());
         }
 
         Ok(calls)
@@ -1855,6 +1889,82 @@ mod tests {
 
         assert!(prompt.cache_control.is_none());
         assert!(!prompt.messages.iter().any(|m| m.content.has_cache()));
+    }
+
+    /// A 1-hour automatic slot under a seeded 5-minute marker is a 400:
+    /// the run stops before its first request, the prompt as seeded.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn cache_refused_before_any_request() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(MockTransport::new().then(mock::text("hi")));
+        let prompt = Prompt::default().system("s").cache();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::one_hour());
+
+        let error =
+            futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
+                .unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Cache(_)), "{error}");
+        assert!(transport.requests().is_empty());
+        assert!(error.prompt.cache_control.is_none());
+    }
+
+    /// A beat whose markers break the rules isn't sent.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_beat_breaking_cache_rules_is_not_sent() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(MockTransport::new().then(mock::text("hi")));
+        let prompt = Prompt::default().system("s").cache();
+        let mut late = Block::from("hi");
+        late.cache_1h();
+        let beat = vec![Message::from((Role::User, vec![late]))];
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
+
+        let error =
+            futures::executor::block_on(chat.run((), beats(vec![beat])))
+                .unwrap_err();
+
+        let Stop::Cache(error) = error.kind else {
+            panic!("{error}");
+        };
+        assert!(matches!(error, CacheError::TtlOrder { .. }));
+        assert!(transport.requests().is_empty());
+    }
+
+    /// On a `breakpoint_after_assistant` transport the window marks each
+    /// assistant turn; one it can't legally mark is taken back.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_turn_the_window_cannot_mark_is_taken_back() {
+        use crate::mock::{self, MockTransport};
+
+        let quirks = crate::Quirks {
+            breakpoint_after_assistant: true,
+            ..Default::default()
+        };
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::text("hello"))
+                .with_quirks(quirks),
+        );
+        let prompt = Prompt::default().system("s").cache();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::one_hour());
+
+        let error =
+            futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
+                .unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Cache(_)), "{error}");
+        assert_eq!(transport.requests().len(), 1);
+        let roles: Vec<Role> =
+            error.prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User], "the turn was taken back");
     }
 
     /// #124: a `max_tokens`-clipped turn's tool calls may be missing

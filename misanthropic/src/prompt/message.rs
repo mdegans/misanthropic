@@ -1987,6 +1987,41 @@ impl Block {
         }
     }
 
+    /// This block's cache breakpoint, if it carries one.
+    pub fn cache_control(&self) -> Option<&CacheControl> {
+        self.cache_slot()?.as_ref()
+    }
+
+    /// This block's `cache_control` field, or `None` for a block that can't
+    /// carry one (see [`cache_with`](Block::cache_with)).
+    pub(crate) fn cache_slot(&self) -> Option<&Option<CacheControl>> {
+        use crate::tool;
+
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
+            | Self::ToolUse {
+                call: tool::Use { cache_control, .. },
+            }
+            | Self::ToolResult {
+                result: tool::Result { cache_control, .. },
+            }
+            | Self::ServerToolUse {
+                call: tool::Use { cache_control, .. },
+            } => Some(cache_control),
+            Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
+            | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
+            | Self::ToolReference { .. } => None,
+        }
+    }
+
     /// Returns true if the block has a `cache_control` breakpoint.
     pub const fn is_cached(&self) -> bool {
         use crate::tool;
@@ -2271,6 +2306,16 @@ impl CacheControl {
     pub fn one_hour() -> Self {
         CacheControl::Ephemeral {
             ttl: Some(CacheTtl::OneHour),
+        }
+    }
+
+    /// How long the entry lives: an omitted `ttl` is
+    /// [`FiveMinutes`](CacheTtl::FiveMinutes), as on the wire.
+    pub fn ttl(&self) -> CacheTtl {
+        match self {
+            CacheControl::Ephemeral { ttl } => {
+                ttl.clone().unwrap_or(CacheTtl::FiveMinutes)
+            }
         }
     }
 }

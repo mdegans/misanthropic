@@ -379,7 +379,11 @@ fn worker_prompt(name: &str) -> Prompt {
         }
         other => unreachable!("no persona for `{other}`"),
     };
-    Prompt::default().system(persona).auto_cache()
+    // Only a 1-hour marker on the last block could clash with the slot.
+    Prompt::default()
+        .system(persona)
+        .auto_cache()
+        .expect("no markers to clash with")
 }
 
 /// The boss's persona; the human side of the swarm.
@@ -541,7 +545,8 @@ async fn main() -> Result<(), BoxError> {
         Prompt::default()
             .model(Id::Sonnet46)
             .system(BOSS_SYSTEM)
-            .auto_cache(),
+            .auto_cache()
+            .expect("no markers to clash with"),
     );
     let boss_printer = Arc::clone(&printer);
     let outcome = cli

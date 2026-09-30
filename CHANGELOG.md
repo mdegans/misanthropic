@@ -17,6 +17,22 @@ record; this file aggregates them.
 
 ### Breaking
 
+- **Cache placements that Anthropic would reject now return a
+  `CacheError` instead of building the request.** The 1-hour and automatic
+  placements are fallible: `Prompt::cache_1h` / `cache_with` /
+  `auto_cache` / `auto_cache_1h` / `auto_cache_with` return
+  `Result<Prompt, CacheError>`, `Prompt::cache_windowed_1h` /
+  `cache_windowed_with` return `Result<(), CacheError>`, and on
+  `CachedPrompt` so do `cached_1h`, `cache_1h`, `cache_windowed_1h` /
+  `_with` and `set_auto_cache` / `set_auto_cache_1h` (the `&mut` ones leave
+  the prompt unchanged on an error). Add a `?` — `Prompt::default()
+  .system(s).auto_cache()?`. The 5-minute block placements (`cache`,
+  `cache_windowed`, `CachedPrompt::cached` / `cache`) keep their
+  signatures: they can only clash with a 1-hour marker at or after theirs,
+  which already caches that prefix for longer, so they skip that marker.
+  `Stop` gains `Stop::Cache` (it is `#[non_exhaustive]`, so a `_` arm
+  already covers it).
+
 - **Deserializing a `Prompt` requires `model`, `messages` and `max_tokens`**,
   matching Anthropic, which 400s with `<field>: Field required`. The
   container-level `#[serde(default)]` is gone (every other field still
@@ -94,6 +110,19 @@ record; this file aggregates them.
   once per run — and what its tools pushed in between is delivered then.
 
 ### Added
+
+- **`Prompt::check_cache`** checks a request's `cache_control` markers
+  against the rules Anthropic 400s on, as a `CacheError` naming the
+  offending `Breakpoint`s by Anthropic's own paths (`messages.2.content.0`):
+  more than 4 markers (the automatic slot counted); a 1-hour marker after a
+  5-minute one (`tools` → `system` → `messages`, the automatic slot last);
+  and an automatic slot whose TTL differs from a marker on the block it
+  lands on. The placements never fail it; hand-placed markers can, so
+  `Chat` runs it before every request (unless the transport ignores
+  markers) and stops with `Stop::Cache`, and a turn its cache window can't
+  legally mark is taken back rather than seated. Also `Block::cache_control`,
+  `MethodDef::cache_control`, `CacheControl::ttl` and
+  `CachedPrompt::cache_with`.
 
 - **`schema-order-check` (default-on) enforces required-before-optional
   property order in tool input schemas** (#141). Anthropic and local grammar
@@ -231,6 +260,15 @@ record; this file aggregates them.
 
 ### Fixed
 
+- **Mixed cache TTLs built requests Anthropic rejects.** `cache_1h()` after
+  `cache()`, `auto_cache_1h()` over a 5-minute marker, or `Chat::cache` with
+  a 1-hour TTL over a seeded 5-minute marker each sent a 400 ("a ttl='1h'
+  cache_control block must not come after a ttl='5m' cache_control block").
+  So did a 5-minute automatic slot on a last block marked 1-hour — an
+  undocumented rule the free `count_tokens` probes (claude-haiku-4-5,
+  2026-09-30) turned up: "When both are specified on the same block, they
+  must have matching TTLs". These are now `CacheError`s, before anything is
+  sent.
 - **Cache markers past Anthropic's limit of 4.** A fifth `cache_control` is
   a 400 ("A maximum of 4 blocks with cache_control may be provided"), not
   the silent keep-the-last-4 the `CachedPrompt` docs promised, and the

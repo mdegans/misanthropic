@@ -248,6 +248,42 @@ println!("Assistant: {reply}");
 # }
 ```
 
+### Prompt caching — `cache()` every turn
+
+`cache()` marks the end of the prompt (5-minute TTL). Call it every turn: it
+keeps Anthropic's 4-marker limit (the automatic slot counts) by sliding a
+window — the newest message markers stay, the oldest go, and their entries
+stay reachable server-side. `auto_cache()` lets the API place the marker
+instead. Anthropic 400s a 1-hour marker after a 5-minute one (`tools` →
+`system` → `messages`, automatic slot last), so the 1-hour and automatic
+placements return a `CacheError` instead of building one; `check_cache()`
+checks hand-placed markers the same way (the `Chat` driver runs it before
+every request).
+
+```rust
+use misanthropic::{Prompt, prompt::{CacheError, message::Role}};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// 1-hour markers first: a long-lived prefix, then a 5-minute conversation.
+let mut chat = Prompt::default()
+    .system("<a long manual>")
+    .cache_1h()?
+    .add_message((Role::User, "Where do I start?"))?
+    .cache();
+assert!(chat.check_cache().is_ok());
+
+// Each turn: push the reply and the next line, re-mark the end.
+chat.push_message((Role::Assistant, "Chapter one."))?;
+chat.push_message((Role::User, "And then?"))?;
+chat = chat.cache();
+
+// A 1-hour marker after those 5-minute ones would be a 400: refused.
+let refused = chat.cache_1h();
+assert!(matches!(refused, Err(CacheError::TtlOrder { .. })));
+# Ok(())
+# }
+```
+
 ### Seating turns — `Prompt::seat` (drivers)
 
 `add_message` / `push_message` are the everyday appends. `Prompt::seat` is the
