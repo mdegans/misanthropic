@@ -11,6 +11,15 @@
 //! how to read the next line of user input, and (via [`Chat::on_assistant`])
 //! what each assistant turn becomes.
 //!
+//! Each response is classified by its [`Disposition`]. A
+//! [`Clipped`](Disposition::Clipped) (`max_tokens`) turn is never seated and
+//! its tool calls never run — they can be valid JSON missing arguments the
+//! model never emitted. The round retries with `max_tokens` doubled (clamped
+//! to the model's ceiling when the transport [lists
+//! one](crate::model::ModelInfo::max_tokens)), counted against the
+//! [round budget](Chat::max_consecutive_tool_calls), so a model that clips
+//! forever still hands back.
+//!
 //! The driver is generic over its [`Transport`] — an API [`Client`] and a
 //! local inference engine drive the same loop.
 //!
@@ -58,7 +67,10 @@
 //! [auto caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
 //! [`Client`]: crate::Client
 
-use std::sync::{Arc, Mutex};
+use std::{
+    num::NonZeroU32,
+    sync::{Arc, Mutex},
+};
 
 use futures::FutureExt;
 
@@ -68,7 +80,7 @@ use crate::{
         AssistantMessage, Block, CacheControl, Content, Message, Role,
         SystemMessage,
     },
-    response::{StopReason, TokenCounts},
+    response::{Disposition, TokenCounts},
     tool::{self, Notification, Notifications, Tool, ToolBox, Use},
 };
 
@@ -76,11 +88,11 @@ use crate::{
 /// and any [`Transport::Error`], so both flow through `?` unchanged.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default ceiling on consecutive model rounds (tool dispatches and paused
-/// server-tool continuations both count) within a single user beat. A runaway
-/// model is stopped here; real agents (Claude Code) run uncapped, so override
-/// with [`Chat::max_consecutive_tool_calls`]. What happens at the cap is the
-/// [`BudgetPolicy`].
+/// Default ceiling on consecutive model rounds (tool dispatches, paused
+/// server-tool continuations and clipped retries all count) within a single
+/// user beat. A runaway model is stopped here; real agents (Claude Code) run
+/// uncapped, so override with [`Chat::max_consecutive_tool_calls`]. What
+/// happens at the cap is the [`BudgetPolicy`].
 pub const DEFAULT_MAX_TOOL_CALLS: usize = 8;
 
 /// What [`Chat::run`] does when one user beat exhausts
@@ -134,6 +146,10 @@ pub struct Chat<State, T: Transport> {
     >,
     /// Cumulative token-usage sink — see [`track_usage`](Chat::track_usage).
     usage: Option<Arc<Mutex<TokenCounts>>>,
+    /// The model's `max_tokens` ceiling, looked up through
+    /// [`Transport::models`] on the first clip and cached (`Some(None)`:
+    /// unknown).
+    ceiling: Option<Option<NonZeroU32>>,
 }
 
 impl<State, T: Transport> Chat<State, T> {
@@ -151,12 +167,14 @@ impl<State, T: Transport> Chat<State, T> {
             pending_system: None,
             on_assistant: None,
             usage: None,
+            ceiling: None,
         }
     }
 
     /// Cap consecutive model rounds within one user beat (default
     /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap triggers the
-    /// [`BudgetPolicy`].
+    /// [`BudgetPolicy`] — or, on a [clipped](Disposition::Clipped) turn,
+    /// hands back without seating it.
     pub fn max_consecutive_tool_calls(mut self, max: usize) -> Self {
         self.max_tool_calls = max;
         self
@@ -385,6 +403,11 @@ impl<State, T: Transport> Chat<State, T> {
     /// Call the model, answer every tool call, and loop until the assistant
     /// stops calling tools *and* the turn isn't paused on a server tool — so
     /// the caller's beat is the *last* thing seated before control returns.
+    ///
+    /// A [`Clipped`](Disposition::Clipped) turn is never seated and its tool
+    /// calls never run (they may be missing arguments the model never
+    /// emitted): the prompt stays un-advanced and the round retries with
+    /// [`max_tokens`](Prompt::max_tokens) raised — see `raise_max_tokens`.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
         let mut rounds = 0usize;
         loop {
@@ -393,10 +416,27 @@ impl<State, T: Transport> Chat<State, T> {
             // legal tail appeared, so the prompt is request-ready here.
             let response = self.transport.send(&self.prompt).await?;
             self.record_usage(&response);
+
             // `pause_turn` means a server tool is still running: the turn
             // must be continued, even though there's nothing to dispatch.
-            let paused =
-                matches!(response.stop_reason, Some(StopReason::PauseTurn));
+            // `ToolUse` vs `Done` doesn't matter here — the calls dispatched
+            // are the ones in the *seated* turn, whatever the hook made it.
+            let paused = match response.disposition() {
+                Disposition::Clipped => {
+                    if rounds >= self.max_tool_calls {
+                        log::warn!(
+                            "budget exhausted on a clipped turn: handing \
+                             back without seating it"
+                        );
+                        return Ok(());
+                    }
+                    rounds += 1;
+                    self.raise_max_tokens().await;
+                    continue;
+                }
+                Disposition::Paused => true,
+                Disposition::ToolUse | Disposition::Done => false,
+            };
 
             let calls = self.seat_assistant(state, response.inner)?;
 
@@ -437,6 +477,50 @@ impl<State, T: Transport> Chat<State, T> {
         }
     }
 
+    /// A turn clipped at [`max_tokens`](Prompt::max_tokens): double it,
+    /// clamped to the model's ceiling when the transport
+    /// [declares one](crate::model::ModelInfo::max_tokens) (never lowering a
+    /// caller's larger setting). The round budget bounds the retries, so a
+    /// model that clips forever still terminates. The raise persists for
+    /// later beats.
+    async fn raise_max_tokens(&mut self) {
+        let current = self.prompt.max_tokens;
+        let doubled = current.saturating_mul(NonZeroU32::new(2).unwrap());
+        let raised = match self.max_tokens_ceiling().await {
+            Some(ceiling) => doubled.min(ceiling).max(current),
+            None => doubled,
+        };
+        log::warn!(
+            "turn clipped at max_tokens = {current}: not seating it or \
+             dispatching its tool calls; retrying with {raised}"
+        );
+        self.prompt.max_tokens = raised;
+    }
+
+    /// The prompt model's output ceiling from [`Transport::models`], looked
+    /// up once and cached. `None` when the transport doesn't list the model,
+    /// doesn't state a ceiling, or the lookup fails (a clip is no reason to
+    /// fail the conversation).
+    async fn max_tokens_ceiling(&mut self) -> Option<NonZeroU32> {
+        if let Some(ceiling) = self.ceiling {
+            return ceiling;
+        }
+        let model = self.prompt.model.name();
+        let ceiling = match self.transport.models().await {
+            Ok(models) => models
+                .iter()
+                .find(|info| info.id.name() == model)
+                .and_then(|info| NonZeroU32::new(info.max_tokens)),
+            Err(error) => {
+                log::debug!(
+                    "model lookup failed; no max_tokens ceiling: {error}"
+                );
+                None
+            }
+        };
+        *self.ceiling.insert(ceiling)
+    }
+
     /// Run the assistant turn through the [`on_assistant`](Chat::on_assistant)
     /// hook (or seat it unchanged), then collect the client tool calls **from
     /// what was seated** — single source of truth, so a hook that replaces or
@@ -460,8 +544,7 @@ impl<State, T: Transport> Chat<State, T> {
         let calls = seated
             .iter()
             .filter(|m| m.role == Role::Assistant)
-            .flat_map(|m| m.content.iter())
-            .filter_map(|block| block.tool_use().cloned())
+            .flat_map(|m| m.tool_uses().cloned())
             .collect();
         for message in seated {
             self.seat(message)?;
@@ -504,6 +587,11 @@ impl<State, T: Transport> Chat<State, T> {
         if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
             let response = self.transport.send(&self.prompt).await?;
             self.record_usage(&response);
+            // A clipped wrap-up is never seated, same as in `quiesce`.
+            if response.disposition().is_clipped() {
+                log::warn!("final word clipped at max_tokens: not seating it");
+                return Ok(());
+            }
             let again = self.seat_assistant(state, response.inner)?;
             // No second chance: error these too and hand back regardless.
             self.synthesize_results(&again)?;
@@ -569,14 +657,16 @@ async fn recv_note(
 mod tests {
     use super::*;
     use crate::{
-        response,
+        response::{self, StopReason},
         tool::{CustomMethodDef, MethodDef},
         transport::tests::Script,
     };
 
-    /// A tool that answers every call with "echoed" and remembers the calls.
+    /// A tool that answers every call with "echoed" and remembers the calls
+    /// (shared, so a test can inspect them after the box is moved).
+    #[derive(Default)]
     struct Echo {
-        calls: Vec<Use>,
+        calls: Arc<Mutex<Vec<Use>>>,
     }
 
     #[async_trait::async_trait]
@@ -599,7 +689,7 @@ mod tests {
 
         async fn call(&mut self, call: Use) -> tool::Result {
             let id = call.id.clone();
-            self.calls.push(call);
+            self.calls.lock().unwrap().push(call);
             tool::Result::new(id, "echoed")
         }
     }
@@ -675,7 +765,7 @@ mod tests {
     fn tool_calls_round_trip_through_the_toolbox() {
         let script =
             Script::new([tool_response("call_1"), text_response("done")]);
-        let toolbox = ToolBox::new().add(Echo { calls: Vec::new() });
+        let toolbox = ToolBox::new().add(Echo::default());
         let chat = Chat::new(script, Prompt::default(), toolbox);
 
         let (prompt, ()) =
@@ -700,7 +790,7 @@ mod tests {
     fn budget_hand_back_seats_synthetic_errors() {
         let script =
             Script::new([tool_response("call_1"), tool_response("call_2")]);
-        let toolbox = ToolBox::new().add(Echo { calls: Vec::new() });
+        let toolbox = ToolBox::new().add(Echo::default());
         let chat = Chat::new(script, Prompt::default(), toolbox)
             .max_consecutive_tool_calls(1);
 
@@ -724,7 +814,7 @@ mod tests {
             tool_response("call_2"),
             text_response("to summarize: echoed"),
         ]);
-        let toolbox = ToolBox::new().add(Echo { calls: Vec::new() });
+        let toolbox = ToolBox::new().add(Echo::default());
         let chat = Chat::new(script, Prompt::default(), toolbox)
             .max_consecutive_tool_calls(1)
             .on_budget_exhausted(BudgetPolicy::FinalWord);
@@ -807,5 +897,114 @@ mod tests {
 
         assert!(prompt.cache_control.is_none());
         assert!(!prompt.messages.iter().any(|m| m.content.has_cache()));
+    }
+
+    /// #124: a `max_tokens`-clipped turn's tool calls may be missing
+    /// arguments, so it is neither seated nor dispatched — the round retries
+    /// with `max_tokens` doubled.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clipped_tool_turn_dispatches_nothing_and_is_not_seated() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(
+                    mock::text("calling")
+                        .tool_use("toolbox__Echo__echo", serde_json::json!({}))
+                        .stop_reason(StopReason::MaxTokens),
+                )
+                .then(mock::text("done")),
+        );
+        let echo = Echo::default();
+        let calls = echo.calls.clone();
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default(),
+            ToolBox::new().add(echo),
+        );
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        assert!(calls.lock().unwrap().is_empty(), "clipped calls ran");
+        // user, assistant("done") — the clipped turn never reached the prompt.
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[1].role, Role::Assistant);
+        assert_eq!(prompt.messages[1].tool_uses().count(), 0);
+        // The retry went out un-advanced, with twice the room.
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["messages"], requests[1]["messages"]);
+        assert_eq!(requests[0]["max_tokens"], 4096);
+        assert_eq!(requests[1]["max_tokens"], 8192);
+        assert_eq!(prompt.max_tokens.get(), 8192);
+    }
+
+    /// The raise is clamped to the model's declared ceiling, and a model that
+    /// clips forever stops at the round budget without seating anything.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clipping_forever_clamps_to_the_ceiling_and_terminates() {
+        use crate::{
+            mock::{self, MockTransport},
+            model::ModelInfo,
+        };
+
+        let mut info = ModelInfo::new(crate::model::Model::default(), "test");
+        info.max_tokens = 10_000;
+        let transport = Arc::new(
+            MockTransport::with(|_: &Prompt| mock::max_tokens("and then"))
+                .with_models([info]),
+        );
+        let chat =
+            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
+                .max_consecutive_tool_calls(3);
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        // Only the user's beat: no clipped turn was ever seated.
+        assert_eq!(prompt.messages.len(), 1);
+        // The first call plus one retry per budgeted round.
+        let sent: Vec<_> = transport
+            .requests()
+            .iter()
+            .map(|r| r["max_tokens"].as_u64().unwrap())
+            .collect();
+        assert_eq!(sent, [4096, 8192, 10_000, 10_000]);
+    }
+
+    /// `FinalWord`'s wrap-up call is not seated when it clips.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clipped_final_word_is_not_seated() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::message(tool_response("call_1")))
+                .then(mock::message(tool_response("call_2")))
+                .then(mock::max_tokens("to summ")),
+        );
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default(),
+            ToolBox::new().add(Echo::default()),
+        )
+        .max_consecutive_tool_calls(1)
+        .on_budget_exhausted(BudgetPolicy::FinalWord);
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        assert_eq!(transport.len(), 3);
+        // The synthetic error results stay the tail; the clip isn't seated.
+        let last = prompt.messages.last().unwrap();
+        assert_eq!(last.role, Role::User);
+        assert!(last.content.iter().all(|b| b.is_tool_result()));
     }
 }

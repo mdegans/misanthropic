@@ -31,6 +31,21 @@ record; this file aggregates them.
 - **`tool_uses()` on `response::Message` and `Content`** — every client
   `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
   trailing one, and only on `stop_reason: tool_use`).
+- **`MockTransport::with_models`** — report `ModelInfo`s from
+  `Transport::models` (previously always empty), e.g. to give a driver a
+  model's `max_tokens` ceiling.
+
+### Fixed
+
+- **`Chat` no longer dispatches tool calls from a `max_tokens`-clipped turn**
+  (#124). A clipped turn's `tool_use` can be valid JSON missing arguments the
+  model never emitted; `Chat` seated it and ran the calls anyway. The loop now
+  matches on `Disposition`: a `Clipped` turn is never seated or dispatched, and
+  the round retries with `max_tokens` doubled — clamped to the model's ceiling
+  when the transport's `models()` lists one (looked up once, on the first
+  clip) — counted against `max_consecutive_tool_calls`, so a model that clips
+  forever hands back. A clipped `BudgetPolicy::FinalWord` wrap-up is likewise
+  not seated. The raised `max_tokens` persists on the returned prompt.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

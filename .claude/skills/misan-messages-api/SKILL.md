@@ -299,7 +299,9 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
 breaks the build here, not silently in a driver). `tool_uses()` iterates
 **every** client `tool::Use` in the turn (unlike `tool_use()`, which returns
-only a trailing one).
+only a trailing one). The `chat`-feature `Chat` driver runs this same match,
+retrying a clip with doubled `max_tokens` (clamped to the model's ceiling when
+`Transport::models` states one) within its round budget.
 
 ```no_run
 use std::num::NonZeroU32;
