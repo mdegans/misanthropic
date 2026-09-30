@@ -82,8 +82,24 @@ impl std::fmt::Display for Breakpoint {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum CacheError {
-    /// More markers than Anthropic accepts — each marked block counts, and
-    /// the automatic slot does too, even on a marked block.
+    /// A tool result marked twice: on itself and on a block of its content,
+    /// or on two content blocks. Anthropic reads a marker in its content as
+    /// the result's own, so it takes one ("cache_control may not be
+    /// specified within `tool_result.content`. Instead, place it directly
+    /// on `tool_result`").
+    #[error(
+        "{at}.tool_result.content.{block}: a tool_result takes one \
+         cache_control, on itself or on one block of its content"
+    )]
+    Nested {
+        /// The tool result.
+        at: Breakpoint,
+        /// Its first marked content block.
+        block: usize,
+    },
+    /// More markers than Anthropic accepts — each marked block counts (a
+    /// tool result marked in its content once), and the automatic slot
+    /// does too, even on a marked block.
     #[error(
         "{found} cache_control markers; Anthropic accepts at most \
          {MAX_CACHE_CONTROLS_PER_REQUEST}"
@@ -151,12 +167,18 @@ pub(super) struct Plan {
     fresh: Vec<Breakpoint>,
     /// Positions to unmark, to fit the budget.
     evicted: Vec<Breakpoint>,
+    /// A tool result the plan leaves marked twice — see
+    /// [`CacheError::Nested`].
+    nested: Option<CacheError>,
     cache_control: CacheControl,
 }
 
 impl Plan {
     /// This plan, if the request it leaves passes [`Prompt::check_cache`].
     pub(super) fn checked(self) -> Result<Self, CacheError> {
+        if let Some(error) = self.nested {
+            return Err(error);
+        }
         check(&self.marks, self.target)?;
         Ok(self)
     }
@@ -164,11 +186,12 @@ impl Plan {
 
 impl Prompt {
     /// Check this request's `cache_control` markers against the rules
-    /// Anthropic rejects a request for (see [`CacheError`]): at most 4,
-    /// counting the automatic slot; no 1-hour marker after a 5-minute one,
-    /// in `tools` → `system` → `messages` order with the automatic slot
-    /// last; and an automatic slot landing on a marked block matches its
-    /// TTL.
+    /// Anthropic rejects a request for (see [`CacheError`]): one per tool
+    /// result, on it or on one block of its content (which counts as the
+    /// result's own); at most 4, counting the automatic slot; no 1-hour
+    /// marker after a 5-minute one, in `tools` → `system` → `messages`
+    /// order with the automatic slot last; and an automatic slot landing on
+    /// a marked block matches its TTL.
     ///
     /// The placement methods never build a request that fails this, but
     /// markers set by hand (or [`Block::cache_with`], or a pushed message)
@@ -176,7 +199,27 @@ impl Prompt {
     ///
     /// [`Block::cache_with`]: super::message::Block::cache_with
     pub fn check_cache(&self) -> Result<(), CacheError> {
+        if let Some(error) = self.nested().next() {
+            return Err(error);
+        }
         check(&self.marks(), self.auto_target())
+    }
+
+    /// Each tool result marked twice (see [`CacheError::Nested`]), naming
+    /// its first marked content block, as Anthropic's error does.
+    fn nested(&self) -> impl Iterator<Item = CacheError> + '_ {
+        self.messages.iter().enumerate().flat_map(|(m, message)| {
+            let blocks = message.content.iter().enumerate();
+            blocks.filter_map(move |(b, block)| {
+                let mut inner = block.content_cache_controls();
+                let (first, _) = inner.next()?;
+                let own = block.cache_slot().is_some_and(Option::is_some);
+                (own || inner.next().is_some()).then_some(CacheError::Nested {
+                    at: Breakpoint::Block(BlockIndex::Message((m, b))),
+                    block: first,
+                })
+            })
+        })
     }
 
     /// How many `cache_control` markers this request carries, as Anthropic
@@ -185,7 +228,8 @@ impl Prompt {
         self.marks().len()
     }
 
-    /// Every marker, in wire order.
+    /// Every marker, in wire order. A marker inside a tool result's content
+    /// is the result's own, as Anthropic reads it.
     fn marks(&self) -> Vec<Mark> {
         let tools = self.tools.iter().flatten().enumerate();
         let tools = tools.filter_map(|(i, tool)| {
@@ -312,11 +356,19 @@ impl Prompt {
             .collect();
         marks.retain(|mark| kept.contains(&mark.at));
         fresh.retain(|at| kept.contains(at));
+        // Marking a tool result or evicting its marker clears its content's.
+        let nested = self.nested().find(|error| {
+            let CacheError::Nested { at, .. } = error else {
+                return true;
+            };
+            !fresh.contains(at) && !evicted.contains(at)
+        });
         Plan {
             marks,
             target: self.auto_target(),
             fresh,
             evicted,
+            nested,
             cache_control,
         }
     }
@@ -472,6 +524,23 @@ mod tests {
         }
     }
 
+    /// The probes' tool round: a user turn marked `first`, an assistant
+    /// turn, then a user turn holding one tool result, marked `own`, with a
+    /// text block per `inner` marker.
+    fn tool_round(
+        first: Option<CacheControl>,
+        own: Option<CacheControl>,
+        inner: &[Option<CacheControl>],
+    ) -> Prompt {
+        let content = Content(inner.iter().cloned().map(text).collect());
+        let mut result = crate::tool::Result::new("toolu_01", content);
+        result.cache_control = own;
+        let mut prompt = prompt(&[], &[&[first], &[None]]);
+        let turn = Message::from((Role::User, vec![Block::from(result)]));
+        prompt.messages.push(turn);
+        prompt
+    }
+
     fn with_tool(
         mut prompt: Prompt,
         cache_control: Option<CacheControl>,
@@ -624,6 +693,75 @@ mod tests {
                 Ok(()),
             ),
             (
+                "5m user, 1h in a tool result's content",
+                tool_round(five(), None, &[None, hour()]),
+                Err(TtlOrder {
+                    earlier: message(0, 0),
+                    later: message(2, 0),
+                }),
+            ),
+            (
+                "1h in a tool result's content",
+                tool_round(None, None, &[hour()]),
+                Ok(()),
+            ),
+            (
+                "5m on a tool result and in its content",
+                tool_round(None, five(), &[five()]),
+                Err(Nested {
+                    at: message(2, 0),
+                    block: 0,
+                }),
+            ),
+            (
+                "1h on a tool result, 5m in its second block",
+                tool_round(None, hour(), &[None, five()]),
+                Err(Nested {
+                    at: message(2, 0),
+                    block: 1,
+                }),
+            ),
+            (
+                "5m on two blocks of a tool result's content",
+                tool_round(None, None, &[None, five(), five()]),
+                Err(Nested {
+                    at: message(2, 0),
+                    block: 1,
+                }),
+            ),
+            (
+                "1h in the last tool result's content, 5m auto",
+                with_auto(tool_round(None, None, &[hour()]), five()),
+                Err(AutoMismatch { at: message(2, 0) }),
+            ),
+            (
+                "4 5m system blocks, 5m in a tool result's content",
+                Prompt {
+                    system: Some(Content(vec![text(five()); 4])),
+                    ..tool_round(None, None, &[five()])
+                },
+                Err(TooMany { found: 5 }),
+            ),
+            (
+                "3 5m system blocks, 5m in a tool result's content",
+                Prompt {
+                    system: Some(Content(vec![text(five()); 3])),
+                    ..tool_round(None, None, &[five()])
+                },
+                Ok(()),
+            ),
+            (
+                "5 markers, two in one tool result's content",
+                Prompt {
+                    system: Some(Content(vec![text(five()); 3])),
+                    ..tool_round(None, None, &[five(), five()])
+                },
+                Err(Nested {
+                    at: message(2, 0),
+                    block: 0,
+                }),
+            ),
+            (
                 "four 5m blocks and a 5m auto",
                 with_auto(
                     prompt(&[five()], &[&[five()], &[five()], &[five()]]),
@@ -636,6 +774,68 @@ mod tests {
         for (name, prompt, expected) in cases {
             assert_eq!(prompt.check_cache(), expected, "{name}");
         }
+    }
+
+    /// Marking a tool result replaces the marker in its content, which
+    /// Anthropic would take for a second one.
+    #[test]
+    fn marking_a_tool_result_clears_its_content() {
+        let prompt = tool_round(None, None, &[None, five()]).cache_1h();
+
+        let prompt = prompt.unwrap();
+        let end = &prompt.messages[2].content[0];
+        assert_eq!(end.content_cache_controls().count(), 0);
+        assert!(matches!(
+            end.cache_control().unwrap().ttl(),
+            CacheTtl::OneHour
+        ));
+        assert_eq!(prompt.check_cache(), Ok(()));
+    }
+
+    /// A marker in a tool result's content takes a slot, and the window
+    /// slides past it like any other.
+    #[test]
+    fn a_marker_in_a_tool_result_slides_out() {
+        let mut cached = CachedPrompt::from(Prompt {
+            system: Some(Content(vec![text(five()); 2])),
+            ..tool_round(None, None, &[five()])
+        });
+
+        cached.push_message((Role::Assistant, "a")).unwrap();
+        cached.push_message((Role::User, "u")).unwrap();
+        cached.cache();
+        assert_eq!(cached.cache_markers(), 4);
+        assert!(cached.messages[2].content.has_cache());
+
+        cached.push_message((Role::Assistant, "a")).unwrap();
+        cached.push_message((Role::User, "u")).unwrap();
+        cached.cache();
+
+        assert!(!cached.messages[2].content.has_cache(), "evicted");
+        let wire = serde_json::to_string(&*cached).unwrap();
+        assert_eq!(wire.matches("\"cache_control\"").count(), 4);
+        assert_eq!(cached.check_cache(), Ok(()));
+    }
+
+    /// A placement refuses to leave a tool result marked twice, and keeps
+    /// the prompt.
+    #[test]
+    fn placements_refuse_a_doubly_marked_tool_result() {
+        let mut cached =
+            CachedPrompt::from(tool_round(None, five(), &[five()]));
+        cached.push_message((Role::Assistant, "a")).unwrap();
+        let before = cached.clone();
+
+        let error = cached.set_auto_cache().unwrap_err();
+
+        assert_eq!(
+            error,
+            CacheError::Nested {
+                at: message(2, 0),
+                block: 0
+            }
+        );
+        assert!(cached == before);
     }
 
     #[test]
@@ -664,6 +864,15 @@ mod tests {
             error.to_string(),
             "messages.0.content.0: a 1h cache_control must not come after \
              the 5m one at system.0"
+        );
+        let error = CacheError::Nested {
+            at: message(2, 1),
+            block: 3,
+        };
+        assert!(
+            error
+                .to_string()
+                .starts_with("messages.2.content.1.tool_result.content.3: ")
         );
     }
 

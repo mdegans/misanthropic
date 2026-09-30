@@ -1918,83 +1918,91 @@ impl Block {
 
     /// Create a cache breakpoint at this block with a caller-provided
     /// [`CacheControl`]. Returns true if the block was cached; returns
-    /// false for thought blocks (which are automatically cached).
-    pub fn cache_with(&mut self, cache_control_value: CacheControl) -> bool {
-        use crate::tool;
-
-        match self {
-            Self::Text { cache_control, .. }
-            | Self::Image { cache_control, .. }
-            | Self::Document { cache_control, .. }
-            | Self::ToolUse {
-                call: tool::Use { cache_control, .. },
-            }
-            | Self::ToolResult {
-                result: tool::Result { cache_control, .. },
-            }
-            | Self::ServerToolUse {
-                call: tool::Use { cache_control, .. },
-            } => {
-                *cache_control = Some(cache_control_value);
-
-                true
-            }
-            // These are automatically cached or carry no cache_control.
-            // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
-            Self::Thought { .. }
-            | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
-        }
+    /// false for thought blocks (which are automatically cached) and the
+    /// others that carry no `cache_control`.
+    ///
+    /// On a [`ToolResult`](Block::ToolResult) it replaces any marker inside
+    /// the result's content: Anthropic takes one per tool result, on it or
+    /// on one of its content blocks (see
+    /// [`CacheError::Nested`](crate::prompt::CacheError::Nested)).
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> bool {
+        // These are automatically cached or carry no cache_control.
+        // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
+        let Some(slot) = self.cache_slot_mut() else {
+            return false;
+        };
+        *slot = Some(cache_control);
+        self.uncache_content();
+        true
     }
 
-    /// Remove the cache breakpoint from this block. Returns `true` if a
-    /// breakpoint was removed.
+    /// Remove the cache breakpoint from this block — on a tool result, any
+    /// inside its content too. Returns `true` if a breakpoint was removed.
     pub fn uncache(&mut self) -> bool {
-        use crate::tool;
+        let inner = self.uncache_content();
+        let own = self.cache_slot_mut().and_then(Option::take).is_some();
+        own || inner
+    }
 
-        match self {
-            Self::Text { cache_control, .. }
-            | Self::Image { cache_control, .. }
-            | Self::Document { cache_control, .. }
-            | Self::ToolUse {
-                call: tool::Use { cache_control, .. },
-            }
-            | Self::ToolResult {
-                result: tool::Result { cache_control, .. },
-            }
-            | Self::ServerToolUse {
-                call: tool::Use { cache_control, .. },
-            } => {
-                let was_cached = cache_control.is_some();
-                *cache_control = None;
-                was_cached
-            }
-            Self::Thought { .. }
-            | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
+    /// Remove the markers inside a tool result's content, returning whether
+    /// there were any.
+    fn uncache_content(&mut self) -> bool {
+        let Self::ToolResult { result } = self else {
+            return false;
+        };
+        let cached = result.content.has_cache();
+        result.content.uncache();
+        cached
+    }
+
+    /// This block's cache breakpoint, if it carries one. A tool result's may
+    /// sit on one of its content blocks instead, which Anthropic reads as
+    /// the result's own (probed on `count_tokens`, 2026-09-30).
+    pub fn cache_control(&self) -> Option<&CacheControl> {
+        match self.cache_slot()? {
+            Some(cache_control) => Some(cache_control),
+            None => self.content_cache_controls().next().map(|(_, cc)| cc),
         }
     }
 
-    /// This block's cache breakpoint, if it carries one.
-    pub fn cache_control(&self) -> Option<&CacheControl> {
-        self.cache_slot()?.as_ref()
+    /// The markers on a tool result's content blocks, by index.
+    pub(crate) fn content_cache_controls(
+        &self,
+    ) -> impl Iterator<Item = (usize, &CacheControl)> {
+        let content: &[Block] = match self {
+            Self::ToolResult { result } => &result.content,
+            _ => &[],
+        };
+        content
+            .iter()
+            .enumerate()
+            .filter_map(|(i, block)| Some((i, block.cache_slot()?.as_ref()?)))
     }
 
-    /// This block's `cache_control` field, or `None` for a block that can't
-    /// carry one (see [`cache_with`](Block::cache_with)).
-    pub(crate) fn cache_slot(&self) -> Option<&Option<CacheControl>> {
+    /// Returns true if the block has a `cache_control` breakpoint — on a
+    /// tool result, on it or on one of its content blocks.
+    pub const fn is_cached(&self) -> bool {
+        if let Some(Some(_)) = self.cache_slot() {
+            return true;
+        }
+        let Self::ToolResult { result } = self else {
+            return false;
+        };
+        // A loop, not an iterator: this is a `const fn`.
+        let content = result.content.0.as_slice();
+        let mut i = 0;
+        while i < content.len() {
+            if let Some(Some(_)) = content[i].cache_slot() {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// This block's own `cache_control` field, or `None` for a block that
+    /// can't carry one (see [`cache_with`](Block::cache_with)).
+    pub(crate) const fn cache_slot(&self) -> Option<&Option<CacheControl>> {
         use crate::tool;
 
         match self {
@@ -2022,8 +2030,8 @@ impl Block {
         }
     }
 
-    /// Returns true if the block has a `cache_control` breakpoint.
-    pub const fn is_cached(&self) -> bool {
+    /// [`cache_slot`](Block::cache_slot), mutably.
+    const fn cache_slot_mut(&mut self) -> Option<&mut Option<CacheControl>> {
         use crate::tool;
 
         match self {
@@ -2038,7 +2046,7 @@ impl Block {
             }
             | Self::ServerToolUse {
                 call: tool::Use { cache_control, .. },
-            } => cache_control.is_some(),
+            } => Some(cache_control),
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
@@ -2047,7 +2055,7 @@ impl Block {
             | Self::CodeExecutionToolResult { .. }
             | Self::BashCodeExecutionToolResult { .. }
             | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
+            | Self::ToolReference { .. } => None,
         }
     }
 

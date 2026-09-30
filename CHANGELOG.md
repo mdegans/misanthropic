@@ -114,10 +114,10 @@ record; this file aggregates them.
 - **`Prompt::check_cache`** checks a request's `cache_control` markers
   against the rules Anthropic 400s on, as a `CacheError` naming the
   offending `Breakpoint`s by Anthropic's own paths (`messages.2.content.0`):
-  more than 4 markers (the automatic slot counted); a 1-hour marker after a
-  5-minute one (`tools` → `system` → `messages`, the automatic slot last);
-  and an automatic slot whose TTL differs from a marker on the block it
-  lands on. The placements never fail it; hand-placed markers can, so
+  a tool result marked twice (on itself and in its content); more than 4
+  markers (the automatic slot counted); a 1-hour marker after a 5-minute
+  one (`tools` → `system` → `messages`, the automatic slot last); and an
+  automatic slot whose TTL differs from a marker on the block it lands on. The placements never fail it; hand-placed markers can, so
   `Chat` runs it before every request (unless the transport ignores
   markers) and stops with `Stop::Cache`, and a turn its cache window can't
   legally mark is taken back rather than seated. Also `Block::cache_control`,
@@ -269,6 +269,15 @@ record; this file aggregates them.
   2026-09-30) turned up: "When both are specified on the same block, they
   must have matching TTLs". These are now `CacheError`s, before anything is
   sent.
+- **A `cache_control` inside a tool result's content went uncounted.**
+  Anthropic reads it as the tool result's own marker (its errors name the
+  `tool_result` block), so it counts toward the 4 and the TTL rules, and a
+  tool result takes one: on itself, or on one block of its content
+  ("cache_control may not be specified within `tool_result.content`",
+  probed on `count_tokens`). `check_cache` now counts it and reports a second one as
+  `CacheError::Nested`; `Block::cache_with` on a tool result replaces the
+  one in its content, and `uncache` (and so the window's eviction) clears
+  it.
 - **Cache markers past Anthropic's limit of 4.** A fifth `cache_control` is
   a 400 ("A maximum of 4 blocks with cache_control may be provided"), not
   the silent keep-the-last-4 the `CachedPrompt` docs promised, and the
