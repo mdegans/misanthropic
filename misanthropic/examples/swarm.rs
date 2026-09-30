@@ -436,8 +436,9 @@ async fn main() -> Result<(), BoxError> {
 
     // The workers: headless Chats. Mail is their only stimulus, so the
     // beat closure just pends until shutdown. `FinalWord` instead of the
-    // default hand-back: a worker that silently hands back would sit idle
-    // until the next letter, so let it wrap up (and mail onward) instead.
+    // default hand-back lets a capped worker wrap up in words — but its
+    // final turn's tool calls (mail included) are synthetic-errored, so
+    // nothing reaches the office; hence the high round cap below (#136).
     //
     // The round cap is a runaway guard, not the budget — postage is the
     // budget. Builders burn one round per bash command (write, run, fix,
