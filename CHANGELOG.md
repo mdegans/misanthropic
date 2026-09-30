@@ -172,10 +172,10 @@ record; this file aggregates them.
   `max_tokens` clip the wire streams a call's input only through its last
   completed member and never sends `content_block_stop`; `with_message`
   dropped the open block, so the turn differed from its non-streaming twin.
-  Assembly now closes it at turn end — completed members only, their
-  containers closed (a member cut mid-value is dropped whole) — which
-  matches the twin's `tool_use` input exactly in both captures
-  (`test/data/stop/clip_*`).
+  Assembly now closes it at turn end — its open containers closed, a
+  trailing scalar kept; failing that, completed members only (a member cut
+  mid-value is dropped whole) — which matches the twin's `tool_use` input
+  exactly in both captures (`test/data/stop/clip_*`).
 
 - **A streamed turn's assembled usage double-counted.** `with_message` added
   the `message_delta` usage to `message_start`'s, but the delta's is

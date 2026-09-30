@@ -974,10 +974,10 @@ impl ArrayScanner {
 }
 
 /// Close a tool input the turn ended without closing — a `max_tokens` clip
-/// — as the non-streaming path does: the completed members only, their open
-/// containers closed. The wire stops at a member boundary, so normally only
-/// brackets are missing; a member cut mid-value is dropped whole. `None`
-/// when nothing completed.
+/// — as the non-streaming path does. The wire stops at a member boundary, so
+/// normally only brackets are missing: the input with its open containers
+/// closed, a trailing scalar kept. Failing that, the completed members only
+/// — a member cut mid-value is dropped whole. `None` when nothing completed.
 fn close_partial(json: &str) -> Option<serde_json::Value> {
     /// An open container. A string ending in an object's `key` position is
     /// a key, not a completed member.
@@ -1072,6 +1072,14 @@ fn close_partial(json: &str) -> Option<serde_json::Value> {
                 }
             }
         }
+    }
+
+    // The wire's shape: only brackets missing.
+    if !in_string
+        && let Ok(value) =
+            serde_json::from_str(&format!("{json}{}", closers(&stack)))
+    {
+        return Some(value);
     }
 
     // `end` follows an ASCII byte or sits on one: a char boundary.
@@ -2509,8 +2517,9 @@ pub(crate) mod tests {
         }
     }
 
-    /// [`close_partial`] keeps completed members only, closing their
-    /// containers: whatever is mid-value is dropped whole.
+    /// [`close_partial`] closes the open containers, keeping a trailing
+    /// scalar; failing that, completed members only: whatever is mid-value
+    /// is dropped whole.
     #[test]
     fn close_partial_keeps_completed_members() {
         let cases = [
@@ -2527,7 +2536,15 @@ pub(crate) mod tests {
                 Some(r#"{"a": [{"b": null}, {}]}"#),
             ),
             (r#"{"a": true"#, Some(r#"{"a": true}"#)),
-            // Mid-string, mid-escape, mid-key, mid-number: dropped whole.
+            // A trailing scalar is a completed member, as in the twin.
+            (
+                r#"{"path": "x", "line": 42"#,
+                Some(r#"{"path": "x", "line": 42}"#),
+            ),
+            (r#"{"n": 1.5"#, Some(r#"{"n": 1.5}"#)),
+            (r#"{"a": [1, 2"#, Some(r#"{"a": [1, 2]}"#)),
+            // Mid-string, mid-escape, mid-key, mid-number, trailing comma:
+            // dropped whole.
             (
                 r#"{"path": "story.txt", "contents": "Once"#,
                 Some(r#"{"path": "story.txt"}"#),
@@ -2535,7 +2552,11 @@ pub(crate) mod tests {
             (r#"{"a": "x\"#, Some("{}")),
             (r#"{"a": 1, "b"#, Some(r#"{"a": 1}"#)),
             (r#"{"a": 1, "b": "#, Some(r#"{"a": 1}"#)),
-            (r#"{"a": [1, 2"#, Some(r#"{"a": [1]}"#)),
+            (r#"{"n": 1."#, Some("{}")),
+            (r#"{"n": -"#, Some("{}")),
+            (r#"{"a": [1, 2, "#, Some(r#"{"a": [1, 2]}"#)),
+            (r#"{"a": 1,"#, Some(r#"{"a": 1}"#)),
+            (r#"{"a": {"b""#, Some(r#"{"a": {}}"#)),
             (r#"{"a": 12 "#, Some(r#"{"a": 12}"#)),
             (r#"{"a": {"#, Some(r#"{"a": {}}"#)),
             (r#"{"#, Some("{}")),
