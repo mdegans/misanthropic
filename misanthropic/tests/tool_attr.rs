@@ -121,9 +121,11 @@ fn name_and_namespaced_definitions() {
 #[cfg(feature = "schema-order-check")]
 #[test]
 fn tool_emits_an_order_test_per_method() {
-    __misanthropic_schema_order__Calc__add();
-    __misanthropic_schema_order__Calc__reset();
-    __misanthropic_schema_order__Holder__put();
+    __misanthropic_schema_order_calc_add();
+    __misanthropic_schema_order_calc_reset();
+    __misanthropic_schema_order_holder_put();
+    __misanthropic_schema_order_sonar_ping();
+    __misanthropic_schema_order_sonar_b_ping();
 }
 
 #[test]

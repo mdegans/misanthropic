@@ -62,6 +62,15 @@ pub fn derive_tool_args(input: TokenStream) -> TokenStream {
 /// method names on the wire bare — no `tool__` segment (sets
 /// `Methods::FLAT`; pair with a flat `ToolBox` to drop its segment too).
 ///
+/// The macro can't see the `Args` fields, so with `misanthropic`'s default
+/// `schema-order-check` feature a required field after an optional one isn't
+/// a compile error here: `ToolArgs::definition` (and so `add_tool`) panics at
+/// runtime. To catch it sooner, the macro emits one `#[cfg(test)]` test per
+/// method, `__misanthropic_schema_order_{tool}_{method}` (snake-cased), that
+/// fails your `cargo test`. Inside a fn body that test can't be collected:
+/// `#[allow(unnameable_test_items)]` on the enclosing fn, or move the impl to
+/// module level so it runs.
+///
 /// ```ignore
 /// #[tool(name = "Notepad")]
 /// impl<'a> Notepad<'a> {

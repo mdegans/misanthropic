@@ -394,9 +394,11 @@ Notes on the macro:
   structured-outputs docs hoist required first), and field order changes what
   the model generates — put reasoning before answers. The default-on
   `schema-order-check` feature rejects interleaving in what you author: a
-  compile error under `#[derive(ToolArgs)]`; under `#[tool]`, a generated
-  `#[cfg(test)]` test per method that fails your `cargo test`; and an `Err`
-  from `MethodBuilder::build` (escape hatch: `build_unchecked`). Received
+  compile error under `#[derive(ToolArgs)]`; under `#[tool]`, which can't
+  see its args' fields, a panic from `ToolArgs::definition` (so `add_tool`)
+  at runtime, plus a generated `#[cfg(test)]` test per method that fails
+  your `cargo test` first; and an `Err` from `MethodBuilder::build` (escape
+  hatch: `build_unchecked`). Received
   schemas (a deserialized `Prompt`) are only checked structurally.
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for

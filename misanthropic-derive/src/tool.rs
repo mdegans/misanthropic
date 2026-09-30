@@ -8,7 +8,8 @@
 //! - an `impl ToolArgs` for each method's `Args` type (name from the fn ident,
 //!   description from its doc comment);
 //! - with `schema-order-check`, a `#[cfg(test)]` test per method that builds
-//!   its definition, catching required-after-optional args at `cargo test`;
+//!   its definition, catching required-after-optional args at `cargo test`
+//!   (see `order_test`);
 //! - one `impl Methods` collecting the wrappers and delegating any tagged
 //!   lifecycle hooks
 //!   (`#[on_init]`/`#[on_turn]`/`#[on_teardown]`/`#[save_json]`/`#[load_json]`),
@@ -277,28 +278,63 @@ fn build(item_impl: &ItemImpl, attr: TokenStream) -> syn::Result<TokenStream> {
 /// With `schema-order-check`, a `#[cfg(test)]` test that builds `m`'s
 /// definition, so args declaring a required field after an optional one fail
 /// the author's own `cargo test` — `#[tool]` can't see the struct's fields to
-/// reject it at compile time the way `#[derive(ToolArgs)]` does. The name's
-/// `__` separators keep two tools' tests apart in one module.
+/// reject it at compile time the way `#[derive(ToolArgs)]` does.
 ///
-/// Inside a fn body the test can't be collected, so rustc warns
-/// (`unnameable_test_items`); `#[allow]` that on the enclosing fn.
+/// Named `__misanthropic_schema_order_{tool}_{method}`, snake-cased so it
+/// needs no lint allow. It sits beside the impl rather than in a module: a
+/// module can't see fn-local items, so an impl in a fn body would stop
+/// compiling under `cfg(test)` instead of only warning
+/// (`unnameable_test_items`) that the test can't be collected.
 fn order_test(self_ident: &Ident, m: &MethodInfo) -> TokenStream {
     if !cfg!(feature = "schema-order-check") {
         return TokenStream::new();
     }
     let test = Ident::new(
-        &format!("__misanthropic_schema_order__{self_ident}__{}", m.ident),
+        &format!(
+            "__misanthropic_schema_order_{}",
+            snake_case(&format!("{self_ident}_{}", m.ident))
+        ),
         Span::call_site(),
     );
     let args_ty = &m.args_ty;
     quote! {
         #[cfg(test)]
         #[test]
-        #[allow(non_snake_case, dead_code)]
         fn #test() {
             let _ = <#args_ty as ::misanthropic::tool::ToolArgs>::definition();
         }
     }
+}
+
+/// `CamelCase` / `snake_case` / `r#raw` → lint-clean `snake_case`: words split
+/// before each capital that starts one (`HTTPTool` → `http_tool`), `_` runs
+/// collapsed, no leading or trailing `_`.
+fn snake_case(ident: &str) -> String {
+    let chars: Vec<char> = ident.replace("r#", "").chars().collect();
+    let spaced: String = chars
+        .iter()
+        .enumerate()
+        .flat_map(|(i, &c)| {
+            let prev = i.checked_sub(1).map(|j| chars[j]);
+            let next = chars.get(i + 1);
+            let starts_word = c.is_uppercase()
+                && prev.is_some_and(|p| {
+                    p.is_lowercase()
+                        || p.is_ascii_digit()
+                        || (p.is_uppercase()
+                            && next.is_some_and(|n| n.is_lowercase()))
+                });
+            starts_word
+                .then_some('_')
+                .into_iter()
+                .chain(c.to_lowercase())
+        })
+        .collect();
+    spaced
+        .split('_')
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join("_")
 }
 
 /// One `#[method]` fn: its name, doc, `Args` type, and optional
@@ -590,4 +626,18 @@ fn self_ty_ident(ty: &Type) -> syn::Result<Ident> {
         ty,
         "`#[tool]` requires a path self type, e.g. `impl Notepad { … }`",
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::snake_case;
+
+    #[test]
+    fn snake_case_is_lint_clean() {
+        assert_eq!(snake_case("Calc_add"), "calc_add");
+        assert_eq!(snake_case("SonarB_ping"), "sonar_b_ping");
+        assert_eq!(snake_case("HTTPTool_get_url"), "http_tool_get_url");
+        assert_eq!(snake_case("Tool2Go_r#type"), "tool2_go_type");
+        assert_eq!(snake_case("Foo__Bar__baz_"), "foo_bar_baz");
+    }
 }
