@@ -373,7 +373,9 @@ impl<State, T: Transport> Chat<State, T> {
     /// model is not called.
     ///
     /// Tool-pushed notifications are handled by the driver itself: it races
-    /// them against `next_beat`, so the losing future is cancelled. Keep
+    /// them against `next_beat`, so the losing future is cancelled, and a note
+    /// that reaches the prompt drives a round as a beat does (see
+    /// [`Notification`] for the buffered system case). Keep
     /// `next_beat` cancel-safe (await a channel `recv`, don't hold
     /// non-restartable state across the await) — the canonical stdin reader is.
     ///
@@ -524,13 +526,14 @@ impl<State, T: Transport> Chat<State, T> {
     /// Seat a pushed [`Notification`], resolving its preferred role against
     /// the model.
     ///
-    /// A note resolving to [`System`](Role::System) goes through
-    /// [`Prompt::seat`], which places it as soon as the tail permits and
-    /// otherwise buffers it (never on the user channel) to ride the next
-    /// request. Either way it does not force a model round on its own — it is
-    /// operator context folded into the next call — whereas a
-    /// [`User`](Role::User)-resolved note appends a user turn and drives an
-    /// immediate round (right for a job completion, versus an operator fact).
+    /// A note that reaches the prompt drives a model round, as a beat does —
+    /// a [`User`](Role::User)-resolved note always (a job completion, a
+    /// letter: `swarm`'s workers run on nothing else). A
+    /// [`System`](Role::System) note goes through [`Prompt::seat`]: seated as
+    /// soon as the tail permits (and then it drives a round too), otherwise
+    /// buffered — never on the user channel — to ride the next beat's request
+    /// without a round of its own. After an assistant turn, that's the
+    /// common case.
     ///
     /// # Panics
     /// A `[System]`-only preference on a model with no system role is a
@@ -1357,6 +1360,130 @@ mod tests {
         assert_eq!(last.role, Role::User);
         assert!(last.content.iter().all(|b| b.is_tool_result()));
         prompt.check_turn_order().unwrap();
+    }
+
+    /// A tool that hands its mailbox to the test, to push on cue.
+    struct Pusher(Arc<Mutex<Option<tool::Mailbox>>>);
+
+    #[async_trait::async_trait]
+    impl Tool for Pusher {
+        fn name(&self) -> &str {
+            "Pusher"
+        }
+
+        fn definitions(&self) -> Vec<MethodDef> {
+            Vec::new()
+        }
+
+        async fn call(&mut self, call: Use) -> tool::Result {
+            tool::Result::new(call.id, "unused")
+        }
+
+        fn connect(&mut self, mailbox: tool::Mailbox) {
+            *self.0.lock().unwrap() = Some(mailbox);
+        }
+    }
+
+    /// Pending once (after asking to be woken), then ready.
+    #[derive(Default)]
+    struct YieldOnce(bool);
+
+    impl std::future::Future for YieldOnce {
+        type Output = ();
+
+        fn poll(
+            mut self: std::pin::Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<()> {
+            if std::mem::replace(&mut self.0, true) {
+                return std::task::Poll::Ready(());
+            }
+            cx.waker().wake_by_ref();
+            std::task::Poll::Pending
+        }
+    }
+
+    /// Beats "hi", then "more": the first reply's hook pushes one note
+    /// preferring `role`, which the second `select!` picks up (the beat
+    /// yields first, so the queued note wins). Returns the prompt and every
+    /// request sent.
+    #[cfg(feature = "mock")]
+    fn chat_with_a_note(
+        model: crate::Id,
+        role: Role,
+    ) -> (Prompt, Vec<serde_json::Value>) {
+        use crate::mock::{self, MockTransport};
+
+        let transport =
+            Arc::new(MockTransport::with(|_: &Prompt| mock::text("ok")));
+        let slot = Arc::new(Mutex::new(None));
+        let pusher = Arc::clone(&slot);
+        let mut queue: std::collections::VecDeque<_> =
+            [user("hi"), user("more")].into();
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default().model(model),
+            ToolBox::new().add(Pusher(slot)),
+        )
+        .on_assistant(move |_: &mut (), msg: AssistantMessage| {
+            if let Some(mailbox) = pusher.lock().unwrap().take() {
+                mailbox.send("job done", [role]).unwrap();
+            }
+            [msg.into()]
+        });
+
+        let (prompt, ()) = futures::executor::block_on(chat.run(
+            (),
+            async move |_: &mut ()| {
+                if queue.len() < 2 {
+                    YieldOnce::default().await;
+                }
+                Ok(queue.pop_front())
+            },
+        ))
+        .unwrap();
+        (prompt, transport.requests())
+    }
+
+    /// A user-role notification drives a round of its own — `swarm`'s
+    /// workers run on nothing else.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn user_notification_drives_a_round() {
+        let (prompt, requests) =
+            chat_with_a_note(crate::Id::Sonnet46, Role::User);
+
+        assert_eq!(requests.len(), 3);
+        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            [
+                Role::User,
+                Role::Assistant,
+                Role::User,
+                Role::Assistant,
+                Role::User,
+                Role::Assistant
+            ]
+        );
+        assert_eq!(prompt.messages[2].content.to_string(), "job done");
+    }
+
+    /// A system note can't follow an assistant turn: it buffers without a
+    /// round and rides the next beat's request.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn buffered_system_notification_waits_for_the_next_beat() {
+        let (_, requests) = chat_with_a_note(crate::Id::Opus48, Role::System);
+
+        assert_eq!(requests.len(), 2);
+        let roles: Vec<_> = requests[1]["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["role"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(roles, ["user", "assistant", "user", "system"]);
     }
 
     /// Default quirks + `.cache(…)`: server-side auto placement — the
