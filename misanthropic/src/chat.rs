@@ -173,9 +173,12 @@ pub enum Stop {
     TurnOrder(#[from] TurnOrderError),
     /// The prompt's `cache_control` markers break a rule Anthropic 400s on
     /// (see [`Prompt::check_cache`]) — a programming error in the caller,
-    /// like a 1-hour [`Chat::cache`] under a seeded 5-minute marker. Nothing
-    /// was sent: the check runs before every request, and a turn the cache
-    /// window can't legally mark isn't seated, so the prompt is as it was.
+    /// like a 1-hour [`Chat::cache`] under a seeded 5-minute marker, which
+    /// is refused before the first request. Nothing was sent: the check
+    /// runs before every request. The beat (or pushed note) that request
+    /// would have carried is taken back, as is a turn the cache window
+    /// can't legally mark; markers seated before it — the seed's, a hook's
+    /// return, tool results — stay, for the caller to fix before resuming.
     #[error(transparent)]
     Cache(#[from] CacheError),
 }
@@ -671,6 +674,7 @@ impl<State, T: Transport> Chat<State, T> {
             };
             // Whether anything reached the prompt — a merge into the tail
             // counts (lengths don't show it), a buffered system note doesn't.
+            let checkpoint = self.checkpoint();
             let advanced = match turn {
                 Turn::Beat(None) => return Ok(()), // graceful stop (Ctrl-D)
                 Turn::Beat(Some(beat)) => self.seat_all(beat)?,
@@ -691,6 +695,14 @@ impl<State, T: Transport> Chat<State, T> {
             // with the next beat that does.
             if !advanced {
                 continue;
+            }
+
+            // A beat whose markers break Anthropic's rules is taken back,
+            // unsent (`send` would refuse it too, but keep it seated).
+            if let Err(error) = self.check_cache() {
+                cold_path();
+                self.rollback(checkpoint);
+                return Err(error.into());
             }
 
             self.quiesce(state).await?;
@@ -888,9 +900,7 @@ impl<State, T: Transport> Chat<State, T> {
     async fn send(&mut self) -> Result<response::Message, Stop> {
         // Markers set by hand, a beat or a hook may break Anthropic's rules
         // even though the driver's own placements never do.
-        if !self.transport.quirks().cache_markers_ignored {
-            self.prompt.check_cache()?;
-        }
+        self.check_cache()?;
         let response =
             self.transport.send(&self.prompt).await.map_err(|error| {
                 cold_path();
@@ -898,6 +908,14 @@ impl<State, T: Transport> Chat<State, T> {
             })?;
         self.record_usage(&response);
         Ok(response)
+    }
+
+    /// [`Prompt::check_cache`], unless the transport ignores markers.
+    fn check_cache(&self) -> Result<(), CacheError> {
+        if self.transport.quirks().cache_markers_ignored {
+            return Ok(());
+        }
+        self.prompt.check_cache()
     }
 
     /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
@@ -1946,6 +1964,7 @@ mod tests {
             futures::executor::block_on(chat.run((), beats(vec![beat])))
                 .unwrap_err();
 
+        assert!(error.prompt.messages.is_empty(), "the beat was taken back");
         let Stop::Cache(error) = error.kind else {
             panic!("{error}");
         };
