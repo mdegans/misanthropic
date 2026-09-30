@@ -1396,18 +1396,14 @@ impl Prompt {
     ///   [`system`], and [`messages`]. To effectively use this method, call it
     ///   after setting [`tools`] and [`system`] if you have no examples or
     ///   after setting [`messages`] if you do.
-    /// * For [`Sonnet35`] and [`Opus30`] models, the prompt must have at least
-    ///   1024 tokens for this to have an effect. For [`Haiku30`], the minimum
-    ///   is 2048 tokens.
-    /// * Since this is a beta feature, the API may change in the future, likely
-    ///   to include another form of `cache_control`.
+    /// * The prefix must reach the model's minimum cacheable length or
+    ///   nothing is cached, silently: from 512 tokens (Opus 5.5) up to 4096
+    ///   (Haiku 4.5, Opus 4.5 and 4.6). See [prompt caching].
     ///
     /// [`tools`]: Prompt::tools
     /// [`system`]: Prompt::system
     /// [`messages`]: Prompt::messages
-    /// [`Sonnet35`]: crate::Id::Sonnet35
-    /// [`Opus30`]: crate::Id::Opus30
-    /// [`Haiku30`]: crate::Id::Haiku30
+    /// [prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     pub fn cache(self) -> Self {
         self.cache_with(crate::prompt::message::CacheControl::ephemeral())
     }
