@@ -918,6 +918,32 @@ mod tests {
         }
     }
 
+    /// Live (Haiku 4.5, 2026-09-30): a forced call clipped 140 tokens deep
+    /// into its `contents` string. The input keeps only the completed
+    /// member — the one being generated is dropped whole, not cut off — so
+    /// it is valid JSON missing an argument, and never dispatchable.
+    #[test]
+    fn captured_clip_keeps_completed_members() {
+        let message: Message = crate::utils::roundtrip(include_str!(
+            "../../test/data/stop/clip_long_tool.response.json"
+        ));
+        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(message.usage.output_tokens, 140);
+        assert_eq!(message.disposition(), Disposition::Clipped);
+        assert!(message.tool_use().is_none());
+        assert_eq!(message.tool_uses().count(), 0);
+
+        let [call] = &message.inner.content.tool_uses().collect::<Vec<_>>()[..]
+        else {
+            panic!("one raw call: {:?}", message.inner.content);
+        };
+        assert_eq!(call.name, "write_file");
+        let members: Vec<_> =
+            call.input.as_object().expect("an object").iter().collect();
+        let path = serde_json::Value::from("story.txt");
+        assert_eq!(members, [(&"path".to_string(), &path)]);
+    }
+
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();

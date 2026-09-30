@@ -2251,41 +2251,64 @@ pub(crate) mod tests {
         assert_eq!(message.usage, expected);
     }
 
-    /// Live (Haiku 4.5): a forced call clipped at `max_tokens`. The wire
-    /// never closes the block — no `content_block_stop`, the last input
-    /// chunk mid-object — then `message_delta` and `message_stop` follow.
-    /// No error and no call surface; the turn still assembles, `max_tokens`
-    /// and **without** the open call (the non-streaming twin keeps it, as
-    /// valid JSON missing `contents`). Either way it is [`Clipped`].
+    /// Live (Haiku 4.5): forced calls clipped at `max_tokens` — early, and
+    /// 140 tokens deep into `contents`. The input chunks stop at the last
+    /// completed member (the one in progress is never sent) and the wire
+    /// never closes the block — no `content_block_stop` — then
+    /// `message_delta` and `message_stop` follow. No error and no call
+    /// surface; the turn still assembles, `max_tokens` and **without** the
+    /// open call (the non-streaming twin keeps it, as valid JSON holding
+    /// only the completed members). Either way it is [`Clipped`].
     ///
     /// [`Clipped`]: response::Disposition::Clipped
     #[tokio::test]
     async fn clip_leaves_the_call_open() {
-        const SSE: &str =
-            include_str!("../test/data/stop/clip_tool.sse.stream.txt");
-        let (results, shown) = replay_stop(SSE).await;
-        assert!(results.iter().all(Result::is_ok), "{results:?}");
-        assert!(shown.is_empty());
-        let messages = results.iter().flatten().filter(|e| e.is_message());
-        assert_eq!(messages.count(), 1, "one turn assembles");
-        let wire: Vec<_> = mock_stream(SSE).try_collect().await.unwrap();
-        assert!(!wire.iter().any(Event::is_content_block_stop));
-        let message = assembled_sse(SSE);
+        let cases = [
+            (
+                include_str!("../test/data/stop/clip_tool.sse.stream.txt"),
+                include_str!("../test/data/stop/clip_tool.response.json"),
+                r#"{"path": "hello.py""#,
+            ),
+            (
+                include_str!("../test/data/stop/clip_long_tool.sse.stream.txt"),
+                include_str!("../test/data/stop/clip_long_tool.response.json"),
+                r#"{"path": "story.txt""#,
+            ),
+        ];
+        for (sse, twin, streamed_input) in cases {
+            let (results, shown) = replay_stop(sse).await;
+            assert!(results.iter().all(Result::is_ok), "{results:?}");
+            assert!(shown.is_empty());
+            let messages = results.iter().flatten().filter(|e| e.is_message());
+            assert_eq!(messages.count(), 1, "one turn assembles");
+            let wire: Vec<_> = mock_stream(sse).try_collect().await.unwrap();
+            assert!(!wire.iter().any(Event::is_content_block_stop));
+            let input: String = wire
+                .iter()
+                .filter_map(|event| match event {
+                    Event::ContentBlockDelta {
+                        delta: Delta::Json { partial_json },
+                        ..
+                    } => Some(partial_json.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(input, streamed_input, "completed members only");
+            let message = assembled_sse(sse);
 
-        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
-        assert_eq!(message.disposition(), response::Disposition::Clipped);
-        assert!(message.inner.content.is_empty());
-        assert!(message.tool_use().is_none());
-        let twin: response::Message = serde_json::from_str(include_str!(
-            "../test/data/stop/clip_tool.response.json"
-        ))
-        .unwrap();
-        assert_eq!(message.usage, twin.usage);
+            assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+            assert_eq!(message.disposition(), response::Disposition::Clipped);
+            assert!(message.inner.content.is_empty());
+            assert!(message.tool_use().is_none());
+            let twin: response::Message = serde_json::from_str(twin).unwrap();
+            assert_eq!(message.usage, twin.usage);
 
-        // `with_tool_use` alone: the open call is dropped at stream end.
-        let events: Vec<_> = mock_stream(SSE).with_tool_use().collect().await;
-        assert!(events.iter().all(Result::is_ok), "{events:?}");
-        assert!(!events.iter().flatten().any(Event::is_tool_use));
+            // `with_tool_use` alone: the open call is dropped at stream end.
+            let events: Vec<_> =
+                mock_stream(sse).with_tool_use().collect().await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert!(!events.iter().flatten().any(Event::is_tool_use));
+        }
     }
 
     /// Every captured stream assembles its turn's *final* usage: the
@@ -2456,6 +2479,13 @@ pub(crate) mod tests {
                     "../test/data/stop/clip_tool.sse.stream.txt"
                 )),
                 counts(685, 30),
+            ),
+            (
+                "clip_long_tool",
+                assembled_sse(include_str!(
+                    "../test/data/stop/clip_long_tool.sse.stream.txt"
+                )),
+                counts(687, 140),
             ),
         ];
         for (name, message, expected) in cases {

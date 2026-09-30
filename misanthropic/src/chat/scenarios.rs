@@ -267,6 +267,14 @@ fn clipped_live_streamed() -> Reply {
     )))
 }
 
+/// A live forced call clipped 140 tokens into its `contents` string: the
+/// input keeps only the completed `path`, dropping `contents` whole.
+fn clipped_long_live() -> Reply {
+    captured(include_str!(
+        "../../test/data/stop/clip_long_tool.response.json"
+    ))
+}
+
 /// A turn calling [`Echo`] once per id.
 fn calls(ids: &[&'static str]) -> Reply {
     ids.iter()
@@ -1043,6 +1051,15 @@ fn rows() -> Vec<Row> {
             .stops([Kind::Clipped])
             .requests(1)
             .roles("U"),
+        row("clip_captured_long")
+            .reply(clipped_long_live())
+            .stops([Kind::Clipped])
+            .requests(1)
+            .roles("U")
+            .extra(|run| {
+                assert!(run.calls.is_empty());
+                assert_eq!(run.stop_reasons, [Some(StopReason::MaxTokens)]);
+            }),
         row("clip_captured_streamed")
             .reply(clipped_live_streamed())
             .stops([Kind::Clipped])
