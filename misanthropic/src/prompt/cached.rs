@@ -68,9 +68,12 @@
 //! too. (Probed against the free `count_tokens` endpoint, 2026-09-30.)
 //!
 //! So the wrapper keeps count: [`cache`] and [`cache_windowed`] never take a
-//! request past 4, evicting older message markers to make room (the earliest
-//! kept longest), and never touching the `tools` / `system` markers or the
-//! automatic slot. Calling [`cache`] every turn is safe.
+//! request past 4. They slide a window over the messages — keeping the
+//! newest message markers, evicting the oldest — and never touch the
+//! `tools` / `system` markers or the automatic slot. Calling [`cache`] every
+//! turn is safe, and loses no cache: an evicted marker's entry stays on the
+//! server for its TTL, and the newer markers reach it through the API's
+//! lookback (about 20 blocks back from each).
 //!
 //! Mixing TTLs has its own rule: a 1-hour marker must not come after a
 //! 5-minute one, in `tools` → `system` → `messages` order with the automatic
@@ -223,8 +226,8 @@ impl CachedPrompt {
     ///
     /// Call this after appending messages to extend the cached region.
     /// Calling this every turn is safe: it never takes the request past
-    /// Anthropic's 4-marker limit (see the [module docs](self)), evicting
-    /// older message markers — the earliest kept longest — to make room.
+    /// Anthropic's 4-marker limit (see the [module docs](self)), keeping the
+    /// newest message markers and evicting the oldest to make room.
     ///
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL (useful
     /// for cache priming across an hourly batch cadence), use
@@ -314,13 +317,10 @@ impl CachedPrompt {
     ///
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
-    /// eviction, **middle** message-level markers (those not in the tail
-    /// window) are removed first, oldest-non-tail kept last — so the
-    /// earliest message-level marker the caller placed (typically the
-    /// initial prefix marker) survives as long as the budget allows. If the
-    /// window alone doesn't fit, its oldest positions go too. Anthropic
-    /// rejects a 1-hour marker after a 5-minute one, so windowing 1-hour
-    /// after 5-minute markers is a 400.
+    /// eviction, the window slides: the oldest message-level markers go
+    /// first, and if the window alone doesn't fit, its oldest positions go
+    /// too. Anthropic rejects a 1-hour marker after a 5-minute one, so
+    /// windowing 1-hour after 5-minute markers is a 400.
     pub fn cache_windowed_with(
         &mut self,
         n: usize,
@@ -374,7 +374,7 @@ impl CachedPrompt {
     /// the prefix content is untouched. Composes with the wrapper's manual
     /// breakpoints ([`cache`], [`cache_windowed`], …) under the API's shared
     /// 4-breakpoint budget, where it takes a slot of its own; if all 4 are
-    /// placed, the newest message marker makes way for it.
+    /// placed, the oldest message marker makes way for it.
     ///
     /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     /// [`cache`]: CachedPrompt::cache
@@ -689,55 +689,41 @@ mod tests {
         assert!(cached.tools.is_none());
     }
 
+    /// `cache` every turn slides the window: the newest markers stay, the
+    /// oldest go, and a window over them has nothing left to change.
     #[test]
-    fn cache_windowed_marks_slide_2_tail_and_preserves_beginning() {
-        let prompt = Prompt::default();
-        let mut cached = CachedPrompt::from(prompt);
+    fn cache_every_turn_slides_the_window() {
+        let mut cached = CachedPrompt::from(Prompt::default());
 
-        // 7 user/asst pairs (14 messages, indices 0..14). cache() after
-        // each pair marks the trailing asst — odd indices 1, 3, 5, 7, 9,
-        // 11, 13 — but never past the budget: each new marker evicts the
-        // newest older one, so the earliest three and the tail survive.
-        for i in 0..7 {
-            cached
-                .push_message((Role::User, format!("user {i}")))
-                .unwrap();
-            cached
-                .push_message((Role::Assistant, format!("asst {i}")))
-                .unwrap();
+        converse(&mut cached, 7, |cached| {
             cached.cache();
-        }
-        assert_eq!(marked(&cached), [1, 3, 5, 13]);
+        });
+        assert_eq!(marked(&cached), [7, 9, 11, 13]);
 
-        // cache_windowed(3) marks the tail at indices 13, 11, 9 (slide-by-2),
-        // then evicts middle non-tail markers until the budget fits. With no
-        // system/tools markers the budget is 4: tail (3) + 1 non-tail slot,
-        // which goes to the earliest existing non-tail marker — index 1.
+        cached.cache_windowed(3);
+        assert_eq!(marked(&cached), [7, 9, 11, 13]);
+    }
+
+    /// The window's own positions outrank a newer marker outside it.
+    #[test]
+    fn cache_windowed_keeps_its_positions_before_newer_ones() {
+        let mut cached = CachedPrompt::cached(Prompt::default().system("s"));
+        converse(&mut cached, 7, |_| {});
+        cached.inner.messages[12].content.cache();
+
+        // `system` holds one slot; the window's three take the rest.
         cached.cache_windowed(3);
 
-        let cached_indices: Vec<usize> = cached
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.content.has_cache())
-            .map(|(i, _)| i)
-            .collect();
-
-        assert_eq!(
-            cached_indices,
-            vec![1, 9, 11, 13],
-            "tail slide-2 keeps 13/11/9; beginning marker at 1 survives the 4-budget; \
-             middle stragglers 3/5/7 are evicted"
-        );
+        assert_eq!(marked(&cached), [9, 11, 13]);
     }
 
     #[test]
-    fn cache_windowed_evicts_beginning_when_system_marker_consumes_budget() {
+    fn cache_windowed_fits_beside_a_system_marker() {
         use crate::prompt::message::{CacheControl, Content};
 
         // Prefix marker on system consumes 1 of the 4 budget slots. With
         // cache_windowed(3) the tail (3) uses the remaining 3, leaving 0
-        // for any non-tail message-level marker.
+        // for any other message-level marker.
         let mut prompt = Prompt::default();
         let mut system = Content::text("system prompt");
         system.cache_with(CacheControl::ephemeral());
@@ -767,8 +753,7 @@ mod tests {
         assert_eq!(
             cached_indices,
             vec![9, 11, 13],
-            "system marker holds 1 budget slot; tail uses 3; no slot left for \
-             the beginning marker, so index 1 is evicted along with the middle"
+            "system marker holds 1 budget slot; the tail uses the other 3"
         );
         assert!(
             cached.inner.system.as_ref().unwrap().has_cache(),
@@ -954,7 +939,7 @@ mod tests {
     }
 
     /// The automatic slot counts: with it and a system marker, `cache`
-    /// every turn keeps two message markers, the first and the newest.
+    /// every turn keeps the two newest message markers.
     #[test]
     fn cache_every_turn_counts_the_automatic_slot() {
         let system = Prompt::default().system("You are terse.");
@@ -966,7 +951,7 @@ mod tests {
         });
 
         assert_eq!(cached.cache_markers(), 4);
-        assert_eq!(marked(&cached), [1, 11]);
+        assert_eq!(marked(&cached), [9, 11]);
     }
 
     /// A window wider than the budget keeps its newest positions.
@@ -1000,13 +985,13 @@ mod tests {
         cached.push_message((Role::User, "more")).unwrap();
         cached.cache();
 
-        // The newest, then the earliest of the rest: the user's three
-        // blocks keep theirs and the assistant's goes.
+        // The newest, then the newest of the rest: the assistant's marker
+        // and the user's last two stay, and the user's first goes.
         assert_eq!(cached.cache_markers(), 4);
         let first = &cached.messages[0].content;
         let kept: Vec<bool> = first.iter().map(Block::is_cached).collect();
-        assert_eq!(kept, [true, true, true]);
-        assert!(!cached.messages[1].content.has_cache());
+        assert_eq!(kept, [false, true, true]);
+        assert!(cached.messages[1].content.has_cache());
         assert!(cached.messages[2].content.has_cache());
     }
 
@@ -1043,7 +1028,7 @@ mod tests {
         assert!(marked(&cached).is_empty());
     }
 
-    /// With every slot on messages, the automatic slot takes the newest's.
+    /// With every slot on messages, the automatic slot takes the oldest's.
     #[test]
     fn set_auto_cache_makes_room() {
         let mut cached = CachedPrompt::from(Prompt::default());
@@ -1055,7 +1040,7 @@ mod tests {
         cached.set_auto_cache();
 
         assert_eq!(cached.cache_markers(), 4);
-        assert_eq!(marked(&cached), [1, 3, 5]);
+        assert_eq!(marked(&cached), [3, 5, 7]);
     }
 
     #[test]

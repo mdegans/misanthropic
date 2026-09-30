@@ -1429,9 +1429,10 @@ impl Prompt {
     ///
     /// Never takes the request past Anthropic's 4-marker limit (see
     /// [`cache_windowed_with`](Prompt::cache_windowed_with) for what
-    /// counts): a new message marker evicts older message markers, the
-    /// earliest kept longest, and a marker with no room left — every slot
-    /// held by `tools`, `system` or the automatic one — isn't placed.
+    /// counts), so calling it every turn is safe: like that window, it keeps
+    /// the newest message markers and evicts the oldest, and a marker with
+    /// no room left — every slot held by `tools`, `system` or the automatic
+    /// one — isn't placed.
     pub fn cache_with(
         mut self,
         cache_control: crate::prompt::message::CacheControl,
@@ -1496,21 +1497,26 @@ impl Prompt {
         })
     }
 
-    /// Evict message-level markers until the request fits Anthropic's
-    /// 4-marker limit. The markers of the messages in `tail` are kept first
-    /// (in `tail`'s order, a message's last block first), then the earliest
-    /// of the rest. `tools`, `system` and the automatic slot are never
-    /// touched, so a prefix holding every slot leaves no message markers.
+    /// Slide the message markers' window forward until the request fits
+    /// Anthropic's 4-marker limit: the markers of the messages in `tail` are
+    /// kept first (in `tail`'s order, a message's last block first), then the
+    /// newest of the rest, and the oldest go. `tools`, `system` and the
+    /// automatic slot are never touched, so a prefix holding every slot
+    /// leaves no message markers.
+    ///
+    /// Evicting an old marker loses no cache: the entry it wrote stays on
+    /// the server for its TTL, and a newer marker finds it by the API's
+    /// lookback (about 20 blocks back from each marker).
     fn fit_cache_budget(&mut self, tail: &[usize]) {
         let budget = MAX_CACHE_CONTROLS_PER_REQUEST
             .saturating_sub(self.prefix_cache_markers());
         let marked: Vec<(usize, usize)> =
             self.message_cache_markers().collect();
-        let in_tail = |&(m, _): &(usize, usize)| tail.contains(&m);
-        let tail_first = tail.iter().flat_map(|&t| {
-            marked.iter().rev().filter(move |&&(m, _)| m == t).copied()
-        });
-        let rest = marked.iter().filter(|mark| !in_tail(mark)).copied();
+        let newest_first = marked.iter().rev().copied();
+        let tail_first = tail
+            .iter()
+            .flat_map(|&t| newest_first.clone().filter(move |&(m, _)| m == t));
+        let rest = newest_first.clone().filter(|(m, _)| !tail.contains(m));
         let evicted: Vec<(usize, usize)> =
             tail_first.chain(rest).skip(budget).collect();
         for (m, b) in evicted {
@@ -1531,7 +1537,7 @@ impl Prompt {
     /// cached — no error, just a zero `cache_creation_input_tokens`.
     ///
     /// The automatic slot is one of the request's 4 markers, even when the
-    /// last block is marked too; if all 4 are already placed, the newest
+    /// last block is marked too; if all 4 are already placed, the oldest
     /// message marker makes way for it.
     ///
     /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
@@ -1631,11 +1637,11 @@ impl Prompt {
     ///
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
-    /// eviction, **middle** message-level markers (those not in the tail
-    /// window) are removed first, oldest-non-tail kept last — so the
-    /// earliest message-level marker the caller placed (typically the
-    /// initial prefix marker) survives as long as the budget allows. If the
-    /// window alone doesn't fit, its oldest positions go too.
+    /// eviction, the window slides: the oldest message-level markers go
+    /// first, and if the window alone doesn't fit, its oldest positions go
+    /// too. An evicted marker's cache entry outlives it on the server (for
+    /// its TTL), and the newer markers still reach it through the API's
+    /// ~20-block lookback, so eviction costs no cache hits.
     ///
     /// Mixing TTLs: Anthropic rejects a 1-hour marker anywhere after a
     /// 5-minute one, in `tools` → `system` → `messages` order with the
