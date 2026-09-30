@@ -157,10 +157,12 @@ record; this file aggregates them.
   tail, and the next beat failed with `Stop::TurnOrder` (system → user). The
   note now goes back to the pending buffer and follows the next beat, and a
   paused turn a hook left uncontinued is dropped whole.
-- **An `on_assistant` return that breaks turn order is seated whole or not at
-  all.** A hook returning, say, a `tool_use` turn followed by a user turn got
-  `Stop::TurnOrder` with the `tool_use` turn already seated and unanswered —
-  a hand-back no beat could legally follow. The seating now rolls back.
+- **A beat, or an `on_assistant` return, that breaks turn order is seated
+  whole or not at all.** A hook returning, say, a `tool_use` turn followed by
+  a user turn got `Stop::TurnOrder` with the `tool_use` turn already seated
+  and unanswered — a hand-back no beat could legally follow — and a
+  multi-message beat failing part-way left its first messages seated. The
+  seating now rolls back.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

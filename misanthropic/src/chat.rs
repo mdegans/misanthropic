@@ -158,7 +158,8 @@ pub enum Stop {
     #[error(transparent)]
     Tool(BoxError),
     /// A beat, hook return or notification broke turn order — a programming
-    /// error in the caller. A hook's return is seated whole or not at all.
+    /// error in the caller. A beat or a hook's return is seated whole or not
+    /// at all, so the prompt is as it was before it.
     #[error(transparent)]
     TurnOrder(#[from] TurnOrderError),
 }
@@ -636,13 +637,7 @@ impl<State, T: Transport> Chat<State, T> {
             // counts (lengths don't show it), a buffered system note doesn't.
             let advanced = match turn {
                 Turn::Beat(None) => return Ok(()), // graceful stop (Ctrl-D)
-                Turn::Beat(Some(beat)) => {
-                    beat.into_iter().try_fold(false, |advanced, message| {
-                        Ok::<_, Stop>(
-                            self.seat(message)?.advanced() || advanced,
-                        )
-                    })?
-                }
+                Turn::Beat(Some(beat)) => self.seat_all(beat)?,
                 // The channel closed (all tools torn down): stop selecting
                 // it and carry on with caller input alone.
                 Turn::Note(None) => {
@@ -1012,24 +1007,32 @@ impl<State, T: Transport> Chat<State, T> {
             .filter(|m| m.role == Role::Assistant)
             .flat_map(|m| m.tool_uses().cloned())
             .collect();
-        // All or nothing: a hook's turns that break turn order part-way
-        // mustn't leave the earlier ones seated — a `tool_use` turn nothing
-        // answers. A single turn seats atomically already.
-        let checkpoint = (seated.len() > 1).then(|| self.checkpoint());
-        let outcome =
-            seated.into_iter().try_for_each(|m| self.seat(m).map(drop));
-        if let (Err(error), Some(checkpoint)) = (&outcome, checkpoint) {
-            cold_path();
-            log::warn!("on_assistant returned turns out of order: {error}");
-            self.rollback(checkpoint);
-        }
-        outcome?;
+        self.seat_all(seated)?;
 
         if let Some(cache_control) = &self.config.cache {
             self.prompt.cache_windowed_with(2, cache_control.clone());
         }
 
         Ok(calls)
+    }
+
+    /// Seat `messages` in order, all or none: a beat's or a hook's turns
+    /// that break turn order part-way mustn't leave the earlier ones seated
+    /// (a `tool_use` turn nothing answers, a system turn no beat may follow).
+    /// Returns whether any reached the prompt — see [`Seated::advanced`].
+    fn seat_all(&mut self, messages: Vec<Message>) -> Result<bool, Stop> {
+        // A single message seats atomically already.
+        let checkpoint = (messages.len() > 1).then(|| self.checkpoint());
+        let outcome =
+            messages.into_iter().try_fold(false, |advanced, message| {
+                Ok::<_, Stop>(self.seat(message)?.advanced() || advanced)
+            });
+        if let (Err(error), Some(checkpoint)) = (&outcome, checkpoint) {
+            cold_path();
+            log::warn!("rolling back turns seated out of order: {error}");
+            self.rollback(checkpoint);
+        }
+        outcome
     }
 
     /// Enough to undo one round's seating — see [`Checkpoint`].

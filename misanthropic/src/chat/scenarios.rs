@@ -252,6 +252,9 @@ enum Beat {
     System(&'static str),
     /// A user line with an operator note after it.
     Both(&'static str, &'static str),
+    /// A user line, then a result that can't lead — the second message
+    /// breaks turn order.
+    Torn,
     /// The beat source fails.
     Fail,
 }
@@ -264,6 +267,10 @@ impl Beat {
             Beat::Both(user, system) => Ok(vec![
                 (Role::User, user).into(),
                 (Role::System, system).into(),
+            ]),
+            Beat::Torn => Ok(vec![
+                (Role::User, "hi").into(),
+                (Role::User, tool::Result::new("x", "out")).into(),
             ]),
             Beat::Fail => Err("the beat source failed".into()),
         }
@@ -1211,6 +1218,12 @@ fn rows() -> Vec<Row> {
             .roles("UAUA")
             .dispatched(["forced"])
             .last("done"),
+        row("beat_breaking_turn_order_seats_nothing")
+            .beats([Beat::User("hi"), Beat::Torn])
+            .reply(mock::text("hello"))
+            .stops([Kind::TurnOrder])
+            .requests(1)
+            .roles("UA"),
         row("hook_strays_onto_the_user_channel")
             .hook(Hook::Stray)
             .reply(calls(&["a"]))
