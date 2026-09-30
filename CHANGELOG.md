@@ -120,16 +120,17 @@ record; this file aggregates them.
   automatic slot whose TTL differs from a marker on the block it lands on
   (where Anthropic lands it: the last block that isn't thinking, a
   server-tool result included). The placements never fail it; hand-placed
-  markers can, so `Chat` runs it before every request (unless the
-  transport ignores markers) and stops with `Stop::Cache`, taking back the
-  beat that request would have carried. Under `Chat::cache`'s rolling
-  window (a `breakpoint_after_assistant` transport), each request is also
-  checked against the window its reply will get, where that turn will sit,
-  so a turn the window can't legally mark is refused before it is paid
-  for; a 1-hour window under a 5-minute `tools` / `system` marker, which
-  no turn could carry, before a beat is taken. A turn that still can't be
-  marked once seated (a hook reshaped it, or it ends in a server-tool
-  result) is taken back rather than seated.
+  markers can, so `Chat` runs it before every request (unless the transport
+  ignores markers) and stops with `Stop::Cache`, taking back the beat that
+  request would have carried; a pushed note goes back to the front of the
+  tools' queue, for a resumed `Chat` to deliver first. Under `Chat::cache`'s
+  rolling window (a `breakpoint_after_assistant` transport), each request is
+  also checked against the window its reply will get, where that turn will
+  sit, so a turn the window can't legally mark is refused before it is paid
+  for; a 1-hour window under a 5-minute `tools` / `system` marker, which no
+  turn could carry, before a beat is taken. A turn that still can't be marked
+  once seated (a hook reshaped it, or it ends in a server-tool result) is
+  taken back rather than seated, its paid-for reply lost.
   Also `Block::cache_control`, `MethodDef::cache_control`,
   `CacheControl::ttl` and `CachedPrompt::cache_with`.
 

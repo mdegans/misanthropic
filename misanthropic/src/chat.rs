@@ -174,12 +174,21 @@ pub enum Stop {
     TurnOrder(#[from] TurnOrderError),
     /// The prompt's `cache_control` markers break a rule Anthropic 400s on
     /// (see [`Prompt::check_cache`]) — a programming error in the caller,
-    /// like a 1-hour [`Chat::cache`] under a seeded 5-minute marker, which
-    /// is refused before the first request. Nothing was sent: the check
-    /// runs before every request. The beat (or pushed note) that request
-    /// would have carried is taken back, as is a turn the cache window
-    /// can't legally mark; markers seated before it — the seed's, a hook's
-    /// return, tool results — stay, for the caller to fix before resuming.
+    /// like a 1-hour [`Chat::cache`] under a seeded 5-minute `system`
+    /// marker, refused before a beat is taken. The check runs before every
+    /// request — under the rolling window, on the window the reply will get
+    /// too — so the offending request was never sent. The one request that
+    /// may have been paid for is a reply the window still can't mark once
+    /// seated (reshaped by the [`on_assistant`](Chat::on_assistant) hook,
+    /// or ending in a server-tool result): it is taken back, unseated, and
+    /// lost.
+    ///
+    /// The beat the refused request would have carried is dropped, unseated,
+    /// for the caller to send again. A pushed note goes back to the front of
+    /// the tools' queue, which a `Chat` resumed from the parts delivers
+    /// first (so a note whose own markers are at fault stops it again).
+    /// Markers seated before — the seed's, a hook's return, tool results —
+    /// stay, for the caller to fix before resuming.
     #[error(transparent)]
     Cache(#[from] CacheError),
 }
@@ -679,10 +688,12 @@ impl<State, T: Transport> Chat<State, T> {
             };
             // Whether anything reached the prompt — a merge into the tail
             // counts (lengths don't show it), a buffered system note doesn't.
+            // A seated note is kept until the request is checked, to go
+            // back to the queue if it isn't sent.
             let checkpoint = self.checkpoint();
-            let advanced = match turn {
+            let (advanced, note) = match turn {
                 Turn::Beat(None) => return Ok(()), // graceful stop (Ctrl-D)
-                Turn::Beat(Some(beat)) => self.seat_all(beat)?,
+                Turn::Beat(Some(beat)) => (self.seat_all(beat)?, None),
                 // The channel closed (all tools torn down): stop selecting
                 // it and carry on with caller input alone.
                 Turn::Note(None) => {
@@ -691,7 +702,7 @@ impl<State, T: Transport> Chat<State, T> {
                 }
                 Turn::Note(Some(note)) => {
                     log::debug!("interleaving a tool-pushed notification");
-                    self.seat_note(note)?.advanced()
+                    (self.seat_note(note.clone())?.advanced(), Some(note))
                 }
             };
 
@@ -704,10 +715,17 @@ impl<State, T: Transport> Chat<State, T> {
 
             // A beat whose markers break Anthropic's rules, or that leaves
             // the reply a turn the cache window can't mark, is taken back,
-            // unsent (`send` would refuse it too, but keep it seated).
+            // unsent (`send` would refuse it too, but keep it seated). A
+            // note goes back to the front of the queue, for a `Chat` resumed
+            // from the parts to deliver first.
             if let Err(error) = self.check_cache() {
                 cold_path();
                 self.rollback(checkpoint);
+                if let (Some(note), Some(notifications)) =
+                    (note, notifications.as_mut())
+                {
+                    notifications.put_back(note);
+                }
                 return Err(error.into());
             }
 
@@ -2191,6 +2209,48 @@ mod tests {
         );
         assert!(transport.requests().is_empty());
         assert_eq!(error.prompt.messages.len(), 2, "the beat was taken back");
+    }
+
+    /// A pushed note whose turn the window can't follow isn't lost: it goes
+    /// back to the queue, and a `Chat` resumed once the prompt is fixed
+    /// delivers it first.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_note_the_window_cannot_follow_is_delivered_on_resume() {
+        let transport = after_assistant();
+        let slot = Arc::new(Mutex::new(None));
+        let toolbox = ToolBox::new().add(Pusher(Arc::clone(&slot)));
+        let mailbox = slot.lock().unwrap().take().unwrap();
+        mailbox.send("job done", [Role::User]).unwrap();
+        let prompt = hour_system()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .add_message((Role::Assistant, vec![marked("hello")]))
+            .unwrap();
+        let chat = Chat::new(transport.clone(), prompt, toolbox)
+            .cache(CacheControl::one_hour());
+        // The caller has nothing to say: the note wins every race.
+        let silent = async |_: &mut ()| {
+            YieldOnce::default().await;
+            Ok(None)
+        };
+
+        let mut error =
+            futures::executor::block_on(chat.run((), silent)).unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Cache(_)), "{error}");
+        assert!(transport.requests().is_empty());
+        assert_eq!(error.prompt.messages.len(), 2, "the note was taken back");
+
+        error.prompt.messages[1].content[0].uncache();
+        let (chat, ()) = error.resume(transport.clone());
+        let (Parts { prompt, .. }, ()) =
+            futures::executor::block_on(chat.run((), silent)).unwrap();
+
+        assert_eq!(transport.requests().len(), 1);
+        assert_eq!(prompt.messages[2].content.to_string(), "job done");
+        assert_eq!(prompt.messages.len(), 4);
+        assert_eq!(prompt.check_cache(), Ok(()));
     }
 
     /// #124: a `max_tokens`-clipped turn's tool calls may be missing
