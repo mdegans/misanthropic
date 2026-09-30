@@ -10,23 +10,8 @@ API.
 - [Documentation](https://docs.rs/misanthropic)
 - [Examples](https://github.com/mdegans/misanthropic/tree/main/misanthropic/examples)
 - [Agent skills](https://github.com/mdegans/misanthropic/tree/main/.claude/skills)
-  for writing code against the crate (doc-tested in CI, so they can't drift)
 
-This README is also the crate front page, and every code block below compiles
-as a doc-test.
-
-## Usage
-
-```toml
-[dependencies]
-misanthropic = "1.0.0-alpha.2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Tool argument and structured output structs derive these:
-schemars = "0.8"
-serde = { version = "1", features = ["derive"] }
-```
-
-### Streaming
+## Streaming
 
 `Client::stream` returns a `futures::Stream` of events. The `FilterExt`
 combinators reduce it to what you care about — here, text tokens as they
@@ -66,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Tool use
+## Tool use
 
 The `#[tool]` macro turns an `impl` block into a typed tool: your argument
 struct's `JsonSchema` becomes the wire definition (field docs become the
@@ -127,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Structured output
+## Structured output
 
 `Prompt::structured_output::<T>()` constrains generation (grammar-based
 decoding, not prompting) to JSON matching `T`'s schema. Parse the reply with

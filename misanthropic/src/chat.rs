@@ -89,6 +89,7 @@ pub const DEFAULT_MAX_TOOL_CALLS: usize = 8;
 /// result explaining the situation, so the prompt stays legal and the model
 /// learns *why* nothing ran.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BudgetPolicy {
     /// Seat the synthetic results and hand control back to the caller
     /// silently; the model sees the explanation on the next beat.

@@ -15,6 +15,13 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Breaking
+
+- **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
+  Downstream `match` on either now needs a `_` arm. Planned variants — a
+  dispatch-once final word (#136) and an egress `Allowlist` (#87) — can then
+  land without further breaks.
+
 ## [1.0.0-alpha.20] — 2026-09-28
 
 ### Added
