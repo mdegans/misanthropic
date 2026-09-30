@@ -46,6 +46,13 @@ record; this file aggregates them.
   clip) — counted against `max_consecutive_tool_calls`, so a model that clips
   forever hands back. A clipped `BudgetPolicy::FinalWord` wrap-up is likewise
   not seated. The raised `max_tokens` persists on the returned prompt.
+- **`Chat` hands back with a legal tail.** Exhausting the round budget on a
+  clipped resume left the in-flight paused turn as the tail (illegal to
+  abandon on the wire); it is now dropped whole, as the mid-pause budget exit
+  already did. A system turn left trailing by any hand-back (seated right
+  before the call, or flushed by synthetic results) goes back to the pending
+  buffer and re-seats after the next beat, instead of making that beat a
+  `BadTransition`.
 - **`Chat` drives a round on a beat that merges into the tail.** It skipped
   the model call whenever a beat left `messages.len()` unchanged, so a user
   beat merging into a user tail (e.g. the synthetic results a budget hand-back

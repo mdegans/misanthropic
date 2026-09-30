@@ -18,7 +18,8 @@
 //! to the model's ceiling when the transport [lists
 //! one](crate::model::ModelInfo::max_tokens)), counted against the
 //! [round budget](Chat::max_consecutive_tool_calls), so a model that clips
-//! forever still hands back.
+//! forever still hands back. Handing back never strands an in-flight paused
+//! turn.
 //!
 //! The driver is generic over its [`Transport`] — an API [`Client`] and a
 //! local inference engine drive the same loop.
@@ -177,7 +178,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// Cap consecutive model rounds within one user beat (default
     /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap triggers the
     /// [`BudgetPolicy`] — or, on a [clipped](Disposition::Clipped) turn,
-    /// hands back without seating it.
+    /// hands back without seating it (dropping any in-flight paused turn).
     pub fn max_consecutive_tool_calls(mut self, max: usize) -> Self {
         self.max_tool_calls = max;
         self
@@ -413,9 +414,13 @@ impl<State, T: Transport> Chat<State, T> {
     /// A [`Clipped`](Disposition::Clipped) turn is never seated and its tool
     /// calls never run (they may be missing arguments the model never
     /// emitted): the prompt stays un-advanced and the round retries with
-    /// [`max_tokens`](Prompt::max_tokens) raised — see `raise_max_tokens`.
+    /// [`max_tokens`](Prompt::max_tokens) raised — see `raise_max_tokens` —
+    /// or, out of budget, hands back via `restore_tail`.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
         let mut rounds = 0usize;
+        // Where the in-flight paused turn sits, while the last seated turn
+        // paused — a hand-back must drop it whole.
+        let mut paused_at: Option<usize> = None;
         loop {
             log::trace!("quiesce round {rounds}: calling the model");
             // A pending system note was already seated by `seat` the moment a
@@ -434,6 +439,7 @@ impl<State, T: Transport> Chat<State, T> {
                             "budget exhausted on a clipped turn: handing \
                              back without seating it"
                         );
+                        self.restore_tail(paused_at);
                         return Ok(());
                     }
                     rounds += 1;
@@ -445,6 +451,16 @@ impl<State, T: Transport> Chat<State, T> {
             };
 
             let calls = self.seat_assistant(state, response.inner)?;
+            // A continuation merges into the paused turn, so this finds the
+            // turn's start either way.
+            paused_at = paused
+                .then(|| {
+                    self.prompt
+                        .messages
+                        .iter()
+                        .rposition(|m| m.role == Role::Assistant)
+                })
+                .flatten();
 
             if calls.is_empty() && !paused {
                 return Ok(()); // assistant is done; back to the caller
@@ -464,7 +480,7 @@ impl<State, T: Transport> Chat<State, T> {
                          server-tool turn (the wire forbids abandoning it \
                          in place)"
                     );
-                    self.prompt.messages.pop();
+                    self.restore_tail(paused_at);
                     return Ok(());
                 }
                 return self.exhaust_budget(state, calls).await;
@@ -501,6 +517,33 @@ impl<State, T: Transport> Chat<State, T> {
              dispatching its tool calls; retrying with {raised}"
         );
         self.prompt.max_tokens = raised;
+    }
+
+    /// Leave a tail the caller's next beat can legally follow when handing
+    /// back without seating the last response.
+    ///
+    /// - An in-flight paused turn (starting at `paused_at`) is dropped whole:
+    ///   the wire forbids abandoning a server tool in place.
+    /// - A trailing [`System`](Role::System) turn (seated right before the
+    ///   model call) goes back to the front of `pending_system`: only an
+    ///   assistant turn may follow one, so the next user beat would be a
+    ///   [`BadTransition`]. [`Prompt::seat`] re-places it after that beat —
+    ///   the same buffering any note gets while the tail forbids it.
+    ///
+    /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
+    fn restore_tail(&mut self, paused_at: Option<usize>) {
+        if let Some(at) = paused_at {
+            self.prompt.messages.truncate(at);
+        }
+        if let Some(tail) =
+            self.prompt.messages.pop_if(|m| m.role == Role::System)
+        {
+            let mut note = SystemMessage::from(tail.content);
+            if let Some(later) = self.pending_system.take() {
+                note.extend(later.content);
+            }
+            self.pending_system = Some(note);
+        }
     }
 
     /// The prompt model's output ceiling from [`Transport::models`], looked
@@ -596,12 +639,14 @@ impl<State, T: Transport> Chat<State, T> {
             // A clipped wrap-up is never seated, same as in `quiesce`.
             if response.disposition().is_clipped() {
                 log::warn!("final word clipped at max_tokens: not seating it");
-                return Ok(());
+            } else {
+                let again = self.seat_assistant(state, response.inner)?;
+                // No second chance: error these too and hand back regardless.
+                self.synthesize_results(&again)?;
             }
-            let again = self.seat_assistant(state, response.inner)?;
-            // No second chance: error these too and hand back regardless.
-            self.synthesize_results(&again)?;
         }
+        // Seating the results may have flushed a buffered system note.
+        self.restore_tail(None);
         Ok(())
     }
 
@@ -1006,6 +1051,71 @@ mod tests {
             .map(|r| r["max_tokens"].as_u64().unwrap())
             .collect();
         assert_eq!(sent, [4096, 8192, 10_000, 10_000]);
+    }
+
+    /// A resume that clips with the budget spent must not strand the paused
+    /// turn it was resuming: the wire forbids abandoning it in place, so the
+    /// whole paused turn goes and the user's next beat is legal.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clipped_resume_at_budget_drops_the_paused_turn() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::message(paused_response()))
+                .then(mock::max_tokens("and the"))
+                .then(mock::text("done")),
+        );
+        let chat =
+            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
+                .max_consecutive_tool_calls(1);
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("search"), user("never mind")])),
+        )
+        .unwrap();
+
+        assert_eq!(transport.len(), 3);
+        // user("search" + "never mind"), assistant("done"): no paused turn.
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[0].role, Role::User);
+        assert_eq!(prompt.messages[1].content.to_string(), "done");
+        assert!(prompt.check_turn_order().is_ok());
+    }
+
+    /// A system turn seated right before a clipped call goes back to the
+    /// buffer on hand-back — only an assistant turn may follow one — and
+    /// re-seats after the user's next beat.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn clipped_hand_back_rebuffers_a_system_tail() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::max_tokens("and the"))
+                .then(mock::text("done")),
+        );
+        let chat =
+            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
+                .max_consecutive_tool_calls(0);
+        let first =
+            vec![(Role::User, "go").into(), (Role::System, "be brief").into()];
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![first, user("again")])),
+        )
+        .unwrap();
+
+        // The clipped call went out with the note as its tail…
+        let requests = transport.requests();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["messages"][1]["role"], "system");
+        // …and it re-seated after the next beat instead of blocking it.
+        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::System, Role::Assistant]);
+        assert_eq!(prompt.messages[1].content.to_string(), "be brief");
     }
 
     /// `FinalWord`'s wrap-up call is not seated when it clips.
