@@ -1,6 +1,10 @@
 # Credit to GitHub Copilot for generating this file
 name: Rust CI
 
+# The full suite runs on PRs, which are the gate (with live.yaml, a required
+# check). A push to main re-ran all of it on a tree the PR already passed
+# (#115, #137), so on push only the cheap `main-lint` job runs: it keeps
+# the README badge reporting main. coverage-main.yaml runs main's tests.
 on:
   push:
     branches: [main]
@@ -14,12 +18,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Push to main only: a quick check that the merged tree still lints, in
+  # case main moved under the PR. The tests are coverage-main.yaml's.
+  main-lint:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-features --all-targets
+
   # Prove the workspace is *publishable* before anything is tagged — the
   # missing-version-on-path-dep class of failure (#133, repeated at
   # alpha.9) only surfaces at `cargo publish` time otherwise. Dry-run
   # packages and verifies every publishable member without touching
   # crates.io.
   publish-dry-run:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +55,7 @@ jobs:
   # Build the `bashd` daemon as a static linux-musl binary (the artifact the
   # `DockerSandbox` injects into a container) and run its unit tests.
   bashd-musl:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -54,6 +76,7 @@ jobs:
         run: cargo test -p bashd --verbose
 
   build:
+    if: github.event_name == 'pull_request'
     runs-on: ${{ matrix.os }}
     strategy:
       # One OS failing shouldn't cancel the others — the surviving legs are
