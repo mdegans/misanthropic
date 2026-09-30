@@ -51,19 +51,22 @@ test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
         cargo test -p misanthropic --features blallama --lib \
         chat::scenarios::live -- --test-threads=1
 
-# Prints a table of each request's input / written / read tokens and latency,
-# and fails when the prefix isn't reused turn to turn. Never run in CI.
+# Prints a table of each request's input / written / read / tip tokens and
+# latency, and fails when the prefix isn't reused turn to turn, or a turn takes
+# a re-prefill's time anyway. Never run in CI.
 # Live multi-turn prompt-caching check against a local blallama, one model.
 test-cache model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
     BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
         cargo test -p misanthropic --features blallama --lib \
         chat::scenarios::cache::blallama -- --test-threads=1 --nocapture
 
-# The same caching check against Anthropic, for reference numbers.
+# The same caching check against Anthropic, for reference numbers. The test
+# is #[ignore]d and also skips unless MISANTHROPIC_PAID_CACHE=1, which only
+# this recipe sets, so CI's live gate (every ignored test) never pays for it.
 # PAID: about 3 cents on claude-haiku-4-5, via misanthropic/api.key.
 test-cache-anthropic:
-    cargo test -p misanthropic --all-features --lib \
-        chat::scenarios::cache::anthropic -- --ignored --nocapture
+    MISANTHROPIC_PAID_CACHE=1 cargo test -p misanthropic --all-features \
+        --lib chat::scenarios::cache::anthropic -- --ignored --nocapture
 
 # Run an example with every feature on (so logging and each example's tools are
 # available). Extra args pass through to the example, and `RUST_LOG` works, e.g.

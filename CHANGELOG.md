@@ -127,12 +127,16 @@ record; this file aggregates them.
 - **`just test-cache <model>`: a live multi-turn prompt-caching check.** One
   `Chat` run of ten beats (four with a tool round) over a ~6.5k-token
   system prompt, cached as a long conversation should be (`Chat::cache` plus
-  a system marker). Every request prints its input / written / read tokens
-  and latency, and must read the previous request's whole prompt back from
-  cache, keep `input` small and latency per output token flat. The same
-  beats run against Anthropic as the paid, `#[ignore]`d reference (`just
-  test-cache-anthropic`, about 3 cents on Haiku 4.5), and offline against a
-  simulated healthy and broken cache.
+  a system marker). Every request prints its input / written / read tokens,
+  its tip (read past what Anthropic would) and latency, and must read back
+  what the previous request cached, by Anthropic's own math for where the
+  markers sit; keep `input` small; and spend no more time beyond decoding
+  than prefilling its uncached tokens takes at the run's measured cold rate,
+  so a server that reports reads but re-prefills fails. The same beats run
+  against Anthropic as the paid reference (`just test-cache-anthropic`,
+  about 3 cents on Haiku 4.5; `#[ignore]`d and also opt-in through
+  `MISANTHROPIC_PAID_CACHE=1`, so CI's live gate doesn't pay for it), and
+  offline against a simulated healthy and broken cache.
 
 - **`Message::unfinished_server_tool_uses()`**,
   **`Block::server_tool_result_id()`** and **`Caller::tool_id()`** — the pieces of the rule above: which server

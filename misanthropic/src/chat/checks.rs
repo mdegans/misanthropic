@@ -169,6 +169,9 @@ pub(crate) struct Log {
     pub(crate) sent: Vec<Prompt>,
     /// Every response received (failed sends have none).
     pub(crate) received: Vec<response::Message>,
+    /// The index in `sent` of the prompt each of `received` answers, so a
+    /// failed send doesn't shift the pairing.
+    pub(crate) answers: Vec<usize>,
     /// The wall time behind each of `received`: its `send`, or the whole
     /// `send_batch` it came back in.
     pub(crate) elapsed: Vec<Duration>,
@@ -210,13 +213,16 @@ impl<T> Checked<T> {
 }
 
 impl<T> Checked<T> {
-    /// Assert `prompt` is legal, then log it as sent.
-    fn check(&self, prompt: &Prompt) {
+    /// Assert `prompt` is legal, then log it as sent, returning its index
+    /// in `sent`.
+    fn check(&self, prompt: &Prompt) -> usize {
         assert_request_legal(prompt);
         // Cloned: a failed assertion mustn't poison the log.
         let received = self.log().received.clone();
         assert_in_flight_paused(prompt, &received);
-        self.log().sent.push(prompt.clone());
+        let mut log = self.log();
+        log.sent.push(prompt.clone());
+        log.sent.len() - 1
     }
 }
 
@@ -230,12 +236,13 @@ impl<T: Transport> Transport for Checked<T> {
         &self,
         prompt: &Prompt,
     ) -> Result<response::Message, Self::Error> {
-        self.check(prompt);
+        let index = self.check(prompt);
         let start = Instant::now();
         let response = self.inner.send(prompt).await?;
         let mut log = self.log();
         log.elapsed.push(start.elapsed());
         log.received.push(response.clone());
+        log.answers.push(index);
         Ok(response)
     }
 
@@ -243,13 +250,20 @@ impl<T: Transport> Transport for Checked<T> {
         &self,
         prompts: &[&Prompt],
     ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
-        prompts.iter().for_each(|prompt| self.check(prompt));
+        let indices: Vec<usize> =
+            prompts.iter().map(|prompt| self.check(prompt)).collect();
         let start = Instant::now();
         let responses = self.inner.send_batch(prompts).await?;
         let elapsed = start.elapsed();
-        let received = responses.iter().filter_map(|r| r.as_ref().ok());
+        let received = indices
+            .into_iter()
+            .zip(&responses)
+            .filter_map(|(index, r)| Some((index, r.as_ref().ok()?)));
         let mut log = self.log();
-        log.received.extend(received.cloned());
+        for (index, response) in received {
+            log.answers.push(index);
+            log.received.push(response.clone());
+        }
         let unmatched = log.received.len() - log.elapsed.len();
         log.elapsed.extend(std::iter::repeat_n(elapsed, unmatched));
         Ok(responses)
@@ -359,6 +373,28 @@ fn checked_forwards_every_method() {
     let log = checked.log();
     assert_eq!((log.sent.len(), log.received.len()), (2, 2));
     assert_eq!(log.elapsed.len(), 2, "a wall time per response");
+    assert_eq!(log.answers, [0, 1], "each response's prompt");
     assert_eq!(checked.quirks(), quirks);
     assert_eq!(checked.max_concurrency(), three);
+}
+
+#[test]
+fn checked_pairs_responses_past_a_failed_send() {
+    use crate::mock::{self, MockTransport};
+
+    let mock = MockTransport::new()
+        .then(mock::text("one"))
+        .then(mock::http_error(500, None))
+        .then(mock::text("three"));
+    let checked = Checked::new(mock);
+    let prompts = [Prompt::user("a"), Prompt::user("b"), Prompt::user("c")];
+
+    let sent = prompts
+        .iter()
+        .map(|prompt| futures::executor::block_on(checked.send(prompt)));
+    assert_eq!(sent.filter(Result::is_ok).count(), 2);
+
+    let log = checked.log();
+    assert_eq!((log.sent.len(), log.received.len()), (3, 2));
+    assert_eq!(log.answers, [0, 2], "the third prompt got the second reply");
 }
