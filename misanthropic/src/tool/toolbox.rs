@@ -1,7 +1,4 @@
-use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap},
-};
+use std::{borrow::Cow, collections::BTreeMap};
 
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +20,10 @@ pub struct ToolBox {
     ///
     /// Stores namespaced function names in the format `tool__function`.
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
-    /// Map of tool names to [`Tool`]s.
-    pub(crate) tool_name_to_tool: HashMap<String, Box<dyn Tool + Send>>,
+    /// Map of tool names to [`Tool`]s. Ordered, so [`Tool::definitions`]
+    /// renders the same tools in the same order in every box — they lead
+    /// the cached prefix.
+    pub(crate) tool_name_to_tool: BTreeMap<String, Box<dyn Tool + Send>>,
     /// This box's outbox — owns the aggregate channel. Each tool gets a
     /// send-only [`derive`](Mailbox::derive)d handle on it; the box's own
     /// receiver is taken by [`Tool::subscribe`]. `None` after
@@ -50,7 +49,7 @@ impl Default for ToolBox {
         Self {
             name: "toolbox".into(), // module syntax, snake case
             method_to_tool_name: BTreeMap::new(),
-            tool_name_to_tool: HashMap::new(),
+            tool_name_to_tool: BTreeMap::new(),
             mailbox: Some(Mailbox::new("toolbox")),
             parked: None,
             source_prefix: None,
@@ -366,7 +365,8 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`].
+    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`], by tool
+    /// name — a stable order, so identical boxes share a prompt cache.
     fn definitions(&self) -> Vec<MethodDef> {
         self.tool_name_to_tool
             .values()
@@ -705,6 +705,52 @@ mod tests {
         dbg!(&names);
         assert!(names.contains(&"toolbox__TestTool__test"));
         assert!(names.contains(&"toolbox__potato__TestTool__test"));
+    }
+
+    /// A one-method stand-in named `.0`.
+    struct Named(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for Named {
+        fn name(&self) -> &str {
+            self.0
+        }
+
+        fn definitions(&self) -> Vec<MethodDef> {
+            let name = format!("{}__run", self.0);
+            let def = CustomMethodDef::with_string_param(
+                name, "Run.", "what", "What.", true,
+            );
+            vec![MethodDef::Custom(def)]
+        }
+
+        async fn call(&mut self, call: Use) -> Result {
+            Result::new(call.id, "ran")
+        }
+    }
+
+    /// Tools render first in the cached prefix, so every box holding the
+    /// same tools offers them in the same order — sorted by name, however
+    /// they were added. A per-instance order would share no cache between
+    /// identical agents, or across a restart.
+    #[test]
+    fn test_definitions_order_is_stable() {
+        const NAMES: [&str; 8] = ["h", "c", "f", "a", "g", "b", "e", "d"];
+        let names = |toolbox: ToolBox| -> Vec<String> {
+            let defs = toolbox.definitions().into_iter();
+            defs.map(|def| def.name().to_string()).collect()
+        };
+        let forward = NAMES.iter().fold(ToolBox::new(), |b, n| b.add(Named(n)));
+        let reverse = NAMES
+            .iter()
+            .rev()
+            .fold(ToolBox::new(), |b, n| b.add(Named(n)));
+
+        let mut sorted: Vec<String> =
+            NAMES.iter().map(|n| format!("toolbox__{n}__run")).collect();
+        sorted.sort_unstable();
+        assert_eq!(names(forward), sorted);
+        assert_eq!(names(reverse), sorted);
     }
 
     #[test]

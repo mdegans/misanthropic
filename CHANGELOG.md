@@ -169,6 +169,11 @@ record; this file aggregates them.
 
 ### Fixed
 
+- **`ToolBox` offered its tools in a per-instance order.** Tools lead the
+  cached prefix, but `definitions()` iterated a `HashMap`, so two boxes
+  holding the same tools (identical agents, or one agent across a restart)
+  usually rendered them differently and shared no prompt cache. They now
+  render sorted by tool name, however they were added.
 - **A streamed turn clipped mid-call assembled without the call.** On a
   `max_tokens` clip the wire streams a call's input only through its last
   completed member and never sends `content_block_stop`; `with_message`
