@@ -3264,6 +3264,48 @@ mod tests {
         }
     }
 
+    // A received prompt parses whatever its tools' property order: Anthropic
+    // accepts interleaved schemas, and blallama deserializes `Json<Prompt>`.
+    #[test]
+    fn prompt_with_interleaved_tool_round_trips() {
+        let fixture = json!({
+            "model": "claude-haiku-4-5",
+            "max_tokens": 1024,
+            "messages": [{
+                "role": "user",
+                "content": [{ "type": "text", "text": "Hi." }],
+            }],
+            "tools": [{
+                "name": "interleaved",
+                "description": "Required, optional, required.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "zulu": { "type": "string" },
+                        "alpha": { "type": "string" },
+                        "mike": { "type": "string" },
+                    },
+                    "required": ["zulu", "mike"],
+                },
+            }],
+        })
+        .to_string();
+
+        let prompt: Prompt = crate::utils::roundtrip(&fixture);
+
+        let method = prompt.tools.as_ref().unwrap()[0].as_method().unwrap();
+        let keys: Vec<&str> = method.schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        #[cfg(feature = "schema-order")]
+        assert_eq!(keys, ["zulu", "alpha", "mike"]);
+        #[cfg(not(feature = "schema-order"))]
+        assert_eq!(keys, ["alpha", "mike", "zulu"]);
+    }
+
     #[test]
     fn test_temperature() {
         let request = Prompt::default().temperature(0.5);

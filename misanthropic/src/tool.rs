@@ -1045,7 +1045,7 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 /// [`Model`]: crate::model::ModelInfo
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
-#[serde(try_from = "MethodBuilder")]
+#[serde(try_from = "received::Received")]
 #[serde(rename = "tool")]
 #[non_exhaustive]
 pub struct CustomMethodDef {
@@ -1151,6 +1151,7 @@ impl crate::markdown::ToMarkdown for CustomMethodDef {
     }
 }
 
+/// Authoring: validates like [`MethodBuilder::build`], property order included.
 impl TryFrom<MethodBuilder> for CustomMethodDef {
     type Error = ToolBuildError;
 
@@ -1161,15 +1162,36 @@ impl TryFrom<MethodBuilder> for CustomMethodDef {
     }
 }
 
+mod received {
+    /// A [`MethodBuilder`](super::MethodBuilder) off the wire. Deserializing a
+    /// [`CustomMethodDef`](super::CustomMethodDef) routes through this rather
+    /// than `TryFrom<MethodBuilder>` so a received schema is only checked
+    /// structurally: a prompt someone else wrote must still parse.
+    #[derive(serde::Deserialize)]
+    #[serde(transparent)]
+    pub struct Received(pub(super) super::MethodBuilder);
+}
+
+#[doc(hidden)]
+impl TryFrom<received::Received> for CustomMethodDef {
+    type Error = ToolBuildError;
+
+    fn try_from(
+        received: received::Received,
+    ) -> std::result::Result<Self, Self::Error> {
+        received.0.build_structural()
+    }
+}
+
 /// A builder for creating a [`CustomMethodDef`] with some basic validation. See
 /// [`CustomMethodDef::builder`] to create one.
 pub struct MethodBuilder {
     tool: CustomMethodDef,
 }
 
-// `CustomMethodDef` is annotated with `#[serde(try_from = "MethodBuilder")]`, so
-// deserializing a `CustomMethodDef` routes through `MethodBuilder::deserialize` and
-// then `MethodBuilder::build`. If we derived `Deserialize` on
+// `CustomMethodDef` is `#[serde(try_from = "received::Received")]`, so
+// deserializing one routes through `MethodBuilder::deserialize` and then
+// `MethodBuilder::build_structural`. If we derived `Deserialize` on
 // `MethodBuilder`, serde would generate an impl that defers to
 // `CustomMethodDef::deserialize`, which in turn calls back into
 // `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
@@ -1402,7 +1424,8 @@ impl MethodBuilder {
         self.tool
     }
 
-    /// Build the tool, validating name, description, and the tool schema.
+    /// Structural checks on an input schema: an object whose `required` keys
+    /// all name `properties`. Property order is `check_property_order`'s.
     fn is_valid_input_schema(
         schema: &serde_json::Value,
     ) -> std::result::Result<(), Cow<'static, str>> {
@@ -1432,12 +1455,12 @@ impl MethodBuilder {
 
         // `required` is optional per JSON Schema. Validate only when present;
         // every listed key must exist in `properties`.
-        let required: Vec<&str> = match obj.get("required") {
-            None => Vec::new(),
+        match obj.get("required") {
+            None => Ok(()),
             Some(serde_json::Value::Array(keys)) => keys
                 .iter()
-                .map(|key| match key.as_str() {
-                    Some(key) if properties.contains_key(key) => Ok(key),
+                .try_for_each(|key| match key.as_str() {
+                    Some(key) if properties.contains_key(key) => Ok(()),
                     Some(key) => Err(format!(
                         "`required` key `{key}` not found in `properties`.",
                     )),
@@ -1446,22 +1469,13 @@ impl MethodBuilder {
                         serde_json::to_string(key).unwrap()
                     )),
                 })
-                .collect::<std::result::Result<_, _>>()?,
-            Some(required) => {
-                return Err(format!(
-                    "Input `schema` `required` not an array: `{}`",
-                    serde_json::to_string(required).unwrap()
-                )
-                .into());
-            }
-        };
-
-        #[cfg(feature = "schema-order-check")]
-        Self::check_property_order(properties, &required)?;
-        #[cfg(not(feature = "schema-order-check"))]
-        let _ = required;
-
-        Ok(())
+                .map_err(Into::into),
+            Some(required) => Err(format!(
+                "Input `schema` `required` not an array: `{}`",
+                serde_json::to_string(required).unwrap()
+            )
+            .into()),
+        }
     }
 
     /// Reject a required property declared after an optional one: Anthropic
@@ -1470,12 +1484,23 @@ impl MethodBuilder {
     /// required-first reads the same everywhere — and order changes what the
     /// model generates. Top-level only, and only faithful under
     /// `preserve_order` (which `schema-order-check` enables via
-    /// `schema-order`).
+    /// `schema-order`). Assumes `is_valid_input_schema` passed.
     #[cfg(feature = "schema-order-check")]
     fn check_property_order(
-        properties: &serde_json::Map<String, serde_json::Value>,
-        required: &[&str],
-    ) -> std::result::Result<(), Cow<'static, str>> {
+        schema: &serde_json::Value,
+    ) -> std::result::Result<(), String> {
+        let empty = serde_json::Map::new();
+        let properties = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .unwrap_or(&empty);
+        let required: Vec<&str> = schema
+            .get("required")
+            .and_then(|r| r.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(|key| key.as_str())
+            .collect();
         let is_required = |key: &&String| required.contains(&key.as_str());
         let mut keys = properties.keys();
         let Some(optional) = keys.by_ref().find(|k| !is_required(k)) else {
@@ -1486,14 +1511,71 @@ impl MethodBuilder {
             Some(late) => Err(format!(
                 "required property `{late}` is declared after optional \
                  property `{optional}`. Declare every required property \
-                 before any optional one: it's the one layout every engine \
-                 generates in the same order, and field order changes what \
-                 the model generates. To send it as-is, use \
-                 `MethodBuilder::build_unchecked()`, or disable the \
-                 `schema-order-check` feature."
-            )
-            .into()),
+                 before any optional one (or disable the \
+                 `schema-order-check` feature): it's the one layout every \
+                 engine generates in the same order, and field order \
+                 changes what the model generates."
+            )),
         }
+    }
+
+    /// `check_property_order` on a built `def` (a no-op without
+    /// `schema-order-check`), appending `hint` — the caller's own escape
+    /// hatch — to the error.
+    fn check_order(
+        def: CustomMethodDef,
+        hint: &str,
+    ) -> std::result::Result<CustomMethodDef, ToolBuildError> {
+        #[cfg(not(feature = "schema-order-check"))]
+        let _ = hint;
+        #[cfg(feature = "schema-order-check")]
+        if let Err(message) = Self::check_property_order(&def.schema) {
+            crate::utils::cold_path();
+            return Err(ToolBuildError::InvalidInputSchema {
+                message: format!("{message}{hint}").into(),
+                schema: def.schema,
+            });
+        }
+        Ok(def)
+    }
+
+    /// Structural validation only: what a *received* definition gets.
+    fn build_structural(
+        self,
+    ) -> std::result::Result<CustomMethodDef, ToolBuildError> {
+        if self.tool.name.is_empty() {
+            crate::utils::cold_path();
+            return Err(ToolBuildError::EmptyName);
+        }
+
+        if self.tool.description.is_empty() {
+            crate::utils::cold_path();
+            return Err(ToolBuildError::EmptyDescription);
+        }
+
+        if self.tool.schema.is_null() {
+            crate::utils::cold_path();
+            return Err(ToolBuildError::EmptyInputSchema);
+        }
+
+        if let Err(err_msg) = Self::is_valid_input_schema(&self.tool.schema) {
+            crate::utils::cold_path();
+            return Err(ToolBuildError::InvalidInputSchema {
+                message: err_msg,
+                schema: self.tool.schema,
+            });
+        }
+
+        Ok(self.tool)
+    }
+
+    /// [`Self::build`] without its escape-hatch hint, for surfaces where
+    /// [`Self::build_unchecked`] isn't the caller's to reach for.
+    pub(crate) fn build_checked(
+        self,
+        hint: &str,
+    ) -> std::result::Result<CustomMethodDef, ToolBuildError> {
+        Self::check_order(self.build_structural()?, hint)
     }
 
     /// This will build the [`CustomMethodDef`] and do some basic validation on the fields.
@@ -1504,27 +1586,14 @@ impl MethodBuilder {
     /// engine generates in the same order, and field order changes what the
     /// model generates — subtly, and more so on smaller models. See
     /// [`Self::build_unchecked`] to send a schema as-is.
+    ///
+    /// This is the *authoring* check. A received definition —
+    /// deserialized, or via [`CustomMethodDef::try_from`] a `Value` — is only
+    /// checked structurally, so a prompt written elsewhere still parses.
     pub fn build(self) -> std::result::Result<CustomMethodDef, ToolBuildError> {
-        if self.tool.name.is_empty() {
-            return Err(ToolBuildError::EmptyName);
-        }
-
-        if self.tool.description.is_empty() {
-            return Err(ToolBuildError::EmptyDescription);
-        }
-
-        if self.tool.schema.is_null() {
-            return Err(ToolBuildError::EmptyInputSchema);
-        }
-
-        if let Err(err_msg) = Self::is_valid_input_schema(&self.tool.schema) {
-            return Err(ToolBuildError::InvalidInputSchema {
-                message: err_msg,
-                schema: self.tool.schema,
-            });
-        }
-
-        Ok(self.tool)
+        self.build_checked(
+            " To send it as-is, use `MethodBuilder::build_unchecked()`.",
+        )
     }
 }
 
@@ -1663,7 +1732,9 @@ impl CustomMethodDef {
         self.strict == Some(true)
     }
 
-    /// Try to convert from a serializable value to a [`CustomMethodDef`].
+    /// Try to convert from a serializable value to a [`CustomMethodDef`]. Like
+    /// `try_from` a `Value`, the schema is received as written; see
+    /// [`Self::try_from_checked`] to hold it to [`MethodBuilder::build`]'s bar.
     // A blanket impl for TryFrom<T> where T: Serialize would be nice but it
     // would conflict with the blanket impl for TryFrom<Value> where Value:
     // Serialize. This is a bit of a hack but it works.
@@ -1676,8 +1747,51 @@ impl CustomMethodDef {
         let value = serde_json::to_value(value)?;
         value.try_into()
     }
+
+    /// Import a definition someone else wrote, validated as if you'd authored
+    /// it with [`MethodBuilder::build`] — so with `schema-order-check`
+    /// (default), an interleaved schema is an error. The receive paths
+    /// ([`from_serializable`](Self::from_serializable), `try_from` a `Value`,
+    /// deserializing a [`Prompt`]) accept it as written.
+    ///
+    /// ```
+    /// # use misanthropic::tool::CustomMethodDef;
+    /// let search = serde_json::json!({
+    ///     "name": "search",
+    ///     "description": "Search the docs.",
+    ///     "input_schema": {
+    ///         "type": "object",
+    ///         "properties": {
+    ///             "query": { "type": "string" },
+    ///             "limit": { "type": "integer" },
+    ///             "lang": { "type": "string" },
+    ///         },
+    ///         "required": ["query", "lang"],
+    ///     },
+    /// });
+    ///
+    /// assert!(CustomMethodDef::try_from(search.clone()).is_ok());
+    /// #[cfg(feature = "schema-order-check")]
+    /// assert!(CustomMethodDef::try_from_checked(search).is_err());
+    /// ```
+    pub fn try_from_checked<T>(
+        value: T,
+    ) -> std::result::Result<CustomMethodDef, serde_json::Error>
+    where
+        T: Serialize,
+    {
+        let builder: MethodBuilder =
+            serde_json::from_value(serde_json::to_value(value)?)?;
+        builder
+            .build_checked(
+                " To accept it as written, use `CustomMethodDef::try_from`.",
+            )
+            .map_err(serde::de::Error::custom)
+    }
 }
 
+/// Receiving: structural validation only, so third-party tool JSON parses as
+/// written. See [`CustomMethodDef::try_from_checked`] for the authoring checks.
 impl TryFrom<serde_json::Value> for CustomMethodDef {
     type Error = serde_json::Error;
 
@@ -1685,9 +1799,7 @@ impl TryFrom<serde_json::Value> for CustomMethodDef {
         value: serde_json::Value,
     ) -> std::result::Result<Self, Self::Error> {
         let builder: MethodBuilder = serde_json::from_value(value)?;
-        builder
-            .build()
-            .map_err(|e| serde::de::Error::custom(e.to_string()))
+        builder.build_structural().map_err(serde::de::Error::custom)
     }
 }
 
@@ -2412,11 +2524,16 @@ mod tests {
     #[cfg(feature = "schema-order-check")]
     fn property_order_check_allows_grouped_and_all_optional() {
         let ok = |required: &[&str]| {
-            let properties = ["a", "b", "c"]
+            let properties: serde_json::Map<_, _> = ["a", "b", "c"]
                 .into_iter()
                 .map(|k| (k.to_string(), serde_json::Value::Null))
                 .collect();
-            MethodBuilder::check_property_order(&properties, required)
+            let schema = serde_json::json!({
+                "type": "object",
+                "properties": properties,
+                "required": required,
+            });
+            MethodBuilder::check_property_order(&schema)
         };
         assert!(ok(&[]).is_ok());
         assert!(ok(&["a", "b", "c"]).is_ok());
@@ -2426,11 +2543,70 @@ mod tests {
         assert!(ok(&["a", "c"]).is_err());
     }
 
+    /// `zulu` required, `alpha` optional, `mike` required: interleaved, in an
+    /// order alphabetical sorting would scramble.
+    fn interleaved_method() -> serde_json::Value {
+        serde_json::json!({
+            "name": "interleaved",
+            "description": "Required, optional, required.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "zulu": { "type": "string" },
+                    "alpha": { "type": "string" },
+                    "mike": { "type": "string" },
+                },
+                "required": ["zulu", "mike"],
+            },
+        })
+    }
+
+    #[test]
+    fn receive_paths_accept_interleaved_schemas() {
+        let wire = interleaved_method();
+        let from_value = CustomMethodDef::try_from(wire.clone()).unwrap();
+        let from_ser = CustomMethodDef::from_serializable(&wire).unwrap();
+        let de: CustomMethodDef = serde_json::from_value(wire.clone()).unwrap();
+        for def in [from_value, from_ser, de] {
+            assert_eq!(serde_json::to_value(&def).unwrap(), wire);
+        }
+    }
+
     #[test]
     #[cfg(feature = "schema-order-check")]
-    #[should_panic(
-        expected = "tool method `Interleaved`: Invalid input schema"
-    )]
+    fn authoring_paths_reject_interleaved_schemas() {
+        let wire = interleaved_method();
+
+        let err = CustomMethodDef::try_from_checked(&wire).unwrap_err();
+        let message = err.to_string();
+        assert!(message.starts_with(
+            "Invalid input schema becuase: required property `mike` is \
+             declared after optional property `alpha`."
+        ));
+        assert!(message.ends_with("use `CustomMethodDef::try_from`."));
+        assert!(!message.contains("build_unchecked"));
+
+        // A builder is authored, so `TryFrom<MethodBuilder>` (and with it
+        // `Prompt::try_add_tool`) checks order like `build`.
+        let builder: MethodBuilder = serde_json::from_value(wire).unwrap();
+        let err = crate::Prompt::default().try_add_tool(builder).unwrap_err();
+        assert!(
+            err.to_string()
+                .ends_with("use `MethodBuilder::build_unchecked()`.")
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "schema-order-check")]
+    #[should_panic(expected = "tool method `Interleaved`: Invalid input \
+                               schema becuase: required property `title` is \
+                               declared after optional property `note`. \
+                               Declare every required property before any \
+                               optional one (or disable the \
+                               `schema-order-check` feature): it's the one \
+                               layout every engine generates in the same \
+                               order, and field order changes what the model \
+                               generates.")]
     fn tool_args_definition_panics_on_required_after_optional() {
         use crate::tool::ToolArgs;
 

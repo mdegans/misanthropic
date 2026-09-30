@@ -118,7 +118,8 @@ pub trait ToolArgs:
         let mut def = CustomMethodDef::builder(Self::NAME)
             .description(Self::DESCRIPTION)
             .schema(schema)
-            .build()
+            // No `build_unchecked` hint: the fix is reordering `Self`'s fields.
+            .build_checked("")
             .unwrap_or_else(|err| {
                 panic!("tool method `{}`: {err}", Self::NAME)
             });
