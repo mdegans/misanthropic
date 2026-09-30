@@ -111,9 +111,10 @@ pub enum BudgetPolicy {
     /// silently; the model sees the explanation on the next beat.
     #[default]
     HandBack,
-    /// Make exactly one more call so the assistant can wrap up verbally. If
-    /// that turn calls tools *again*, those are synthetic-errored too and
-    /// control is handed back unconditionally.
+    /// Make exactly one more call, with `tool_choice: none`, so the
+    /// assistant wraps up in words. If that turn calls tools anyway (a
+    /// backend that ignores `tool_choice`), those are synthetic-errored too
+    /// and control is handed back unconditionally.
     FinalWord,
 }
 
@@ -818,36 +819,49 @@ impl<State, T: Transport> Chat<State, T> {
         self.synthesize_results(&calls)?;
 
         if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
-            let response = self.send().await?;
-            match response.disposition() {
-                Disposition::Clipped => {
-                    cold_path();
-                    log::warn!(
-                        "final word clipped at max_tokens: handing back"
-                    );
-                    return Err(Stop::Clipped(Box::new(response)));
-                }
-                Disposition::Done if response.tool_uses().next().is_some() => {
-                    return Err(self.unusable(response, None));
-                }
-                // A paused wrap-up would leave its server tool in flight
-                // with no budget to resume it: not seated.
-                Disposition::Paused => {
-                    log::warn!(
-                        "final word paused on a server tool: not seated"
-                    );
-                }
-                Disposition::ToolUse | Disposition::Done => {
-                    let again = self.seat_assistant(state, response.inner)?;
-                    // No second chance: error these too and hand back
-                    // regardless.
-                    self.synthesize_results(&again)?;
-                }
-            }
+            self.final_word(state).await?;
         }
         // Seating the results may have flushed a buffered system note.
         self.restore_tail(None);
         Ok(())
+    }
+
+    /// [`BudgetPolicy::FinalWord`]'s one wrap-up call, sent with
+    /// [`tool_choice: none`](tool::Choice::None) so the model answers in
+    /// words (the prompt's own `tool_choice` is restored after). A transport
+    /// that [doesn't honor it](crate::Quirks::tool_choice_not_respected) gets
+    /// the prompt unchanged. Calls the wrap-up makes anyway are answered with
+    /// synthetic errors — no second chance.
+    async fn final_word(&mut self, state: &mut State) -> Result<(), Stop> {
+        let honored = !self.transport.quirks().tool_choice_not_respected;
+        let choice = honored
+            .then(|| self.prompt.tool_choice.replace(tool::Choice::none()));
+        let response = self.send().await;
+        if let Some(choice) = choice {
+            self.prompt.tool_choice = choice;
+        }
+        let response = response?;
+
+        match response.disposition() {
+            Disposition::Clipped => {
+                cold_path();
+                log::warn!("final word clipped at max_tokens: handing back");
+                Err(Stop::Clipped(Box::new(response)))
+            }
+            Disposition::Done if response.tool_uses().next().is_some() => {
+                Err(self.unusable(response, None))
+            }
+            // A paused wrap-up would leave its server tool in flight with no
+            // budget to resume it: not seated.
+            Disposition::Paused => {
+                log::warn!("final word paused on a server tool: not seated");
+                Ok(())
+            }
+            Disposition::ToolUse | Disposition::Done => {
+                let again = self.seat_assistant(state, response.inner)?;
+                self.synthesize_results(&again)
+            }
+        }
     }
 
     /// Seat one user turn of `is_error` results answering `calls` — the
@@ -1226,6 +1240,95 @@ mod tests {
         let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
         assert_eq!(roles, [Role::User, Role::System, Role::Assistant]);
         assert_eq!(prompt.messages[2].content.to_string(), "done");
+        prompt.check_turn_order().unwrap();
+    }
+
+    /// `FinalWord` asks for words: the wrap-up goes out with `tool_choice:
+    /// none`, and the prompt's own choice is back afterwards.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn final_word_sends_tool_choice_none() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::message(tool_response("call_1")))
+                .then(mock::message(tool_response("call_2")))
+                .then(mock::text("to summarize")),
+        );
+        let prompt = Prompt::default().tool_choice(tool::Choice::any());
+        let chat = Chat::new(
+            transport.clone(),
+            prompt,
+            ToolBox::new().add(Echo::default()),
+        )
+        .max_consecutive_tool_calls(1)
+        .on_budget_exhausted(BudgetPolicy::FinalWord);
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        let choices: Vec<_> = transport
+            .requests()
+            .iter()
+            .map(|r| r["tool_choice"]["type"].clone())
+            .collect();
+        assert_eq!(choices, ["any", "any", "none"]);
+        assert!(matches!(prompt.tool_choice, Some(tool::Choice::Any { .. })));
+        assert_eq!(prompt.messages.last().unwrap().role, Role::Assistant);
+    }
+
+    /// A transport that ignores `tool_choice` gets the prompt unchanged, and
+    /// the calls its wrap-up makes anyway are answered with synthetic errors.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn final_word_without_tool_choice_synthesizes() {
+        use crate::{
+            Quirks,
+            mock::{self, MockTransport},
+        };
+
+        let quirks = Quirks {
+            tool_choice_not_respected: true,
+            ..Quirks::default()
+        };
+        let transport = Arc::new(
+            MockTransport::new()
+                .with_quirks(quirks)
+                .then(mock::message(tool_response("call_1")))
+                .then(mock::message(tool_response("call_2")))
+                .then(mock::message(tool_response("call_3"))),
+        );
+        let echo = Echo::default();
+        let calls = echo.calls.clone();
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default(),
+            ToolBox::new().add(echo),
+        )
+        .max_consecutive_tool_calls(1)
+        .on_budget_exhausted(BudgetPolicy::FinalWord);
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        assert!(
+            transport
+                .requests()
+                .iter()
+                .all(|r| r.get("tool_choice").is_none())
+        );
+        // Only the first call ran; the wrap-up's call was answered with an
+        // error, keeping the prompt legal.
+        assert_eq!(calls.lock().unwrap().len(), 1);
+        let last = prompt.messages.last().unwrap();
+        assert!(matches!(
+            last.content.iter().next().unwrap(),
+            Block::ToolResult { result } if result.is_error
+                && result.tool_use_id == "call_3"
+        ));
         prompt.check_turn_order().unwrap();
     }
 

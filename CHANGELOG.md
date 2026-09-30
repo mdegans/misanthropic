@@ -71,6 +71,14 @@ record; this file aggregates them.
   `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
   trailing one, and only on `stop_reason: tool_use`).
 
+### Changed
+
+- **`BudgetPolicy::FinalWord` asks for words.** The wrap-up call now goes out
+  with `tool_choice: none` (the prompt's own `tool_choice` is restored after)
+  instead of letting the model call tools only to answer them with synthetic
+  errors. A transport with `Quirks::tool_choice_not_respected` gets the prompt
+  unchanged, and calls a wrap-up makes anyway are still errored.
+
 ### Fixed
 
 - **`Chat` no longer dispatches tool calls from a `max_tokens`-clipped turn**
