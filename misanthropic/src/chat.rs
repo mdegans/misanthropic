@@ -177,18 +177,23 @@ pub enum Stop {
     /// like a 1-hour [`Chat::cache`] under a seeded 5-minute `system`
     /// marker, refused before a beat is taken. The check runs before every
     /// request — under the rolling window, on the window the reply will get
-    /// too — so the offending request was never sent. The one request that
-    /// may have been paid for is a reply the window still can't mark once
-    /// seated (reshaped by the [`on_assistant`](Chat::on_assistant) hook,
-    /// or ending in a server-tool result): it is taken back, unseated, and
-    /// lost.
+    /// too — so the offending request was never sent. The one reply that
+    /// may have been paid for and lost is one the window still can't mark
+    /// once seated (reshaped by the [`on_assistant`](Chat::on_assistant)
+    /// hook, or ending in a server-tool result): it is taken back, unseated.
     ///
-    /// The beat the refused request would have carried is dropped, unseated,
-    /// for the caller to send again. A pushed note goes back to the front of
-    /// the tools' queue, which a `Chat` resumed from the parts delivers
-    /// first (so a note whose own markers are at fault stops it again).
-    /// Markers seated before — the seed's, a hook's return, tool results —
-    /// stay, for the caller to fix before resuming.
+    /// What else is taken back depends on when. Refused before a round's
+    /// first request, the beat that request would have carried is dropped,
+    /// unseated, for the caller to send again, and a pushed note goes back
+    /// to the front of the tools' queue, which a `Chat` resumed from the
+    /// parts delivers first (so a note whose own markers are at fault stops
+    /// it again). Refused later in the round — a reply taken back, or a
+    /// request after one was paid for, like one carrying a tool result
+    /// marked 5-minute under a 1-hour window — nothing else is: the beat (or
+    /// note), the paid turns and their tool results stay seated, and a
+    /// `Chat` resumed from the parts sends the request again before taking
+    /// a beat. Markers seated before — the seed's, a hook's return, tool
+    /// results — stay, for the caller to fix before resuming.
     #[error(transparent)]
     Cache(#[from] CacheError),
 }
@@ -2238,6 +2243,79 @@ mod tests {
         );
         assert!(transport.requests().is_empty());
         assert_eq!(error.prompt.messages.len(), 2, "the beat was taken back");
+    }
+
+    /// A tool that answers every call with a result marked 5-minute.
+    #[cfg(feature = "mock")]
+    struct Marked;
+
+    #[cfg(feature = "mock")]
+    #[async_trait::async_trait]
+    impl Tool for Marked {
+        fn name(&self) -> &str {
+            "Marked"
+        }
+
+        fn definitions(&self) -> Vec<MethodDef> {
+            let def = CustomMethodDef::simple("Marked__echo", "Echo, marked");
+            vec![MethodDef::Custom(def)]
+        }
+
+        async fn call(&mut self, call: Use) -> tool::Result {
+            let mut result = tool::Result::new(call.id, "echoed");
+            result.cache_control = Some(CacheControl::ephemeral());
+            result
+        }
+    }
+
+    /// A request refused mid-round — a tool result marked 5-minute, under
+    /// the 1-hour window, after the `tool_use` turn it answers was paid for
+    /// — takes nothing back: the beat, the paid turn and the result stay
+    /// seated, the prompt awaiting the model.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_refusal_mid_round_keeps_the_paid_turns() {
+        use crate::mock::{self, MockTransport};
+
+        let quirks = crate::Quirks {
+            breakpoint_after_assistant: true,
+            ..Default::default()
+        };
+        let input = serde_json::Value::Object(Default::default());
+        let call = mock::tool_use("toolbox__Marked__echo", input);
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(call)
+                .then(mock::text("done"))
+                .with_quirks(quirks),
+        );
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default(),
+            ToolBox::new().add(Marked),
+        )
+        .cache(CacheControl::one_hour());
+
+        let mut error =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Cache(_)), "{error}");
+        assert_eq!(transport.requests().len(), 1);
+        let roles: Vec<Role> =
+            error.prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::Assistant, Role::User]);
+        assert!(error.prompt.messages[1].tool_uses().next().is_some());
+        assert!(error.prompt.messages[2].content[0].is_tool_result());
+
+        // Fixed, a resumed `Chat` answers the result before taking a beat.
+        error.prompt.messages[2].content[0].uncache();
+        let (chat, ()) = error.resume(transport.clone());
+        let (Parts { prompt, .. }, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();
+
+        assert_eq!(transport.requests().len(), 2);
+        assert_eq!(prompt.messages[3].content.to_string(), "done");
     }
 
     /// A pushed note whose turn the window can't follow isn't lost: it goes
