@@ -735,8 +735,9 @@ impl<State, T: Transport> Chat<State, T> {
     async fn rounds(&mut self, state: &mut State) -> Result<(), Stop> {
         let mut rounds = 0usize;
         // Where the in-flight paused turn sits, while the last seated turn
-        // paused — a hand-back must drop it whole.
-        let mut paused_at: Option<usize> = None;
+        // paused — a hand-back must drop it whole. A resumed prompt may start
+        // on one.
+        let mut paused_at = self.paused_tail_start();
         loop {
             log::trace!("quiesce round {rounds}: calling the model");
             // A pending system note was already seated by `seat` the moment a
@@ -827,6 +828,28 @@ impl<State, T: Transport> Chat<State, T> {
             // Paused with no client calls: loop — the next request resumes
             // the in-flight server tool.
         }
+    }
+
+    /// Where the paused turn a seeded prompt ends on starts — its tail an
+    /// assistant turn awaiting a server tool — so a hand-back can drop it
+    /// whole: the first assistant turn after the last user turn (a note
+    /// flushed mid-pause may split it).
+    fn paused_tail_start(&self) -> Option<usize> {
+        let messages = &self.prompt.messages;
+        let tail = messages.last()?;
+        if tail.role != Role::Assistant
+            || tail.unfinished_server_tool_uses().next().is_none()
+        {
+            return None;
+        }
+        let after_user = messages
+            .iter()
+            .rposition(|m| m.role == Role::User)
+            .map_or(0, |at| at + 1);
+        messages[after_user..]
+            .iter()
+            .position(|m| m.role == Role::Assistant)
+            .map(|at| after_user + at)
     }
 
     /// One model call, its usage recorded. (`&mut self`: a `&self` held

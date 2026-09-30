@@ -125,6 +125,11 @@ record; this file aggregates them.
   own content, or in the paused turn it continued — was seated as a dead
   turn nothing would ever answer, and the next beat 400'd. It is now
   `Stop::Unusable` like a finished turn with client calls, dropped whole.
+- **A resumed `Chat` drops a paused turn it resumed, when it must.** A run
+  seeded with a paused tail (a resume after, say, a transport error) didn't
+  know where that turn started, so an unusable continuation or a budget
+  hand-back left the in-flight turn in place. It now tracks the tail's
+  paused turn from the start.
 - **`Chat` hands back with a legal tail.** Exhausting the round budget
   mid-pause drops the in-flight paused turn whole, and a system turn left
   trailing by a hand-back (seated right before the call, or flushed by

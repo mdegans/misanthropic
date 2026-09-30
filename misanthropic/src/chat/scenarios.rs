@@ -1283,6 +1283,21 @@ fn rows() -> Vec<Row> {
             .requests(3)
             .roles("UA")
             .extra(|run| assert_settled(run.turn(1))),
+        // A resumed paused turn is still dropped whole.
+        row("refusal_after_a_resumed_pause")
+            .resume()
+            .reply(paused())
+            .status(529)
+            .reply(calls(&["r"]).refusal("cyber", "no"))
+            .reply(mock::text("ok"))
+            .stops([Kind::Transport, Kind::Unusable])
+            .requests(4)
+            .roles("UA")
+            .last("ok")
+            .extra(|run| {
+                assert_eq!(run.sent_roles(2), "UA", "the resumed pause");
+                assert_eq!(run.sent_roles(3), "U", "the paused turn dropped");
+            }),
     ]
 }
 
