@@ -1663,19 +1663,28 @@ impl Prompt {
     }
 
     /// Whether [`cache_windowed_with`](Prompt::cache_windowed_with) could
-    /// mark the next turn once it is appended — the window a driver places
-    /// after each assistant turn — so it can refuse before paying for one.
-    /// Every rule is checked but the automatic slot's landing, which the
-    /// turn's blocks decide.
+    /// mark the assistant turn a request sent now gets back, once it is
+    /// seated — the window a driver places after each assistant turn — so
+    /// it can refuse before paying for the turn. Every rule is checked but
+    /// the automatic slot's landing, which the turn's blocks decide.
     #[cfg(feature = "chat")]
     pub(crate) fn check_next_window(
         &self,
         n: usize,
         cache_control: CacheControl,
     ) -> Result<(), CacheError> {
-        let len = self.messages.len() + 1;
+        let len = self.next_turn() + 1;
         let plan = self.plan_window_over(len, n, cache_control);
         plan.unlanded().checked().map(drop)
+    }
+
+    /// Where the assistant turn a request sent now gets back is seated: it
+    /// merges into an assistant tail (a continuation), else it is appended.
+    #[cfg(feature = "chat")]
+    fn next_turn(&self) -> usize {
+        let tail = self.messages.last().map(|m| m.role);
+        let merges = tail == Some(message::Role::Assistant);
+        self.messages.len() - usize::from(merges)
     }
 
     /// [`Self::plan_window`] over `len` messages, those past the end yet to

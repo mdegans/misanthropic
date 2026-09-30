@@ -215,6 +215,37 @@ impl Prompt {
         check(&self.marks(), self.auto_target())
     }
 
+    /// The rule a `cache_control` window breaks wherever its turns land: a
+    /// 1-hour window after a 5-minute `tools` or `system` marker, which comes
+    /// before every message and is never evicted. `later` names the place
+    /// the window marks first: the turn a request sent now would get back.
+    #[cfg(feature = "chat")]
+    pub(crate) fn check_window_prefix(
+        &self,
+        cache_control: &CacheControl,
+    ) -> Result<(), CacheError> {
+        if !matches!(cache_control.ttl(), CacheTtl::OneHour) {
+            return Ok(());
+        }
+        let prefix = |mark: &Mark| {
+            matches!(
+                mark.at,
+                Breakpoint::Tool(_) | Breakpoint::Block(BlockIndex::System(_))
+            )
+        };
+        let earlier = self.marks().into_iter().find(|m| prefix(m) && !m.hour);
+        match earlier {
+            Some(earlier) => Err(CacheError::TtlOrder {
+                earlier: earlier.at,
+                later: Breakpoint::Block(BlockIndex::Message((
+                    self.next_turn(),
+                    0,
+                ))),
+            }),
+            None => Ok(()),
+        }
+    }
+
     /// Each tool result marked twice (see [`CacheError::Nested`]), naming
     /// its first marked content block, as Anthropic's error does.
     fn nested(&self) -> impl Iterator<Item = CacheError> + '_ {

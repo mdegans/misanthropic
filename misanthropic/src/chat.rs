@@ -70,7 +70,8 @@
 //! [ignores markers](crate::Quirks::cache_markers_ignored) gets none. Without the
 //! knob the driver stays out of caching entirely — pre-configured markers
 //! on the prompt are untouched either way. Unless the transport ignores
-//! markers, every request is checked first ([`Prompt::check_cache`]): one
+//! markers, every request is checked first ([`Prompt::check_cache`]) — and,
+//! under the rolling window, so is the window its reply will get: one
 //! Anthropic would 400 stops the run with [`Stop::Cache`] instead.
 //!
 //! [auto caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
@@ -600,9 +601,10 @@ impl<State, T: Transport> Chat<State, T> {
     /// Resolve the caching strategy against the transport's quirks, once per
     /// run: `config.cache` stays `Some` only for the per-assistant-turn
     /// windowed marking; the other strategies act here (or never). A
-    /// strategy no request could legally carry is refused here, before the
-    /// first is paid for. On error nothing changes, so a fixed prompt
-    /// resumes with the same strategy.
+    /// strategy no request could legally carry — a 1-hour window under a
+    /// 5-minute `tools` or `system` marker — is refused here, before a beat
+    /// is taken. On error nothing changes, so a fixed prompt resumes with
+    /// the same strategy.
     fn resolve_cache(&mut self) -> Result<(), CacheError> {
         let Some(cache_control) = self.config.cache.clone() else {
             return Ok(());
@@ -611,8 +613,11 @@ impl<State, T: Transport> Chat<State, T> {
         if quirks.cache_markers_ignored {
             log::debug!("transport ignores cache markers; placing none");
         } else if quirks.breakpoint_after_assistant {
-            // The window marks each assistant turn as it is seated.
-            return self.prompt.check_next_window(WINDOW, cache_control);
+            // The window marks each assistant turn as it is seated, and
+            // each request is checked against the window its turn will get
+            // (see `check_cache`). Only the prefix breaks it wherever the
+            // turns land.
+            return self.prompt.check_window_prefix(&cache_control);
         } else if self.prompt.messages.last().is_some_and(awaits_model) {
             // Canonical Anthropic: the server places the breakpoint on the
             // last cacheable block at request time — for a resume, of the
@@ -697,7 +702,8 @@ impl<State, T: Transport> Chat<State, T> {
                 continue;
             }
 
-            // A beat whose markers break Anthropic's rules is taken back,
+            // A beat whose markers break Anthropic's rules, or that leaves
+            // the reply a turn the cache window can't mark, is taken back,
             // unsent (`send` would refuse it too, but keep it seated).
             if let Err(error) = self.check_cache() {
                 cold_path();
@@ -910,12 +916,21 @@ impl<State, T: Transport> Chat<State, T> {
         Ok(response)
     }
 
-    /// [`Prompt::check_cache`], unless the transport ignores markers.
+    /// [`Prompt::check_cache`], unless the transport ignores markers — and,
+    /// when the driver marks assistant turns, the window the reply to a
+    /// request sent now will get, so a turn it can't mark is refused before
+    /// it is paid for.
     fn check_cache(&self) -> Result<(), CacheError> {
         if self.transport.quirks().cache_markers_ignored {
             return Ok(());
         }
-        self.prompt.check_cache()
+        self.prompt.check_cache()?;
+        match &self.config.cache {
+            Some(window) => {
+                self.prompt.check_next_window(WINDOW, window.clone())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
@@ -1048,10 +1063,13 @@ impl<State, T: Transport> Chat<State, T> {
     /// transport, the seated assistant tail is (re-)marked here with a
     /// 2-deep rolling window — the end-of-assistant render is what such
     /// backends hash, and the second trailing breakpoint is what keeps a
-    /// later tail merge re-paying only the last segment. A window no turn
-    /// could carry is refused before the first request; a turn the window
-    /// still can't legally mark (markers a beat or a hook brought) is taken
-    /// back ([`Stop::Cache`]).
+    /// later tail merge re-paying only the last segment. Each request is
+    /// checked against the window its reply will get (a stand-in marker on
+    /// the turn to come), so a turn the window can't legally mark is
+    /// refused before it is paid for. One that still can't be, once seated —
+    /// reshaped by the [`on_assistant`](Chat::on_assistant) hook, or ending
+    /// where no marker fits (a server-tool result) — is taken back
+    /// ([`Stop::Cache`]).
     fn seat_assistant(
         &mut self,
         state: &mut State,
@@ -1074,7 +1092,8 @@ impl<State, T: Transport> Chat<State, T> {
             return Ok(calls);
         };
 
-        // A turn the window can't legally mark is taken back, unrun.
+        // A turn the window still can't legally mark (`send` checked a
+        // stand-in for it) is taken back, unrun.
         let checkpoint = self.checkpoint();
         self.seat_all(seated)?;
         if let Err(error) =
@@ -2056,25 +2075,48 @@ mod tests {
         assert!(transport.requests().is_empty());
     }
 
-    /// A turn the window still can't legally mark — after a beat brought a
-    /// 5-minute marker — is taken back.
+    /// A `breakpoint_after_assistant` transport with a 1-hour window.
     #[cfg(feature = "mock")]
-    #[test]
-    fn a_turn_the_window_cannot_mark_is_taken_back() {
+    fn after_assistant() -> Arc<crate::mock::MockTransport> {
         use crate::mock::{self, MockTransport};
 
         let quirks = crate::Quirks {
             breakpoint_after_assistant: true,
             ..Default::default()
         };
-        let transport = Arc::new(
+        Arc::new(
             MockTransport::new()
                 .then(mock::text("hello"))
                 .with_quirks(quirks),
-        );
-        let mut beat = Block::from("hi");
-        beat.cache();
-        let beat = vec![Message::from((Role::User, vec![beat]))];
+        )
+    }
+
+    /// A text block marked 5-minute.
+    #[cfg(feature = "mock")]
+    fn marked(text: &str) -> Block {
+        let mut block = Block::from(text);
+        block.cache();
+        block
+    }
+
+    /// A system prompt holding two 1-hour markers, so the messages get two.
+    #[cfg(feature = "mock")]
+    fn hour_system() -> Prompt {
+        let mut manual = Block::from("manual");
+        manual.cache_1h();
+        let mut appendix = Block::from("appendix");
+        appendix.cache_1h();
+        Prompt::default().system(Content(vec![manual, appendix]))
+    }
+
+    /// A beat that leaves the reply a turn the window can't legally mark —
+    /// its own 5-minute marker, under the 1-hour window — is taken back
+    /// before any request.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_beat_the_window_cannot_follow_is_refused_before_sending() {
+        let transport = after_assistant();
+        let beat = vec![Message::from((Role::User, vec![marked("hi")]))];
         let chat =
             Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
                 .cache(CacheControl::one_hour());
@@ -2084,10 +2126,71 @@ mod tests {
                 .unwrap_err();
 
         assert!(matches!(error.kind, Stop::Cache(_)), "{error}");
+        assert!(transport.requests().is_empty());
+        assert!(error.prompt.messages.is_empty(), "the beat was taken back");
+    }
+
+    /// The window is checked where the reply lands: after the beat, so the
+    /// seed's 5-minute marker on the user turn two before it is evicted, not
+    /// followed by a 1-hour one.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_seeded_marker_the_window_evicts_is_no_refusal() {
+        let transport = after_assistant();
+        let prompt = hour_system()
+            .add_message((Role::User, vec![marked("hi")]))
+            .unwrap()
+            .add_message((Role::Assistant, "hello"))
+            .unwrap();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::one_hour());
+
+        let (Parts { prompt, .. }, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("again")])),
+        )
+        .unwrap();
+
         assert_eq!(transport.requests().len(), 1);
-        let roles: Vec<Role> =
-            error.prompt.messages.iter().map(|m| m.role).collect();
-        assert_eq!(roles, [Role::User], "the turn was taken back");
+        assert_eq!(prompt.check_cache(), Ok(()));
+        assert!(!prompt.messages[0].content.has_cache(), "evicted");
+        assert!(prompt.messages[1].content.has_cache());
+        assert!(prompt.messages[3].content.has_cache());
+    }
+
+    /// A seeded 5-minute marker on the assistant turn the window keeps —
+    /// two before the reply — is followed by the reply's 1-hour one: refused
+    /// before the request is paid for.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_seeded_marker_the_window_keeps_is_refused_before_sending() {
+        use crate::prompt::{BlockIndex, Breakpoint};
+
+        let transport = after_assistant();
+        let prompt = hour_system()
+            .add_message((Role::User, "hi"))
+            .unwrap()
+            .add_message((Role::Assistant, vec![marked("hello")]))
+            .unwrap();
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::one_hour());
+
+        let error = futures::executor::block_on(
+            chat.run((), beats(vec![user("again")])),
+        )
+        .unwrap_err();
+
+        let Stop::Cache(kind) = error.kind else {
+            panic!("{error}");
+        };
+        assert_eq!(
+            kind,
+            CacheError::TtlOrder {
+                earlier: Breakpoint::Block(BlockIndex::Message((1, 0))),
+                later: Breakpoint::Block(BlockIndex::Message((3, 0))),
+            }
+        );
+        assert!(transport.requests().is_empty());
+        assert_eq!(error.prompt.messages.len(), 2, "the beat was taken back");
     }
 
     /// #124: a `max_tokens`-clipped turn's tool calls may be missing

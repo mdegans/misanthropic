@@ -122,10 +122,14 @@ record; this file aggregates them.
   server-tool result included). The placements never fail it; hand-placed
   markers can, so `Chat` runs it before every request (unless the
   transport ignores markers) and stops with `Stop::Cache`, taking back the
-  beat that request would have carried. A `Chat::cache` strategy no
-  request could carry (a 1-hour window under a 5-minute `system` marker) is
-  refused before the first request, and a turn its cache window still
-  can't legally mark is taken back rather than seated.
+  beat that request would have carried. Under `Chat::cache`'s rolling
+  window (a `breakpoint_after_assistant` transport), each request is also
+  checked against the window its reply will get, where that turn will sit,
+  so a turn the window can't legally mark is refused before it is paid
+  for; a 1-hour window under a 5-minute `tools` / `system` marker, which
+  no turn could carry, before a beat is taken. A turn that still can't be
+  marked once seated (a hook reshaped it, or it ends in a server-tool
+  result) is taken back rather than seated.
   Also `Block::cache_control`, `MethodDef::cache_control`,
   `CacheControl::ttl` and `CachedPrompt::cache_with`.
 
