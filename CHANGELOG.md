@@ -15,7 +15,24 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Breaking
+
+- **Turn order rejects abandoning an in-flight server tool** — new
+  `TurnOrderError::UnfinishedServerToolUse`. A `server_tool_use` no result in
+  its turn answers (a `pause_turn` turn) admits only an assistant
+  continuation; a user or system turn after it was accepted client-side and
+  400'd on the wire (live-probed). `check_turn_order`, `push_message` and
+  `Prompt::seat` now refuse it (a system note buffers instead). A
+  programmatic call's container awaiting client `tool_result`s is not in
+  flight, and a system turn after a result still needs that result to answer
+  every use in the turn.
+
 ### Added
+
+- **`Message::unfinished_server_tool_uses()`**, **`Block::server_tool_result_id()`**
+  and **`Caller::tool_id()`** — the pieces of the rule above: which server
+  tool calls a turn leaves in flight, which use a server-tool result answers,
+  and which container made a programmatic call.
 
 - **`Prompt::user(content)` — an infallible opening turn** (#125), plus
   `impl From<&str> for Prompt`. A lone turn of text, image or document
