@@ -124,6 +124,15 @@ record; this file aggregates them.
   surfaces as a failure. The offline table (68 rows over `MockTransport`)
   asserts the requests, turn shapes, calls run, usage and wire legality of
   every request and hand-back.
+- **`just test-equivalence <model>`: a live warm-vs-cold KV-cache check.** A
+  greedy (`top_k: 1`) conversation runs with blallama's cache reuse — a long
+  answer, a forced tool call copying a long passage full of escapes and
+  multi-byte text, a stop-sequence cut, a clipped turn retried in full — and
+  then every recorded request is replayed cold, after tiny prompts evict
+  every prefix-cache slot (the replay must read nothing from cache). Each
+  reply must match its warm twin byte for byte, from a prompt of the same
+  size; a mismatch names the block and char where they part, with context
+  and the warm request's reuse. Offline, a simulated stale cache must fail.
 - **`just test-cache <model>`: a live multi-turn prompt-caching check.** One
   `Chat` run of ten beats (four with a tool round) over a ~6.5k-token
   system prompt, cached as a long conversation should be (`Chat::cache` plus

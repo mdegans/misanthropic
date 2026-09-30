@@ -51,6 +51,16 @@ test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
         cargo test -p misanthropic --features blallama --lib \
         chat::scenarios::live -- --test-threads=1
 
+# Runs a greedy multi-turn conversation with cache reuse, then replays each
+# request cold (after evicting every prefix-cache slot, so don't run it beside
+# other cache-sensitive work) and fails unless every reply matches its warm
+# twin byte for byte. Never run in CI.
+# Live warm-vs-cold KV-cache equivalence check against a local blallama.
+test-equivalence model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
+    BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
+        cargo test -p misanthropic --features blallama --lib \
+        chat::scenarios::equivalence::blallama -- --test-threads=1 --nocapture
+
 # Prints a table of each request's input / written / read / tip tokens and
 # latency, and fails when the prefix isn't reused turn to turn, or a turn takes
 # a re-prefill's time anyway. Never run in CI.
