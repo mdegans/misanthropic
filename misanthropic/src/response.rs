@@ -6,7 +6,7 @@ use derive_more::derive::IsVariant;
 
 pub(crate) mod message;
 pub use message::{
-    Builder, CacheCreation, Container, JsonError, Kind, Message,
+    Builder, CacheCreation, Container, Disposition, JsonError, Kind, Message,
     OutputTokensDetails, StopDetails, StopReason, TokenCounts, Usage,
 };
 

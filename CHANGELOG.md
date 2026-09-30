@@ -21,6 +21,16 @@ record; this file aggregates them.
   `impl From<&str> for Prompt`. A lone user turn is always legal, so the line
   every program starts with needs no `Role` import and no `?`:
   `client.message(Prompt::user("What is 2+2?"))`.
+- **`response::Disposition` + `response::Message::disposition()` — what a
+  driver must do next with a turn** (#125): `Paused` (`pause_turn`),
+  `Clipped` (`max_tokens` — never dispatch its tool calls), `ToolUse`, or
+  `Done` (`end_turn` / `stop_sequence` / `refusal`). Exhaustive on purpose,
+  so a new disposition breaks every driver's `match` at compile time. A
+  response with no `stop_reason` (a provider that doesn't report one) is
+  classified from its content: `ToolUse` if it calls tools, else `Done`.
+- **`tool_uses()` on `response::Message` and `Content`** — every client
+  `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
+  trailing one, and only on `stop_reason: tool_use`).
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

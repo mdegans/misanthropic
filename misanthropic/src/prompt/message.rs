@@ -812,6 +812,12 @@ impl Content {
         self.0.iter().any(|b| b.is_cached())
     }
 
+    /// Every client [`tool::Use`] ([`Block::ToolUse`]), in order. Server tool
+    /// calls ([`Block::ServerToolUse`]) are not included — the API runs those.
+    pub fn tool_uses(&self) -> impl Iterator<Item = &tool::Use> {
+        self.0.iter().filter_map(Block::tool_use)
+    }
+
     /// Push a [`Delta`] into the final [`Block`]. The types must be compatible
     /// or this will return a [`ContentMismatch`] error.
     ///

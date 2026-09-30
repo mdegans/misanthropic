@@ -293,6 +293,68 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 
 [`Seated`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.Seated.html
 
+### Agent loops — `response.disposition()`
+
+`response.disposition()` classifies a turn by what the loop must do next — the
+pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
+breaks the build here, not silently in a driver). `tool_uses()` iterates
+**every** client `tool::Use` in the turn (unlike `tool_use()`, which returns
+only a trailing one).
+
+```no_run
+use std::num::NonZeroU32;
+
+use misanthropic::{
+    Client, Prompt,
+    prompt::message::{Block, Role, SystemMessage},
+    response::Disposition,
+    tool::{Tool, ToolBox},
+};
+
+# type Error = Box<dyn std::error::Error + Send + Sync>;
+# async fn run(client: Client, mut toolbox: ToolBox) -> Result<(), Error> {
+let mut prompt = Prompt::user("Run the tests and summarize the failures.");
+toolbox.prepare(&mut prompt).await?;
+let mut pending: Option<SystemMessage> = None;
+let ceiling = NonZeroU32::new(64_000).unwrap(); // e.g. ModelInfo::max_tokens
+
+for _ in 0..8 { // round budget: a model that clips forever still stops
+    let response = client.message(&prompt).await?;
+    match response.disposition() {
+        // pause_turn: seat + resend to resume the server tool (or pop the
+        // whole paused turn — abandoning it in place is a 400).
+        Disposition::Paused => { prompt.seat(response, &mut pending)?; }
+        // max_tokens: tool calls may be missing arguments. NEVER seat or
+        // dispatch; retry with more room, clamped to the model ceiling.
+        Disposition::Clipped => {
+            let two = NonZeroU32::new(2).unwrap();
+            prompt.max_tokens =
+                prompt.max_tokens.saturating_mul(two).min(ceiling);
+        }
+        // Complete turn with client tool calls: seat it, answer every call
+        // in one tool_result-led user turn.
+        Disposition::ToolUse => {
+            let calls: Vec<_> = response.tool_uses().cloned().collect();
+            prompt.seat(response, &mut pending)?;
+            let mut results = Vec::new();
+            for call in calls {
+                results.push(Block::from(toolbox.call(call).await));
+            }
+            prompt.seat((Role::User, results), &mut pending)?;
+        }
+        // end_turn / stop_sequence / refusal (or no stop reason and no
+        // calls): seat and hand back.
+        Disposition::Done => { prompt.seat(response, &mut pending)?; break; }
+    }
+}
+# Ok(())
+# }
+```
+
+Clip handling is policy: raise-and-retry (above), or drop the clipped turn and
+nudge the model to be briefer. Continuing a partial assistant turn (prefill) is
+backend-dependent — Anthropic rejects it with thinking enabled.
+
 ## Tool use — the `#[tool]` macro (preferred)
 
 The `#[tool]` macro (default `derive` feature) turns an `impl` block into a
@@ -755,7 +817,7 @@ use misanthropic::response::StopReason;
 # fn document(reason: StopReason) {
 match reason {
     StopReason::EndTurn => {}       // natural stopping point
-    StopReason::MaxTokens => {}     // hit max_tokens
+    StopReason::MaxTokens => {}     // hit max_tokens — never dispatch its calls
     StopReason::StopSequence => {}  // a stop sequence was generated
     StopReason::ToolUse => {}       // wants a tool call — see `tool_use()`
     StopReason::PauseTurn => {}     // server tool paused; resend to continue
@@ -817,7 +879,8 @@ your task — they're the most current, compiler-checked usage.
   `Role::System` content seats when the tail permits or buffers (never on the
   user channel) until it does, concatenating onto a system tail if it lands on
   one. Returns `Seated::{Appended, Merged, Buffered}`. See the seating example
-  above.
+  above. Pair it with `response.disposition()` (`Paused` / `Clipped` /
+  `ToolUse` / `Done`) to decide what to seat — never a `Clipped` turn.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.
