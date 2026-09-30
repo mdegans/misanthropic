@@ -12,9 +12,13 @@
 //! grammar-constrained tool input (the segmentation-drift class of
 //! drama_llama#91), a turn cut by a stop sequence, and a clipped turn
 //! retried in full — the last two leave a tip the next prompt must not
-//! trust past what was seated. [`replay_cold`] then sends each recorded
-//! prompt again with nothing to reuse, and [`assert_equivalent`] demands
-//! the same reply, byte for byte, and the same prompt size.
+//! trust past what was seated. A step clipped at `max_tokens` or still
+//! calling after [`MAX_ROUNDS`] is dropped, and the table says so; the run
+//! stops early ([`assert_forced_call_seated`]) unless the forced call and
+//! its result round were both seated, since otherwise the #91 path went
+//! unexercised. [`replay_cold`] then sends each recorded prompt again with
+//! nothing to reuse, and [`assert_equivalent`] demands the same reply, byte
+//! for byte, and the same prompt size.
 //!
 //! **Forcing a cold prefill.** blallama has no request-level bypass: its
 //! cache-off mode is a session setting, and a prompt without markers still
@@ -241,6 +245,26 @@ struct Exchange {
     /// The request, serialized exactly as sent.
     json: String,
     reply: response::Message,
+    /// Why its step's turns were dropped, if they were.
+    dropped: Option<Dropped>,
+}
+
+/// Why [`converse`] dropped a step's turns rather than seat them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Dropped {
+    /// A reply stopped at `max_tokens`.
+    MaxTokens,
+    /// The step was still calling tools after [`MAX_ROUNDS`] rounds.
+    MaxRounds,
+}
+
+impl std::fmt::Display for Dropped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MaxTokens => "max_tokens",
+            Self::MaxRounds => "MAX_ROUNDS",
+        })
+    }
 }
 
 /// Send `prompt`, or panic naming `what`.
@@ -257,8 +281,9 @@ async fn send<T: Transport>(
 
 /// Run [`steps`] from `base` (its model and `max_tokens`), greedy and
 /// cached, and hand back every request with its reply. A clipped reply is
-/// never seated (as [`Chat`](crate::chat::Chat) never seats one): its
-/// step's turns are dropped and the conversation moves on without them.
+/// never seated (as [`Chat`](crate::chat::Chat) never seats one), nor is a
+/// step still calling after [`MAX_ROUNDS`]: its turns are dropped, marked
+/// [`Dropped`], and the conversation moves on without them.
 async fn converse<T: Transport>(transport: &T, base: Prompt) -> Vec<Exchange> {
     // Marked while it has no messages, so the mark lands on the system.
     let mut prompt = base
@@ -268,7 +293,7 @@ async fn converse<T: Transport>(transport: &T, base: Prompt) -> Vec<Exchange> {
         .cache();
     let mut log = Vec::new();
     for step in steps() {
-        let start = prompt.messages.len();
+        let (start, first) = (prompt.messages.len(), log.len());
         prompt
             .push_message((Role::User, step.say.as_str()))
             .expect("a beat follows an assistant turn");
@@ -280,11 +305,22 @@ async fn converse<T: Transport>(transport: &T, base: Prompt) -> Vec<Exchange> {
                 step: step.name,
                 json: serde_json::to_string(&request).unwrap(),
                 reply: reply.clone(),
+                dropped: None,
             });
             let calls: Vec<tool::Use> =
                 reply.inner.content.tool_uses().cloned().collect();
             let clipped = reply.stop_reason == Some(StopReason::MaxTokens);
-            if clipped || (!calls.is_empty() && round + 1 == MAX_ROUNDS) {
+            let dropped = match () {
+                _ if clipped => Some(Dropped::MaxTokens),
+                _ if !calls.is_empty() && round + 1 == MAX_ROUNDS => {
+                    Some(Dropped::MaxRounds)
+                }
+                _ => None,
+            };
+            if let Some(why) = dropped {
+                log[first..]
+                    .iter_mut()
+                    .for_each(|exchange| exchange.dropped = Some(why));
                 prompt.messages.truncate(start);
                 break;
             }
@@ -303,6 +339,40 @@ async fn converse<T: Transport>(transport: &T, base: Prompt) -> Vec<Exchange> {
         }
     }
     log
+}
+
+/// The step whose call carries [`PASSAGE`].
+const FORCED: &str = "forced_call";
+
+/// `warm`'s forced call ran its course: a `tool_use`, then a result round,
+/// both seated. Otherwise the long grammar-constrained input (drama_llama
+/// #91's path) was never read back from the cache, and the run proves
+/// nothing about it.
+fn assert_forced_call_seated(warm: &[Exchange]) {
+    let forced: Vec<&Exchange> =
+        warm.iter().filter(|e| e.step == FORCED).collect();
+    let called = forced
+        .first()
+        .is_some_and(|e| e.reply.inner.content.tool_uses().next().is_some());
+    let seated =
+        forced.len() >= 2 && forced.iter().all(|e| e.dropped.is_none());
+    let rounds: Vec<String> = forced
+        .iter()
+        .map(|e| {
+            format!(
+                "{:?}, {} call(s), {}",
+                e.reply.stop_reason,
+                e.reply.inner.content.tool_uses().count(),
+                e.dropped
+                    .map_or("seated".into(), |why| format!("dropped: {why}"))
+            )
+        })
+        .collect();
+    assert!(
+        called && seated,
+        "the `{FORCED}` step didn't seat a call and its result round, so \
+         the #91 path went unexercised: {rounds:?}"
+    );
 }
 
 /// Tokens `reply` restored from the server's cache.
@@ -541,6 +611,8 @@ struct Verdict {
     /// A second cold replay, made where the first disagreed (see
     /// [`recheck`]).
     control: Option<response::Message>,
+    /// Why the warm request's step was dropped, if it was.
+    dropped: Option<Dropped>,
 }
 
 impl Verdict {
@@ -556,6 +628,7 @@ impl Verdict {
             flushes: *flushes,
             divergence: Divergence::find(&exchange.reply, cold),
             control: control.cloned(),
+            dropped: exchange.dropped,
         }
     }
 
@@ -650,16 +723,18 @@ impl Verdict {
 /// The per-request table.
 fn table(verdicts: &[Verdict]) -> String {
     let header = format!(
-        "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>5} {:>5} {:>5} verdict",
+        "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>8} {:>8} {:>5} {:<10} \
+         verdict",
         "req",
         "step",
         "prompt",
         "read",
         "input",
         "written",
-        "out",
-        "cold",
+        "warm_out",
+        "cold_out",
         "flush",
+        "dropped",
     );
     let rows = verdicts.iter().enumerate().map(|(n, v)| {
         let counts = v.warm.usage.counts;
@@ -669,7 +744,8 @@ fn table(verdicts: &[Verdict]) -> String {
             (Some(divergence), _) => divergence.brief(),
         } + v.control_brief();
         format!(
-            "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>5} {:>5} {:>5} {verdict}",
+            "{:>3} {:<11} {:>7} {:>7} {:>6} {:>7} {:>8} {:>8} {:>5} {:<10} \
+             {verdict}",
             n + 1,
             v.step,
             prompt_size(&counts),
@@ -679,10 +755,26 @@ fn table(verdicts: &[Verdict]) -> String {
             counts.output_tokens,
             v.cold.usage.counts.output_tokens,
             v.flushes,
+            v.dropped.map_or("-".into(), |why| why.to_string()),
         )
     });
+    let mut dropped: Vec<String> = verdicts
+        .iter()
+        .filter_map(|v| v.dropped.map(|why| format!("`{}` ({why})", v.step)))
+        .collect();
+    dropped.dedup();
+    let dropped = match dropped.is_empty() {
+        true => "dropped steps: none".to_string(),
+        false => format!("dropped steps: {}", dropped.join(", ")),
+    };
+    let legend = "prompt / read / input / written: the warm request's \
+        tokens; warm_out / cold_out: output tokens of the warm reply and of \
+        its cold replay; flush: flushes before that replay; dropped: why the \
+        step's turns weren't seated"
+        .to_string();
     std::iter::once(header)
         .chain(rows)
+        .chain([dropped, legend])
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -782,6 +874,7 @@ mod blallama {
         let client = Retrying(super::super::live::client(&url));
         let base = Prompt::default().model(model).max_tokens(MAX_TOKENS);
         let warm = converse(&client, base).await;
+        assert_forced_call_seated(&warm);
         let cold = replay_cold(&client, &warm).await;
         let controls = recheck(&client, &warm, &cold).await;
         assert_equivalent(&warm, &cold, &controls);
@@ -931,6 +1024,19 @@ fn simulated_healthy_cache_passes() {
     );
 
     assert!(controls.iter().all(Option::is_none), "nothing to recheck");
+    assert_forced_call_seated(&warm);
+    let dropped: Vec<_> = warm.iter().map(|e| e.dropped).collect();
+    let clip = Some(Dropped::MaxTokens);
+    assert_eq!(dropped[5], clip, "the clip step");
+    assert_eq!(dropped.iter().filter(|d| d.is_some()).count(), 1);
+    let verdicts: Vec<Verdict> = warm
+        .iter()
+        .zip(&cold)
+        .map(|(w, c)| Verdict::new(w, c, None))
+        .collect();
+    let printed = table(&verdicts);
+    assert!(printed.contains("dropped steps: `clip` (max_tokens)"));
+    assert!(printed.lines().nth(6).unwrap().contains(" max_tokens "));
 
     assert_equivalent(&warm, &cold, &controls);
 }
@@ -966,6 +1072,7 @@ fn the_control_tells_the_cache_from_nondeterminism() {
         step: "long",
         json: String::new(),
         reply: mock::text("warm").build(),
+        dropped: None,
     };
     let first = (mock::text("cold").build(), FLUSHES);
     let verdict = |control: &'static str| {
@@ -1005,6 +1112,7 @@ fn a_cache_that_wont_clear_is_reported() {
         )
         .unwrap(),
         reply: mock::text("hi").build(),
+        dropped: None,
     };
     let replay = std::panic::catch_unwind(AssertUnwindSafe(|| {
         futures::executor::block_on(cold(&server, 1, &exchange))
@@ -1064,4 +1172,32 @@ fn divergence_names_the_block_or_the_stop() {
     };
     let found = Divergence::find(&stopped("STOP"), &stopped("END"));
     assert_eq!(found.map(|d| d.brief()).as_deref(), Some("stop differs"));
+}
+
+/// A forced call that was clipped, went uncalled, or never got its result
+/// round seated leaves the #91 path unexercised, and fails.
+#[test]
+fn an_unseated_forced_call_fails() {
+    let unexercised = |warm: Vec<Exchange>, why: &str| {
+        let checked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            assert_forced_call_seated(&warm)
+        }));
+        let panic = checked.expect_err(why);
+        let message = panic.downcast_ref::<String>().expect("a message");
+        assert!(message.contains("went unexercised"), "{message}");
+    };
+    let warm = || simulate(false).0;
+
+    let mut clipped = warm();
+    clipped[2].dropped = Some(Dropped::MaxTokens);
+    clipped[1].dropped = Some(Dropped::MaxTokens);
+    unexercised(clipped, "a clipped result round");
+
+    let mut uncalled = warm();
+    uncalled[1].reply = mock::text("No.").build();
+    unexercised(uncalled, "no call");
+
+    let mut unanswered = warm();
+    unanswered.remove(2);
+    unexercised(unanswered, "no result round");
 }

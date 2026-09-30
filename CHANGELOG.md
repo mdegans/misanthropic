@@ -134,7 +134,10 @@ record; this file aggregates them.
   size; a mismatch names the block and char where they part, with context
   and the warm request's reuse, and replays that request cold once more as
   a control: two cold replies that agree put the blame on the cache, two
-  that differ on nondeterminism. Offline, a simulated stale cache must fail.
+  that differ on nondeterminism. The table marks steps dropped for
+  `max_tokens` or too many tool rounds, and the run fails early unless the
+  forced call and its result round were both seated. Offline, a simulated
+  stale cache must fail.
   Start blallama with `--no-penalty` (a repetition penalty resumes warm but
   is rebuilt cold); the test skips unless `BLALLAMA_EQUIVALENCE=1` too, which
   only the recipe sets, since it evicts every cache slot.
