@@ -1214,7 +1214,8 @@ async fn recv_note(
     }
 }
 
-#[cfg(test)]
+// The checks serve the mock-driven scenarios.
+#[cfg(all(test, feature = "mock"))]
 mod checks;
 #[cfg(all(test, feature = "mock"))]
 mod scenarios;
@@ -1222,7 +1223,6 @@ mod scenarios;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::num::NonZeroU32;
 
     use crate::{
         response::StopReason,
@@ -1443,6 +1443,7 @@ mod tests {
         assert_eq!(prompt.messages[0].role, Role::User);
     }
 
+    #[cfg(feature = "mock")]
     /// The continuation of [`paused_response`]: the search's result, then
     /// `done`.
     fn continued_response() -> response::Message {
@@ -1671,9 +1672,11 @@ mod tests {
         prompt.check_turn_order().unwrap();
     }
 
+    #[cfg(feature = "mock")]
     /// A tool that hands its mailbox to the test, to push on cue.
     struct Pusher(Arc<Mutex<Option<tool::Mailbox>>>);
 
+    #[cfg(feature = "mock")]
     #[async_trait::async_trait]
     impl Tool for Pusher {
         fn name(&self) -> &str {
@@ -1693,10 +1696,12 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "mock")]
     /// Pending once (after asking to be woken), then ready.
     #[derive(Default)]
     struct YieldOnce(bool);
 
+    #[cfg(feature = "mock")]
     impl std::future::Future for YieldOnce {
         type Output = ();
 
@@ -1887,7 +1892,7 @@ mod tests {
 
         // Resume with more room: answered at once, no beat needed.
         let mut error = error;
-        error.prompt.max_tokens = NonZeroU32::new(8192).unwrap();
+        error.prompt.max_tokens = std::num::NonZeroU32::new(8192).unwrap();
         let (chat, ()) = error.resume(transport.clone());
         let (Parts { prompt, .. }, ()) =
             futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();

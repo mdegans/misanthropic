@@ -319,7 +319,6 @@ fn checks_catch_illegal_shapes() {
     assert!(panics(&|| assert_request_legal(&empty)));
 }
 
-#[cfg(feature = "mock")]
 #[test]
 fn checked_forwards_every_method() {
     use crate::mock::{self, MockTransport};
