@@ -163,6 +163,15 @@ record; this file aggregates them.
 
 ### Fixed
 
+- **A streamed turn's assembled usage double-counted.** `with_message` added
+  the `message_delta` usage to `message_start`'s, but the delta's is
+  cumulative for the turn — so a captured turn billed 685 in / 34 out
+  assembled as 1370 / 44, and a server-tool turn summed its start and final
+  input. The delta's counters now replace the start's, keeping any it omits
+  (older deltas report only `output_tokens`; none carry the cache TTL
+  breakdown). Every captured stream now assembles to its final report, and to
+  its non-streaming twin's usage where one exists. `Chat::track_usage` sums
+  whole responses, so it was off only behind a transport that streams.
 - **Chat demo ran tool calls before the turn's stop reason arrived.** The
   frontend dispatched on `stream::Event::ToolUse`, which fires as the block
   closes — before `message_delta` — so a refused or truncated call could

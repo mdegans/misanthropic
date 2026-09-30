@@ -532,6 +532,10 @@ pub struct StopDetails {
 /// `service_tier`/`inference_geo` strings here, which arguably belong on the
 /// parent response but are out of our control — so downstream code that wants
 /// cheap copyable counters should take `usage.counts` ([`TokenCounts`]).
+///
+/// Adding (`+`) sums *separate* requests. A stream's
+/// [`MessageDelta`](crate::stream::Event::MessageDelta) usage is cumulative
+/// for the turn, so assembly replaces rather than adds.
 #[derive(
     Clone,
     Debug,
@@ -604,6 +608,32 @@ impl TokenCounts {
             output_tokens,
             ..Default::default()
         }
+    }
+
+    /// Fold a `message_delta`'s counts over `message_start`'s. They are
+    /// cumulative, not increments: each counter the delta reports replaces
+    /// ours, and one it omits (`None`, or a zero `u64` — older deltas sent
+    /// only `output_tokens`) keeps ours. So does the TTL breakdown, which
+    /// deltas don't carry.
+    pub(crate) fn apply_delta(&mut self, delta: Self) {
+        let reported = |count: u64| (count != 0).then_some(count);
+        *self = Self {
+            input_tokens: reported(delta.input_tokens)
+                .unwrap_or(self.input_tokens),
+            cache_creation_input_tokens: delta
+                .cache_creation_input_tokens
+                .or(self.cache_creation_input_tokens),
+            cache_creation: delta.cache_creation.or(self.cache_creation),
+            cache_read_input_tokens: delta
+                .cache_read_input_tokens
+                .or(self.cache_read_input_tokens),
+            output_tokens: reported(delta.output_tokens)
+                .unwrap_or(self.output_tokens),
+            output_tokens_details: delta
+                .output_tokens_details
+                .or(self.output_tokens_details),
+            server_tool_use: delta.server_tool_use.or(self.server_tool_use),
+        };
     }
 }
 
@@ -687,6 +717,15 @@ impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
                 .map(|c| c + rhs.tool_search_requests.unwrap_or(0))
                 .or(rhs.tool_search_requests),
         }
+    }
+}
+
+impl Usage {
+    /// `TokenCounts::apply_delta`, keeping the tier and geo the delta omits.
+    pub(crate) fn apply_delta(&mut self, delta: Self) {
+        self.counts.apply_delta(delta.counts);
+        self.service_tier = delta.service_tier.or(self.service_tier.take());
+        self.inference_geo = delta.inference_geo.or(self.inference_geo.take());
     }
 }
 

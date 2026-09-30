@@ -53,7 +53,8 @@ pub enum Event {
     MessageDelta {
         /// Delta to apply to the [`response::Message`].
         delta: MessageDelta,
-        /// Usage statistics for the message.
+        /// The turn's usage so far — cumulative, so it supersedes
+        /// [`MessageStart`](Self::MessageStart)'s rather than adding to it.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage: Option<Usage>,
     },
@@ -1086,7 +1087,7 @@ pub trait FilterExt:
                         if let Some(message) = message.as_mut() {
                             message.apply_delta(delta.clone());
                             if let Some(usage) = usage {
-                                message.usage += usage.clone();
+                                message.usage.apply_delta(usage.clone());
                             }
                         } else {
                             yield Err(Error::MessageAssembly {
@@ -2199,6 +2200,7 @@ pub(crate) mod tests {
         .unwrap();
         let twin_call = twin.inner.content.tool_uses().next().unwrap();
         assert_eq!(WriteFile::of(raw[0]), WriteFile::of(twin_call));
+        assert_eq!(message.usage, twin.usage);
         assert_eq!(
             WriteFile::of(raw[0]),
             WriteFile {
@@ -2238,6 +2240,15 @@ pub(crate) mod tests {
                 contents: "".into(),
             }
         );
+
+        // The twin is a separate generation: same input, its own output.
+        let twin: response::Message = serde_json::from_str(include_str!(
+            "../test/data/stop/stop_sequence_text_tool.response.json"
+        ))
+        .unwrap();
+        let mut expected = twin.usage;
+        expected.output_tokens = 72;
+        assert_eq!(message.usage, expected);
     }
 
     /// Live (Haiku 4.5): a forced call clipped at `max_tokens`. The wire
@@ -2263,11 +2274,201 @@ pub(crate) mod tests {
         assert_eq!(message.disposition(), response::Disposition::Clipped);
         assert!(message.inner.content.is_empty());
         assert!(message.tool_use().is_none());
+        let twin: response::Message = serde_json::from_str(include_str!(
+            "../test/data/stop/clip_tool.response.json"
+        ))
+        .unwrap();
+        assert_eq!(message.usage, twin.usage);
 
         // `with_tool_use` alone: the open call is dropped at stream end.
         let events: Vec<_> = mock_stream(SSE).with_tool_use().collect().await;
         assert!(events.iter().all(Result::is_ok), "{events:?}");
         assert!(!events.iter().flatten().any(Event::is_tool_use));
+    }
+
+    /// Every captured stream assembles its turn's *final* usage: the
+    /// cumulative `message_delta` report, over `message_start`'s for any
+    /// counter it omits — never the two summed. (`thinking.sse.stream.txt`,
+    /// from the docs, reports no usage.)
+    #[test]
+    fn assembled_usage_is_the_final_report() {
+        use crate::response::message::{
+            CacheCreation, ServerToolUsage, TokenCounts,
+        };
+
+        // A current capture: cache counters, and `message_start`'s TTL
+        // breakdown (deltas carry none).
+        let counts = |input, output| TokenCounts {
+            cache_creation_input_tokens: Some(0),
+            cache_creation: Some(CacheCreation::default()),
+            cache_read_input_tokens: Some(0),
+            ..TokenCounts::new(input, output)
+        };
+        // A server-tool turn, counting (searches, fetches).
+        let tools = |input, output, (searches, fetches)| TokenCounts {
+            server_tool_use: Some(ServerToolUsage {
+                web_search_requests: searches,
+                web_fetch_requests: fetches,
+                tool_search_requests: None,
+            }),
+            ..counts(input, output)
+        };
+
+        let cases = [
+            // An old delta reporting only `output_tokens`.
+            (
+                "sse",
+                assembled_sse(include_str!("../test/data/sse.stream.txt")),
+                TokenCounts::new(472, 89),
+            ),
+            // No delta usage: `message_start`'s stands.
+            (
+                "redacted_thought",
+                assembled(include_str!(
+                    "../test/data/redacted_thought.sse.stream.jsonl"
+                )),
+                TokenCounts {
+                    cache_creation_input_tokens: Some(0),
+                    cache_read_input_tokens: Some(0),
+                    ..TokenCounts::new(92, 3)
+                },
+            ),
+            (
+                "text",
+                assembled(include_str!("../test/data/text.sse.stream.jsonl")),
+                counts(11, 4),
+            ),
+            (
+                "structured_items",
+                assembled(include_str!(
+                    "../test/data/incremental/structured_items.sse.stream.jsonl"
+                )),
+                counts(284, 47),
+            ),
+            (
+                "tool_items",
+                assembled(include_str!(
+                    "../test/data/incremental/tool_items.sse.stream.jsonl"
+                )),
+                counts(739, 91),
+            ),
+            (
+                "system_after_server_tool",
+                assembled(include_str!(
+                    "../test/data/system_after_server_tool.sse.stream.jsonl"
+                )),
+                TokenCounts {
+                    output_tokens_details: Some(
+                        crate::response::message::OutputTokensDetails {
+                            thinking_tokens: 0,
+                        },
+                    ),
+                    ..counts(1305, 27)
+                },
+            ),
+            // Server tools: the delta's input grows past `message_start`'s.
+            (
+                "code_execution",
+                assembled(include_str!(
+                    "../test/data/server_tools/code_execution.sse.stream.jsonl"
+                )),
+                tools(13375, 534, (0, 0)),
+            ),
+            (
+                "code_execution_result",
+                assembled(include_str!(
+                    "../test/data/server_tools/code_execution_result.sse.stream.jsonl"
+                )),
+                tools(3363, 113, (0, 0)),
+            ),
+            (
+                "pause_turn",
+                assembled(include_str!(
+                    "../test/data/server_tools/pause_turn.sse.stream.jsonl"
+                )),
+                tools(22682, 902, (0, 10)),
+            ),
+            (
+                "pause_turn_resume",
+                assembled(include_str!(
+                    "../test/data/server_tools/pause_turn_resume.sse.stream.jsonl"
+                )),
+                tools(6058, 362, (0, 2)),
+            ),
+            (
+                "ptc",
+                assembled(include_str!(
+                    "../test/data/server_tools/ptc.sse.stream.jsonl"
+                )),
+                tools(3164, 153, (0, 0)),
+            ),
+            // A pre-populated `message_start`, no delta.
+            (
+                "ptc_resume",
+                assembled(include_str!(
+                    "../test/data/server_tools/ptc_resume.sse.stream.jsonl"
+                )),
+                TokenCounts {
+                    server_tool_use: Some(ServerToolUsage::default()),
+                    ..TokenCounts::default()
+                },
+            ),
+            (
+                "tool_search",
+                assembled(include_str!(
+                    "../test/data/server_tools/tool_search.sse.stream.jsonl"
+                )),
+                tools(1641, 163, (0, 0)),
+            ),
+            (
+                "web_fetch",
+                assembled(include_str!(
+                    "../test/data/server_tools/web_fetch.sse.stream.jsonl"
+                )),
+                tools(5956, 140, (0, 1)),
+            ),
+            (
+                "web_search",
+                assembled(include_str!(
+                    "../test/data/server_tools/web_search.sse.stream.jsonl"
+                )),
+                tools(12116, 126, (1, 0)),
+            ),
+            (
+                "stop_sequence_tool",
+                assembled_sse(include_str!(
+                    "../test/data/stop/stop_sequence_tool.sse.stream.txt"
+                )),
+                counts(685, 34),
+            ),
+            (
+                "stop_sequence_text_tool",
+                assembled_sse(include_str!(
+                    "../test/data/stop/stop_sequence_text_tool.sse.stream.txt"
+                )),
+                counts(595, 72),
+            ),
+            (
+                "clip_tool",
+                assembled_sse(include_str!(
+                    "../test/data/stop/clip_tool.sse.stream.txt"
+                )),
+                counts(685, 30),
+            ),
+        ];
+        for (name, message, expected) in cases {
+            assert_eq!(message.usage.counts, expected, "{name}");
+        }
+
+        // Where a non-streaming twin exists, the whole `Usage` matches it.
+        let twin: response::Message = serde_json::from_str(include_str!(
+            "../test/data/system_after_server_tool.response.json"
+        ))
+        .unwrap();
+        let streamed = assembled(include_str!(
+            "../test/data/system_after_server_tool.sse.stream.jsonl"
+        ));
+        assert_eq!(streamed.usage, twin.usage);
     }
 
     #[tokio::test]
