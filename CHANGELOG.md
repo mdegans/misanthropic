@@ -110,6 +110,11 @@ record; this file aggregates them.
   the model call whenever a beat left `messages.len()` unchanged, so a user
   beat merging into a user tail (e.g. the synthetic results a budget hand-back
   leaves) was silently never answered. It now asks `Seated::advanced`.
+- **`Chat` no longer seats an empty assistant turn.** A refusal with no
+  content, or an empty `end_turn`, was seated as a turn with no blocks, and
+  the API rejects an empty turn — so the next request 400'd. Such a turn now
+  reaches the `on_assistant` hook (which may still seat something) but is
+  otherwise dropped, and the caller's next beat follows the previous tail.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

@@ -20,7 +20,7 @@ use crate::{
     Id, Prompt, Quirks, Transport,
     mock::{self, MockTransport, Reply},
     model::Model,
-    prompt::message::{AssistantMessage, Block, Message, Role},
+    prompt::message::{AssistantMessage, Block, Content, Message, Role},
     response::{self, StopReason, TokenCounts},
     tool::{self, Choice, CustomMethodDef, MethodDef, Tool, ToolBox, Use},
 };
@@ -191,6 +191,16 @@ fn calls(ids: &[&'static str]) -> Reply {
 /// A turn cut off at `max_tokens` mid-call.
 fn clipped_call() -> Reply {
     calls(&["cut"]).stop_reason(StopReason::MaxTokens)
+}
+
+/// A finished turn with no content at all.
+fn empty_turn() -> Reply {
+    let turn = AssistantMessage::from(Content(Vec::new()));
+    mock::message(
+        response::Message::builder(Model::default(), turn)
+            .stop_reason(StopReason::EndTurn)
+            .build(),
+    )
 }
 
 /// `text`, stopped by `sequence`.
@@ -802,6 +812,26 @@ fn rows() -> Vec<Row> {
             .requests(2)
             .roles("US")
             .extra(|run| assert_eq!(run.sent_roles(1), "UAS")),
+        row("refusal_without_content")
+            .beats(["hi", "again"])
+            .reply(mock::refusal("cyber", "no"))
+            .reply(mock::text("ok"))
+            .requests(2)
+            .roles("UA"),
+        row("empty_turn_is_not_seated")
+            .beats(["hi", "again"])
+            .reply(empty_turn())
+            .reply(mock::text("ok"))
+            .requests(2)
+            .roles("UA"),
+        row("empty_turn_after_tool_round")
+            .beats(["go", "again"])
+            .reply(calls(&["a"]))
+            .reply(empty_turn())
+            .reply(mock::text("ok"))
+            .requests(3)
+            .roles("UAUA")
+            .dispatched(["a"]),
         // Clips: never seated, never dispatched.
         row("clip_first_round")
             .live()

@@ -779,7 +779,9 @@ impl<State, T: Transport> Chat<State, T> {
     /// Run the assistant turn through the [`on_assistant`](Chat::on_assistant)
     /// hook (or seat it unchanged), then collect the client tool calls **from
     /// what was seated** — single source of truth, so a hook that replaces or
-    /// redacts the turn naturally governs which tools run.
+    /// redacts the turn naturally governs which tools run. A turn with no
+    /// content — a bare refusal, an empty `end_turn` — is not seated: the
+    /// API rejects an empty turn, so the next request would fail.
     ///
     /// When the driver owns caching for a
     /// [`breakpoint_after_assistant`](crate::Quirks::breakpoint_after_assistant)
@@ -795,7 +797,10 @@ impl<State, T: Transport> Chat<State, T> {
         let seated: Vec<Message> = match self.on_assistant.as_mut() {
             Some(hook) => hook(state, message),
             None => vec![message.into()],
-        };
+        }
+        .into_iter()
+        .filter(|m| !m.content.is_empty())
+        .collect();
         let calls = seated
             .iter()
             .filter(|m| m.role == Role::Assistant)
