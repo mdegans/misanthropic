@@ -656,11 +656,14 @@ impl Prompt {
     /// driver's per-session field) so casual code that never touches system
     /// notes keeps [`add_message`]/[`push_message`] and passes `&mut None`.
     ///
+    /// Which response turns to seat is the response's
+    /// [`Disposition`](crate::response::Disposition) — never a clipped one.
+    ///
     /// # Errors
     /// [`TurnOrderError`] if the append (or merge) would break turn order.
     /// System content is buffered, not appended, so it never errors here.
     ///
-    /// [`Chat`]: <https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/utils/chat.rs>
+    /// [`Chat`]: <https://docs.rs/misanthropic/latest/misanthropic/chat/struct.Chat.html>
     /// [`may_precede`]: message::Message::may_precede
     /// [ends]: message::Message::ends_in_server_tool_result
     /// [`System`]: message::Role::System
