@@ -3403,6 +3403,7 @@ dependencies = [
  "derive_more 1.0.0",
  "misanthropic",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
 ]
 

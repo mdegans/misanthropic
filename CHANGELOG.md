@@ -32,6 +32,12 @@ record; this file aggregates them.
   `tool_uses()`, and answers parallel calls in one user turn instead of one
   turn per result. The `with_tool_use` / `Event::ToolUse` docs and the
   streaming skill now say to display from that event, not dispatch.
+- **Chat demo seated refused / clipped turns.** A `Refusal` or `MaxTokens`
+  turn holding an unanswered `tool_use` stayed in the history on both sides,
+  so the next message 400'd. Both now drop the turn and rewind past the
+  message that prompted it (a user turn can't follow a user turn), and the
+  UI says why. The decision lives in `model::turn` (`Disposition`, `reply`,
+  `rewind`), unit-tested against parallel, refused and clipped turns.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

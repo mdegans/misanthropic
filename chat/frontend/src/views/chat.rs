@@ -13,12 +13,18 @@ use misanthropic::{
         serde_json,
     },
     prompt::{
-        message::{Block, DocumentSource, Image, MediaType, UserMessage},
+        message::{Block, DocumentSource, Image, MediaType, Role, UserMessage},
         Prompt,
     },
+    response::StopReason,
     tool::Tool,
 };
-use model::{request::Request, response::Success, toolbox};
+use model::{
+    request::Request,
+    response::Success,
+    toolbox,
+    turn::{reply, rewind, Disposition},
+};
 use wasm_bindgen::{prelude::Closure, JsCast};
 
 use crate::utils::sleep_ms;
@@ -224,6 +230,19 @@ fn make_prompt() -> Prompt {
     Prompt::default()
 }
 
+/// Shown when a turn is dropped (see [`Disposition::Drop`]).
+fn dropped_notice(reason: Option<StopReason>) -> String {
+    let why = match reason {
+        Some(StopReason::Refusal) => "Claude declined to answer",
+        Some(StopReason::MaxTokens) => "the reply hit the token limit",
+        _ => "the reply was cut short",
+    };
+    format!(
+        "Your last message was removed from the chat because {why}. \
+         Try rephrasing it."
+    )
+}
+
 #[component]
 pub fn Chat() -> Element {
     // Our signals. This is reactive state management. When these signals are
@@ -242,6 +261,8 @@ pub fn Chat() -> Element {
     let mut show_system = use_signal(|| false);
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
+    // Why the last turn was dropped, until the next message is sent.
+    let mut notice = use_signal(|| None::<String>);
     // Created un-loaded; persisted state is restored asynchronously as the
     // first step of the stream task (see below), before the first prompt is
     // requested. Doing it here would require `block_on`, which only works for
@@ -325,15 +346,13 @@ pub fn Chat() -> Element {
                                 // Tools run on the client, but only once the
                                 // whole turn is in: `Event::ToolUse` fires as
                                 // each block closes, *before* `message_delta`
-                                // says why the turn stopped, and a refusal or
-                                // `max_tokens` stop means the calls must not
-                                // run. `tool_uses` is empty unless the stop
-                                // reason is `tool_use`.
-                                let calls: Vec<_> = match &event {
+                                // says why the turn stopped. `Disposition`
+                                // decides from the assembled turn.
+                                let disposition = match &event {
                                     misanthropic::stream::Event::Message {
                                         message,
-                                    } => message.tool_uses().cloned().collect(),
-                                    _ => Vec::new(),
+                                    } => Some(Disposition::from(message)),
+                                    _ => None,
                                 };
                                 if let Err(e) =
                                     // A Prompt and Vec<Message> both implement
@@ -355,32 +374,55 @@ pub fn Chat() -> Element {
                                     );
                                 }
 
-                                if !calls.is_empty() {
-                                    let mut results = Vec::new();
-                                    for call in calls {
-                                        log::info!("Tool use: {:?}", call);
-                                        let result =
-                                            toolbox.write().call(call).await;
-                                        log::info!("Tool result: {:?}", result);
-                                        results.push(result);
+                                match disposition {
+                                    Some(Disposition::Drop(reason)) => {
+                                        // Unseat the turn (assembled in place
+                                        // from the stream) and the turn that
+                                        // prompted it, as the backend does.
+                                        let mut prompt = prompt.write();
+                                        let messages = &mut prompt.messages;
+                                        if messages.last().is_some_and(|m| {
+                                            m.role == Role::Assistant
+                                        }) {
+                                            messages.pop();
+                                        }
+                                        rewind(messages);
+                                        notice
+                                            .set(Some(dropped_notice(reason)));
                                     }
-                                    persist_tool_state(toolbox).await;
+                                    Some(Disposition::Dispatch(calls)) => {
+                                        let mut results = Vec::new();
+                                        for call in calls {
+                                            log::info!("Tool use: {:?}", call);
+                                            let result = toolbox
+                                                .write()
+                                                .call(call)
+                                                .await;
+                                            log::info!(
+                                                "Tool result: {:?}",
+                                                result
+                                            );
+                                            results.push(result);
+                                        }
+                                        persist_tool_state(toolbox).await;
 
-                                    // Every result goes back in one user turn;
-                                    // the server echoes it as a UserMessage.
-                                    let reply: UserMessage =
-                                        results.into_iter().collect();
-                                    if let Err(e) = CLIENT
-                                        .read()
-                                        .send(Request::UserMessage(reply))
-                                        .await
-                                    {
-                                        connected.set(false);
-                                        log::error!(
-                                            "Failed to set prompt after tool use: {}",
-                                            e
-                                        );
+                                        // The server echoes the reply back as a
+                                        // UserMessage.
+                                        if let Err(e) = CLIENT
+                                            .read()
+                                            .send(Request::UserMessage(reply(
+                                                results,
+                                            )))
+                                            .await
+                                        {
+                                            connected.set(false);
+                                            log::error!(
+                                                "Failed to set prompt after tool use: {}",
+                                                e
+                                            );
+                                        }
                                     }
+                                    Some(Disposition::Keep) | None => {}
                                 }
                             }
                             Ok(Success::Prompt(mut new)) => {
@@ -502,6 +544,10 @@ pub fn Chat() -> Element {
             {prompt.read().into_element_custom(1337, &options.read())}
         }
 
+        if let Some(text) = notice.read().as_ref() {
+            div { class: "notice", "{text}" }
+        }
+
         div {
             class: "input",
             form {
@@ -544,6 +590,7 @@ pub fn Chat() -> Element {
                                 } else {
                                     // Sucessfully sent the message.
                                     input_buffer.write().clear();
+                                    notice.set(None);
                                 }
                             }
                         }

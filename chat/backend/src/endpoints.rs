@@ -349,6 +349,21 @@ pub async fn events_stream(
                         if let misanthropic::stream::Event::Message { message } =
                             event
                         {
+                            // A refused or clipped turn is never seated (an
+                            // unanswered `tool_use` 400s the next request),
+                            // and neither is the turn that prompted it. The
+                            // frontend drops the same turns.
+                            use model::turn::{rewind, Disposition};
+                            if let Disposition::Drop(reason) =
+                                Disposition::from(&message)
+                            {
+                                let dropped = rewind(&mut prompt.messages);
+                                log::warn!(
+                                    "Dropped a {reason:?} turn and {} before it",
+                                    dropped.len()
+                                );
+                                continue;
+                            }
                             let assistant = AssistantMessage::from(message);
                             if let Err(e) = prompt.push_message(assistant) {
                                 log::error!(
