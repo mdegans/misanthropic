@@ -2266,6 +2266,8 @@ pub(crate) mod tests {
         let (results, shown) = replay_stop(SSE).await;
         assert!(results.iter().all(Result::is_ok), "{results:?}");
         assert!(shown.is_empty());
+        let messages = results.iter().flatten().filter(|e| e.is_message());
+        assert_eq!(messages.count(), 1, "one turn assembles");
         let wire: Vec<_> = mock_stream(SSE).try_collect().await.unwrap();
         assert!(!wire.iter().any(Event::is_content_block_stop));
         let message = assembled_sse(SSE);

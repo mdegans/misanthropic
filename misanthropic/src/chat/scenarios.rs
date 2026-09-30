@@ -604,6 +604,8 @@ struct Run {
     calls: Vec<Use>,
     tally: Tally,
     stops: Vec<Kind>,
+    /// The stop reasons of the turns `stops` handed back, in order.
+    stop_reasons: Vec<Option<StopReason>>,
 }
 
 impl Run {
@@ -675,6 +677,7 @@ where
 
     let mut tally = Tally::default();
     let mut stops = Vec::new();
+    let mut stop_reasons = Vec::new();
     let (prompt, pending, tally) = loop {
         let mut error = match chat.run(tally, &mut next_beat).await {
             Ok((parts, state)) => {
@@ -689,6 +692,9 @@ where
         let received = &transport.log().received;
         checks::assert_in_flight_paused(&error.prompt, received);
         stops.push(Kind::of(&error.kind));
+        if let Stop::Clipped(turn) | Stop::Unusable(turn) = &error.kind {
+            stop_reasons.push(turn.stop_reason);
+        }
         if !row.resume || stops.len() > 2 {
             break (error.prompt, error.pending, error.state);
         }
@@ -712,6 +718,7 @@ where
         calls,
         tally,
         stops,
+        stop_reasons,
     }
 }
 
@@ -931,13 +938,21 @@ fn rows() -> Vec<Row> {
             .reply(stopped_mid_call())
             .stops([Kind::Unusable])
             .requests(1)
-            .roles("U"),
+            .roles("U")
+            .extra(|run| {
+                let stopped = [Some(StopReason::StopSequence)];
+                assert_eq!(run.stop_reasons, stopped);
+            }),
         row("stop_sequence_cuts_a_streamed_call_short")
             .prompt(|p| p.stop_sequences(["print("]))
             .reply(stopped_mid_call_streamed())
             .stops([Kind::Unusable])
             .requests(1)
-            .roles("U"),
+            .roles("U")
+            .extra(|run| {
+                let stopped = [Some(StopReason::StopSequence)];
+                assert_eq!(run.stop_reasons, stopped);
+            }),
         row("refused_continuation_strands_the_pause")
             .reply(paused())
             .reply(mock::text("I can't continue.").refusal("cyber", "no"))
