@@ -27,7 +27,8 @@
 //! past the Anthropic-equivalent bound. blallama may reuse the previous
 //! turn's generated KV there, which only moves tokens from `creation` to
 //! `read`; a warning flags a request that re-prefilled most of the previous
-//! turn's output.
+//! turn's output (read less than half of it past that turn's whole prompt,
+//! `read_k - T_{k-1}`).
 //!
 //! Two scripts: [`SHORT`], ten beats, and [`LONG`], twenty with larger tool
 //! results, so the conversation itself grows to many thousands of tokens.
@@ -93,8 +94,9 @@ const TIP_FLOOR: u64 = 64;
 /// What a backend's cache is held to.
 #[derive(Clone, Copy)]
 struct Backend {
-    /// Anthropic, or a stand-in for it: the reference, held to its exact
-    /// behavior (the prompt grows, the tip is Anthropic's zero).
+    /// Anthropic, or a stand-in for it: its prompt must grow every request
+    /// (elsewhere a shrink is a note), and its tips go unwarned (Anthropic
+    /// never reads past a breakpoint, so it has no generated KV to reuse).
     reference: bool,
     /// Markers ride assistant turns (the driver's window), not the tail.
     after_assistant: bool,
@@ -477,8 +479,9 @@ struct Request {
     written: Option<u64>,
     /// `cache_read_input_tokens`; `None` when the server left it out.
     read: Option<u64>,
-    /// The server's `count_tokens` for the request, when asked.
-    counted: Option<u64>,
+    /// The server's `count_tokens` for the request (or why it failed),
+    /// when asked.
+    counted: Option<Result<u64, String>>,
     output: u64,
     millis: f64,
 }
@@ -507,8 +510,9 @@ impl Request {
     }
 }
 
-/// `log`'s requests, with each prompt's `counted` alongside if given.
-fn requests(log: &Log, counted: Option<&[u64]>) -> Vec<Request> {
+/// `log`'s requests, with each prompt's `counted` alongside if given
+/// (indexed like `log.sent`, which a failed send leaves longer).
+fn requests(log: &Log, counted: Option<&[Counted]>) -> Vec<Request> {
     let received = log.received.iter().zip(&log.answers).zip(&log.elapsed);
     received
         .map(|((reply, &n), elapsed)| {
@@ -524,7 +528,7 @@ fn requests(log: &Log, counted: Option<&[u64]>) -> Vec<Request> {
                 input: counts.input_tokens,
                 written: counts.cache_creation_input_tokens,
                 read: counts.cache_read_input_tokens,
-                counted: counted.map(|counted| counted[n]),
+                counted: counted.map(|counted| counted[n].clone()),
                 output: counts.output_tokens,
                 millis: elapsed.as_secs_f64() * 1e3,
             }
@@ -545,6 +549,13 @@ fn bound(before: &Request, backend: Backend) -> u64 {
 /// How far `now` read past what Anthropic would have (see [`Request::cached`]).
 fn tip(before: &Request, now: &Request) -> u64 {
     now.read().saturating_sub(before.cached())
+}
+
+/// How much of what `before` generated `now` read back: its read past
+/// `before`'s whole prompt, `read_k - T_{k-1}`, which only a server reusing
+/// generated KV (blallama's tip) reaches.
+fn reused(before: &Request, now: &Request) -> u64 {
+    now.read().saturating_sub(before.prompt())
 }
 
 /// What a request's wall time should be, fitted to the run itself.
@@ -647,7 +658,11 @@ fn table(
             n + 1,
             r.kind,
             r.prompt(),
-            or_dash(r.counted),
+            match &r.counted {
+                Some(Ok(counted)) => counted.to_string(),
+                Some(Err(_)) => "err".into(),
+                None => "-".into(),
+            },
             r.input,
             or_dash(r.written),
             or_dash(r.read),
@@ -691,7 +706,7 @@ fn table(
 /// equal exactly.
 fn assert_caches(
     log: &Log,
-    counted: Option<&[u64]>,
+    counted: Option<&[Counted]>,
     script: &Script,
     backend: Backend,
 ) {
@@ -723,13 +738,17 @@ fn check_counts(requests: &[Request]) {
             "request {}: no cache_creation or cache_read",
             n + 1
         );
-        if let Some(counted) = r.counted {
-            assert_eq!(
+        match &r.counted {
+            Some(Ok(counted)) => assert_eq!(
                 r.prompt(),
-                counted,
+                *counted,
                 "request {}: input + creation + read vs count_tokens",
                 n + 1
-            );
+            ),
+            Some(Err(error)) => {
+                panic!("request {}: count_tokens failed: {error}", n + 1)
+            }
+            None => {}
         }
     }
 }
@@ -786,22 +805,31 @@ fn check_reads(requests: &[Request], backend: Backend, input_cap: u64) {
 /// Warn, off Anthropic, where a request re-prefilled most of what the one
 /// before it generated rather than reading its KV back.
 fn check_tips(requests: &[Request], backend: Backend) {
+    tip_warnings(requests, backend)
+        .iter()
+        .for_each(|warning| eprintln!("{warning}"));
+}
+
+/// [`check_tips`]' warnings: a request that read back less than half of
+/// what the one before it generated (at least [`TIP_FLOOR`] tokens).
+fn tip_warnings(requests: &[Request], backend: Backend) -> Vec<String> {
     if backend.reference {
-        return;
+        return Vec::new();
     }
-    for (n, pair) in requests.windows(2).enumerate() {
+    let warn = |(n, pair): (usize, &[Request])| {
         let (before, now, k) = (&pair[0], &pair[1], n + 2);
-        let tip = tip(before, now);
-        if before.output >= TIP_FLOOR && tip < before.output / 2 {
-            eprintln!(
-                "WARN tip: request {k} read {tip} tokens past the \
-                 Anthropic-equivalent bound; request {} generated {}, so it \
-                 re-prefilled most of them",
+        let reused = reused(before, now);
+        (before.output >= TIP_FLOOR && reused < before.output / 2).then(|| {
+            format!(
+                "WARN tip: request {k} read {reused} tokens past request {}'s \
+                 whole prompt, which then generated {}: it re-prefilled most \
+                 of them",
                 k - 1,
                 before.output
-            );
-        }
-    }
+            )
+        })
+    };
+    requests.windows(2).enumerate().filter_map(warn).collect()
 }
 
 /// Each request's time beyond decoding fits prefilling only its uncached
@@ -826,12 +854,17 @@ fn check_latency(requests: &[Request], latency: &Latency, slack_ms: f64) {
     }
 }
 
-/// Each of `log`'s requests counted by `client`'s `count_tokens`.
-async fn counted(client: &Client, log: &Log) -> Vec<u64> {
+/// A request's `count_tokens`, or why it failed.
+type Counted = Result<u64, String>;
+
+/// Each of `log`'s requests counted by `client`'s `count_tokens`. A failure
+/// is kept, not raised, so [`assert_caches`] prints the table before
+/// failing on it.
+async fn counted(client: &Client, log: &Log) -> Vec<Counted> {
     let mut counted = Vec::with_capacity(log.sent.len());
     for prompt in &log.sent {
-        let count = client.count_tokens(prompt).await.expect("count_tokens");
-        counted.push(u64::from(count));
+        let count = client.count_tokens(prompt).await;
+        counted.push(count.map(u64::from).map_err(|e| e.to_string()));
     }
     counted
 }
@@ -1119,17 +1152,25 @@ fn simulated_broken_cache_fails() {
     assert!(message.contains("re-prefilled"), "{message}");
 }
 
+/// A request billed `input`, `written` and `read`, that decoded `output`.
+fn accounted(input: u64, written: u64, read: u64, output: u64) -> Request {
+    Request {
+        kind: "beat",
+        input,
+        written: Some(written),
+        read: Some(read),
+        counted: None,
+        output,
+        millis: 0.0,
+    }
+}
+
 /// A synthetic request: `prefilled` uncached tokens (all written but a
 /// 3-token tail) over `read` cached, `output` decoded, in `millis`.
 fn synthetic(read: u64, prefilled: u64, output: u64, millis: f64) -> Request {
     Request {
-        kind: "beat",
-        input: 3,
-        written: Some(prefilled - 3),
-        read: Some(read),
-        counted: None,
-        output,
         millis,
+        ..accounted(3, prefilled - 3, read, output)
     }
 }
 
@@ -1186,4 +1227,143 @@ fn a_shrinking_prompt_is_a_note_off_anthropic() {
     let shrink = std::panic::catch_unwind(|| check_growth(&run, ANTHROPIC));
     assert!(shrink.is_err(), "Anthropic's prompt must grow");
     check_growth(&run, local);
+}
+
+/// Markers on the tail are read back whole; markers on assistant turns
+/// leave the previous request's uncached `input` (its beat) out.
+#[test]
+fn the_bound_follows_where_the_markers_sit() {
+    let after_assistant = Backend {
+        after_assistant: true,
+        ..ANTHROPIC
+    };
+    // A 6,000-token prompt whose last 100 (the beat) weren't cached.
+    let before = accounted(100, 5900, 0, 200);
+    assert_eq!(bound(&before, ANTHROPIC), 6000);
+    assert_eq!(bound(&before, after_assistant), 5900);
+
+    let run = [before, accounted(50, 100, 5900, 20)];
+    check_reads(&run, after_assistant, 1024);
+    let tail = std::panic::catch_unwind(|| check_reads(&run, ANTHROPIC, 1024));
+    let panic = tail.expect_err("a tail marker reads the whole prompt back");
+    let message = panic.downcast_ref::<String>().expect("a message");
+    assert!(message.contains("request 2 read 5900"), "{message}");
+}
+
+/// The tip is the read past Anthropic's bound; the reuse, past the whole
+/// previous prompt (into what it generated). Both stop at zero.
+#[test]
+fn tips_and_reuse_count_past_their_bounds() {
+    let before = accounted(100, 5900, 0, 200);
+    let past = accounted(50, 100, 6150, 20);
+    assert_eq!(tip(&before, &past), 250);
+    assert_eq!(reused(&before, &past), 150);
+    let short = accounted(50, 100, 5000, 20);
+    assert_eq!(tip(&before, &short), 0);
+    assert_eq!(reused(&before, &short), 0);
+}
+
+/// Off Anthropic, a request that reads back less than half of what the
+/// previous one generated is warned about, even when its tip (which also
+/// counts the previous beat) looks healthy.
+#[test]
+fn a_tip_that_re_prefills_generated_tokens_warns() {
+    let local = Backend {
+        reference: false,
+        ..ANTHROPIC
+    };
+    let run = |output, read| {
+        [
+            accounted(100, 5900, 0, output),
+            accounted(50, 100, read, 20),
+        ]
+    };
+    assert!(
+        tip_warnings(&run(200, 6150), local).is_empty(),
+        "150 of 200"
+    );
+
+    let rereads = run(200, 6050);
+    assert!(
+        tip(&rereads[0], &rereads[1]) >= 100,
+        "the tip looks healthy"
+    );
+    let warned = tip_warnings(&rereads, local);
+    assert_eq!(warned.len(), 1, "{warned:?}");
+    assert!(warned[0].contains("request 2 read 50 tokens"), "{warned:?}");
+    assert!(warned[0].contains("generated 200"), "{warned:?}");
+
+    assert!(
+        tip_warnings(&rereads, ANTHROPIC).is_empty(),
+        "the reference"
+    );
+    let short = run(TIP_FLOOR - 1, 6000);
+    assert!(tip_warnings(&short, local).is_empty(), "too few to matter");
+}
+
+/// A failed send leaves `sent` longer than `received`: each reply pairs
+/// with the prompt it answers, for its kind and its count.
+#[test]
+fn requests_pair_each_reply_with_what_it_answers() {
+    let beat = Prompt::default().add_message((Role::User, "hi")).unwrap();
+    let result: Block = tool::Result::new("toolu_1", "done").into();
+    let mut tool_round = beat.clone();
+    tool_round.messages.push((Role::User, vec![result]).into());
+    let reply = |input| mock::text("ok").usage(input, 2).build();
+    let log = Log {
+        sent: vec![beat.clone(), beat, tool_round],
+        received: vec![reply(10), reply(30)],
+        answers: vec![0, 2],
+        elapsed: vec![std::time::Duration::from_millis(5); 2],
+    };
+    let counted = [Ok(10), Err("refused".to_string()), Ok(30)];
+
+    let requests = requests(&log, Some(&counted));
+    let kinds: Vec<_> = requests.iter().map(|r| r.kind).collect();
+    assert_eq!(kinds, ["beat", "tool"]);
+    let counts: Vec<_> = requests.iter().map(|r| r.counted.clone()).collect();
+    assert_eq!(counts, [Some(Ok(10)), Some(Ok(30))]);
+    assert_eq!(requests[1].input, 30);
+}
+
+/// A reply without its cache fields, or a failed `count_tokens`, still
+/// gets the table (with the gap marked), then fails the run.
+#[test]
+fn a_missing_cache_field_prints_the_table_then_fails() {
+    let mut log = simulate(&SHORT, true);
+    log.received[3].usage.counts.cache_creation_input_tokens = None;
+    let rows = requests(&log, None);
+    let printed = table(&rows, SIMULATED, &Latency::fit(&rows));
+    let row = printed.lines().nth(4).expect("request 4's row");
+    assert_eq!(row.split_whitespace().nth(5), Some("-"), "{row}");
+
+    let checked = std::panic::catch_unwind(|| {
+        assert_caches(&log, None, &SHORT, SIMULATED);
+    });
+    let panic = checked.expect_err("a missing cache field must fail");
+    let message = panic.downcast_ref::<String>().expect("a message");
+    assert!(
+        message.contains("request 4: no cache_creation"),
+        "{message}"
+    );
+
+    let log = simulate(&SHORT, true);
+    let mut counted: Vec<Counted> = requests(&log, None)
+        .iter()
+        .map(|r| Ok(r.prompt()))
+        .collect();
+    counted[2] = Err("connection refused".into());
+    let rows = requests(&log, Some(&counted));
+    let printed = table(&rows, SIMULATED, &Latency::fit(&rows));
+    let row = printed.lines().nth(3).expect("request 3's row");
+    assert_eq!(row.split_whitespace().nth(3), Some("err"), "{row}");
+    let checked = std::panic::catch_unwind(|| {
+        assert_caches(&log, Some(&counted), &SHORT, SIMULATED);
+    });
+    let panic = checked.expect_err("a failed count must fail");
+    let message = panic.downcast_ref::<String>().expect("a message");
+    assert!(
+        message.contains("request 3: count_tokens failed: connection refused"),
+        "{message}"
+    );
 }
