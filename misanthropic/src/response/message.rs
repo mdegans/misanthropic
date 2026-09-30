@@ -313,6 +313,9 @@ impl Builder {
     Clone, Copy, Debug, Serialize, Deserialize, derive_more::IsVariant,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+// Test-only (`strum` is a dev-dep): lets `test_disposition` visit every
+// variant.
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model reached a natural stopping point.
@@ -816,6 +819,8 @@ mod tests {
 
     #[test]
     fn test_disposition() {
+        use strum::IntoEnumIterator;
+
         let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
         let classify = |message: &Message, reason| {
             let mut message = message.clone();
@@ -823,15 +828,10 @@ mod tests {
             message.disposition()
         };
 
-        // Exhaustive over `StopReason`: a new variant must be classified.
-        for reason in [
-            StopReason::EndTurn,
-            StopReason::MaxTokens,
-            StopReason::StopSequence,
-            StopReason::ToolUse,
-            StopReason::PauseTurn,
-            StopReason::Refusal,
-        ] {
+        // The `match` (no `_` arm) is the compile-time guard: a new
+        // `StopReason` won't build until it's classified here. `EnumIter`
+        // visits every variant, so none escapes the assertion.
+        for reason in StopReason::iter() {
             let expected = match reason {
                 StopReason::PauseTurn => Disposition::Paused,
                 StopReason::MaxTokens => Disposition::Clipped,
