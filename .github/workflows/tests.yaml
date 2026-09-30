@@ -78,8 +78,13 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-features
 
+      # Never combined with --all-features, which overrides it (#143). The
+      # lib-only clippy is the featureless build; see `just test-no-default`.
+      - name: Clippy Without Default Features
+        run: cargo clippy -p misanthropic --no-default-features
+
       - name: Test Without Default Features
-        run: cargo test --all-features --verbose --no-default-features
+        run: cargo test -p misanthropic --verbose --no-default-features
 
       - name: Test With all Features
         run: cargo test --all-features --verbose

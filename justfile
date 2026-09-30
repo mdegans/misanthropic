@@ -15,12 +15,19 @@ fmt-check:
 
 # Offline gate run by the pre-commit hook: fmt, clippy, doc, all-features +
 # no-default tests.
-test:
+test: && test-no-default
     cargo fmt --all -- --check
     cargo clippy --all-features --all-targets
     RUSTDOCFLAGS="-D warnings" cargo doc -p misanthropic --all-features --no-deps --examples
     cargo test --all-features
-    cargo test --all-features --no-default-features
+
+# The crate with its default features off (`--all-features` would override
+# `--no-default-features`, so they're never combined). The lib-only clippy is
+# the featureless build; test builds also get the self dev-dependency's `log`
+# and `chat`. Examples needing more are skipped by their required-features.
+test-no-default:
+    cargo clippy -p misanthropic --no-default-features
+    cargo test -p misanthropic --no-default-features
 
 # Build the docs with broken intra-doc links (and any rustdoc warning) treated as
 # errors — the doc half of the gate. Covers the lib (incl. the `__skills` skill
