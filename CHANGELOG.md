@@ -284,10 +284,10 @@ record; this file aggregates them.
   `tool_result` block), so it counts toward the 4 and the TTL rules, and a
   tool result takes one: on itself, or on one block of its content
   ("cache_control may not be specified within `tool_result.content`",
-  probed on `count_tokens`). `check_cache` now counts it and reports a second one as
-  `CacheError::Nested`; `Block::cache_with` on a tool result replaces the
-  one in its content, and `uncache` (and so the window's eviction) clears
-  it.
+  probed on `count_tokens`). `check_cache` now counts it and reports a
+  second one as `CacheError::Nested`; `Block::cache_with` on a tool result
+  replaces the one in its content, and `uncache` (and so the window's
+  eviction) clears it.
 - **Cache markers past Anthropic's limit of 4.** A fifth `cache_control` is
   a 400 ("A maximum of 4 blocks with cache_control may be provided"), not
   the silent keep-the-last-4 the `CachedPrompt` docs promised, and the
