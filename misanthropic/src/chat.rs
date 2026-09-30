@@ -593,15 +593,31 @@ impl<State, T: Transport> Chat<State, T> {
                 Disposition::ToolUse | Disposition::Done => false,
             };
 
-            let calls = self.seat_assistant(state, response.inner)?;
-            // A continuation merges into the paused turn, so this finds the
-            // turn's start either way.
-            paused_at = paused
-                .then(|| {
+            // This round's turn starts here: a continuation merges into an
+            // assistant tail; anything else appends.
+            let seated_from = self.prompt.messages.len()
+                - usize::from(
                     self.prompt
                         .messages
-                        .iter()
-                        .rposition(|m| m.role == Role::Assistant)
+                        .last()
+                        .is_some_and(|m| m.role == Role::Assistant),
+                );
+            let calls = self.seat_assistant(state, response.inner)?;
+            // The paused turn starts where it was first seated — a later
+            // continuation (a separate turn after a flushed note) doesn't
+            // move it — and only this round's seating counts, so a hook that
+            // redacts the turn can't point it at an earlier beat.
+            paused_at = paused
+                .then(|| {
+                    paused_at.or_else(|| {
+                        self.prompt
+                            .messages
+                            .iter()
+                            .enumerate()
+                            .skip(seated_from)
+                            .find(|(_, m)| m.role == Role::Assistant)
+                            .map(|(at, _)| at)
+                    })
                 })
                 .flatten();
 
@@ -693,23 +709,22 @@ impl<State, T: Transport> Chat<State, T> {
     /// back without seating the last response.
     ///
     /// - An in-flight paused turn (starting at `paused_at`) is dropped whole:
-    ///   the wire forbids abandoning a server tool in place.
+    ///   the wire forbids abandoning a server tool in place. System notes
+    ///   seated inside it are kept.
     /// - A trailing [`System`](Role::System) turn (seated right before the
-    ///   model call) goes back to the front of `pending_system`: only an
-    ///   assistant turn may follow one, so the next user beat would be a
-    ///   [`BadTransition`]. [`Prompt::seat`] re-places it after that beat —
-    ///   the same buffering any note gets while the tail forbids it.
+    ///   model call) is taken off too: only an assistant turn may follow
+    ///   one, so the next user beat would be a [`BadTransition`].
+    ///
+    /// Both go back to the front of `pending_system`, and [`Prompt::seat`]
+    /// re-places them after the next beat — the same buffering any note gets
+    /// while the tail forbids it.
     ///
     /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
     fn restore_tail(&mut self, paused_at: Option<usize>) {
-        if let Some(at) = paused_at {
-            self.prompt.messages.truncate(at);
-        }
-        if let Some(tail) =
-            self.prompt.messages.pop_if(|m| m.role == Role::System)
-        {
-            self.rebuffer(tail.content);
-        }
+        let dropped = self.drop_paused_turn(paused_at);
+        let tail = self.prompt.messages.pop_if(|m| m.role == Role::System);
+        // The trailing note was seated before the paused turn began.
+        self.rebuffer(tail.into_iter().flat_map(|m| m.content).chain(dropped));
     }
 
     /// Truncate the paused turn starting at `at` (continuations, dispatched
@@ -815,9 +830,14 @@ impl<State, T: Transport> Chat<State, T> {
                 Disposition::Done if response.tool_uses().next().is_some() => {
                     return Err(self.unusable(response, None));
                 }
-                Disposition::Paused
-                | Disposition::ToolUse
-                | Disposition::Done => {
+                // A paused wrap-up would leave its server tool in flight
+                // with no budget to resume it: not seated.
+                Disposition::Paused => {
+                    log::warn!(
+                        "final word paused on a server tool: not seated"
+                    );
+                }
+                Disposition::ToolUse | Disposition::Done => {
                     let again = self.seat_assistant(state, response.inner)?;
                     // No second chance: error these too and hand back
                     // regardless.
@@ -1110,6 +1130,130 @@ mod tests {
         // The paused assistant turn is gone; the user's beat is the tail.
         assert_eq!(prompt.messages.len(), 1);
         assert_eq!(prompt.messages[0].role, Role::User);
+    }
+
+    /// A paused turn that ends in a server-tool result, its use answered —
+    /// a system note may follow it.
+    fn paused_on_a_result() -> response::Message {
+        let block = |json: &str| serde_json::from_str::<Block>(json).unwrap();
+        let mut inner = AssistantMessage::text("searching…");
+        inner.content.push(block(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        )));
+        inner.content.push(block(include_str!(
+            "../test/data/server_tools/web_search_result.json"
+        )));
+        response::Message::builder("test-model", inner)
+            .stop_reason(StopReason::PauseTurn)
+            .build()
+    }
+
+    /// An `on_assistant` hook that seats a system note after the first turn.
+    fn note_after_first()
+    -> impl FnMut(&mut (), AssistantMessage) -> Vec<Message> + Send + 'static
+    {
+        let mut first = true;
+        move |_: &mut (), msg| {
+            let mut seated = vec![Message::from(msg)];
+            if std::mem::take(&mut first) {
+                seated.push((Role::System, "note").into());
+            }
+            seated
+        }
+    }
+
+    /// A hook that redacts a paused turn away doesn't make a budget
+    /// hand-back drop earlier beats: only this round's seating can be the
+    /// paused turn.
+    #[test]
+    fn redacted_pause_keeps_earlier_beats() {
+        let script = Script::new([text_response("hello"), paused_response()]);
+        let chat = Chat::new(script, Prompt::default(), ToolBox::new())
+            .max_consecutive_tool_calls(0)
+            .on_assistant(|_: &mut (), msg: AssistantMessage| {
+                msg.server_tool_use().is_none().then(|| msg.into())
+            });
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("hi"), user("search")])),
+        )
+        .unwrap();
+
+        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::Assistant, Role::User]);
+        assert_eq!(prompt.messages[1].content.to_string(), "hello");
+    }
+
+    /// A note seated inside a paused turn survives the budget dropping that
+    /// turn: it re-seats after the next beat.
+    #[test]
+    fn budget_mid_pause_keeps_notes_seated_inside_the_turn() {
+        let script = Script::new([paused_on_a_result(), text_response("done")]);
+        let chat = Chat::new(script, Prompt::default(), ToolBox::new())
+            .max_consecutive_tool_calls(0)
+            .on_assistant(note_after_first());
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("search"), user("next")])),
+        )
+        .unwrap();
+
+        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::System, Role::Assistant]);
+        assert_eq!(prompt.messages[1].content.to_string(), "note");
+        prompt.check_turn_order().unwrap();
+    }
+
+    /// A continuation seated after a flushed note is a separate assistant
+    /// turn, but the paused turn still starts at the first one — so the
+    /// budget drops it all.
+    #[test]
+    fn budget_mid_pause_drops_from_the_turn_start() {
+        let script = Script::new([
+            paused_on_a_result(),
+            paused_response(),
+            text_response("done"),
+        ]);
+        let chat = Chat::new(script, Prompt::default(), ToolBox::new())
+            .max_consecutive_tool_calls(1)
+            .on_assistant(note_after_first());
+
+        let (prompt, ()) = futures::executor::block_on(
+            chat.run((), beats(vec![user("search"), user("next")])),
+        )
+        .unwrap();
+
+        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::System, Role::Assistant]);
+        assert_eq!(prompt.messages[2].content.to_string(), "done");
+        prompt.check_turn_order().unwrap();
+    }
+
+    /// A `FinalWord` wrap-up that pauses isn't seated: nothing could resume
+    /// its server tool.
+    #[test]
+    fn paused_final_word_is_not_seated() {
+        let script = Script::new([
+            tool_response("call_1"),
+            tool_response("call_2"),
+            paused_response(),
+        ]);
+        let chat = Chat::new(
+            script,
+            Prompt::default(),
+            ToolBox::new().add(Echo::default()),
+        )
+        .max_consecutive_tool_calls(1)
+        .on_budget_exhausted(BudgetPolicy::FinalWord);
+
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap();
+
+        let last = prompt.messages.last().unwrap();
+        assert_eq!(last.role, Role::User);
+        assert!(last.content.iter().all(|b| b.is_tool_result()));
+        prompt.check_turn_order().unwrap();
     }
 
     /// Default quirks + `.cache(…)`: server-side auto placement — the

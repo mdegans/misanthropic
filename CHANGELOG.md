@@ -91,7 +91,13 @@ record; this file aggregates them.
   mid-pause drops the in-flight paused turn whole, and a system turn left
   trailing by a hand-back (seated right before the call, or flushed by
   synthetic results) goes back to the pending buffer and re-seats after the
-  next beat, instead of making that beat a `BadTransition`.
+  next beat, instead of making that beat a `BadTransition`. The paused turn is
+  tracked from where it was first seated and only within the round's own
+  seating — a continuation seated after a flushed note no longer leaves the
+  turn's start behind, and a hook that redacts a paused turn no longer makes
+  the drop take earlier beats with it. System notes seated inside the dropped
+  turn are re-buffered instead of lost, and a `FinalWord` wrap-up that pauses
+  is no longer seated as an unresumable tail.
 - **`Chat` drives a round on a beat that merges into the tail.** It skipped
   the model call whenever a beat left `messages.len()` unchanged, so a user
   beat merging into a user tail (e.g. the synthetic results a budget hand-back
