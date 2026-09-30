@@ -1091,13 +1091,13 @@ fn close_partial(json: &str) -> Option<serde_json::Value> {
 enum Assembled {
     /// An event to pass on, a completed call included.
     Event(Result<Event, Error>),
-    /// A call its turn ended without closing, its input closed by
-    /// [`close_partial`]. Never shown as a completed call.
+    /// A call a [`MaxTokens`](StopReason::MaxTokens) clip left open, its
+    /// input closed by [`close_partial`]. Never shown as a completed call.
     Open(Block),
 }
 
 /// Assemble tool calls from their deltas: [`FilterExt::with_tool_use`]'s
-/// engine, which also flushes a call left open for
+/// engine, which also flushes a call a clip left open for
 /// [`FilterExt::with_message_ip`] to seat.
 fn assemble_tool_uses<S>(stream: S) -> impl futures::Stream<Item = Assembled>
 where
@@ -1110,8 +1110,8 @@ where
         let mut is_server = false;
         let mut input = String::new();
 
-        // A call still open when its turn moves on: flushed with whatever
-        // completed. No deltas means the start's input stands.
+        // A clipped call: flushed with whatever completed. No deltas means
+        // the start's input stands.
         let open = |mut call: tool::Use, input: &str, is_server: bool| {
             if let Some(input) = close_partial(input) {
                 call.input = input;
@@ -1126,12 +1126,23 @@ where
         pin_mut!(stream);
 
         while let Some(result) = stream.next().await {
+            // A call still open when its turn moves on is seated only if a
+            // `max_tokens` clip explains it. Anything else — no stop reason
+            // to vouch for it — is dropped, lest an unreported stop read as
+            // a dispatchable call.
             if let Ok(
-                Event::ContentBlockStart { .. }
+                event @ (Event::ContentBlockStart { .. }
                 | Event::MessageDelta { .. }
-                | Event::MessageStop,
+                | Event::MessageStop),
             ) = &result
                 && let Some(call) = call.take()
+                && let Event::MessageDelta {
+                    delta: MessageDelta {
+                        stop_reason: Some(StopReason::MaxTokens),
+                        ..
+                    },
+                    ..
+                } = event
             {
                 yield open(call, &input, is_server);
             }
@@ -1182,10 +1193,7 @@ where
                 event => yield Assembled::Event(event),
             }
         }
-
-        if let Some(call) = call.take() {
-            yield open(call, &input, is_server);
-        }
+        // A call open at the end never saw its stop reason: dropped.
     }
 }
 
@@ -1228,7 +1236,7 @@ pub trait FilterExt:
     ///
     /// # Note:
     /// - Message is set to `None` at the beginning of the stream.
-    /// - Implies [`with_tool_use`], and seats a call the turn leaves open
+    /// - Implies [`with_tool_use`], and seats a call a clip leaves open
     ///   (see [`Event::Message`]).
     ///
     /// [`with_tool_use`]: FilterExt::with_tool_use
@@ -2286,29 +2294,36 @@ pub(crate) mod tests {
 
     /// Synthetic: `sse.stream.txt` (minus its error events) cut off mid
     /// tool input — no closing `input_json_delta` or `content_block_stop` —
-    /// then stopped for `max_tokens`. Nothing is dispatchable or shown, and
-    /// the open block neither panics nor surfaces an error: it assembles
-    /// closed, with its completed arguments.
-    #[tokio::test]
-    async fn truncated_tool_input_is_not_dispatchable() {
+    /// then `tail`.
+    fn cut_mid_call(tail: &[&str]) -> &'static str {
         let captured = include_str!("../test/data/sse.stream.txt");
         let cut = captured
             .find(r#"\"unit\""#)
             .expect("fixture has the second input chunk");
         let head = &captured[..captured[..cut].rfind("event: ").unwrap()];
-        let truncated: &'static str = head
-            .split_terminator("\n\n")
+        head.split_terminator("\n\n")
             .filter(|event| !event.starts_with("event: error"))
-            .chain([
-                "event: message_delta\n\
-                 data: {\"type\":\"message_delta\",\"delta\":\
-                 {\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\
-                 \"usage\":{\"output_tokens\":89}}",
-                "event: message_stop\ndata: {\"type\":\"message_stop\"}",
-            ])
+            .chain(tail.iter().copied())
             .map(|event| format!("{event}\n\n"))
             .collect::<String>()
-            .leak();
+            .leak()
+    }
+
+    const MESSAGE_STOP: &str =
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}";
+
+    /// [`cut_mid_call`], stopped for `max_tokens`. Nothing is dispatchable
+    /// or shown, and the open block neither panics nor surfaces an error:
+    /// it assembles closed, with its completed arguments.
+    #[tokio::test]
+    async fn truncated_tool_input_is_not_dispatchable() {
+        let truncated = cut_mid_call(&[
+            "event: message_delta\n\
+             data: {\"type\":\"message_delta\",\"delta\":\
+             {\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\
+             \"usage\":{\"output_tokens\":89}}",
+            MESSAGE_STOP,
+        ]);
 
         let results: Vec<_> =
             mock_stream(truncated).with_message().collect().await;
@@ -2333,6 +2348,46 @@ pub(crate) mod tests {
         assert_eq!(calls[0].input, expected);
         assert_eq!(message.tool_uses().count(), 0);
         assert!(message.tool_use().is_none());
+    }
+
+    /// [`cut_mid_call`] with no `max_tokens` to explain the open call — no
+    /// stop reason, no `message_delta`, or no end at all: the call is
+    /// dropped, not seated, so [`Disposition`]'s no-stop-reason fallback
+    /// can't read it as a [`ToolUse`] turn and dispatch it.
+    ///
+    /// [`Disposition`]: response::Disposition
+    /// [`ToolUse`]: response::Disposition::ToolUse
+    #[tokio::test]
+    async fn unexplained_open_call_is_dropped() {
+        let unreported = "event: message_delta\n\
+             data: {\"type\":\"message_delta\",\"delta\":\
+             {\"stop_reason\":null,\"stop_sequence\":null},\
+             \"usage\":{\"output_tokens\":89}}";
+        let tails: [&[&str]; 3] =
+            [&[unreported, MESSAGE_STOP], &[MESSAGE_STOP], &[]];
+        for tail in tails {
+            let mut message = None;
+            let results: Vec<_> = mock_stream(cut_mid_call(tail))
+                .with_message_ip(&mut message)
+                .collect()
+                .await;
+            assert!(results.iter().all(Result::is_ok), "{results:?}");
+            assert!(!results.iter().flatten().any(Event::is_tool_use));
+            // The finished turn, or what assembled before the stream ended.
+            let message = results
+                .into_iter()
+                .flatten()
+                .find_map(|event| match event {
+                    Event::Message { message } => Some(message),
+                    _ => None,
+                })
+                .or(message)
+                .expect("the turn started");
+            assert_eq!(message.stop_reason, None, "{tail:?}");
+            assert_eq!(message.inner.content.tool_uses().count(), 0);
+            assert_eq!(message.disposition(), response::Disposition::Done);
+            assert_eq!(message.tool_uses().count(), 0);
+        }
     }
 
     /// The `write_file` arguments of the `test/data/stop/` captures.

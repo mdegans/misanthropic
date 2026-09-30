@@ -164,7 +164,8 @@ record; this file aggregates them.
   call.** Raw `Content::tool_uses()` on a clipped streamed turn now sees it,
   as on the non-streaming path; `response::Message::tool_uses()` stays empty
   and the turn is still `Disposition::Clipped`, so nothing dispatches.
-  `with_tool_use` still never yields it.
+  `with_tool_use` still never yields it. Only a `max_tokens` stop seats it:
+  a call left open with no stop reason is still dropped.
 
 ### Fixed
 
