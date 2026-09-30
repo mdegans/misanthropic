@@ -60,6 +60,7 @@ mod utils;
 
 use std::{
     collections::HashMap,
+    num::NonZeroU32,
     sync::{Arc, Mutex},
 };
 
@@ -444,6 +445,13 @@ async fn main() -> Result<(), BoxError> {
     // repeat), so the guard sits high; `--max-tool-calls` overrides it
     // (and the boss's, via `ChatArgs::configure`).
     let worker_rounds = cli.chat.max_tool_calls.unwrap_or(128);
+    // Room for a full source listing in one letter. A worker whose turn
+    // clips at `max_tokens` stops (`chat::Stop::Clipped`) rather than mail a
+    // truncated call, so the default is generous; `--max-tokens` overrides.
+    let worker_max_tokens = cli
+        .common
+        .max_tokens
+        .unwrap_or(NonZeroU32::new(16_384).unwrap());
     let (quit, _) = tokio::sync::watch::channel(false);
     let mut swarm = tokio::task::JoinSet::new();
     for (name, toolbox) in worker_boxes {
@@ -452,23 +460,26 @@ async fn main() -> Result<(), BoxError> {
         let usage = Arc::clone(&payroll[name]);
         let mut done = quit.subscribe();
         swarm.spawn(async move {
-            let outcome =
-                utils::Chat::new(client, worker_prompt(name), toolbox)
-                    .max_consecutive_tool_calls(worker_rounds)
-                    .on_budget_exhausted(BudgetPolicy::FinalWord)
-                    .track_usage(usage)
-                    .on_assistant(move |_state: &mut (), msg| {
-                        // The workers' side of the story, under `--verbose`.
-                        log::debug!("{name} ▸ {}", msg.content);
-                        [msg.into()] // seat the turn unchanged
-                    })
-                    .run((), async move |_state: &mut ()| {
-                        // Mail drives everything; the only beat is shutdown
-                        // (a closed channel counts).
-                        done.changed().await.ok();
-                        Ok(None)
-                    })
-                    .await;
+            let outcome = utils::Chat::new(
+                client,
+                worker_prompt(name).max_tokens(worker_max_tokens),
+                toolbox,
+            )
+            .max_consecutive_tool_calls(worker_rounds)
+            .on_budget_exhausted(BudgetPolicy::FinalWord)
+            .track_usage(usage)
+            .on_assistant(move |_state: &mut (), msg| {
+                // The workers' side of the story, under `--verbose`.
+                log::debug!("{name} ▸ {}", msg.content);
+                [msg.into()] // seat the turn unchanged
+            })
+            .run((), async move |_state: &mut ()| {
+                // Mail drives everything; the only beat is shutdown
+                // (a closed channel counts).
+                done.changed().await.ok();
+                Ok(None)
+            })
+            .await;
             if let Err(error) = outcome {
                 printer
                     .lock()
