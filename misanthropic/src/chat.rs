@@ -2093,7 +2093,7 @@ mod tests {
         assert!(transport.requests().is_empty());
     }
 
-    /// A `breakpoint_after_assistant` transport with a 1-hour window.
+    /// A `breakpoint_after_assistant` transport scripted with one reply.
     #[cfg(feature = "mock")]
     fn after_assistant() -> Arc<crate::mock::MockTransport> {
         use crate::mock::{self, MockTransport};
