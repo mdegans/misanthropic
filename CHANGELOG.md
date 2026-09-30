@@ -133,14 +133,21 @@ record; this file aggregates them.
   reply must match its warm twin byte for byte, from a prompt of the same
   size; a mismatch names the block and char where they part, with context
   and the warm request's reuse, and replays that request cold once more as
-  a control: two cold replies that agree put the blame on the cache, two
-  that differ on nondeterminism. The table marks steps dropped for
-  `max_tokens` or too many tool rounds, and the run fails early unless the
-  forced call and its result round were both seated. Offline, a simulated
-  stale cache must fail.
+  a control. Each mismatch is classed: a request that read back the
+  previous turn's generated tokens (the tip, `read_k > T_{k-1}`, which warm
+  decoded one token at a time and cold prefills in a batch, so its logits
+  differ on a healthy cache) is a **tip schedule** and only warns; one that
+  reused no tip, with two cold replies that agree, is **cache suspect** and
+  fails; two cold replies that differ are **nondeterminism**, warned about
+  loudly. Any difference in prompt size fails. The table shows each
+  request's tip and class, marks steps dropped for `max_tokens` or too many
+  tool rounds, and the run fails early unless the forced call and its
+  result round were both seated. Offline, simulated tip-schedule and
+  nondeterministic servers must warn and pass, and a stale cache must fail.
   Start blallama with `--no-penalty` (a repetition penalty resumes warm but
-  is rebuilt cold); the test skips unless `BLALLAMA_EQUIVALENCE=1` too, which
-  only the recipe sets, since it evicts every cache slot.
+  is rebuilt cold) and `--cache-slots 1` (other sequences in the unified KV
+  cache change logits); the test skips unless `BLALLAMA_EQUIVALENCE=1` too,
+  which only the recipe sets, since it evicts every cache slot.
 - **`just test-cache <model>`: a live multi-turn prompt-caching check.** One
   `Chat` run of ten beats (four with a tool round) over a ~6.5k-token
   system prompt, cached as a long conversation should be (`Chat::cache` plus

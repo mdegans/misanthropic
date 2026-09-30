@@ -54,9 +54,13 @@ test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
 # Runs a greedy multi-turn conversation with cache reuse, then replays each
 # request cold (after evicting every prefix-cache slot, so don't run it beside
 # other cache-sensitive work) and fails unless every reply matches its warm
-# twin byte for byte. Start blallama with `--no-penalty`: a repetition penalty
-# resumes warm but is rebuilt cold, so it can split the replies with no KV
-# corruption, and the server doesn't report it. The test also skips unless
+# twin byte for byte, or the mismatch is explained: a request that reused the
+# previous turn's generated tokens (the tip, decoded one at a time warm but
+# prefilled in a batch cold), or cold replays that disagree with each other,
+# only warn. Start blallama with `--no-penalty --cache-slots 1`: a repetition
+# penalty resumes warm but is rebuilt cold, and other sequences in the unified
+# KV cache change logits, so either can split the replies with no KV
+# corruption, and the server reports neither. The test also skips unless
 # BLALLAMA_EQUIVALENCE=1, which only this recipe sets, so an exported
 # BLALLAMA_URL never lets the pre-commit gate evict the slots. Never run in CI.
 # Live warm-vs-cold KV-cache equivalence check against a local blallama.
