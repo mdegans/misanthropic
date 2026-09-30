@@ -567,7 +567,25 @@ impl<State, T: Transport> Chat<State, T> {
     /// Client calls run only from a [`ToolUse`](Disposition::ToolUse) or
     /// [`Paused`](Disposition::Paused) turn; any other turn carrying them is
     /// a [`Stop`], never seated (see `unusable`).
+    ///
+    /// Whatever it returns, a round never leaves a legal prompt illegal: the
+    /// caller's next beat (or a resume) can follow it. Debug builds assert
+    /// that at every exit.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), Stop> {
+        let was_legal =
+            cfg!(debug_assertions) && self.prompt.check_turn_order().is_ok();
+        let outcome = self.rounds(state).await;
+        debug_assert!(
+            !was_legal || resumable(&self.prompt),
+            "Chat left a prompt the caller can't carry on from ({:?})",
+            self.prompt.check_turn_order().err()
+        );
+        outcome
+    }
+
+    /// The body of [`quiesce`](Self::quiesce): model rounds until the turn
+    /// settles or stops.
+    async fn rounds(&mut self, state: &mut State) -> Result<(), Stop> {
         let mut rounds = 0usize;
         // Where the in-flight paused turn sits, while the last seated turn
         // paused — a hand-back must drop it whole.
@@ -914,6 +932,16 @@ fn awaits_model(tail: &Message) -> bool {
         || tail.unfinished_server_tool_uses().next().is_some()
 }
 
+/// Whether the caller can carry on from `prompt`: legal turn order, and a
+/// tail that awaits the model (a resume answers it) or takes a user beat —
+/// never one with client calls left unanswered.
+fn resumable(prompt: &Prompt) -> bool {
+    prompt.check_turn_order().is_ok()
+        && prompt.messages.last().is_none_or(|tail| {
+            awaits_model(tail) || tail.tool_uses().next().is_none()
+        })
+}
+
 /// Await the next notification, or never resolve when there's no notification
 /// stream — so it can sit in a `select!` arm whether or not the box pushes.
 async fn recv_note(
@@ -924,6 +952,11 @@ async fn recv_note(
         None => std::future::pending().await,
     }
 }
+
+#[cfg(test)]
+mod checks;
+#[cfg(all(test, feature = "mock"))]
+mod scenarios;
 
 #[cfg(test)]
 mod tests {
