@@ -2093,6 +2093,35 @@ mod tests {
         assert!(transport.requests().is_empty());
     }
 
+    /// A 1-hour window under a 5-minute `system` marker, when `system`
+    /// already holds all 4 markers, has no slot to place one in: nothing it
+    /// could mark breaks the TTL order, so it runs.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn a_window_with_no_slot_left_runs() {
+        let transport = after_assistant();
+        let blocks = [true, true, true, false].map(|hour| {
+            let mut block = Block::from("manual");
+            if hour {
+                block.cache_1h();
+            } else {
+                block.cache();
+            }
+            block
+        });
+        let prompt = Prompt::default().system(Content(blocks.into()));
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new())
+            .cache(CacheControl::one_hour());
+
+        let (Parts { prompt, .. }, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![user("hi")])))
+                .unwrap();
+
+        assert_eq!(transport.requests().len(), 1);
+        assert_eq!(prompt.check_cache(), Ok(()));
+        assert!(!prompt.messages.iter().any(|m| m.content.has_cache()));
+    }
+
     /// A `breakpoint_after_assistant` transport scripted with one reply.
     #[cfg(feature = "mock")]
     fn after_assistant() -> Arc<crate::mock::MockTransport> {

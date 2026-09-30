@@ -219,6 +219,8 @@ impl Prompt {
     /// 1-hour window after a 5-minute `tools` or `system` marker, which comes
     /// before every message and is never evicted. `later` names the place
     /// the window marks first: the turn a request sent now would get back.
+    /// Markers outside `messages` that fill the budget leave the window no
+    /// slot, so it places nothing and breaks nothing.
     #[cfg(feature = "chat")]
     pub(crate) fn check_window_prefix(
         &self,
@@ -227,13 +229,18 @@ impl Prompt {
         if !matches!(cache_control.ttl(), CacheTtl::OneHour) {
             return Ok(());
         }
+        let marks = self.marks();
+        let fixed = marks.iter().filter(|mark| mark.message().is_none());
+        if fixed.count() >= MAX_CACHE_CONTROLS_PER_REQUEST {
+            return Ok(());
+        }
         let prefix = |mark: &Mark| {
             matches!(
                 mark.at,
                 Breakpoint::Tool(_) | Breakpoint::Block(BlockIndex::System(_))
             )
         };
-        let earlier = self.marks().into_iter().find(|m| prefix(m) && !m.hour);
+        let earlier = marks.into_iter().find(|m| prefix(m) && !m.hour);
         match earlier {
             Some(earlier) => Err(CacheError::TtlOrder {
                 earlier: earlier.at,
@@ -1130,5 +1137,28 @@ mod tests {
 
         assert!(matches!(error, CacheError::TtlOrder { .. }));
         assert!(cached == before);
+    }
+
+    /// A 1-hour window under a 5-minute `system` marker breaks the TTL
+    /// order — unless `tools` and `system` fill the budget, leaving the
+    /// window nothing to place.
+    #[cfg(feature = "chat")]
+    #[test]
+    fn a_window_with_no_slot_left_passes_the_prefix_check() {
+        let window = CacheControl::one_hour();
+        let short = prompt(&[hour(), hour(), five()], &[&[None]]);
+        assert_eq!(
+            short.check_window_prefix(&window),
+            Err(CacheError::TtlOrder {
+                earlier: system(2),
+                later: message(1, 0),
+            })
+        );
+
+        let full = prompt(&[hour(), hour(), hour(), five()], &[&[None]]);
+        assert_eq!(full.check_window_prefix(&window), Ok(()));
+        // A tool marker takes a slot too.
+        let full = with_tool(short, hour());
+        assert_eq!(full.check_window_prefix(&window), Ok(()));
     }
 }
