@@ -66,10 +66,10 @@ pub fn check(input: &DeriveInput) -> syn::Result<()> {
             format!(
                 "required field `{late}` is declared after optional field \
                  `{optional}`. Declare every required field before any \
-                 optional one: it's the one layout every engine generates in \
-                 the same order, and field order changes what the model \
-                 generates (or disable misanthropic's `schema-order-check` \
-                 feature).",
+                 optional one (or disable misanthropic's \
+                 `schema-order-check` feature): it's the one layout every \
+                 engine generates in the same order, and field order changes \
+                 what the model generates.",
                 late = ident(late),
                 optional = ident(optional),
             ),
