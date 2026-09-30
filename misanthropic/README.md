@@ -61,7 +61,7 @@ validated for you — no hand-parsing `serde_json::Value`:
 ```rust,no_run
 use misanthropic::{
     Client, Id, Prompt,
-    prompt::message::{Content, Role},
+    prompt::message::{Content, Role, UserMessage},
     tool::{Tool, tool},
 };
 use schemars::JsonSchema;
@@ -99,11 +99,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let message = client.message(&chat).await?;
 
-    if let Some(call) = message.tool_use() {
-        let call = call.clone();
+    // Every call in the turn (parallel ones too); empty unless the turn
+    // stopped for `tool_use` — a refused or clipped call never runs.
+    let calls: Vec<_> = message.tool_uses().cloned().collect();
+    if !calls.is_empty() {
         chat.push_message(message)?;
-        // Typed dispatch — bad arguments become a model-facing error.
-        chat.push_message(weather.call(call).await)?;
+        let mut results = Vec::new();
+        for call in calls {
+            // Typed dispatch — bad arguments become a model-facing error.
+            results.push(weather.call(call).await);
+        }
+        // Every result goes back in one user turn.
+        chat.push_message(results.into_iter().collect::<UserMessage>())?;
 
         println!("{}", client.message(&chat).await?);
     }

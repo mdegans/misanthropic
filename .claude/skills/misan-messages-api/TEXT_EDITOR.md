@@ -15,7 +15,7 @@ type (no extension allowlist, unlike the markdown-jailed memory backend):
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
 use misanthropic::{
     Client, Prompt,
-    prompt::message::Role,
+    prompt::message::{Role, UserMessage},
     tool::{TextEditor, Tool, text_editor::FsEditorBackend},
 };
 
@@ -26,15 +26,20 @@ let mut chat = Prompt::default()
     .add_tool(TextEditor::latest())                   // predefined, no schema
     .add_message((Role::User, "Fix the syntax error in primes.py."))?;
 
-// Drive the tool loop: execute each editor `tool_use` locally and feed the
+// Drive the tool loop: execute every editor `tool_use` locally and feed the
 // result back, until a turn arrives with no tool call — that one is the answer.
 let answer = loop {
     let message = client.message(&chat).await?;
-    let Some(call) = message.tool_use() else { break message };
-    let call = call.clone();
+    // Every call in the turn; empty unless it stopped for `tool_use`.
+    let calls: Vec<_> = message.tool_uses().cloned().collect();
+    if calls.is_empty() { break message }
     chat.push_message(message)?;
-    let result = editor.call(call).await;             // typed dispatch
-    chat.push_message(result)?;
+    let mut results = Vec::new();
+    for call in calls {
+        results.push(editor.call(call).await);        // typed dispatch
+    }
+    // All results in one user turn.
+    chat.push_message(results.into_iter().collect::<UserMessage>())?;
 };
 println!("{}", answer.inner.content);
 # Ok(())

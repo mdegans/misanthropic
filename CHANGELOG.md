@@ -34,6 +34,16 @@ record; this file aggregates them.
   `ToolBuildError`: `InvalidInputSchema` for a misordered schema, the new
   `Json` variant for a value that isn't a tool definition.
 
+- **`response::Message::tool_uses()`** — every client `tool::Use` in the
+  turn, in order (the parallel-call twin of `tool_use()`), gated the same
+  way: empty unless `stop_reason` is `ToolUse`. A refusal can cut a call off
+  mid-input and `max_tokens` can truncate one, so calls are only safe to run
+  once the stop reason says so. The README, skills and tool examples
+  (`strawberry`, `bash`, `text_editor`, `python`, `interleaved_thinking`)
+  now dispatch through it and answer every call in one user turn;
+  `tool_use()` returns only the last call, complete only when parallel tool
+  use is disabled.
+
 ### Breaking
 
 - **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
@@ -62,6 +72,22 @@ record; this file aggregates them.
 - **`ToolBuildError` gains a `Json(serde_json::Error)` variant**, so an
   exhaustive `match` on it needs an arm. Its `InvalidInputSchema` message now
   reads "because", not "becuase".
+
+### Fixed
+
+- **Chat demo ran tool calls before the turn's stop reason arrived.** The
+  frontend dispatched on `stream::Event::ToolUse`, which fires as the block
+  closes — before `message_delta` — so a refused or truncated call could
+  run. It now dispatches from the assembled `Event::Message` via
+  `tool_uses()`, and answers parallel calls in one user turn instead of one
+  turn per result. The `with_tool_use` / `Event::ToolUse` docs and the
+  streaming skill now say to display from that event, not dispatch.
+- **Chat demo seated refused / clipped turns.** A `Refusal` or `MaxTokens`
+  turn holding an unanswered `tool_use` stayed in the history on both sides,
+  so the next message 400'd. Both now drop the turn and rewind past the
+  message that prompted it (a user turn can't follow a user turn), and the
+  UI says why. The decision lives in `model::turn` (`Disposition`, `reply`,
+  `rewind`), unit-tested against parallel, refused and clipped turns.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 
