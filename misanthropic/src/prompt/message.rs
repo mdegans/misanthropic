@@ -417,7 +417,7 @@ impl Message {
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
     /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
     /// [`UnansweredToolUse`]: crate::prompt::TurnOrderError::UnansweredToolUse
-    /// [`UnfinishedServerToolUse`]: crate::prompt::TurnOrderError::UnfinishedServerToolUse
+    /// [`UnfinishedServerToolUse`]: super::TurnOrderError::UnfinishedServerToolUse
     pub fn may_precede(
         &self,
         next: &Self,

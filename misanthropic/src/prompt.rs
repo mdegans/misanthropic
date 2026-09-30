@@ -345,7 +345,7 @@ pub enum TurnOrderError {
         unanswered: Vec<String>,
     },
     /// A non-assistant turn follows an [`Assistant`] turn with a server tool
-    /// [still in flight](crate::prompt::message::Message::unfinished_server_tool_uses)
+    /// [still in flight](message::Message::unfinished_server_tool_uses)
     /// — a paused (`pause_turn`) turn. Only its continuation may follow:
     /// resend to resume it, or drop the whole paused turn. Abandoning it in
     /// place is a 400 on the wire.
