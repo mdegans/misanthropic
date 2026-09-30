@@ -3,7 +3,8 @@
 //! so), and asserts the requests sent, the final turn shape, the calls
 //! dispatched, the usage tracked, and the [`checks`] invariants on every
 //! request and every hand-back. Rows marked `live` also run against a
-//! local Anthropic-compatible server — see `live`.
+//! local Anthropic-compatible server — see `live` — where a row with
+//! [`Leeway`] is held to its bounds instead of the mock's exact counts.
 
 #[cfg(feature = "blallama")]
 mod live;
@@ -468,6 +469,37 @@ impl Kind {
     }
 }
 
+/// How far a live model may stray from a row's script — how many calls it
+/// makes, so how many rounds and turns. A live run of a row with leeway
+/// asserts these bounds, calls run or not, and the invariants, not the
+/// mock's exact counts; the mock run must fit them too.
+#[derive(Clone, Copy)]
+struct Leeway {
+    /// The most requests a run may send.
+    requests: usize,
+    /// The stop reasons a response may carry.
+    stop_reasons: &'static [StopReason],
+}
+
+impl Leeway {
+    fn assert_admits(&self, run: &Run) {
+        let sent = run.log.sent.len();
+        assert!(
+            (1..=self.requests).contains(&sent),
+            "{sent} requests sent, leeway 1..={}",
+            self.requests
+        );
+        for (n, reply) in run.log.received.iter().enumerate() {
+            let stop = reply.stop_reason;
+            assert!(
+                stop.is_some_and(|stop| self.stop_reasons.contains(&stop)),
+                "response {n} stopped {stop:?}, leeway {:?}",
+                self.stop_reasons
+            );
+        }
+    }
+}
+
 /// One scenario: its setup, then what it must produce.
 struct Row {
     name: &'static str,
@@ -479,6 +511,10 @@ struct Row {
     quirks: Quirks,
     budget: Option<(usize, BudgetPolicy)>,
     hook: Hook,
+    /// Offer [`Echo`]. A tool-free row offers the model nothing to call, so
+    /// a live model answers in words; a [`Hook::Push`] still attaches
+    /// [`Pusher`], which has no methods.
+    tools: bool,
     /// Add a [`Broken`] tool.
     broken: bool,
     replies: Vec<Scripted>,
@@ -488,6 +524,8 @@ struct Row {
     /// The kinds of the hand-backs, in order.
     stops: Vec<Kind>,
     requests: usize,
+    /// What a live run may vary, if anything.
+    leeway: Option<Leeway>,
     /// The final prompt's turn roles (see [`checks::roles`]).
     roles: &'static str,
     /// The ids [`Echo`] ran (live: only how many).
@@ -507,12 +545,14 @@ fn row(name: &'static str) -> Row {
         quirks: Quirks::default(),
         budget: None,
         hook: Hook::None,
+        tools: true,
         broken: false,
         replies: Vec::new(),
         beats: vec![Beat::User("go")],
         resume: false,
         stops: Vec::new(),
         requests: 0,
+        leeway: None,
         roles: "",
         dispatched: Vec::new(),
         last: None,
@@ -544,6 +584,13 @@ impl Row {
 
     fn hook(self, hook: Hook) -> Self {
         Self { hook, ..self }
+    }
+
+    fn tool_free(self) -> Self {
+        Self {
+            tools: false,
+            ..self
+        }
     }
 
     fn broken(self) -> Self {
@@ -581,6 +628,18 @@ impl Row {
 
     fn requests(self, requests: usize) -> Self {
         Self { requests, ..self }
+    }
+
+    fn leeway(
+        self,
+        requests: usize,
+        stop_reasons: &'static [StopReason],
+    ) -> Self {
+        let leeway = Some(Leeway {
+            requests,
+            stop_reasons,
+        });
+        Self { leeway, ..self }
     }
 
     fn roles(self, roles: &'static str) -> Self {
@@ -667,10 +726,15 @@ where
     };
 
     // One toolbox and one configuration for the whole row: a resume carries
-    // both through the hand-back.
+    // both through the hand-back. Only the tools the row needs.
     let slot = Slot::default();
-    let mut toolbox =
-        ToolBox::new().add(echo.clone()).add(Pusher(slot.clone()));
+    let mut toolbox = ToolBox::new();
+    if row.tools {
+        toolbox = toolbox.add(echo.clone());
+    }
+    if let Hook::Push(_) = row.hook {
+        toolbox = toolbox.add(Pusher(slot.clone()));
+    }
     if row.broken {
         toolbox = toolbox.add(Broken);
     }
@@ -731,19 +795,47 @@ where
 }
 
 /// Assert `run` is what `row` expects. A `live` run checks only what a
-/// real model can't vary: dispatch counts, not ids or text.
+/// real model can't vary: dispatch counts, not ids or text — and with
+/// [`Leeway`], only its bounds — but that a turn the row ends on has text.
 fn expect(row: &Row, run: &Run, live: bool) {
     assert_eq!(run.stops, row.stops, "hand-backs");
-    assert_eq!(run.log.sent.len(), row.requests, "requests sent");
-    assert_eq!(checks::roles(&run.prompt), row.roles, "final turn roles");
-    let ids: Vec<&str> = run.calls.iter().map(|c| c.id.as_ref()).collect();
-    match live {
-        true => assert_eq!(ids.len(), row.dispatched.len(), "calls run"),
-        false => assert_eq!(ids, row.dispatched, "calls run"),
+    if !row.tools {
+        let offers =
+            |p: &Prompt| p.tools.as_ref().is_some_and(|t| !t.is_empty());
+        assert!(!run.log.sent.iter().any(offers), "tool-free: no tools");
     }
-    if let (false, Some(last)) = (live, row.last) {
-        let tail = run.prompt.messages.last().expect("a final turn");
-        assert_eq!(text(tail), last, "final turn text");
+    if let Some(leeway) = row.leeway {
+        leeway.assert_admits(run);
+    }
+    let ids: Vec<&str> = run.calls.iter().map(|c| c.id.as_ref()).collect();
+    match (live, row.leeway) {
+        (true, Some(_)) => {
+            let ran = !ids.is_empty();
+            assert_eq!(ran, !row.dispatched.is_empty(), "calls run: {ids:?}");
+        }
+        _ => {
+            assert_eq!(run.log.sent.len(), row.requests, "requests sent");
+            let roles = checks::roles(&run.prompt);
+            assert_eq!(roles, row.roles, "final turn roles");
+            match live {
+                true => assert_eq!(ids.len(), row.dispatched.len(), "calls"),
+                false => assert_eq!(ids, row.dispatched, "calls run"),
+            }
+        }
+    }
+    let tail = run.prompt.messages.last();
+    match (live, row.last) {
+        (false, Some(last)) => {
+            let tail = tail.expect("a final turn");
+            assert_eq!(text(tail), last, "final turn text");
+        }
+        (true, _) if row.roles.ends_with('A') => {
+            let roles = checks::roles(&run.prompt);
+            assert!(roles.ends_with('A'), "ends on the model: {roles}");
+            let tail = tail.expect("a final turn");
+            assert!(!text(tail).trim().is_empty(), "final assistant text");
+        }
+        _ => {}
     }
     if let Some(extra) = row.extra {
         extra(run);
@@ -774,6 +866,11 @@ fn run_mock(row: Row) {
     let run = futures::executor::block_on(drive(&row, transport, base));
     assert_eq!(mock.remaining(), 0, "every scripted reply is used");
     expect(&row, &run, false);
+    // A live row's script is one run a real model could make: it meets
+    // the looser live expectations too.
+    if row.live {
+        expect(&row, &run, true);
+    }
 }
 
 /// Every row passes, reported together.
@@ -813,6 +910,7 @@ fn rows() -> Vec<Row> {
         // Plain turns.
         row("plain_end_turn")
             .live()
+            .tool_free()
             .beats(["Say hello in one word."])
             .reply(mock::text("Hello."))
             .requests(1)
@@ -820,6 +918,7 @@ fn rows() -> Vec<Row> {
             .last("Hello."),
         row("two_beats")
             .live()
+            .tool_free()
             .beats(["Say hi in one word.", "Now say bye in one word."])
             .reply(mock::text("Hi."))
             .reply(mock::text("Bye."))
@@ -833,8 +932,11 @@ fn rows() -> Vec<Row> {
             .stops([Kind::Beat])
             .requests(1)
             .roles("UA"),
+        // Tool-free, so the stop can't land in a call's input (captured:
+        // `stop_sequence_cuts_a_call_short`).
         row("stop_sequence")
             .live()
+            .tool_free()
             .prompt(|p| p.stop_sequences(["STOP"]))
             .beats(["Reply with exactly these words: alpha beta STOP gamma"])
             .reply(stopped_at("alpha beta ", "STOP"))
@@ -1227,6 +1329,7 @@ fn rows() -> Vec<Row> {
             .reply(calls(&["b"]))
             .reply(mock::text("pong"))
             .requests(3)
+            .leeway(3, &[StopReason::ToolUse, StopReason::EndTurn])
             .roles("UAUAUA")
             .dispatched(["a"])
             .extra(|run| {
@@ -1292,6 +1395,7 @@ fn rows() -> Vec<Row> {
             .extra(|run| assert_eq!(run.sent_roles(1), "UAUS")),
         row("note_rides_the_next_beat")
             .live()
+            .tool_free()
             .hook(Hook::NoteAfterFirst)
             .beats(["Say hi in one word.", "Now say bye in one word."])
             .reply(mock::text("Hi."))
@@ -1387,6 +1491,7 @@ fn rows() -> Vec<Row> {
         // Notifications: a seated note drives a round.
         row("user_note_drives_a_round")
             .live()
+            .tool_free()
             .model(Id::Sonnet46)
             .hook(Hook::Push(&[Role::User]))
             .beats(["Say hi in one word.", "Now say bye in one word."])

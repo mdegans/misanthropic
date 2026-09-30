@@ -13,6 +13,11 @@
 //! Besides the row's own expectations and the [`checks`](super::checks)
 //! invariants, every response must be shaped as Anthropic's would be. A
 //! deviation is a server bug unless it is a deliberate improvement.
+//!
+//! A real model varies: rows that don't need tools offer none (a model
+//! answering "say hi" with a call is legal, not a bug), and a row where it
+//! may vary how often it calls one is held to its bounds, not the mock's
+//! counts.
 
 use super::{Checked, Row, Run, StopReason, drive, expect, rows};
 use crate::{Client, Prompt};
