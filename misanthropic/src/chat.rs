@@ -1086,7 +1086,11 @@ impl<State, T: Transport> Chat<State, T> {
     /// transport, the seated assistant tail is (re-)marked here with a
     /// 2-deep rolling window — the end-of-assistant render is what such
     /// backends hash, and the second trailing breakpoint is what keeps a
-    /// later tail merge re-paying only the last segment. Each request is
+    /// later tail merge re-paying only the last segment. Under a 5-minute
+    /// window that second one can lose its slot: the fit ranks 1-hour
+    /// message markers (anchors seeded or placed by hand) above it, so once
+    /// they take every slot `tools`, `system` and the tail leave, a tail
+    /// merge re-pays back to the newest anchor instead. Each request is
     /// checked against the window its reply will get (a stand-in marker on
     /// the turn to come), so a turn the window can't legally mark is
     /// refused before it is paid for. One that still can't be, once seated —
