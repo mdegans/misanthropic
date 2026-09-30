@@ -1616,6 +1616,19 @@ pub(crate) mod tests {
         Stream::new(inner)
     }
 
+    /// A raw SSE fixture's `data:` payloads in the wrapped jsonl format — the
+    /// same pure text transform as `test/data/capture.sh` — so
+    /// [`roundtrip_sse`](crate::utils::roundtrip_sse) can gate it per event.
+    pub(crate) fn sse_jsonl(sse: &str) -> String {
+        sse.lines()
+            .filter_map(|line| line.strip_prefix("data: "))
+            .map(|payload| match payload.starts_with(r#"{"type":"error""#) {
+                true => format!("{{\"Err\":{payload}}}\n"),
+                false => format!("{{\"Ok\":{payload}}}\n"),
+            })
+            .collect()
+    }
+
     /// Replay a wrapped `*.sse.stream.jsonl` fixture — one
     /// `{"Ok": <event>}` / `{"Err": <error event>}` per line (see
     /// `test/data/README.md`) — as a stream. `Err` lines surface as the real
@@ -1649,9 +1662,21 @@ pub(crate) mod tests {
     /// Assemble a captured SSE fixture (see [`mock_stream_jsonl`]) into its
     /// response, as a streaming client would.
     pub(crate) fn assembled(jsonl: &'static str) -> crate::response::Message {
+        assembled_from(mock_stream_jsonl(jsonl))
+    }
+
+    /// [`assembled`], from a raw SSE fixture (see [`mock_stream`]).
+    pub(crate) fn assembled_sse(sse: &'static str) -> crate::response::Message {
+        assembled_from(mock_stream(sse))
+    }
+
+    /// The last [`Event::Message`] `events` assemble into.
+    fn assembled_from(
+        events: impl futures::Stream<Item = Result<Event, Error>> + Send,
+    ) -> crate::response::Message {
         use futures::StreamExt;
 
-        let events = mock_stream_jsonl(jsonl).with_message();
+        let events = events.with_message();
         futures::executor::block_on(
             events
                 .filter_map(async |event| match event {
@@ -2109,6 +2134,136 @@ pub(crate) mod tests {
         assert!(!message.inner.content.iter().any(|b| b.tool_use().is_some()));
         assert_eq!(message.tool_uses().count(), 0);
         assert!(message.tool_use().is_none());
+    }
+
+    /// The `write_file` arguments of the `test/data/stop/` captures.
+    #[derive(Debug, PartialEq, serde::Deserialize)]
+    struct WriteFile {
+        path: String,
+        contents: String,
+    }
+
+    impl WriteFile {
+        fn of(call: &tool::Use) -> Self {
+            serde_json::from_value(call.input.clone()).unwrap()
+        }
+    }
+
+    /// Replay a raw `test/data/stop/` capture: gate every event's exact
+    /// round-trip, then return what [`FilterExt::with_message`] yields —
+    /// every result, and the calls shown on block close.
+    async fn replay_stop(
+        sse: &'static str,
+    ) -> (Vec<Result<Event, Error>>, Vec<tool::Use>) {
+        crate::utils::roundtrip_sse(&sse_jsonl(sse)).assert_round_trips();
+        let results: Vec<_> = mock_stream(sse).with_message().collect().await;
+        let shown = results
+            .iter()
+            .flatten()
+            .filter_map(|event| match event {
+                Event::ToolUse { tool_use } => Some(tool_use.clone()),
+                _ => None,
+            })
+            .collect();
+        (results, shown)
+    }
+
+    /// Live (Haiku 4.5): a stop sequence (`print(`) matched inside a forced
+    /// call's input. The API still closes the block — the input truncated at
+    /// the match, but valid, closed JSON — so the call is *shown* on block
+    /// close, and only the stop reason keeps it from dispatch.
+    #[tokio::test]
+    async fn stop_sequence_in_tool_input() {
+        const SSE: &str =
+            include_str!("../test/data/stop/stop_sequence_tool.sse.stream.txt");
+        let (results, shown) = replay_stop(SSE).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let message = assembled_sse(SSE);
+
+        assert_eq!(message.stop_reason, Some(StopReason::StopSequence));
+        assert_eq!(message.stop_sequence.as_deref(), Some("print("));
+        assert_eq!(message.disposition(), response::Disposition::Done);
+        assert_eq!(message.tool_uses().count(), 0);
+        assert!(message.tool_use().is_none());
+        let raw: Vec<_> = message.inner.content.tool_uses().collect();
+        assert_eq!(raw, shown.iter().collect::<Vec<_>>());
+
+        // The same cut the non-streaming twin made.
+        let twin: response::Message = serde_json::from_str(include_str!(
+            "../test/data/stop/stop_sequence_tool.response.json"
+        ))
+        .unwrap();
+        let twin_call = twin.inner.content.tool_uses().next().unwrap();
+        assert_eq!(WriteFile::of(raw[0]), WriteFile::of(twin_call));
+        assert_eq!(
+            WriteFile::of(raw[0]),
+            WriteFile {
+                path: "hello.py".into(),
+                contents: "import datetime\n".into(),
+            }
+        );
+    }
+
+    /// Live (Haiku 4.5): text, then a call cut by the stop sequence
+    /// (`auto` tool choice). Same shape as a forced call: closed, truncated,
+    /// shown, never dispatchable.
+    #[tokio::test]
+    async fn stop_sequence_after_text() {
+        const SSE: &str = include_str!(
+            "../test/data/stop/stop_sequence_text_tool.sse.stream.txt"
+        );
+        let (results, shown) = replay_stop(SSE).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        let message = assembled_sse(SSE);
+
+        assert_eq!(message.stop_reason, Some(StopReason::StopSequence));
+        assert_eq!(message.stop_sequence.as_deref(), Some("print("));
+        assert_eq!(message.disposition(), response::Disposition::Done);
+        assert_eq!(message.tool_uses().count(), 0);
+        let [Block::Text { text, .. }, Block::ToolUse { call }] =
+            &message.inner.content[..]
+        else {
+            panic!("text, then the call: {:?}", message.inner.content);
+        };
+        assert!(text.starts_with("I will create"), "{text}");
+        assert_eq!(shown, std::slice::from_ref(call));
+        assert_eq!(
+            WriteFile::of(call),
+            WriteFile {
+                path: "hello.py".into(),
+                contents: "".into(),
+            }
+        );
+    }
+
+    /// Live (Haiku 4.5): a forced call clipped at `max_tokens`. The wire
+    /// never closes the block — no `content_block_stop`, the last input
+    /// chunk mid-object — then `message_delta` and `message_stop` follow.
+    /// No error and no call surface; the turn still assembles, `max_tokens`
+    /// and **without** the open call (the non-streaming twin keeps it, as
+    /// valid JSON missing `contents`). Either way it is [`Clipped`].
+    ///
+    /// [`Clipped`]: response::Disposition::Clipped
+    #[tokio::test]
+    async fn clip_leaves_the_call_open() {
+        const SSE: &str =
+            include_str!("../test/data/stop/clip_tool.sse.stream.txt");
+        let (results, shown) = replay_stop(SSE).await;
+        assert!(results.iter().all(Result::is_ok), "{results:?}");
+        assert!(shown.is_empty());
+        let wire: Vec<_> = mock_stream(SSE).try_collect().await.unwrap();
+        assert!(!wire.iter().any(Event::is_content_block_stop));
+        let message = assembled_sse(SSE);
+
+        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(message.disposition(), response::Disposition::Clipped);
+        assert!(message.inner.content.is_empty());
+        assert!(message.tool_use().is_none());
+
+        // `with_tool_use` alone: the open call is dropped at stream end.
+        let events: Vec<_> = mock_stream(SSE).with_tool_use().collect().await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        assert!(!events.iter().flatten().any(Event::is_tool_use));
     }
 
     #[tokio::test]

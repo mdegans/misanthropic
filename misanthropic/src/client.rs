@@ -1579,6 +1579,27 @@ mod tests {
         assert_eq!(e.status(), NonZeroU16::new(500));
     }
 
+    /// Live (Haiku 4.5, 2026-09-30): a whitespace-only stop sequence is an
+    /// HTTP 400 — the same plain body whether or not `stream` is set.
+    #[cfg(feature = "client")]
+    #[test]
+    fn test_error_response_whitespace_stop() {
+        let e = anthropic(error_response(
+            reqwest::StatusCode::BAD_REQUEST,
+            None,
+            include_str!("../test/data/stop/whitespace_stop.error.json"),
+        ));
+        assert_eq!(
+            e,
+            AnthropicError::InvalidRequest {
+                message: "stop_sequences: each stop sequence must contain \
+                          non-whitespace"
+                    .to_string()
+            }
+        );
+        assert_eq!(e.status(), NonZeroU16::new(400));
+    }
+
     #[cfg(feature = "client")]
     #[test]
     fn test_error_response_non_json() {

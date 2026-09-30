@@ -821,6 +821,58 @@ mod tests {
         );
     }
 
+    /// Live (Haiku 4.5, 2026-09-30): turns that stop with a client call in
+    /// them, each round-tripping exactly. A stop sequence matched inside the
+    /// call's input truncates it to valid, closed JSON; `max_tokens` leaves
+    /// valid JSON missing a required argument. Neither dispatches: the gated
+    /// accessors are empty, though the raw content still holds the call.
+    #[test]
+    fn captured_turns_cut_a_call_short() {
+        let cases = [
+            (
+                include_str!(
+                    "../../test/data/stop/stop_sequence_tool.response.json"
+                ),
+                StopReason::StopSequence,
+                Disposition::Done,
+            ),
+            (
+                include_str!(
+                    "../../test/data/stop/stop_sequence_text_tool.response.json"
+                ),
+                StopReason::StopSequence,
+                Disposition::Done,
+            ),
+            (
+                include_str!("../../test/data/stop/clip_tool.response.json"),
+                StopReason::MaxTokens,
+                Disposition::Clipped,
+            ),
+        ];
+        for (fixture, reason, disposition) in cases {
+            let message: Message = crate::utils::roundtrip(fixture);
+            assert_eq!(message.stop_reason, Some(reason));
+            assert_eq!(message.disposition(), disposition);
+            assert!(message.tool_use().is_none());
+            assert_eq!(message.tool_uses().count(), 0);
+            let raw: Vec<_> = message.inner.content.tool_uses().collect();
+            assert_eq!(raw.len(), 1, "{reason:?}: the call is still there");
+            assert_eq!(raw[0].name, "write_file");
+            assert_eq!(raw[0].input["path"], "hello.py");
+            match reason {
+                StopReason::StopSequence => {
+                    assert_eq!(
+                        message.stop_sequence.as_deref(),
+                        Some("print(")
+                    );
+                    assert!(raw[0].input["contents"].is_string());
+                }
+                // Valid JSON, missing the required `contents`.
+                _ => assert!(raw[0].input.get("contents").is_none()),
+            }
+        }
+    }
+
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
