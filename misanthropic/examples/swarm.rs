@@ -439,6 +439,9 @@ async fn main() -> Result<(), BoxError> {
     // default hand-back lets a capped worker wrap up in words — but its
     // final turn's tool calls (mail included) are synthetic-errored, so
     // nothing reaches the office; hence the high round cap below (#136).
+    // Still deliberate over `HandBack`: the wrap-up is seated in the
+    // worker's own history, for continuity on its next beat, and shows
+    // under `--verbose`.
     //
     // The round cap is a runaway guard, not the budget — postage is the
     // budget. Builders burn one round per bash command (write, run, fix,
