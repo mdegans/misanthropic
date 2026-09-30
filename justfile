@@ -54,19 +54,24 @@ test-blallama model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
 # Prints a table of each request's input / written / read / tip tokens and
 # latency, and fails when the prefix isn't reused turn to turn, or a turn takes
 # a re-prefill's time anyway. Never run in CI.
+# `which` picks one run: canonical, after_assistant or long (the default runs
+# all three; long needs a context of about 32k).
 # Live multi-turn prompt-caching check against a local blallama, one model.
-test-cache model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
+test-cache model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf" which="":
     BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
         cargo test -p misanthropic --features blallama --lib \
-        chat::scenarios::cache::blallama -- --test-threads=1 --nocapture
+        chat::scenarios::cache::blallama::{{which}} -- --test-threads=1 \
+        --nocapture
 
-# The same caching check against Anthropic, for reference numbers. The test
-# is #[ignore]d and also skips unless MISANTHROPIC_PAID_CACHE=1, which only
-# this recipe sets, so CI's live gate (every ignored test) never pays for it.
-# PAID: about 3 cents on claude-haiku-4-5, via misanthropic/api.key.
-test-cache-anthropic:
+# The same caching check against Anthropic, for reference numbers: `which` is
+# canonical (about 3 cents) or long (about 8). The tests are #[ignore]d and
+# also skip unless MISANTHROPIC_PAID_CACHE=1, which only this recipe sets, so
+# CI's live gate (every ignored test) never pays for them.
+# PAID: claude-haiku-4-5, via misanthropic/api.key.
+test-cache-anthropic which="canonical":
     MISANTHROPIC_PAID_CACHE=1 cargo test -p misanthropic --all-features \
-        --lib chat::scenarios::cache::anthropic -- --ignored --nocapture
+        --lib chat::scenarios::cache::anthropic::{{which}} -- --ignored \
+        --nocapture
 
 # Run an example with every feature on (so logging and each example's tools are
 # available). Extra args pass through to the example, and `RUST_LOG` works, e.g.

@@ -1,4 +1,4 @@
-//! A multi-turn prompt-caching check: one [`Chat`] run of scripted beats
+//! A multi-turn prompt-caching check: a [`Chat`] run of scripted beats
 //! over a long, stable system prompt, cached the way a growing conversation
 //! should be on Anthropic — [`Chat::cache`] (automatic, so the breakpoint
 //! follows the tail) plus a marker on the system (so tools and system
@@ -29,19 +29,23 @@
 //! `read`; a warning flags a request that re-prefilled most of the previous
 //! turn's output.
 //!
-//! Every entry point runs the same beats:
+//! Two scripts: [`SHORT`], ten beats, and [`LONG`], twenty with larger tool
+//! results, so the conversation itself grows to many thousands of tokens.
+//! The entry points:
 //!
-//! - `blallama::canonical` and `blallama::after_assistant`: a local
-//!   drama_llama server, skipped unless `BLALLAMA_URL` is set (see `live`).
-//!   The first is configured exactly as for Anthropic; the second reports
+//! - `blallama::canonical`, `blallama::after_assistant` (both [`SHORT`])
+//!   and `blallama::long`: a local drama_llama server, skipped unless
+//!   `BLALLAMA_URL` is set (see `live`). `canonical` and `long` are
+//!   configured exactly as for Anthropic; `after_assistant` reports
 //!   [`breakpoint_after_assistant`](crate::Quirks::breakpoint_after_assistant)
 //!   so the driver marks assistant turns instead. Each request's `T` must
 //!   also equal the server's `count_tokens`. Run with `just test-cache`.
-//! - `anthropic::canonical`: **paid** — `claude-haiku-4-5`, about three
-//!   cents, with `misanthropic/api.key`. `#[ignore]`d, and skipped even
-//!   then unless `MISANTHROPIC_PAID_CACHE=1`, so the live CI gate (which
-//!   runs every ignored test) doesn't pay for it. Run with
-//!   `just test-cache-anthropic`.
+//! - `anthropic::canonical` ([`SHORT`]) and `anthropic::long`: **paid** —
+//!   `claude-haiku-4-5`, about three and eight cents, with
+//!   `misanthropic/api.key`. `#[ignore]`d, and skipped even then unless
+//!   `MISANTHROPIC_PAID_CACHE=1`, so the live CI gate (which runs every
+//!   ignored test) doesn't pay for them. Run with
+//!   `just test-cache-anthropic [canonical|long]`.
 //! - `simulated_*`: offline, through a [`MockTransport`] standing in for a
 //!   healthy cache and a broken one.
 
@@ -70,9 +74,6 @@ use crate::{
 const MIN_CACHEABLE: u64 = 4096;
 /// What the first prompt must reach: well clear of [`MIN_CACHEABLE`].
 const PREFIX_FLOOR: u64 = 5000;
-/// The most uncached `input` a request after the first may pay: a beat or
-/// a tool result, never the conversation.
-const INPUT_CAP: u64 = 1024;
 /// How many times the calibrated prefill cost of a request's uncached
 /// tokens its time beyond decode may reach. Generous: a re-prefilled prompt
 /// costs tens of times more.
@@ -131,7 +132,36 @@ const SIMULATED: Backend = Backend {
     ..ANTHROPIC
 };
 
-/// The user's beats. Four ask for a tool (`ledger`, `stores`), which a
+/// A conversation to drive, and what it's held to.
+struct Script {
+    /// The user's beats, in order.
+    beats: &'static [&'static str],
+    /// Offer the [`Logbook`] too.
+    logbook: bool,
+    /// The most uncached `input` a request after the first may pay: a beat
+    /// or a tool result, never the conversation.
+    input_cap: u64,
+}
+
+/// Ten beats, four with a tool round: the conversation stays around a
+/// thousand tokens beside the system prompt.
+const SHORT: Script = Script {
+    beats: &BEATS,
+    logbook: false,
+    input_cap: 1024,
+};
+
+/// Twenty beats, twelve with a tool round, nine of them reading ten days
+/// of the [`Logbook`] (about a thousand tokens each): the conversation
+/// grows to many thousands of tokens, the regime where a prefix that isn't
+/// reused makes every turn crawl. Needs a context of about 32k.
+const LONG: Script = Script {
+    beats: &LONG_BEATS,
+    logbook: true,
+    input_cap: 2048,
+};
+
+/// [`SHORT`]'s beats. Four ask for a tool (`ledger`, `stores`), which a
 /// model takes as a round before it answers.
 const BEATS: [&str; 10] = [
     "Who checks the fog signal, and how often?",
@@ -144,6 +174,31 @@ const BEATS: [&str; 10] = [
     "How much paraffin is in the stores?",
     "Sum up our conversation so far in one sentence.",
     "Last one: what does section 12 cover?",
+];
+
+/// [`LONG`]'s beats: nine read ten days of the logbook, three more ask for
+/// the ledger or the stores.
+const LONG_BEATS: [&str; 20] = [
+    "Read the logbook for days 1 to 10. Which keeper stood the most watches?",
+    "Who checks the fog signal, and how often?",
+    "Read the logbook for days 11 to 20. Was the wind ever above force 7?",
+    "What is the lamp's service code?",
+    "Read the logbook for days 21 to 30 and total the fog-signal blasts.",
+    "Count the lamp mantles in the stores. Should I reorder?",
+    "Read the logbook for days 31 to 40. When was the lamp lit latest?",
+    "Which shelf holds the radio's spares?",
+    "Read the logbook for days 41 to 50 and name the calmest day.",
+    "If the cistern reads low, whom do I tell?",
+    "Read the logbook for days 51 to 60. Did anyone stand two nights running?",
+    "How much paraffin is in the stores?",
+    "Read the logbook for days 61 to 70 and sum up the weather.",
+    "Which keeper signs the tide gauge's card?",
+    "Read the logbook for days 71 to 80. How often did the wind back west?",
+    "Sum up our conversation so far in one sentence.",
+    "Read the logbook for days 81 to 90 and name the windiest day.",
+    "What does section 40 cover?",
+    "Read the ledger entry for day 95 and tell me who was on watch.",
+    "Last one: which three sections matter most to a new keeper?",
 ];
 
 /// Handbook sections in the system prompt: about 6,500 tokens in all.
@@ -225,6 +280,10 @@ fn system() -> String {
 const LEDGER: &str = "toolbox__Ledger__entry";
 /// The wire name of [`Stores`]' method.
 const STORES: &str = "toolbox__Stores__count";
+/// The wire name of [`Logbook`]'s method.
+const LOGBOOK: &str = "toolbox__Logbook__range";
+/// The most days a [`Logbook`] range returns.
+const RANGE_CAP: u64 = 14;
 
 /// The station ledger: one day's entry, about 80 words.
 struct Ledger;
@@ -242,6 +301,16 @@ struct Stores;
 #[derive(serde::Serialize)]
 struct ItemArgs {
     item: &'static str,
+}
+
+/// The station logbook: the [`Ledger`]'s entries for a run of days, up to
+/// [`RANGE_CAP`] of them.
+struct Logbook;
+
+/// [`Logbook`]'s arguments.
+#[derive(serde::Serialize)]
+struct RangeArgs {
+    days: &'static str,
 }
 
 /// `call`'s string argument `key`, however the model typed it.
@@ -276,22 +345,56 @@ impl Tool for Ledger {
     }
 
     async fn call(&mut self, call: Use) -> tool::Result {
-        let day = argument(&call, "day");
-        let n = seed(&day);
-        let wind = ["north", "east", "south", "west"][pick(n, 1, 4)];
-        let force = 1 + pick(n, 2, 9);
-        let keeper = KEEPERS[pick(n, 3, KEEPERS.len())];
-        let blasts = pick(n, 4, 40);
-        let entry = format!(
-            "Day {day}. Wind {wind} force {force}, sea moderate, pressure \
-             falling slowly. Lamp lit at 19:{:02} and out at dawn. Keeper on \
-             watch: {keeper}. Fog signal sounded {blasts} times after \
-             midnight. One drum of paraffin opened; the old drum returned \
-             to the store. Remarks: gallery rail wet, harness worn, nothing \
-             else to report.",
-            pick(n, 5, 60),
-        );
+        let entry = entry(&argument(&call, "day"));
         tool::Result::new(call.id, entry)
+    }
+}
+
+/// The ledger's entry for `day`: about 80 words.
+fn entry(day: &str) -> String {
+    let n = seed(day);
+    let wind = ["north", "east", "south", "west"][pick(n, 1, 4)];
+    let force = 1 + pick(n, 2, 9);
+    let keeper = KEEPERS[pick(n, 3, KEEPERS.len())];
+    let blasts = pick(n, 4, 40);
+    format!(
+        "Day {day}. Wind {wind} force {force}, sea moderate, pressure \
+         falling slowly. Lamp lit at 19:{:02} and out at dawn. Keeper on \
+         watch: {keeper}. Fog signal sounded {blasts} times after midnight. \
+         One drum of paraffin opened; the old drum returned to the store. \
+         Remarks: gallery rail wet, harness worn, nothing else to report.",
+        pick(n, 5, 60),
+    )
+}
+
+#[async_trait::async_trait]
+impl Tool for Logbook {
+    fn name(&self) -> &str {
+        "Logbook"
+    }
+
+    fn definitions(&self) -> Vec<MethodDef> {
+        vec![MethodDef::Custom(CustomMethodDef::with_string_param(
+            "Logbook__range",
+            "Read the station logbook's entries for a run of days, at most \
+             14.",
+            "days",
+            "The first and last day, e.g. `1-10`.",
+            true,
+        ))]
+    }
+
+    async fn call(&mut self, call: Use) -> tool::Result {
+        let days = argument(&call, "days");
+        let mut bounds = days
+            .split(|c: char| !c.is_ascii_digit())
+            .filter_map(|n| n.parse::<u64>().ok());
+        let first = bounds.next().unwrap_or(1);
+        let last = bounds.next().unwrap_or(first).max(first);
+        let entries = (first..=last.min(first + RANGE_CAP - 1))
+            .map(|day| entry(&day.to_string()))
+            .collect::<Vec<_>>();
+        tool::Result::new(call.id, entries.join("\n\n"))
     }
 }
 
@@ -320,13 +423,14 @@ impl Tool for Stores {
     }
 }
 
-/// Drive [`BEATS`] through `transport` from `base` (its model and
+/// Drive `script` through `transport` from `base` (its model and
 /// `max_tokens`) with the caching knobs a long conversation wants, and
 /// hand back what was sent and received. `backend` is only for the table
 /// printed if the run stops.
 async fn scenario<T>(
     transport: Checked<T>,
     base: Prompt,
+    script: &Script,
     backend: Backend,
 ) -> Log
 where
@@ -334,10 +438,14 @@ where
 {
     let sink = Arc::new(Mutex::new(TokenCounts::default()));
     let toolbox = ToolBox::new().add(Ledger).add(Stores);
+    let toolbox = match script.logbook {
+        true => toolbox.add(Logbook),
+        false => toolbox,
+    };
     // Marked while it has no messages, so the mark lands on the system,
     // covering the tools (they render first) too.
     let prompt = base.system(system()).cache();
-    let mut beats = BEATS.iter();
+    let mut beats = script.beats.iter();
     let mut next_beat = async |_: &mut ()| {
         let beat = beats.next().map(|&beat| vec![(Role::User, beat).into()]);
         Ok::<_, BoxError>(beat)
@@ -577,22 +685,29 @@ fn table(
         .join("\n")
 }
 
-/// Hold `log` to a healthy cached loop's signature on `backend` (see the
-/// module docs), after printing its table. `counted` is each prompt's
-/// `count_tokens`, which `input + creation + read` must equal exactly.
-fn assert_caches(log: &Log, counted: Option<&[u64]>, backend: Backend) {
+/// Hold `log`, a run of `script`, to a healthy cached loop's signature on
+/// `backend` (see the module docs), after printing its table. `counted` is
+/// each prompt's `count_tokens`, which `input + creation + read` must
+/// equal exactly.
+fn assert_caches(
+    log: &Log,
+    counted: Option<&[u64]>,
+    script: &Script,
+    backend: Backend,
+) {
     let requests = requests(log, counted);
     let latency = Latency::fit(&requests);
     eprintln!("{}", table(&requests, backend, &latency));
 
-    assert!(requests.len() >= BEATS.len(), "a request per beat at least");
+    let beats = script.beats.len();
+    assert!(requests.len() >= beats, "a request per beat at least");
     assert!(
         requests.iter().any(|r| r.kind == "tool"),
         "no tool round: the scenario covers tool results too"
     );
     check_counts(&requests);
     check_growth(&requests, backend);
-    check_reads(&requests, backend);
+    check_reads(&requests, backend, script.input_cap);
     check_tips(&requests, backend);
     if let (Ok(latency), Some(slack)) = (&latency, backend.latency_slack_ms) {
         check_latency(&requests, latency, slack);
@@ -637,8 +752,8 @@ fn check_growth(requests: &[Request], backend: Backend) {
 }
 
 /// The first request caches the prefix, and each after reads what the one
-/// before it cached, paying little fresh.
-fn check_reads(requests: &[Request], backend: Backend) {
+/// before it cached, paying no more than `input_cap` fresh.
+fn check_reads(requests: &[Request], backend: Backend, input_cap: u64) {
     let first = &requests[0];
     assert!(
         first.prompt() >= PREFIX_FLOOR,
@@ -661,8 +776,8 @@ fn check_reads(requests: &[Request], backend: Backend) {
             backend.slack
         );
         assert!(
-            now.input <= INPUT_CAP,
-            "request {k} paid {} uncached input tokens (cap {INPUT_CAP})",
+            now.input <= input_cap,
+            "request {k} paid {} uncached input tokens (cap {input_cap})",
             now.input
         );
     }
@@ -757,10 +872,11 @@ impl Transport for AfterAssistant {
 mod blallama {
     use super::*;
 
-    /// Run the scenario through `wrap`ped [`Client`], held to `backend`,
+    /// Run `script` through `wrap`ped [`Client`], held to `backend`,
     /// unless no server is configured.
     async fn run<T>(
         name: &str,
+        script: &Script,
         backend: Backend,
         wrap: impl FnOnce(Client) -> T,
     ) where
@@ -775,15 +891,21 @@ mod blallama {
             .model(model)
             .max_tokens(NonZeroU32::new(8192).unwrap());
         let transport = Checked::new(wrap(client.clone()));
-        let log = scenario(transport, base, backend).await;
+        let log = scenario(transport, base, script, backend).await;
         let counted = counted(&client, &log).await;
-        assert_caches(&log, Some(&counted), backend);
+        assert_caches(&log, Some(&counted), script, backend);
     }
 
     /// Configured exactly as for Anthropic.
     #[tokio::test]
     async fn canonical() {
-        run("canonical", BLALLAMA, |client| client).await;
+        run("canonical", &SHORT, BLALLAMA, |client| client).await;
+    }
+
+    /// [`LONG`], configured as for Anthropic.
+    #[tokio::test]
+    async fn long() {
+        run("long", &LONG, BLALLAMA, |client| client).await;
     }
 
     /// Markers on assistant turns, as agentkit places them for blallama.
@@ -793,7 +915,7 @@ mod blallama {
             after_assistant: true,
             ..BLALLAMA
         };
-        run("after_assistant", backend, AfterAssistant).await;
+        run("after_assistant", &SHORT, backend, AfterAssistant).await;
     }
 }
 
@@ -838,12 +960,9 @@ fn paid(name: &str) -> bool {
 mod anthropic {
     use super::*;
 
-    /// Configured as a long conversation should be; see the module docs.
-    #[tokio::test]
-    #[ignore = "PAID: live Anthropic API (claude-haiku-4-5, about 3 cents); \
-                needs misanthropic/api.key and MISANTHROPIC_PAID_CACHE=1"]
-    async fn canonical() {
-        if !paid("anthropic::canonical") {
+    /// Run `script` on Haiku 4.5, if paid runs are opted into.
+    async fn run(name: &str, script: &Script) {
+        if !paid(name) {
             return;
         }
         let client = Client::new(crate::utils::load_api_key().await).unwrap();
@@ -851,8 +970,24 @@ mod anthropic {
             .model(Id::Haiku45)
             .max_tokens(NonZeroU32::new(512).unwrap());
         let transport = Checked::new(Retrying(client));
-        let log = scenario(transport, base, ANTHROPIC).await;
-        assert_caches(&log, None, ANTHROPIC);
+        let log = scenario(transport, base, script, ANTHROPIC).await;
+        assert_caches(&log, None, script, ANTHROPIC);
+    }
+
+    /// Configured as a long conversation should be; see the module docs.
+    #[tokio::test]
+    #[ignore = "PAID: live Anthropic API (claude-haiku-4-5, about 3 cents); \
+                needs misanthropic/api.key and MISANTHROPIC_PAID_CACHE=1"]
+    async fn canonical() {
+        run("anthropic::canonical", &SHORT).await;
+    }
+
+    /// [`LONG`], for reference numbers in the growth regime.
+    #[tokio::test]
+    #[ignore = "PAID: live Anthropic API (claude-haiku-4-5, about 8 cents); \
+                needs misanthropic/api.key and MISANTHROPIC_PAID_CACHE=1"]
+    async fn long() {
+        run("anthropic::long", &LONG).await;
     }
 }
 
@@ -860,8 +995,8 @@ mod anthropic {
 /// serialized length and writes it all to the cache but the framing; when
 /// `healthy` it first reads back what the previous request cached if this
 /// one extends it, broken it never does (a prefix that changes every
-/// turn). A beat naming the ledger or the stores gets one call, anything
-/// else an answer.
+/// turn). A beat naming the logbook, the ledger or the stores gets one
+/// call, anything else an answer.
 fn simulated(healthy: bool) -> MockTransport {
     let last: Mutex<Option<(Vec<String>, u64)>> = Mutex::default();
     MockTransport::with(move |prompt: &Prompt| {
@@ -899,8 +1034,13 @@ fn simulated_reply(prompt: &Prompt) -> Reply {
         .iter()
         .any(|block| matches!(block, Block::ToolResult { .. }));
     let (ledger, stores) = (DayArgs { day: "3" }, ItemArgs { item: "oil" });
+    let logbook = RangeArgs { days: "1-10" };
     match () {
         _ if answered => mock::text("Noted."),
+        _ if beat.contains("logbook") => {
+            let args = serde_json::to_value(logbook).unwrap();
+            mock::text("Reading.").tool_use(LOGBOOK, args)
+        }
         _ if beat.contains("ledger") => {
             let args = serde_json::to_value(ledger).unwrap();
             mock::text("Reading.").tool_use(LEDGER, args)
@@ -913,17 +1053,17 @@ fn simulated_reply(prompt: &Prompt) -> Reply {
     }
 }
 
-/// The scenario against [`simulated`]`(healthy)`, and its log.
-fn simulate(healthy: bool) -> Log {
+/// `script` against [`simulated`]`(healthy)`, and its log.
+fn simulate(script: &Script, healthy: bool) -> Log {
     let transport = Checked::new(Arc::new(simulated(healthy)));
     let base = Prompt::default().model(Id::Haiku45);
-    futures::executor::block_on(scenario(transport, base, SIMULATED))
+    futures::executor::block_on(scenario(transport, base, script, SIMULATED))
 }
 
 /// The knobs reach the wire, the tools run, and a healthy cache passes.
 #[test]
 fn simulated_healthy_cache_passes() {
-    let log = simulate(true);
+    let log = simulate(&SHORT, true);
 
     let first = &log.sent[0];
     assert!(first.cache_control.is_some(), "automatic caching is on");
@@ -933,15 +1073,47 @@ fn simulated_healthy_cache_passes() {
     assert_eq!(names.collect::<Vec<_>>(), [LEDGER, STORES]);
     assert_eq!(log.sent.len(), BEATS.len() + 4, "four tool rounds");
 
-    assert_caches(&log, None, SIMULATED);
+    assert_caches(&log, None, &SHORT, SIMULATED);
+}
+
+/// [`LONG`] offers the logbook, grows by many thousands of tokens, and a
+/// healthy cache passes it.
+#[test]
+fn simulated_long_conversation_passes() {
+    let log = simulate(&LONG, true);
+
+    let names = log.sent[0].tools.iter().flatten().map(MethodDef::name);
+    assert_eq!(names.collect::<Vec<_>>(), [LEDGER, LOGBOOK, STORES]);
+    assert_eq!(log.sent.len(), LONG_BEATS.len() + 12, "twelve tool rounds");
+    let requests = requests(&log, None);
+    let grown = requests.last().unwrap().prompt() - requests[0].prompt();
+    assert!(grown >= 8000, "the conversation grew only {grown} tokens");
+
+    assert_caches(&log, None, &LONG, SIMULATED);
+}
+
+/// A logbook range is a day's entry per day, capped.
+#[test]
+fn logbook_reads_a_capped_range() {
+    let read = |days: &'static str| {
+        let args = serde_json::to_value(RangeArgs { days }).unwrap();
+        let call = Use::new(LOGBOOK, args).with_id("toolu_1");
+        let result = futures::executor::block_on(Logbook.call(call));
+        result.content.to_string()
+    };
+    assert_eq!(read("1 to 10").matches("Day ").count(), 10);
+    assert_eq!(read("5-5").matches("Day ").count(), 1);
+    assert_eq!(read("1-100").matches("Day ").count(), RANGE_CAP as usize);
+    assert!(read("3-4").starts_with(&entry("3")));
 }
 
 /// A cache rewritten every turn fails, however well the rest goes.
 #[test]
 fn simulated_broken_cache_fails() {
-    let log = simulate(false);
-    let checked =
-        std::panic::catch_unwind(|| assert_caches(&log, None, SIMULATED));
+    let log = simulate(&SHORT, false);
+    let checked = std::panic::catch_unwind(|| {
+        assert_caches(&log, None, &SHORT, SIMULATED);
+    });
     let panic = checked.expect_err("a re-prefilled prompt must fail");
     let message = panic.downcast_ref::<String>().expect("a message");
     assert!(message.contains("re-prefilled"), "{message}");

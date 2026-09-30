@@ -136,7 +136,11 @@ record; this file aggregates them.
   against Anthropic as the paid reference (`just test-cache-anthropic`,
   about 3 cents on Haiku 4.5; `#[ignore]`d and also opt-in through
   `MISANTHROPIC_PAID_CACHE=1`, so CI's live gate doesn't pay for it), and
-  offline against a simulated healthy and broken cache.
+  offline against a simulated healthy and broken cache. A long variant —
+  twenty beats, nine reading ten days of a logbook — grows the conversation
+  itself by many thousands of tokens: on blallama by default (`just
+  test-cache <model> long` alone), on Anthropic only as `just
+  test-cache-anthropic long` (about 8 cents).
 
 - **`Message::unfinished_server_tool_uses()`**,
   **`Block::server_tool_result_id()`** and **`Caller::tool_id()`** — the pieces of the rule above: which server
