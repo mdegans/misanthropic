@@ -1707,7 +1707,7 @@ mod tests {
     #[cfg(feature = "client")]
     use crate::utils::load_api_key;
 
-    #[cfg(feature = "log")]
+    #[cfg(all(feature = "client", feature = "log"))]
     fn init_log() {
         let mut log_builder = env_logger::Builder::from_default_env();
         log_builder

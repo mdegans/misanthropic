@@ -245,7 +245,12 @@ dioxus-ssr = "0.7"
 # so the client's internal logs surface without an extra `--features log`. This
 # self path dev-dependency is dev/test/bench-scoped only: `cargo build` and
 # downstream consumers keep `log` opt-in. See the `run-example` just recipe.
-misanthropic = { path = ".", features = ["log", "chat"] }
+# `default-features = false`, or it would switch the defaults back on under
+# `--no-default-features` and that leg would test nothing (#143).
+misanthropic = { path = ".", default-features = false, features = [
+    "log",
+    "chat",
+] }
 
 [features]
 # rustls because I am sick of getting Dependabot alerts for OpenSSL.
@@ -439,6 +444,16 @@ doc-scrape-examples = true
 
 [[example]]
 name = "mid_conversation_system"
+required-features = ["client"]
+doc-scrape-examples = true
+
+[[example]]
+name = "triage_stream"
+required-features = ["client"]
+doc-scrape-examples = true
+
+[[example]]
+name = "code_execution"
 required-features = ["client"]
 doc-scrape-examples = true
 
