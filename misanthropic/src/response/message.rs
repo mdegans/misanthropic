@@ -157,6 +157,26 @@ impl Message {
             .filter_map(prompt::message::Block::tool_use)
     }
 
+    /// What a driver must do next with this turn — see [`Disposition`].
+    pub fn disposition(&self) -> Disposition {
+        match self.stop_reason {
+            Some(StopReason::PauseTurn) => Disposition::Paused,
+            Some(StopReason::MaxTokens) => Disposition::Clipped,
+            Some(StopReason::ToolUse) => Disposition::ToolUse,
+            Some(
+                StopReason::EndTurn
+                | StopReason::StopSequence
+                | StopReason::Refusal,
+            ) => Disposition::Done,
+            // No stop reason (a provider that doesn't report one): the
+            // content is all there is to go on — raw, as `tool_uses` is gated.
+            None if self.inner.content.tool_uses().next().is_some() => {
+                Disposition::ToolUse
+            }
+            None => Disposition::Done,
+        }
+    }
+
     /// Parse the first [`Text`] [`Block`] as JSON into `T`, skipping any
     /// leading [`Thought`] / [`RedactedThought`] blocks produced by
     /// [Extended Thinking]. Intended for use with
@@ -308,6 +328,9 @@ impl Builder {
     Clone, Copy, Debug, Serialize, Deserialize, derive_more::IsVariant,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+// Test-only (`strum` is a dev-dep): lets `test_disposition` visit every
+// variant.
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model reached a natural stopping point.
@@ -335,6 +358,135 @@ pub enum StopReason {
     /// [`Prompt::output_config`]: crate::Prompt::output_config
     /// [Anthropic docs on invalid outputs]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#invalid-outputs>
     Refusal,
+}
+
+/// What a driver must do next with a response [`Message`] — the pause / clip /
+/// dispatch lore in one place, classified by [`Message::disposition`] from its
+/// [`StopReason`] ([`stop_reason`](Message::stop_reason) stays available for
+/// finer policy). Pure classification: *how* to handle a clip or a pause is
+/// driver policy.
+///
+/// Deliberately exhaustive (no `#[non_exhaustive]`): a new disposition should
+/// break every driver's `match` at compile time, not slip past a `_` arm.
+///
+/// # Example
+///
+/// A minimal agent loop — `Prompt::user` to start, [`Prompt::seat`] to append:
+///
+/// ```no_run
+/// # #[cfg(feature = "client")]
+/// use misanthropic::{
+///     Client, Prompt,
+///     prompt::message::{Block, Role, SystemMessage},
+///     response::Disposition,
+///     tool::{Tool, ToolBox},
+/// };
+///
+/// # #[cfg(feature = "client")]
+/// # async fn run(
+/// #     client: Client,
+/// #     mut toolbox: ToolBox,
+/// # ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// // Infallible: a lone text turn is legal by construction — no `?`.
+/// let mut prompt = Prompt::user("Run the tests and summarize the failures.")
+///     .system("You are a careful CI assistant.");
+/// toolbox.prepare(&mut prompt).await?;
+/// // `seat`'s pending-system buffer is caller-owned; it outlives rounds.
+/// let mut pending: Option<SystemMessage> = None;
+///
+/// // A round budget, so a model that calls tools forever stops.
+/// for _ in 0..8 {
+///     let response = client.message(&prompt).await?;
+///
+///     match response.disposition() {
+///         // max_tokens: a clipped turn's tool calls can be valid JSON that
+///         // is missing arguments the model never emitted. Never seat or
+///         // dispatch it: hand back, to raise `max_tokens` (or ask for
+///         // brevity) and resend.
+///         Disposition::Clipped => break,
+///         // tool_use, or pause_turn (a server tool still running; resending
+///         // resumes it): seat the turn, then answer its client calls, if
+///         // any, in one user turn (results must lead it). The content's
+///         // calls, raw: `response.tool_uses()` is gated on `tool_use`, so
+///         // misses a paused turn's and a turn inferred without a reason.
+///         Disposition::Paused | Disposition::ToolUse => {
+///             let content = &response.inner.content;
+///             let calls: Vec<_> = content.tool_uses().cloned().collect();
+///             prompt.seat(response, &mut pending)?;
+///             if calls.is_empty() {
+///                 continue;
+///             }
+///             let mut results = Vec::with_capacity(calls.len());
+///             for call in calls {
+///                 results.push(Block::from(toolbox.call(call).await));
+///             }
+///             prompt.seat((Role::User, results), &mut pending)?;
+///         }
+///         // end_turn / stop_sequence / refusal: seat it and hand back —
+///         // unless it's empty (the API rejects an empty turn) or cuts a call
+///         // short: a refusal can leave a `tool_use` or a server tool
+///         // half-made, and a finished turn's calls never run. Drop such a
+///         // turn whole; stripping the calls could strand a server tool.
+///         Disposition::Done => {
+///             let turn = &response.inner;
+///             let usable = !turn.content.is_empty()
+///                 && turn.content.tool_uses().next().is_none()
+///                 && turn.unfinished_server_tool_uses().next().is_none();
+///             if usable {
+///                 prompt.seat(response, &mut pending)?;
+///             }
+///             break;
+///         }
+///     }
+/// }
+///
+/// // A paused turn left in flight — out of rounds, clipped or dropped while
+/// // resuming it — admits only its continuation: pop it before a user turn
+/// // follows. (It is one message: continuations merge into it.)
+/// let in_flight = |turn: &misanthropic::prompt::message::Message| {
+///     turn.unfinished_server_tool_uses().next().is_some()
+/// };
+/// if prompt.messages.last().is_some_and(in_flight) {
+///     prompt.messages.pop();
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`Prompt::seat`]: crate::Prompt::seat
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::IsVariant)]
+pub enum Disposition {
+    /// [`PauseTurn`](StopReason::PauseTurn): a server tool is still running.
+    /// Seat the turn (answering any client calls it makes — [programmatic
+    /// tool calling]) and resend to resume it; abandoning it means dropping
+    /// the whole paused turn.
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    Paused,
+    /// [`MaxTokens`](StopReason::MaxTokens): the turn is incomplete, and its
+    /// tool calls may be missing arguments the model never emitted. Never
+    /// seat it or dispatch them.
+    Clipped,
+    /// A complete turn carrying client tool calls
+    /// ([`ToolUse`](StopReason::ToolUse)) — see [`Message::tool_uses`].
+    /// Also inferred when a provider reports no stop reason but the turn
+    /// calls tools — which trusts the provider: a transport that omits
+    /// `stop_reason` on a truncated turn bypasses the
+    /// [`Clipped`](Self::Clipped) guard. Transports (and mocks) should always
+    /// set it. An inferred turn's calls are its content's
+    /// ([`Content::tool_uses`]): [`Message::tool_uses`] is gated on the
+    /// reported stop reason.
+    ///
+    /// [`Content::tool_uses`]: crate::prompt::message::Content::tool_uses
+    ToolUse,
+    /// Quiescent: [`EndTurn`](StopReason::EndTurn),
+    /// [`StopSequence`](StopReason::StopSequence) or
+    /// [`Refusal`](StopReason::Refusal) (which hands back like any finished
+    /// turn), or no stop reason and no tool calls. Hand control back — and
+    /// never run client calls such a turn still carries, nor seat a turn
+    /// that carries them or leaves a server tool in flight: a refusal can
+    /// cut either short. Nor an empty one: the API rejects an empty turn.
+    Done,
 }
 
 /// Object-type discriminator on a response [`Message`]. Always
@@ -739,6 +891,46 @@ mod tests {
 
         message.stop_reason = Some(StopReason::ToolUse);
         assert_eq!(ids(&message), ["a", "b"]);
+    }
+
+    #[test]
+    fn test_disposition() {
+        use strum::IntoEnumIterator;
+
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let classify = |message: &Message, reason| {
+            let mut message = message.clone();
+            message.stop_reason = reason;
+            message.disposition()
+        };
+
+        // The `match` (no `_` arm) is the compile-time guard: a new
+        // `StopReason` won't build until it's classified here. `EnumIter`
+        // visits every variant, so none escapes the assertion.
+        for reason in StopReason::iter() {
+            let expected = match reason {
+                StopReason::PauseTurn => Disposition::Paused,
+                StopReason::MaxTokens => Disposition::Clipped,
+                StopReason::ToolUse => Disposition::ToolUse,
+                StopReason::EndTurn
+                | StopReason::StopSequence
+                | StopReason::Refusal => Disposition::Done,
+            };
+            assert_eq!(classify(&message, Some(reason)), expected);
+        }
+
+        // No stop reason: inferred from the content.
+        assert_eq!(classify(&message, None), Disposition::Done);
+        message.inner.content.push(
+            crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
+        );
+        assert_eq!(classify(&message, None), Disposition::ToolUse);
+
+        // A clipped turn stays clipped, tool call or not.
+        assert_eq!(
+            classify(&message, Some(StopReason::MaxTokens)),
+            Disposition::Clipped
+        );
     }
 
     #[test]

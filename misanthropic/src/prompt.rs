@@ -228,6 +228,13 @@ impl Default for Prompt {
     }
 }
 
+/// The one-liner: `Prompt::from("…")` is [`Prompt::user`].
+impl From<&str> for Prompt {
+    fn from(text: &str) -> Self {
+        Self::user(text)
+    }
+}
+
 /// Capacity tier for a request. Set via [`Prompt::service_tier`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
@@ -267,7 +274,9 @@ pub enum InferenceGeo {
 /// block is treated as evidence the backend allows it. This is a heuristic,
 /// not a guarantee: a backend that emits `server_tool_use` yet enforces strict
 /// alternation would be wrongly permitted here — but the failure surfaces as a
-/// backend-side error, not silent corruption.
+/// backend-side error, not silent corruption. Conversely, while a server tool
+/// is still in flight *only* that continuation may follow
+/// ([`UnfinishedServerToolUse`](Self::UnfinishedServerToolUse)).
 ///
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
@@ -335,6 +344,25 @@ pub enum TurnOrderError {
         /// The `tool_use` ids with no matching leading `tool_result` next.
         unanswered: Vec<String>,
     },
+    /// A non-assistant turn follows an [`Assistant`] turn with a server tool
+    /// [still in flight](message::Message::unfinished_server_tool_uses)
+    /// — a paused (`pause_turn`) turn. Only its continuation may follow:
+    /// resend to resume it, or drop the whole paused turn. Abandoning it in
+    /// place is a 400 on the wire.
+    ///
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    #[error(
+        "{} server_tool_use block(s) are still in flight; only an assistant \
+         continuation may follow: {}",
+        .unfinished.len(),
+        .unfinished.join(", ")
+    )]
+    UnfinishedServerToolUse {
+        /// The assistant message with the in-flight server tool call(s).
+        message: Message,
+        /// The `server_tool_use` ids no result answers yet.
+        unfinished: Vec<String>,
+    },
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
@@ -385,6 +413,39 @@ impl Seated {
 }
 
 impl Prompt {
+    /// A [`Prompt::default`] opening with one [`User`] turn — the line every
+    /// program starts with. No [`TurnOrderError`] to handle: a lone turn of
+    /// text, image or document content is always legal. [`ToolResult`]
+    /// blocks are the exception (an opening turn has no `tool_use` for them
+    /// to answer, and they must lead) — [`add_message`] is the checked path;
+    /// here a debug build asserts [`check_turn_order`].
+    ///
+    /// ```
+    /// use misanthropic::Prompt;
+    ///
+    /// let prompt = Prompt::user("What is 2+2?").system("Be terse.");
+    /// assert_eq!(prompt.messages.len(), 1);
+    /// ```
+    ///
+    /// [`User`]: message::Role::User
+    /// [`ToolResult`]: message::Block::ToolResult
+    /// [`add_message`]: Prompt::add_message
+    /// [`check_turn_order`]: Prompt::check_turn_order
+    pub fn user(content: impl Into<Content>) -> Self {
+        let prompt = Self {
+            messages: vec![Message {
+                role: message::Role::User,
+                content: content.into(),
+            }],
+            ..Self::default()
+        };
+        debug_assert!(
+            prompt.check_turn_order().is_ok(),
+            "Prompt::user: tool_result blocks must lead the turn"
+        );
+        prompt
+    }
+
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -626,11 +687,14 @@ impl Prompt {
     /// driver's per-session field) so casual code that never touches system
     /// notes keeps [`add_message`]/[`push_message`] and passes `&mut None`.
     ///
+    /// Which response turns to seat is the response's
+    /// [`Disposition`](crate::response::Disposition) — never a clipped one.
+    ///
     /// # Errors
     /// [`TurnOrderError`] if the append (or merge) would break turn order.
     /// System content is buffered, not appended, so it never errors here.
     ///
-    /// [`Chat`]: <https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/utils/chat.rs>
+    /// [`Chat`]: <https://docs.rs/misanthropic/latest/misanthropic/chat/struct.Chat.html>
     /// [`may_precede`]: message::Message::may_precede
     /// [ends]: message::Message::ends_in_server_tool_result
     /// [`System`]: message::Role::System
@@ -2282,29 +2346,30 @@ mod tests {
     /// assistant → system is legal iff the assistant turn ends in a
     /// server-tool *result* — strictly the last block, and a *use* (the
     /// paused-turn tail) does not qualify. The fixture blocks keep the
-    /// shapes wire-sourced.
+    /// shapes wire-sourced, and the result answers the use (a use no result
+    /// answers is in flight — see `test_unfinished_server_tool_use`).
     #[test]
     fn test_system_after_server_tool_tails() {
         use crate::prompt::message::{Block, Content};
 
-        let fetch_use: Block = serde_json::from_str(include_str!(
+        let search_use: Block = serde_json::from_str(include_str!(
             "../test/data/server_tools/server_tool_use.json"
         ))
         .unwrap();
-        let fetch_result: Block = serde_json::from_str(include_str!(
-            "../test/data/server_tools/web_fetch_result.json"
+        let search_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_search_result.json"
         ))
         .unwrap();
         let text = Block::text("done.");
 
         // (assistant tail blocks, may a system turn follow?)
         let cases = [
-            (vec![text.clone(), fetch_use.clone()], false), // paused turn
+            (vec![text.clone(), search_use.clone()], false), // paused turn
             (
-                vec![fetch_use.clone(), fetch_result.clone(), text.clone()],
+                vec![search_use.clone(), search_result.clone(), text.clone()],
                 false, // "ending in" is strict on the last block
             ),
-            (vec![fetch_use, fetch_result], true),
+            (vec![search_use, search_result], true),
         ];
 
         for (blocks, legal) in cases {
@@ -2316,6 +2381,81 @@ mod tests {
                 .add_message((Role::System, "note"));
             assert_eq!(outcome.is_ok(), legal);
         }
+    }
+
+    /// Offline mirror of the live "abandoning a paused server tool" probe
+    /// (`client::tests::test_count_tokens_validates_system_placement`): a
+    /// `server_tool_use` no result answers admits only its continuation. A
+    /// programmatic call awaiting client results is not in flight.
+    #[test]
+    fn test_unfinished_server_tool_use() {
+        use crate::prompt::message::{Block, Content};
+
+        let block =
+            |json: &str| -> Block { serde_json::from_str(json).unwrap() };
+        let search_use = block(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ));
+        let search_result = block(include_str!(
+            "../test/data/server_tools/web_search_result.json"
+        ));
+        let text = Block::text("searching…");
+        // Programmatic tool calling, as captured: a code-execution
+        // `server_tool_use` whose client call (`caller.tool_id`) awaits a
+        // `tool_result`.
+        let ptc = crate::stream::tests::assembled(include_str!(
+            "../test/data/server_tools/ptc.sse.stream.jsonl"
+        ));
+        let ptc_turn: Vec<Block> = ptc.inner.content.iter().cloned().collect();
+        let ptc_call = ptc.inner.content.tool_uses().next().unwrap();
+        let ptc_answer = Block::from(crate::tool::Result::new(
+            ptc_call.id.clone(),
+            "{\"revenue\": 1}",
+        ));
+
+        let with = |assistant: Vec<Block>, next: Message| {
+            let mut prompt = Prompt::user("search it");
+            prompt
+                .messages
+                .push((Role::Assistant, Content(assistant)).into());
+            prompt.messages.push(next);
+            prompt.check_turn_order()
+        };
+        let paused = vec![text.clone(), search_use.clone()];
+        let unfinished = |outcome: Result<(), TurnOrderError>| {
+            matches!(
+                outcome,
+                Err(TurnOrderError::UnfinishedServerToolUse { unfinished, .. })
+                    if unfinished == ["srvtoolu_01XAxdGfRL2vypN6SF17MJXT"]
+            )
+        };
+
+        // Paused: a user turn abandons it in place (the live 400).
+        assert!(unfinished(with(paused.clone(), (Role::User, "nvm").into())));
+        // Its continuation is the one legal successor.
+        with(
+            paused,
+            (Role::Assistant, Content(vec![search_result.clone()])).into(),
+        )
+        .unwrap();
+        // Answered in the same turn (a merged continuation): anything goes.
+        with(
+            vec![search_use.clone(), search_result.clone()],
+            (Role::User, "thanks").into(),
+        )
+        .unwrap();
+        // Ending in *a* result doesn't excuse an earlier unanswered use.
+        let other_result = block(include_str!(
+            "../test/data/server_tools/web_fetch_result.json"
+        ));
+        assert!(unfinished(with(
+            vec![search_use, other_result],
+            (Role::System, "note").into(),
+        )));
+        // PTC: the container waits on the client, which answers next.
+        let container = |b: &Block| matches!(b, Block::ServerToolUse { .. });
+        assert!(ptc_turn.iter().any(container));
+        with(ptc_turn, (Role::User, Content(vec![ptc_answer])).into()).unwrap();
     }
 
     #[test]
@@ -2342,6 +2482,27 @@ mod tests {
             ])
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_user_matches_add_message() {
+        let expected =
+            Prompt::default().add_message((Role::User, "hi")).unwrap();
+
+        assert_eq!(Prompt::user("hi"), expected);
+        assert_eq!(Prompt::from("hi"), expected);
+        assert!(Prompt::user("hi").check_turn_order().is_ok());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tool_result blocks must lead")]
+    fn test_user_asserts_results_lead() {
+        let content = Content(vec![
+            message::Block::from("see:"),
+            message::Block::from(crate::tool::Result::new("id", "out")),
+        ]);
+        let _ = Prompt::user(content);
     }
 
     #[test]
@@ -2536,12 +2697,12 @@ mod tests {
         // An assistant turn ending in a server-tool result is the one assistant
         // tail a system turn may follow — the note seats immediately.
         use crate::prompt::message::{Block, Content};
-        let fetch_use: Block = serde_json::from_str(include_str!(
+        let search_use: Block = serde_json::from_str(include_str!(
             "../test/data/server_tools/server_tool_use.json"
         ))
         .unwrap();
-        let fetch_result: Block = serde_json::from_str(include_str!(
-            "../test/data/server_tools/web_fetch_result.json"
+        let search_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_search_result.json"
         ))
         .unwrap();
 
@@ -2550,7 +2711,7 @@ mod tests {
         prompt.seat((Role::User, "fetch it"), &mut pending).unwrap();
         prompt
             .seat(
-                (Role::Assistant, Content(vec![fetch_use, fetch_result])),
+                (Role::Assistant, Content(vec![search_use, search_result])),
                 &mut pending,
             )
             .unwrap();
@@ -2562,6 +2723,34 @@ mod tests {
         assert_eq!(prompt.messages.last().unwrap().role, Role::System);
         assert!(pending.is_none());
         prompt.check_turn_order().unwrap();
+    }
+
+    /// `seat` refuses to abandon a paused turn: a user beat after it errors
+    /// (the tail is untouched), and a system note buffers.
+    #[test]
+    fn test_seat_rejects_a_beat_after_a_paused_turn() {
+        use crate::prompt::message::{Block, Content};
+        let search_use: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+
+        let mut prompt = Prompt::user("search it");
+        let mut pending = None;
+        prompt
+            .seat((Role::Assistant, Content(vec![search_use])), &mut pending)
+            .unwrap();
+
+        let err = prompt.seat((Role::User, "nvm"), &mut pending).unwrap_err();
+        assert!(matches!(
+            err,
+            TurnOrderError::UnfinishedServerToolUse { .. }
+        ));
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(
+            prompt.seat((Role::System, "note"), &mut pending).unwrap(),
+            Seated::Buffered
+        );
     }
 
     #[test]

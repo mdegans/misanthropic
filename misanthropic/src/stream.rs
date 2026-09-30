@@ -1646,6 +1646,24 @@ pub(crate) mod tests {
         }))
     }
 
+    /// Assemble a captured SSE fixture (see [`mock_stream_jsonl`]) into its
+    /// response, as a streaming client would.
+    pub(crate) fn assembled(jsonl: &'static str) -> crate::response::Message {
+        use futures::StreamExt;
+
+        let events = mock_stream_jsonl(jsonl).with_message();
+        futures::executor::block_on(
+            events
+                .filter_map(async |event| match event {
+                    Ok(Event::Message { message }) => Some(message),
+                    _ => None,
+                })
+                .collect::<Vec<_>>(),
+        )
+        .pop()
+        .expect("the fixture assembles a message")
+    }
+
     /// An SSE `error` event arrives after the HTTP 200, so there is no
     /// status to take: an unrecognized `type` mid-stream stays
     /// `Unknown { code: None }`, while known types keep their implied one.

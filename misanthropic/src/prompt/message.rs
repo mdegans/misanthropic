@@ -300,6 +300,33 @@ impl<R> RoleMessage<R> {
             .any(|b| matches!(b, Block::ServerToolUse { .. }))
     }
 
+    /// Ids of this turn's in-flight [`ServerToolUse`](Block::ServerToolUse)
+    /// calls: answered by no server-tool result in the turn, and not waiting
+    /// on a client [`ToolUse`](Block::ToolUse) they made ([programmatic tool
+    /// calling], by its [`caller`](crate::tool::Use::caller)). Non-empty on a
+    /// paused turn — which only an assistant continuation may follow (see
+    /// [`Message::may_precede`]).
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    pub fn unfinished_server_tool_uses(&self) -> impl Iterator<Item = &str> {
+        let settled: std::collections::BTreeSet<&str> = self
+            .content
+            .iter()
+            .filter_map(|block| {
+                block
+                    .server_tool_result_id()
+                    .or_else(|| block.tool_use()?.caller.as_ref()?.tool_id())
+            })
+            .collect();
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                Block::ServerToolUse { call } => Some(call.id.as_ref()),
+                _ => None,
+            })
+            .filter(move |id| !settled.contains(id))
+    }
+
     /// Whether the final [`Content`] [`Block`] is a server-tool *result* —
     /// the one assistant tail the API allows a [`System`](Role::System) turn
     /// to follow (the turn-order rule behind
@@ -375,6 +402,11 @@ impl Message {
     ///     (2026-06-12, pinned by the `count_tokens` placement probes): the
     ///     docs' "ending in server tool use" is wrong, so a *paused* turn
     ///     (ending in the in-flight use) is **not** a legal predecessor.
+    /// - only an `Assistant` continuation may follow a turn with a server
+    ///   tool [still in flight](Self::unfinished_server_tool_uses) — an
+    ///   [`UnfinishedServerToolUse`] otherwise. A `server_tool_use` left
+    ///   without its result 400s once any other turn follows (verified live);
+    ///   a programmatic call awaiting client results is not in flight.
     /// - every client [`ToolUse`](Block::ToolUse) in this turn is answered by
     ///   a matching leading [`ToolResult`](Block::ToolResult) in `next` — an
     ///   [`UnansweredToolUse`] otherwise (#102).
@@ -385,6 +417,7 @@ impl Message {
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
     /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
     /// [`UnansweredToolUse`]: crate::prompt::TurnOrderError::UnansweredToolUse
+    /// [`UnfinishedServerToolUse`]: super::TurnOrderError::UnfinishedServerToolUse
     pub fn may_precede(
         &self,
         next: &Self,
@@ -409,6 +442,20 @@ impl Message {
                 first: self.clone(),
                 second: next.clone(),
             });
+        }
+
+        // An in-flight server tool admits only its continuation.
+        if next.role != Assistant {
+            let unfinished: Vec<String> = self
+                .unfinished_server_tool_uses()
+                .map(String::from)
+                .collect();
+            if !unfinished.is_empty() {
+                return Err(TurnOrderError::UnfinishedServerToolUse {
+                    message: self.clone(),
+                    unfinished,
+                });
+            }
         }
 
         // Every client `tool_use` must be answered by a matching leading
@@ -810,6 +857,16 @@ impl Content {
     /// Returns `true` if any block in this content has a cache breakpoint.
     pub fn has_cache(&self) -> bool {
         self.0.iter().any(|b| b.is_cached())
+    }
+
+    /// Every client [`tool::Use`] ([`Block::ToolUse`]), in order. Server tool
+    /// calls ([`Block::ServerToolUse`]) are not included — the API runs those.
+    /// Raw: a response's [`tool_uses`] is the stop-reason-gated view, the one
+    /// to dispatch from.
+    ///
+    /// [`tool_uses`]: crate::response::Message::tool_uses
+    pub fn tool_uses(&self) -> impl Iterator<Item = &tool::Use> {
+        self.0.iter().filter_map(Block::tool_use)
     }
 
     /// Push a [`Delta`] into the final [`Block`]. The types must be compatible
@@ -1627,19 +1684,28 @@ impl Block {
     }
 
     /// Is a server-tool *result* block (the output half of a
-    /// [`ServerToolUse`](Self::ServerToolUse), any server tool). Exhaustive on
-    /// purpose: a new [`Block`] variant fails to compile until it's
-    /// classified result / not-result, because turn-order legality (a
-    /// [`System`](Role::System) turn may follow an assistant turn ending in
-    /// one of these) depends on the answer.
+    /// [`ServerToolUse`](Self::ServerToolUse), any server tool) — see
+    /// [`server_tool_result_id`](Self::server_tool_result_id).
     pub fn is_server_tool_result(&self) -> bool {
+        self.server_tool_result_id().is_some()
+    }
+
+    /// The [`ServerToolUse`](Self::ServerToolUse) id a server-tool result
+    /// block answers; `None` for any other block. Exhaustive on purpose: a new
+    /// [`Block`] variant fails to compile until it's classified result /
+    /// not-result, because turn-order legality (a [`System`](Role::System)
+    /// turn may follow an assistant turn ending in one of these; only a
+    /// continuation may follow an unanswered use) depends on the answer.
+    pub fn server_tool_result_id(&self) -> Option<&str> {
         match self {
-            Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. } => true,
+            Self::WebSearchToolResult { tool_use_id, .. }
+            | Self::WebFetchToolResult { tool_use_id, .. }
+            | Self::ToolSearchToolResult { tool_use_id, .. }
+            | Self::CodeExecutionToolResult { tool_use_id, .. }
+            | Self::BashCodeExecutionToolResult { tool_use_id, .. }
+            | Self::TextEditorCodeExecutionToolResult { tool_use_id, .. } => {
+                Some(tool_use_id)
+            }
             Self::Text { .. }
             | Self::Thought { .. }
             | Self::RedactedThought { .. }
@@ -1648,7 +1714,7 @@ impl Block {
             | Self::ToolUse { .. }
             | Self::ToolResult { .. }
             | Self::ServerToolUse { .. }
-            | Self::ToolReference { .. } => false,
+            | Self::ToolReference { .. } => None,
         }
     }
 

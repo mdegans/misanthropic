@@ -44,6 +44,7 @@ gate (`hooks/pre-commit` runs `just test` via `core.hooksPath`).
 just                # list recipes
 just test           # offline gate: fmt, clippy, all-features + no-default tests
 just test-ignored   # live-API #[ignore]d tests (needs misanthropic/api.key)
+just test-blallama <model>  # live Chat scenarios on a local blallama server
 just install-hooks  # enable the pre-commit gate (once per clone)
 ```
 

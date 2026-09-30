@@ -55,7 +55,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
 ## Quick start — single message
 
 ```no_run
-use misanthropic::{Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Prompt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -68,16 +68,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a Prompt (the request type) and send it. `Client::message`
     // forces `stream = false` and returns a `response::Message` directly.
-    // `messages` validates turn order, so the `?` is required — and not
-    // just for correctness: an un-unwrapped `Result` would itself satisfy
-    // `impl Serialize` and reach the wire as `{"Ok": {…}}` if the error
-    // type were serializable. It deliberately isn't.
-    let message = client
-        .message(
-            Prompt::default()
-                .messages([(Role::User, "What is 2+2?")])?,
-        )
-        .await?;
+    // `Prompt::user` (or `Prompt::from("…")`) is infallible — a lone turn
+    // of text, image or document content is always legal. The appending
+    // builders (`messages`, `add_message`, …) validate turn order and
+    // return a `Result`, so they need a `?` — and not just for correctness:
+    // an un-unwrapped `Result` would itself satisfy `impl Serialize` and
+    // reach the wire as `{"Ok": {…}}` if the error type were serializable.
+    // It deliberately isn't.
+    let message = client.message(Prompt::user("What is 2+2?")).await?;
 
     // `response::Message` implements `Display` (prints content).
     println!("{message}");
@@ -296,6 +294,147 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 ```
 
 [`Seated`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.Seated.html
+
+### Agent loops — `response.disposition()`
+
+`response.disposition()` classifies a turn by what the loop must do next — the
+pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
+breaks the build here, not silently in a driver). `response.tool_uses()`
+iterates **every** client `tool::Use` in the turn (unlike `tool_use()`, which
+returns only a trailing one) — but, like `tool_use()`, only on a `tool_use`
+stop; the content's own `tool_uses()` (`response.inner.content`) is the raw
+view, which a paused turn's calls and a turn inferred without a stop reason
+need. Client calls run **only** from a `ToolUse` (or `Paused`) turn — a
+`refusal` can cut a `tool_use` (or a server tool) short. The `chat`-feature
+`Chat` driver runs this same match; see *The `Chat` driver* below for how it
+hands a turn it can't use back.
+
+```no_run
+use misanthropic::{
+    Client, Prompt,
+    prompt::message::{Block, Message, Role, SystemMessage},
+    response::Disposition,
+    tool::{Tool, ToolBox},
+};
+
+# type Error = Box<dyn std::error::Error + Send + Sync>;
+# async fn run(client: Client, mut toolbox: ToolBox) -> Result<(), Error> {
+let mut prompt = Prompt::user("Run the tests and summarize the failures.");
+toolbox.prepare(&mut prompt).await?;
+let mut pending: Option<SystemMessage> = None;
+
+for _ in 0..8 { // round budget: a model that calls tools forever still stops
+    let response = client.message(&prompt).await?;
+    match response.disposition() {
+        // max_tokens: tool calls may be missing arguments. NEVER seat or
+        // dispatch; hand back — raise max_tokens (or ask for brevity), resend.
+        Disposition::Clipped => break,
+        // tool_use, or pause_turn (resending resumes the server tool): seat
+        // it, answer any client calls in one tool_result-led user turn. Raw
+        // calls: the gated `response.tool_uses()` misses a paused turn's.
+        Disposition::Paused | Disposition::ToolUse => {
+            let content = &response.inner.content;
+            let calls: Vec<_> = content.tool_uses().cloned().collect();
+            prompt.seat(response, &mut pending)?;
+            if calls.is_empty() {
+                continue;
+            }
+            let mut results = Vec::new();
+            for call in calls {
+                results.push(Block::from(toolbox.call(call).await));
+            }
+            prompt.seat((Role::User, results), &mut pending)?;
+        }
+        // end_turn / stop_sequence / refusal: seat and hand back — unless
+        // it's empty (a 400) or cuts a call short (a refusal can leave a
+        // tool_use or a server tool half-made); drop such a turn whole
+        // (stripping could strand a server tool).
+        Disposition::Done => {
+            let turn = &response.inner;
+            let usable = !turn.content.is_empty()
+                && turn.content.tool_uses().next().is_none()
+                && turn.unfinished_server_tool_uses().next().is_none();
+            if usable {
+                prompt.seat(response, &mut pending)?;
+            }
+            break;
+        }
+    }
+}
+// A paused turn left in flight admits only its continuation: pop it (one
+// message — continuations merge) before a user turn follows.
+let in_flight =
+    |turn: &Message| turn.unfinished_server_tool_uses().next().is_some();
+if prompt.messages.last().is_some_and(in_flight) {
+    prompt.messages.pop();
+}
+# Ok(())
+# }
+```
+
+Clip handling is policy: hand back (above), then raise `max_tokens` and
+resend, or nudge the model to be briefer. Continuing a partial assistant turn
+(prefill) is backend-dependent — Anthropic rejects it with thinking enabled.
+
+### The `Chat` driver — hand-backs and resume
+
+`Chat` (feature `chat`) runs the loop above over any `Transport`. A turn it
+can't use is never seated and its calls never run: `run` returns a
+`chat::Error { kind, prompt, pending, state, .. }` — `Stop::Clipped`
+(`max_tokens`) or `Stop::Unusable` (a finished turn, e.g. a refusal, that
+still calls tools or cuts a server tool short; dropped whole) — alongside
+transport, beat, tool and turn-order failures. It hands back everything a
+resume needs: the prompt (legal to resend), buffered system notes, the state,
+and the torn-down toolbox and configuration (hook, budget, caching, usage
+sink). `error.resume(transport)` rebuilds the same `Chat` (re-preparing the
+tools), which answers the prompt before asking for a beat — so resuming is a
+loop. A finished run hands back the same `chat::Parts`; `Chat::from_parts`
+carries on from them. Pass the beat closure as `&mut` to keep it across
+resumes. `chat::Error` converts into a `BoxError` with `?`.
+
+```no_run
+use std::num::NonZeroU32;
+
+use misanthropic::{
+    Prompt, Transport,
+    chat::{BoxError, Chat, Stop},
+    prompt::message::{Message, Role},
+    tool::ToolBox,
+};
+
+# async fn converse<T: Transport + Clone>(
+#     transport: T,
+#     lines: Vec<&str>,
+# ) -> Result<Prompt, BoxError> {
+let mut lines = lines.into_iter();
+let mut next_beat = async |_: &mut ()| {
+    let line = lines.next();
+    Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
+};
+
+let mut chat = Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
+loop {
+    let mut error = match chat.run((), &mut next_beat).await {
+        Ok((parts, ())) => return Ok(parts.prompt),
+        Err(error) => error,
+    };
+    match &error.kind {
+        // Nothing seated or run: raise the limit, resume.
+        Stop::Clipped(_) => {
+            let two = NonZeroU32::new(2).unwrap();
+            error.prompt.max_tokens =
+                error.prompt.max_tokens.saturating_mul(two);
+        }
+        // A refusal (or other finished turn) that called tools: nothing ran.
+        Stop::Unusable(response) => {
+            return Err(format!("unusable: {:?}", response.stop_reason).into());
+        }
+        _ => return Err(error.into()),
+    }
+    (chat, _) = error.resume(transport.clone());
+}
+# }
+```
 
 ## Tool use — the `#[tool]` macro (preferred)
 
@@ -815,7 +954,7 @@ use misanthropic::response::StopReason;
 # fn document(reason: StopReason) {
 match reason {
     StopReason::EndTurn => {}       // natural stopping point
-    StopReason::MaxTokens => {}     // hit max_tokens
+    StopReason::MaxTokens => {}     // hit max_tokens — never dispatch its calls
     StopReason::StopSequence => {}  // a stop sequence was generated
     StopReason::ToolUse => {}       // wants a tool call — see `tool_use()`
     StopReason::PauseTurn => {}     // server tool paused; resend to continue
@@ -877,7 +1016,9 @@ your task — they're the most current, compiler-checked usage.
   `Role::System` content seats when the tail permits or buffers (never on the
   user channel) until it does, concatenating onto a system tail if it lands on
   one. Returns `Seated::{Appended, Merged, Buffered}`. See the seating example
-  above.
+  above. Pair it with `response.disposition()` (`Paused` / `Clipped` /
+  `ToolUse` / `Done`) to decide what to seat — never a `Clipped` turn, and
+  never run the calls of anything but a `ToolUse` / `Paused` one.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.

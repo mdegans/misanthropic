@@ -15,35 +15,6 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
-### Added
-
-- **`schema-order-check` (default-on) enforces required-before-optional
-  property order in tool input schemas** (#141). Anthropic and local grammar
-  engines like drama_llama generate in `properties` order (the live probe
-  found 0/24 optionals hoisted), while an engine following the
-  structured-outputs docs hoists required properties first — so
-  required-before-optional is the one layout every engine generates
-  identically. It matters because field order changes what the model
-  generates (reasoning must precede the answer), more so on smaller models.
-  The feature enables `schema-order` (without `preserve_order` the check
-  would see alphabetical order).
-
-- **`CustomMethodDef::try_from_checked`** imports third-party tool JSON held
-  to `MethodBuilder::build`'s authoring checks, property order included;
-  `try_from` / `from_serializable` receive it as written. It returns a typed
-  `ToolBuildError`: `InvalidInputSchema` for a misordered schema, the new
-  `Json` variant for a value that isn't a tool definition.
-
-- **`response::Message::tool_uses()`** — every client `tool::Use` in the
-  turn, in order (the parallel-call twin of `tool_use()`), gated the same
-  way: empty unless `stop_reason` is `ToolUse`. A refusal can cut a call off
-  mid-input and `max_tokens` can truncate one, so calls are only safe to run
-  once the stop reason says so. The README, skills and tool examples
-  (`strawberry`, `bash`, `text_editor`, `python`, `interleaved_thinking`)
-  now dispatch through it and answer every call in one user turn;
-  `tool_use()` returns only the last call, complete only when parallel tool
-  use is disabled.
-
 ### Breaking
 
 - **`chat::BudgetPolicy` and `tool::bash::Network` are `#[non_exhaustive]`.**
@@ -73,6 +44,113 @@ record; this file aggregates them.
   exhaustive `match` on it needs an arm. Its `InvalidInputSchema` message now
   reads "because", not "becuase".
 
+- **Turn order rejects abandoning an in-flight server tool** — new
+  `TurnOrderError::UnfinishedServerToolUse`. A `server_tool_use` no result in
+  its turn answers (a `pause_turn` turn) admits only an assistant
+  continuation; a user or system turn after it was accepted client-side and
+  400'd on the wire (live-probed). `check_turn_order`, `push_message` and
+  `Prompt::seat` now refuse it (a system note buffers instead). A
+  programmatic call's container awaiting client `tool_result`s is not in
+  flight, and a system turn after a result still needs that result to answer
+  every use in the turn.
+- **`Chat::run` hands everything back: `Ok((chat::Parts, State))` or
+  `Err(chat::Error<State>)`** (was `Ok((Prompt, State))` or a bare
+  `BoxError`, which dropped the prompt, the state, the tools and any
+  buffered system note). `Parts { prompt, pending, toolbox, .. }` also
+  carries the `Chat`'s configuration (hook, budget, caching, usage sink), and
+  `Chat::from_parts(transport, parts)` rebuilds the same `Chat` from it — a
+  note still buffered is seated after the next beat instead of lost. The
+  `Error` carries the same (`kind`, `prompt`, `pending`, `state`, plus
+  `toolbox_mut()` / `into_parts()`), implements `std::error::Error`, and
+  stays `Send + Sync`, so `?` into a `BoxError` still works; `kind` is the
+  new `chat::Stop`: `Clipped` and `Unusable` (see *Fixed*), or `Transport` /
+  `Beat` / `Tool` / `TurnOrder` wrapping what used to be the bare error. The
+  prompt is legal to resend, and a `Chat` whose prompt awaits the model
+  (ending in a user or system turn, or a paused one) now **answers it before
+  asking for a beat** — so resuming is a loop:
+
+  ```rust
+  let mut error = match chat.run((), &mut next_beat).await {
+      Ok((parts, ())) => return Ok(parts.prompt),
+      Err(error) => error,
+  };
+  // Clipped: nothing was seated or run — raise max_tokens, resume.
+  error.prompt.max_tokens = error.prompt.max_tokens.saturating_mul(two);
+  (chat, _) = error.resume(transport.clone());
+  ```
+
+  The toolbox is still torn down at the end of every run (so giving up on
+  an `Error` leaks nothing) and prepared again by the next — `on_init` runs
+  once per run — and what its tools pushed in between is delivered then.
+
+### Added
+
+- **`schema-order-check` (default-on) enforces required-before-optional
+  property order in tool input schemas** (#141). Anthropic and local grammar
+  engines like drama_llama generate in `properties` order (the live probe
+  found 0/24 optionals hoisted), while an engine following the
+  structured-outputs docs hoists required properties first — so
+  required-before-optional is the one layout every engine generates
+  identically. It matters because field order changes what the model
+  generates (reasoning must precede the answer), more so on smaller models.
+  The feature enables `schema-order` (without `preserve_order` the check
+  would see alphabetical order).
+
+- **`CustomMethodDef::try_from_checked`** imports third-party tool JSON held
+  to `MethodBuilder::build`'s authoring checks, property order included;
+  `try_from` / `from_serializable` receive it as written. It returns a typed
+  `ToolBuildError`: `InvalidInputSchema` for a misordered schema, the new
+  `Json` variant for a value that isn't a tool definition.
+
+- **`blallama` feature and `just test-blallama <model>`: live `Chat`
+  scenarios against a local Anthropic-compatible server** (drama_llama's
+  `blallama`, on `localhost:11435`). Local runs only: the tests skip unless
+  `BLALLAMA_URL` is set, with `BLALLAMA_MODEL` naming the model, which keeps
+  them out of CI's `--all-features` builds. They run the scenario table's
+  live-able rows — a plain turn, stop sequences, a clip mid-call, a forced
+  tool call through a `FinalWord` wrap-up, system notes, a notification —
+  and hold every response to Anthropic's shape, so a server deviation
+  surfaces as a failure. The offline table (68 rows over `MockTransport`)
+  asserts the requests, turn shapes, calls run, usage and wire legality of
+  every request and hand-back.
+
+- **`Message::unfinished_server_tool_uses()`**,
+  **`Block::server_tool_result_id()`** and **`Caller::tool_id()`** — the pieces of the rule above: which server
+  tool calls a turn leaves in flight, which use a server-tool result answers,
+  and which container made a programmatic call.
+
+- **`Prompt::user(content)` — an infallible opening turn** (#125), plus
+  `impl From<&str> for Prompt`. A lone turn of text, image or document
+  content is always legal, so the line every program starts with needs no
+  `Role` import and no `?`: `client.message(Prompt::user("What is 2+2?"))`.
+  (`tool_result` content is the exception; `add_message` is the checked
+  path.)
+- **`response::Disposition` + `response::Message::disposition()` — what a
+  driver must do next with a turn** (#125): `Paused` (`pause_turn`),
+  `Clipped` (`max_tokens` — never dispatch its tool calls), `ToolUse`, or
+  `Done` (`end_turn` / `stop_sequence` / `refusal`). Exhaustive on purpose,
+  so a new disposition breaks every driver's `match` at compile time. A
+  response with no `stop_reason` (a provider that doesn't report one) is
+  classified from its content: `ToolUse` if it calls tools, else `Done` — so
+  a transport that omits it on a truncated turn bypasses the `Clipped` guard.
+- **`tool_uses()` on `response::Message` and `Content`** — every client
+  `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
+  trailing one). The response's is gated like `tool_use()`: empty unless
+  `stop_reason` is `tool_use`, so a refused or truncated turn's calls never
+  reach dispatch. `Content::tool_uses()` is the raw view (what `disposition`
+  infers a stop-reason-less `ToolUse` from). The README, skills and tool
+  examples (`strawberry`, `bash`, `text_editor`, `python`,
+  `interleaved_thinking`) now dispatch through it and answer every call in one
+  user turn; `tool_use()` is complete only when parallel tool use is disabled.
+
+### Changed
+
+- **`BudgetPolicy::FinalWord` asks for words.** The wrap-up call now goes out
+  with `tool_choice: none` (the prompt's own `tool_choice` is restored after)
+  instead of letting the model call tools only to answer them with synthetic
+  errors. A transport with `Quirks::tool_choice_not_respected` gets the prompt
+  unchanged, and calls a wrap-up makes anyway are still errored.
+
 ### Fixed
 
 - **Chat demo ran tool calls before the turn's stop reason arrived.** The
@@ -88,6 +166,63 @@ record; this file aggregates them.
   message that prompted it (a user turn can't follow a user turn), and the
   UI says why. The decision lives in `model::turn` (`Disposition`, `reply`,
   `rewind`), unit-tested against parallel, refused and clipped turns.
+- **`Chat` no longer dispatches tool calls from a `max_tokens`-clipped turn**
+  (#124). A clipped turn's `tool_use` can be valid JSON missing arguments the
+  model never emitted; `Chat` seated it and ran the calls anyway. The loop now
+  matches on `Disposition`: a `Clipped` turn (the `BudgetPolicy::FinalWord`
+  wrap-up included) is never seated or dispatched, and `run` hands the
+  un-advanced prompt back as `Stop::Clipped` — raising `max_tokens`,
+  nudging the model, or giving up is the caller's policy.
+- **`Chat` runs client tool calls only from a `tool_use` turn** (or a paused
+  one). It dispatched by content, whatever the stop reason — but a
+  `refusal` can cut a `tool_use` short. A finished (`Done`) turn that still
+  calls client tools is now `Stop::Unusable`: none run, and the whole turn is
+  dropped (with any paused turn it continued), never stripped — stripping
+  could strand a `server_tool_use`. Calls an `on_assistant` hook seats still
+  run.
+- **`Chat` never seats a finished turn that cuts a server tool short.** A
+  refusal (or `end_turn`) leaving a `server_tool_use` unanswered — in its
+  own content, or in the paused turn it continued — was seated as a dead
+  turn nothing would ever answer, and the next beat 400'd. It is now
+  `Stop::Unusable` like a finished turn with client calls, dropped whole.
+- **A resumed `Chat` drops a paused turn it resumed, when it must.** A run
+  seeded with a paused tail (a resume after, say, a transport error) didn't
+  know where that turn started, so an unusable continuation or a budget
+  hand-back left the in-flight turn in place. It now tracks the tail's
+  paused turn from the start.
+- **`Chat` hands back with a legal tail.** Exhausting the round budget
+  mid-pause drops the in-flight paused turn whole, and a system turn left
+  trailing by a hand-back (seated right before the call, or flushed by
+  synthetic results) goes back to the pending buffer and re-seats after the
+  next beat, instead of making that beat a `BadTransition`. The paused turn is
+  tracked from where it was first seated and only within the round's own
+  seating — a continuation seated after a flushed note no longer leaves the
+  turn's start behind, and a hook that redacts a paused turn no longer makes
+  the drop take earlier beats with it. System notes seated inside the dropped
+  turn are re-buffered instead of lost, and a `FinalWord` wrap-up that pauses
+  is no longer seated as an unresumable tail.
+- **`Chat` drives a round on a beat that merges into the tail.** It skipped
+  the model call whenever a beat left `messages.len()` unchanged, so a user
+  beat merging into a user tail (e.g. the synthetic results a budget hand-back
+  leaves) was silently never answered. It now asks `Seated::advanced`.
+- **`Chat` no longer seats an empty assistant turn.** A refusal with no
+  content, or an empty `end_turn`, was seated as a turn with no blocks, and
+  the API rejects an empty turn — so the next request 400'd. Such a turn now
+  reaches the `on_assistant` hook (which may still seat something) but is
+  otherwise dropped, and the caller's next beat follows the previous tail.
+- **A round that seats nothing no longer strands a system note.** A note
+  seated right before the model call (a user + system beat, say) followed by
+  a turn that seats nothing — a bare refusal, an empty `end_turn`, a hook
+  returning nothing or only a system verdict — left a `[…, user, system]`
+  tail, and the next beat failed with `Stop::TurnOrder` (system → user). The
+  note now goes back to the pending buffer and follows the next beat, and a
+  paused turn a hook left uncontinued is dropped whole.
+- **A beat, or an `on_assistant` return, that breaks turn order is seated
+  whole or not at all.** A hook returning, say, a `tool_use` turn followed by
+  a user turn got `Stop::TurnOrder` with the `tool_use` turn already seated
+  and unanswered — a hand-back no beat could legally follow — and a
+  multi-message beat failing part-way left its first messages seated. The
+  seating now rolls back.
 
 ## [1.0.0-alpha.20] — 2026-09-28
 

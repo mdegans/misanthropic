@@ -1869,6 +1869,20 @@ impl Caller {
         Self::Known(KnownCaller::Direct)
     }
 
+    /// The `srvtoolu_` id of the server-tool call (a code-execution
+    /// container) that made this call; `None` for a direct call. An
+    /// unmodeled caller is read from its raw `tool_id`, if it has one.
+    pub fn tool_id(&self) -> Option<&str> {
+        match self {
+            Self::Known(KnownCaller::Direct) => None,
+            Self::Known(
+                KnownCaller::CodeExecution20250825 { tool_id }
+                | KnownCaller::CodeExecution20260120 { tool_id },
+            ) => Some(tool_id),
+            Self::Other(raw) => raw.get("tool_id")?.as_str(),
+        }
+    }
+
     /// A `code_execution_20260120` container called the tool programmatically,
     /// carrying the `srvtoolu_` id of the code-execution call. See
     /// [`KnownCaller::CodeExecution20260120`].
@@ -3252,5 +3266,25 @@ mod tests {
             .build()
             .unwrap();
         assert_eq!(tool.strict, Some(true));
+    }
+
+    #[test]
+    fn test_caller_tool_id() {
+        assert_eq!(Caller::direct().tool_id(), None);
+        assert_eq!(
+            Caller::code_execution_20260120("srvtoolu_1").tool_id(),
+            Some("srvtoolu_1")
+        );
+        assert_eq!(
+            Caller::code_execution_20250825("srvtoolu_2").tool_id(),
+            Some("srvtoolu_2")
+        );
+        // An unmodeled caller is read from its raw shape.
+        let future: Caller = serde_json::from_str(
+            r#"{"type": "code_execution_29990101", "tool_id": "srvtoolu_3"}"#,
+        )
+        .unwrap();
+        assert!(matches!(future, Caller::Other(_)));
+        assert_eq!(future.tool_id(), Some("srvtoolu_3"));
     }
 }

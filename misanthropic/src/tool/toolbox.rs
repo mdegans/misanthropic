@@ -32,6 +32,10 @@ pub struct ToolBox {
     /// adopts its parent's (send-only) handle here (see [`ToolBox`]'s
     /// [`Tool::connect`]).
     mailbox: Option<Mailbox>,
+    /// The consumer end a driver [`park`](Self::park)ed after a run, handed
+    /// out again by the next [`Tool::subscribe`] — the channel outlives the
+    /// box's own sender, as the tools hold theirs.
+    parked: Option<Notifications>,
     /// Source-path prefix for stamping child mailboxes. `None` at the root (a
     /// source is the bare tool name); `Some("root/child")` once nested, so
     /// sources compose `parent/child/leaf`.
@@ -48,6 +52,7 @@ impl Default for ToolBox {
             method_to_tool_name: BTreeMap::new(),
             tool_name_to_tool: HashMap::new(),
             mailbox: Some(Mailbox::new("toolbox")),
+            parked: None,
             source_prefix: None,
             flat: false,
         }
@@ -295,6 +300,16 @@ impl ToolBox {
                 .join("\n")
                 .into())
         }
+    }
+
+    /// Give back the stream [`Tool::subscribe`] handed out, so the next
+    /// subscriber — a resumed `Chat` — gets it, with whatever
+    /// the tools pushed in between still queued. A driver parks it after
+    /// [`teardown_tools`](Self::teardown_tools), which drops only the box's
+    /// own sender.
+    #[cfg(any(feature = "chat", test))]
+    pub(crate) fn park(&mut self, notifications: Notifications) {
+        self.parked = Some(notifications);
     }
 
     /// Tear down all tools in the toolbox — releasing external resources they
@@ -547,7 +562,9 @@ impl Tool for ToolBox {
     }
 
     fn subscribe(&mut self) -> Option<Notifications> {
-        self.mailbox.as_mut().and_then(Mailbox::subscribe)
+        self.parked
+            .take()
+            .or_else(|| self.mailbox.as_mut().and_then(Mailbox::subscribe))
     }
 
     async fn on_init(
@@ -804,6 +821,24 @@ mod tests {
         let note = notes.try_recv().expect("leaf push reached the root");
         assert_eq!(&*note.source, "mid/inner/leaf");
         assert!(notes.try_recv().is_err(), "exactly one push");
+    }
+
+    /// A parked stream outlives teardown: the tools keep their senders, so
+    /// a push after it is waiting for the next subscriber.
+    #[tokio::test]
+    async fn test_parked_stream_survives_teardown() {
+        let mut root = ToolBox::new().add(Pusher::default());
+        let mut prompt = Prompt::default();
+
+        let notes = root.subscribe().expect("root box has an outbox");
+        root.prepare(&mut prompt).await.unwrap(); // pushes "ping"
+        root.teardown_tools(&mut prompt).await.unwrap();
+        root.park(notes);
+        root.prepare(&mut prompt).await.unwrap(); // pushes again
+
+        let mut notes = root.subscribe().expect("the parked stream");
+        assert!(notes.try_recv().is_ok() && notes.try_recv().is_ok());
+        assert!(root.subscribe().is_none(), "handed out once");
     }
 
     #[tokio::test]
