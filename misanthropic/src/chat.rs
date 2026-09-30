@@ -18,8 +18,8 @@
 //! to the model's ceiling when the transport [lists
 //! one](crate::model::ModelInfo::max_tokens)), counted against the
 //! [round budget](Chat::max_consecutive_tool_calls), so a model that clips
-//! forever still hands back. Handing back never strands an in-flight paused
-//! turn.
+//! forever still hands back — at once, when the ceiling leaves no room to
+//! grow. Handing back never strands an in-flight paused turn.
 //!
 //! The driver is generic over its [`Transport`] — an API [`Client`] and a
 //! local inference engine drive the same loop.
@@ -415,7 +415,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// calls never run (they may be missing arguments the model never
     /// emitted): the prompt stays un-advanced and the round retries with
     /// [`max_tokens`](Prompt::max_tokens) raised — see `raise_max_tokens` —
-    /// or, out of budget, hands back via `restore_tail`.
+    /// or, out of budget or room, hands back via `restore_tail`.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
         let mut rounds = 0usize;
         // Where the in-flight paused turn sits, while the last seated turn
@@ -439,12 +439,12 @@ impl<State, T: Transport> Chat<State, T> {
                             "budget exhausted on a clipped turn: handing \
                              back without seating it"
                         );
-                        self.restore_tail(paused_at);
-                        return Ok(());
+                    } else if self.raise_max_tokens().await {
+                        rounds += 1;
+                        continue;
                     }
-                    rounds += 1;
-                    self.raise_max_tokens().await;
-                    continue;
+                    self.restore_tail(paused_at);
+                    return Ok(());
                 }
                 Disposition::Paused => true,
                 Disposition::ToolUse | Disposition::Done => false,
@@ -502,21 +502,31 @@ impl<State, T: Transport> Chat<State, T> {
     /// A turn clipped at [`max_tokens`](Prompt::max_tokens): double it,
     /// clamped to the model's ceiling when the transport
     /// [declares one](crate::model::ModelInfo::max_tokens) (never lowering a
-    /// caller's larger setting). The round budget bounds the retries, so a
-    /// model that clips forever still terminates. The raise persists for
-    /// later beats.
-    async fn raise_max_tokens(&mut self) {
+    /// caller's larger setting). The raise persists for later beats.
+    ///
+    /// `false` when there's no room to grow (already at the ceiling): a retry
+    /// would re-send the identical request, so the caller hands back instead.
+    /// Otherwise the round budget bounds the retries.
+    async fn raise_max_tokens(&mut self) -> bool {
         let current = self.prompt.max_tokens;
         let doubled = current.saturating_mul(NonZeroU32::new(2).unwrap());
         let raised = match self.max_tokens_ceiling().await {
             Some(ceiling) => doubled.min(ceiling).max(current),
             None => doubled,
         };
+        if raised == current {
+            log::warn!(
+                "turn clipped at max_tokens = {current} with no room to \
+                 grow: handing back without seating it"
+            );
+            return false;
+        }
         log::warn!(
             "turn clipped at max_tokens = {current}: not seating it or \
              dispatching its tool calls; retrying with {raised}"
         );
         self.prompt.max_tokens = raised;
+        true
     }
 
     /// Leave a tail the caller's next beat can legally follow when handing
@@ -1018,8 +1028,9 @@ mod tests {
         assert_eq!(prompt.max_tokens.get(), 8192);
     }
 
-    /// The raise is clamped to the model's declared ceiling, and a model that
-    /// clips forever stops at the round budget without seating anything.
+    /// The raise is clamped to the model's declared ceiling, and once there
+    /// is no room to grow the driver hands back at once rather than re-send
+    /// the identical request until the round budget runs out.
     #[cfg(feature = "mock")]
     #[test]
     fn clipping_forever_clamps_to_the_ceiling_and_terminates() {
@@ -1036,7 +1047,7 @@ mod tests {
         );
         let chat =
             Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
-                .max_consecutive_tool_calls(3);
+                .max_consecutive_tool_calls(8);
 
         let (prompt, ()) =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
@@ -1044,13 +1055,13 @@ mod tests {
 
         // Only the user's beat: no clipped turn was ever seated.
         assert_eq!(prompt.messages.len(), 1);
-        // The first call plus one retry per budgeted round.
+        // No identical retry at the ceiling, with budget to spare.
         let sent: Vec<_> = transport
             .requests()
             .iter()
             .map(|r| r["max_tokens"].as_u64().unwrap())
             .collect();
-        assert_eq!(sent, [4096, 8192, 10_000, 10_000]);
+        assert_eq!(sent, [4096, 8192, 10_000]);
     }
 
     /// A resume that clips with the budget spent must not strand the paused

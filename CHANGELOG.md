@@ -44,8 +44,10 @@ record; this file aggregates them.
   the round retries with `max_tokens` doubled — clamped to the model's ceiling
   when the transport's `models()` lists one (looked up once, on the first
   clip) — counted against `max_consecutive_tool_calls`, so a model that clips
-  forever hands back. A clipped `BudgetPolicy::FinalWord` wrap-up is likewise
-  not seated. The raised `max_tokens` persists on the returned prompt.
+  forever hands back. At the ceiling it hands back at once rather than
+  re-send the identical request until the budget runs out. A clipped
+  `BudgetPolicy::FinalWord` wrap-up is likewise not seated. The raised
+  `max_tokens` persists on the returned prompt.
 - **`Chat` hands back with a legal tail.** Exhausting the round budget on a
   clipped resume left the in-flight paused turn as the tail (illegal to
   abandon on the wire); it is now dropped whole, as the mid-pause budget exit
