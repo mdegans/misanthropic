@@ -438,6 +438,14 @@ impl<State, T: Transport> Chat<State, T> {
         {
             log::warn!("tool teardown failed: {error}");
         }
+        // A note the tail still forbids has no legal place in the prompt
+        // handed back, and a resumed `Chat` starts with an empty buffer.
+        if let Some(note) = &self.pending_system {
+            log::warn!(
+                "handing back with {} buffered system block(s): dropped",
+                note.content.len()
+            );
+        }
 
         match outcome {
             Ok(()) => Ok((self.prompt, state)),

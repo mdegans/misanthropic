@@ -299,10 +299,10 @@ impl Hook {
         if let Hook::None = self {
             return chat;
         }
-        let mut first = true;
+        // "First" across resumes too: the tally is the caller's state.
         chat.on_assistant(move |tally: &mut Tally, turn| {
             tally.turns += 1;
-            self.apply(std::mem::take(&mut first), turn, &slot)
+            self.apply(tally.turns == 1, turn, &slot)
         })
     }
 
@@ -1071,6 +1071,25 @@ fn rows() -> Vec<Row> {
             .reply(mock::text("ok"))
             .requests(1)
             .roles("USA"),
+        // Today a note still buffered at a hand-back is dropped (with a
+        // warning): the prompt has no legal place for it, and a resumed
+        // `Chat` starts with an empty buffer. These pin that.
+        row("trailing_note_is_dropped")
+            .hook(Hook::NoteAfterFirst)
+            .reply(mock::text("hi"))
+            .requests(1)
+            .roles("UA"),
+        row("buffered_note_is_dropped_by_a_resume")
+            .resume()
+            .hook(Hook::NoteAfterFirst)
+            .beats(["search", "next"])
+            .reply(paused())
+            .status(529)
+            .reply(resumed())
+            .reply(mock::text("ok"))
+            .stops([Kind::Transport])
+            .requests(4)
+            .roles("UAUA"),
         // The on_assistant hook.
         row("hook_pass_through")
             .hook(Hook::PassThrough)

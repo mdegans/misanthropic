@@ -90,6 +90,11 @@ record; this file aggregates them.
   instead of letting the model call tools only to answer them with synthetic
   errors. A transport with `Quirks::tool_choice_not_respected` gets the prompt
   unchanged, and calls a wrap-up makes anyway are still errored.
+- **`Chat` warns when a hand-back drops a buffered system note.** A note the
+  tail still forbids (after an assistant turn, or a paused one) has no legal
+  place in the prompt handed back, and a resumed `Chat` starts with an empty
+  buffer, so it is lost — at the end of a run, or across an error and
+  resume. That was silent; it now logs a warning.
 
 ### Fixed
 
