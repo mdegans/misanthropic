@@ -137,7 +137,8 @@ impl Message {
     /// Every client [`tool::Use`] in the turn, in order — regardless of
     /// [`stop_reason`](Self::stop_reason). Pair with
     /// [`disposition`](Self::disposition) to decide whether to dispatch them:
-    /// a [`Clipped`](Disposition::Clipped) turn's calls must not run.
+    /// only a [`ToolUse`](Disposition::ToolUse) (or
+    /// [`Paused`](Disposition::Paused)) turn's calls may run.
     ///
     /// [`tool::Use`]: crate::tool::Use
     pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
@@ -411,9 +412,14 @@ pub enum StopReason {
 ///             }
 ///             prompt.seat((Role::User, results), &mut pending)?;
 ///         }
-///         // end_turn / stop_sequence / refusal: seat it and hand back.
+///         // end_turn / stop_sequence / refusal: seat it and hand back. A
+///         // refusal can cut a `tool_use` short, so a finished turn's calls
+///         // never run: drop such a turn whole (stripping the calls could
+///         // strand a server tool).
 ///         Disposition::Done => {
-///             prompt.seat(response, &mut pending)?;
+///             if response.tool_uses().next().is_none() {
+///                 prompt.seat(response, &mut pending)?;
+///             }
 ///             break;
 ///         }
 ///     }
@@ -444,7 +450,9 @@ pub enum Disposition {
     /// Quiescent: [`EndTurn`](StopReason::EndTurn),
     /// [`StopSequence`](StopReason::StopSequence) or
     /// [`Refusal`](StopReason::Refusal) (which hands back like any finished
-    /// turn), or no stop reason and no tool calls. Hand control back.
+    /// turn), or no stop reason and no tool calls. Hand control back — and
+    /// never run client calls such a turn still carries: a refusal can cut
+    /// a `tool_use` short.
     Done,
 }
 

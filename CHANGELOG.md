@@ -26,6 +26,25 @@ record; this file aggregates them.
   programmatic call's container awaiting client `tool_result`s is not in
   flight, and a system turn after a result still needs that result to answer
   every use in the turn.
+- **`Chat::run` returns `chat::Error<State>`, handing the prompt and state
+  back** (was a bare `BoxError`, which dropped both). `chat::Error { kind,
+  prompt, state }` implements `std::error::Error`, so `?` into a `BoxError`
+  still works; `kind` is the new `chat::Stop`: `Clipped` and `Unusable` (see
+  *Fixed*), or `Transport` / `Beat` / `Tool` / `TurnOrder` wrapping what used
+  to be the bare error. The returned prompt is legal to resend, and a `Chat`
+  seeded with a prompt that awaits the model (ending in a user or system
+  turn, or a paused one) now **answers it before asking for a beat** — so
+  resuming is a loop:
+
+  ```rust
+  match chat.run((), &mut next_beat).await {
+      Ok((prompt, ())) => { /* … */ }
+      Err(chat::Error { kind: Stop::Clipped(_), prompt, state }) => {
+          // Nothing was seated or run: raise max_tokens, resume.
+      }
+      Err(error) => return Err(error.into()),
+  }
+  ```
 
 ### Added
 
@@ -51,30 +70,28 @@ record; this file aggregates them.
 - **`tool_uses()` on `response::Message` and `Content`** — every client
   `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
   trailing one, and only on `stop_reason: tool_use`).
-- **`MockTransport::with_models`** — report `ModelInfo`s from
-  `Transport::models` (previously always empty), e.g. to give a driver a
-  model's `max_tokens` ceiling.
 
 ### Fixed
 
 - **`Chat` no longer dispatches tool calls from a `max_tokens`-clipped turn**
   (#124). A clipped turn's `tool_use` can be valid JSON missing arguments the
   model never emitted; `Chat` seated it and ran the calls anyway. The loop now
-  matches on `Disposition`: a `Clipped` turn is never seated or dispatched, and
-  the round retries with `max_tokens` doubled — clamped to the model's ceiling
-  when the transport's `models()` lists one (looked up once, on the first
-  clip) — counted against `max_consecutive_tool_calls`, so a model that clips
-  forever hands back. At the ceiling it hands back at once rather than
-  re-send the identical request until the budget runs out. A clipped
-  `BudgetPolicy::FinalWord` wrap-up is likewise not seated. The raised
-  `max_tokens` persists on the returned prompt.
-- **`Chat` hands back with a legal tail.** Exhausting the round budget on a
-  clipped resume left the in-flight paused turn as the tail (illegal to
-  abandon on the wire); it is now dropped whole, as the mid-pause budget exit
-  already did. A system turn left trailing by any hand-back (seated right
-  before the call, or flushed by synthetic results) goes back to the pending
-  buffer and re-seats after the next beat, instead of making that beat a
-  `BadTransition`.
+  matches on `Disposition`: a `Clipped` turn (the `BudgetPolicy::FinalWord`
+  wrap-up included) is never seated or dispatched, and `run` hands the
+  un-advanced prompt back as `Stop::Clipped` — raising `max_tokens`,
+  nudging the model, or giving up is the caller's policy.
+- **`Chat` runs client tool calls only from a `tool_use` turn** (or a paused
+  one). It dispatched by content, whatever the stop reason — but a
+  `refusal` can cut a `tool_use` short. A finished (`Done`) turn that still
+  calls client tools is now `Stop::Unusable`: none run, and the whole turn is
+  dropped (with any paused turn it continued), never stripped — stripping
+  could strand a `server_tool_use`. Calls an `on_assistant` hook seats still
+  run.
+- **`Chat` hands back with a legal tail.** Exhausting the round budget
+  mid-pause drops the in-flight paused turn whole, and a system turn left
+  trailing by a hand-back (seated right before the call, or flushed by
+  synthetic results) goes back to the pending buffer and re-seats after the
+  next beat, instead of making that beat a `BadTransition`.
 - **`Chat` drives a round on a beat that merges into the tail.** It skipped
   the model call whenever a beat left `messages.len()` unchanged, so a user
   beat merging into a user tail (e.g. the synthetic results a budget hand-back

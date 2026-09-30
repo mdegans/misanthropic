@@ -387,10 +387,11 @@ schema-inline = []
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),
-# `derive` (the `#[tool]` macro), and the client-executed file tools `memory-fs`
+# `derive` (the `#[tool]` macro), the client-executed file tools `memory-fs`
 # (memory + its backend), `text-editor-fs` (text editor + its backend), and
-# `bash-container` (the `DockerSandbox` bash executor).
-__skills = ["client", "derive", "memory-fs", "text-editor-fs", "bash-container"]
+# `bash-container` (the `DockerSandbox` bash executor), and `chat` (the `Chat`
+# driver).
+__skills = ["client", "derive", "memory-fs", "text-editor-fs", "bash-container", "chat"]
 
 # Integration tests link the lib as an *external* crate, so `cfg(test)` does not
 # reach it — the `test`-gated `derive(PartialEq)` on API types (e.g.

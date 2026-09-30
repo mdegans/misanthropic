@@ -11,15 +11,18 @@
 //! how to read the next line of user input, and (via [`Chat::on_assistant`])
 //! what each assistant turn becomes.
 //!
-//! Each response is classified by its [`Disposition`]. A
-//! [`Clipped`](Disposition::Clipped) (`max_tokens`) turn is never seated and
-//! its tool calls never run — they can be valid JSON missing arguments the
-//! model never emitted. The round retries with `max_tokens` doubled (clamped
-//! to the model's ceiling when the transport [lists
-//! one](crate::model::ModelInfo::max_tokens)), counted against the
-//! [round budget](Chat::max_consecutive_tool_calls), so a model that clips
-//! forever still hands back — at once, when the ceiling leaves no room to
-//! grow. Handing back never strands an in-flight paused turn.
+//! Each response is classified by its [`Disposition`], and client tool calls
+//! run only from a complete [`ToolUse`](Disposition::ToolUse) turn (or a
+//! [paused](Disposition::Paused) one). A turn the driver can't use is never
+//! seated and its calls never run — it stops with an [`Error`] that hands the
+//! [`Prompt`] and `State` back, so the caller can adjust and resume:
+//!
+//! - [`Clipped`](Stop::Clipped) (`max_tokens`): its tool calls can be valid
+//!   JSON missing arguments the model never emitted.
+//! - [`Unusable`](Stop::Unusable): a finished turn — a `refusal` above all —
+//!   that still calls client tools. A refusal can cut a `tool_use` short.
+//!
+//! Handing back never strands an in-flight paused turn.
 //!
 //! The driver is generic over its [`Transport`] — an API [`Client`] and a
 //! local inference engine drive the same loop.
@@ -68,35 +71,33 @@
 //! [auto caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
 //! [`Client`]: crate::Client
 
-use std::{
-    num::NonZeroU32,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
 
 use crate::{
     Prompt, Transport,
     prompt::{
-        Seated,
+        Seated, TurnOrderError,
         message::{
             AssistantMessage, Block, CacheControl, Content, Message, Role,
             SystemMessage,
         },
     },
-    response::{Disposition, TokenCounts},
+    response::{self, Disposition, TokenCounts},
     tool::{self, Notification, Notifications, Tool, ToolBox, Use},
+    utils::cold_path,
 };
 
 /// Boxed, thread-safe error — matches the [`Tool`] lifecycle-hook error type
 /// and any [`Transport::Error`], so both flow through `?` unchanged.
 pub type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Default ceiling on consecutive model rounds (tool dispatches, paused
-/// server-tool continuations and clipped retries all count) within a single
-/// user beat. A runaway model is stopped here; real agents (Claude Code) run
-/// uncapped, so override with [`Chat::max_consecutive_tool_calls`]. What
-/// happens at the cap is the [`BudgetPolicy`].
+/// Default ceiling on consecutive model rounds (tool dispatches and paused
+/// server-tool continuations both count) within a single user beat. A runaway
+/// model is stopped here; real agents (Claude Code) run uncapped, so override
+/// with [`Chat::max_consecutive_tool_calls`]. What happens at the cap is the
+/// [`BudgetPolicy`].
 pub const DEFAULT_MAX_TOOL_CALLS: usize = 8;
 
 /// What [`Chat::run`] does when one user beat exhausts
@@ -114,6 +115,127 @@ pub enum BudgetPolicy {
     /// that turn calls tools *again*, those are synthetic-errored too and
     /// control is handed back unconditionally.
     FinalWord,
+}
+
+/// Why [`Chat::run`] stopped early — the [`kind`](Error::kind) of an
+/// [`Error`].
+#[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
+pub enum Stop {
+    /// A [`Clipped`](Disposition::Clipped) (`max_tokens`) turn. Its tool calls
+    /// may be missing arguments the model never emitted, so nothing was
+    /// seated or run: the prompt is exactly as sent. Raise
+    /// [`max_tokens`](Prompt::max_tokens) (or ask for brevity) and resume.
+    #[error(
+        "the model's turn was clipped at max_tokens; nothing was seated \
+         (raise max_tokens and resume)"
+    )]
+    Clipped(Box<response::Message>),
+    /// A finished ([`Done`](Disposition::Done)) turn — a `refusal` above all
+    /// — that still calls client tools. A refusal can cut a `tool_use` short,
+    /// so none run and the whole turn is dropped (with any paused turn it
+    /// continued), never stripped — stripping could strand a
+    /// `server_tool_use`. Inspect its
+    /// [`stop_reason`](response::Message::stop_reason) and resume.
+    #[error(
+        "the model finished its turn ({:?}) with client tool calls; none ran",
+        .0.stop_reason
+    )]
+    Unusable(Box<response::Message>),
+    /// [`Transport::send`] failed; the prompt is as sent.
+    #[error(transparent)]
+    Transport(BoxError),
+    /// The [`run`](Chat::run) closure returned an error.
+    #[error(transparent)]
+    Beat(BoxError),
+    /// A [`Tool`] lifecycle hook (init or turn context) failed.
+    #[error(transparent)]
+    Tool(BoxError),
+    /// A beat, hook return or notification broke turn order — a programming
+    /// error in the caller.
+    #[error(transparent)]
+    TurnOrder(#[from] TurnOrderError),
+}
+
+/// [`Chat::run`] stopped early — see [`Stop`]. Carries the [`Prompt`] and
+/// `State` back out so the caller can adjust and resume: a fresh [`Chat`] on
+/// that `prompt` answers it before asking for the next beat.
+///
+/// ```
+/// use std::num::NonZeroU32;
+///
+/// use misanthropic::{
+///     Prompt, Transport,
+///     chat::{self, BoxError, Chat, Stop},
+///     prompt::message::{Message, Role},
+///     tool::ToolBox,
+/// };
+///
+/// /// Chat through `lines`, doubling `max_tokens` whenever a turn clips.
+/// async fn converse<T: Transport + Clone>(
+///     transport: T,
+///     lines: Vec<&str>,
+/// ) -> Result<Prompt, BoxError> {
+///     let mut lines = lines.into_iter();
+///     let mut next_beat = async |_: &mut ()| {
+///         let line = lines.next();
+///         Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
+///     };
+///
+///     let mut prompt = Prompt::default();
+///     loop {
+///         let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
+///         match chat.run((), &mut next_beat).await {
+///             Ok((prompt, ())) => return Ok(prompt),
+///             // Nothing was seated or run. Raise the limit and resume: the
+///             // next `Chat` answers the un-advanced prompt first.
+///             Err(chat::Error {
+///                 kind: Stop::Clipped(_),
+///                 prompt: clipped,
+///                 ..
+///             }) => {
+///                 let two = NonZeroU32::new(2).unwrap();
+///                 let max_tokens = clipped.max_tokens.saturating_mul(two);
+///                 prompt = clipped.max_tokens(max_tokens);
+///             }
+///             // Anything else still converts with `?` (or `.into()`).
+///             Err(error) => return Err(error.into()),
+///         }
+///     }
+/// }
+/// ```
+pub struct Error<State = ()> {
+    /// Why the driver stopped.
+    pub kind: Stop,
+    /// The prompt, legal to resend as is — see [`Stop`] for what (if
+    /// anything) was dropped.
+    pub prompt: Prompt,
+    /// The caller's state, as the driver last left it.
+    pub state: State,
+}
+
+impl<State> std::fmt::Debug for Error<State> {
+    /// `state` is the caller's (and needn't be `Debug`); [`Prompt`]'s own
+    /// `Debug` hides the conversation.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Error")
+            .field("kind", &self.kind)
+            .field("prompt", &self.prompt)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<State> std::fmt::Display for Error<State> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.kind.fmt(f)
+    }
+}
+
+impl<State> std::error::Error for Error<State> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        // Display is the kind's, so the chain continues below it.
+        std::error::Error::source(&self.kind)
+    }
 }
 
 /// What the round's `select!` produced — computed first, acted on after, so
@@ -150,10 +272,6 @@ pub struct Chat<State, T: Transport> {
     >,
     /// Cumulative token-usage sink — see [`track_usage`](Chat::track_usage).
     usage: Option<Arc<Mutex<TokenCounts>>>,
-    /// The model's `max_tokens` ceiling, looked up through
-    /// [`Transport::models`] on the first clip and cached (`Some(None)`:
-    /// unknown).
-    ceiling: Option<Option<NonZeroU32>>,
 }
 
 impl<State, T: Transport> Chat<State, T> {
@@ -171,14 +289,12 @@ impl<State, T: Transport> Chat<State, T> {
             pending_system: None,
             on_assistant: None,
             usage: None,
-            ceiling: None,
         }
     }
 
     /// Cap consecutive model rounds within one user beat (default
     /// [`DEFAULT_MAX_TOOL_CALLS`]). Hitting the cap triggers the
-    /// [`BudgetPolicy`] — or, on a [clipped](Disposition::Clipped) turn,
-    /// hands back without seating it (dropping any in-flight paused turn).
+    /// [`BudgetPolicy`].
     pub fn max_consecutive_tool_calls(mut self, max: usize) -> Self {
         self.max_tool_calls = max;
         self
@@ -211,14 +327,6 @@ impl<State, T: Transport> Chat<State, T> {
         self
     }
 
-    /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
-    /// sink, if one is installed. Called at every [`Transport::send`] site.
-    fn record_usage(&self, response: &crate::response::Message) {
-        if let Some(sink) = &self.usage {
-            *sink.lock().expect("usage sink poisoned") += response.usage.counts;
-        }
-    }
-
     /// The assistant-turn hook: receives each assistant
     /// [`Message`](AssistantMessage) the model produces and returns the
     /// message(s) actually seated — the loop's output side (the input side is
@@ -229,7 +337,8 @@ impl<State, T: Transport> Chat<State, T> {
     /// messages to append context, or an assistant message carrying
     /// `tool_use` blocks to *force* tool calls — the driver dispatches
     /// whatever client tool calls are in the **seated** assistant turns,
-    /// regardless of provenance. A returned [`System`](Role::System) message
+    /// regardless of provenance. (A turn the driver can't use — see [`Stop`]
+    /// — never reaches the hook.) A returned [`System`](Role::System) message
     /// goes through [`Prompt::seat`] like any other — seated when the tail
     /// permits, otherwise buffered — never re-attributed to the user role.
     ///
@@ -250,22 +359,33 @@ impl<State, T: Transport> Chat<State, T> {
     /// Drive the conversation until `next_beat` returns `None`, then return the
     /// final [`Prompt`] and `State`.
     ///
+    /// A seeded `prompt` that awaits the model — ending in a user or system
+    /// turn, or a paused one — is answered first; that is how a run resumes
+    /// after an [`Error`].
+    ///
     /// `next_beat` produces the next user-side turn(s) — a human line, a
     /// scripted prompt — as `Some(messages)`, or `None` to stop. It owns its
-    /// own input source (typically captured by `move`), so the driver stays
-    /// I/O-agnostic. Returning several messages seats them in order; a beat
-    /// that seats nothing new (empty, or all-[`System`](Role::System) and thus
-    /// buffered) is a no-op round — the model is not called.
+    /// own input source (typically captured by `move`; pass `&mut` to keep it
+    /// across a resume), so the driver stays I/O-agnostic. Returning several
+    /// messages seats them in order; a beat that seats nothing new (empty, or
+    /// all-[`System`](Role::System) and thus buffered) is a no-op round — the
+    /// model is not called.
     ///
     /// Tool-pushed notifications are handled by the driver itself: it races
     /// them against `next_beat`, so the losing future is cancelled. Keep
     /// `next_beat` cancel-safe (await a channel `recv`, don't hold
     /// non-restartable state across the await) — the canonical stdin reader is.
+    ///
+    /// # Errors
+    /// An [`Error`] carrying the prompt and state back — see [`Stop`].
+    // The `Err` arm is large because it hands the `Prompt` back — as the
+    // `Ok` arm does.
+    #[allow(clippy::result_large_err)]
     pub async fn run<H>(
         mut self,
         mut state: State,
         next_beat: H,
-    ) -> Result<(Prompt, State), BoxError>
+    ) -> Result<(Prompt, State), Error<State>>
     where
         H: AsyncFnMut(&mut State) -> Result<Option<Vec<Message>>, BoxError>,
     {
@@ -286,7 +406,14 @@ impl<State, T: Transport> Chat<State, T> {
         }
 
         // Install the box's method definitions and run each tool's `on_init`.
-        self.toolbox.prepare(&mut self.prompt).await?;
+        if let Err(error) = self.toolbox.prepare(&mut self.prompt).await {
+            cold_path();
+            return Err(Error {
+                kind: Stop::Tool(error),
+                prompt: self.prompt,
+                state,
+            });
+        }
 
         // The driver owns notification interleaving: subscribe to the box once
         // and race pushes against the caller's input inside `drive`.
@@ -301,7 +428,17 @@ impl<State, T: Transport> Chat<State, T> {
             log::warn!("tool teardown failed: {error}");
         }
 
-        outcome.map(|()| (self.prompt, state))
+        match outcome {
+            Ok(()) => Ok((self.prompt, state)),
+            Err(kind) => {
+                cold_path();
+                Err(Error {
+                    kind,
+                    prompt: self.prompt,
+                    state,
+                })
+            }
+        }
     }
 
     /// The loop body: per round, let the tools see the turn, take the next beat
@@ -312,15 +449,27 @@ impl<State, T: Transport> Chat<State, T> {
         state: &mut State,
         mut next_beat: H,
         mut notifications: Option<Notifications>,
-    ) -> Result<(), BoxError>
+    ) -> Result<(), Stop>
     where
         H: AsyncFnMut(&mut State) -> Result<Option<Vec<Message>>, BoxError>,
     {
+        // A seeded prompt awaiting the model (a resume) is answered before
+        // the first beat — once: a later user tail (a budget hand-back's
+        // synthetic results) waits for the caller.
+        let mut resume = self.prompt.messages.last().is_some_and(awaits_model);
         loop {
             // Tools see the turn first — a push-only tool may drop a
             // notification into its mailbox here, which the `select!` below can
             // then pick up in the same round.
-            self.toolbox.update_turn_context(&mut self.prompt).await?;
+            self.toolbox
+                .update_turn_context(&mut self.prompt)
+                .await
+                .map_err(Stop::Tool)?;
+
+            if std::mem::take(&mut resume) {
+                self.quiesce(state).await?;
+                continue;
+            }
 
             // Race the caller's next beat against any tool-pushed notification.
             // The losing future is cancelled; both arms await a cancel-safe
@@ -333,7 +482,7 @@ impl<State, T: Transport> Chat<State, T> {
                 let note = recv_note(&mut notifications).fuse();
                 futures::pin_mut!(beat, note);
                 futures::select! {
-                    result = beat => Turn::Beat(result?),
+                    result = beat => Turn::Beat(result.map_err(Stop::Beat)?),
                     note = note => Turn::Note(note),
                 }
             };
@@ -343,7 +492,7 @@ impl<State, T: Transport> Chat<State, T> {
                 Turn::Beat(None) => return Ok(()), // graceful stop (Ctrl-D)
                 Turn::Beat(Some(beat)) => {
                     beat.into_iter().try_fold(false, |advanced, message| {
-                        Ok::<_, BoxError>(
+                        Ok::<_, Stop>(
                             self.seat(message)?.advanced() || advanced,
                         )
                     })?
@@ -387,7 +536,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// programming error in the tool itself — there is nothing legal to seat,
     /// ever — so this panics naming the offender rather than silently
     /// re-attributing operator content.
-    fn seat_note(&mut self, note: Notification) -> Result<Seated, BoxError> {
+    fn seat_note(&mut self, note: Notification) -> Result<Seated, Stop> {
         let role = self.prompt.resolve_role(&note.preferred_roles);
         let downgraded = role != Role::System
             && note.preferred_roles.contains(&Role::System);
@@ -411,12 +560,10 @@ impl<State, T: Transport> Chat<State, T> {
     /// stops calling tools *and* the turn isn't paused on a server tool — so
     /// the caller's beat is the *last* thing seated before control returns.
     ///
-    /// A [`Clipped`](Disposition::Clipped) turn is never seated and its tool
-    /// calls never run (they may be missing arguments the model never
-    /// emitted): the prompt stays un-advanced and the round retries with
-    /// [`max_tokens`](Prompt::max_tokens) raised — see `raise_max_tokens` —
-    /// or, out of budget or room, hands back via `restore_tail`.
-    async fn quiesce(&mut self, state: &mut State) -> Result<(), BoxError> {
+    /// Client calls run only from a [`ToolUse`](Disposition::ToolUse) or
+    /// [`Paused`](Disposition::Paused) turn; any other turn carrying them is
+    /// a [`Stop`], never seated (see `unusable`).
+    async fn quiesce(&mut self, state: &mut State) -> Result<(), Stop> {
         let mut rounds = 0usize;
         // Where the in-flight paused turn sits, while the last seated turn
         // paused — a hand-back must drop it whole.
@@ -425,26 +572,22 @@ impl<State, T: Transport> Chat<State, T> {
             log::trace!("quiesce round {rounds}: calling the model");
             // A pending system note was already seated by `seat` the moment a
             // legal tail appeared, so the prompt is request-ready here.
-            let response = self.transport.send(&self.prompt).await?;
-            self.record_usage(&response);
+            let response = self.send().await?;
 
             // `pause_turn` means a server tool is still running: the turn
             // must be continued, even though there's nothing to dispatch.
-            // `ToolUse` vs `Done` doesn't matter here — the calls dispatched
-            // are the ones in the *seated* turn, whatever the hook made it.
             let paused = match response.disposition() {
                 Disposition::Clipped => {
-                    if rounds >= self.max_tool_calls {
-                        log::warn!(
-                            "budget exhausted on a clipped turn: handing \
-                             back without seating it"
-                        );
-                    } else if self.raise_max_tokens().await {
-                        rounds += 1;
-                        continue;
-                    }
-                    self.restore_tail(paused_at);
-                    return Ok(());
+                    cold_path();
+                    log::warn!(
+                        "turn clipped at max_tokens = {}: handing back \
+                         without seating it",
+                        self.prompt.max_tokens
+                    );
+                    return Err(Stop::Clipped(Box::new(response)));
+                }
+                Disposition::Done if response.tool_uses().next().is_some() => {
+                    return Err(self.unusable(response, paused_at));
                 }
                 Disposition::Paused => true,
                 Disposition::ToolUse | Disposition::Done => false,
@@ -499,34 +642,51 @@ impl<State, T: Transport> Chat<State, T> {
         }
     }
 
-    /// A turn clipped at [`max_tokens`](Prompt::max_tokens): double it,
-    /// clamped to the model's ceiling when the transport
-    /// [declares one](crate::model::ModelInfo::max_tokens) (never lowering a
-    /// caller's larger setting). The raise persists for later beats.
-    ///
-    /// `false` when there's no room to grow (already at the ceiling): a retry
-    /// would re-send the identical request, so the caller hands back instead.
-    /// Otherwise the round budget bounds the retries.
-    async fn raise_max_tokens(&mut self) -> bool {
-        let current = self.prompt.max_tokens;
-        let doubled = current.saturating_mul(NonZeroU32::new(2).unwrap());
-        let raised = match self.max_tokens_ceiling().await {
-            Some(ceiling) => doubled.min(ceiling).max(current),
-            None => doubled,
-        };
-        if raised == current {
-            log::warn!(
-                "turn clipped at max_tokens = {current} with no room to \
-                 grow: handing back without seating it"
-            );
-            return false;
+    /// One model call, its usage recorded. (`&mut self`: a `&self` held
+    /// across the await would need `Chat: Sync` for the future to be `Send`.)
+    async fn send(&mut self) -> Result<response::Message, Stop> {
+        let response =
+            self.transport.send(&self.prompt).await.map_err(|error| {
+                cold_path();
+                Stop::Transport(Box::new(error))
+            })?;
+        self.record_usage(&response);
+        Ok(response)
+    }
+
+    /// Add `response`'s counts to the [`track_usage`](Chat::track_usage)
+    /// sink, if one is installed.
+    fn record_usage(&self, response: &response::Message) {
+        if let Some(sink) = &self.usage {
+            *sink.lock().expect("usage sink poisoned") += response.usage.counts;
         }
+    }
+
+    /// A finished turn carrying client tool calls: none run, and the whole
+    /// turn goes — with the paused turn it continued (from `paused_at`), so
+    /// the prompt ends where the caller left it. System notes seated inside
+    /// that turn are kept.
+    fn unusable(
+        &mut self,
+        response: response::Message,
+        paused_at: Option<usize>,
+    ) -> Stop {
+        cold_path();
         log::warn!(
-            "turn clipped at max_tokens = {current}: not seating it or \
-             dispatching its tool calls; retrying with {raised}"
+            "turn finished ({:?}) with client tool calls: running none, \
+             handing back without seating it",
+            response.stop_reason
         );
-        self.prompt.max_tokens = raised;
-        true
+        let notes = self.drop_paused_turn(paused_at);
+        self.rebuffer(notes);
+        // After the drop the tail is the caller's (a user or system turn), so
+        // the rescued notes seat at once.
+        if let Some(note) = self.pending_system.take()
+            && let Err(error) = self.seat(note)
+        {
+            return error;
+        }
+        Stop::Unusable(Box::new(response))
     }
 
     /// Leave a tail the caller's next beat can legally follow when handing
@@ -548,36 +708,35 @@ impl<State, T: Transport> Chat<State, T> {
         if let Some(tail) =
             self.prompt.messages.pop_if(|m| m.role == Role::System)
         {
-            let mut note = SystemMessage::from(tail.content);
-            if let Some(later) = self.pending_system.take() {
-                note.extend(later.content);
-            }
-            self.pending_system = Some(note);
+            self.rebuffer(tail.content);
         }
     }
 
-    /// The prompt model's output ceiling from [`Transport::models`], looked
-    /// up once and cached. `None` when the transport doesn't list the model,
-    /// doesn't state a ceiling, or the lookup fails (a clip is no reason to
-    /// fail the conversation).
-    async fn max_tokens_ceiling(&mut self) -> Option<NonZeroU32> {
-        if let Some(ceiling) = self.ceiling {
-            return ceiling;
-        }
-        let model = self.prompt.model.name();
-        let ceiling = match self.transport.models().await {
-            Ok(models) => models
-                .iter()
-                .find(|info| info.id.name() == model)
-                .and_then(|info| NonZeroU32::new(info.max_tokens)),
-            Err(error) => {
-                log::debug!(
-                    "model lookup failed; no max_tokens ceiling: {error}"
-                );
-                None
-            }
-        };
-        *self.ceiling.insert(ceiling)
+    /// Truncate the paused turn starting at `at` (continuations, dispatched
+    /// results and all), returning the system notes seated inside it.
+    fn drop_paused_turn(&mut self, at: Option<usize>) -> Vec<Block> {
+        at.map(|at| self.prompt.messages.split_off(at))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|m| m.role == Role::System)
+            .flat_map(|m| m.content)
+            .collect()
+    }
+
+    /// Put `notes` back at the front of `pending_system` — they were seated
+    /// before anything still buffered.
+    fn rebuffer(&mut self, notes: impl IntoIterator<Item = Block>) {
+        let notes: Vec<Block> = notes
+            .into_iter()
+            .chain(
+                self.pending_system
+                    .take()
+                    .into_iter()
+                    .flat_map(|p| p.content),
+            )
+            .collect();
+        self.pending_system =
+            (!notes.is_empty()).then(|| SystemMessage::from(Content(notes)));
     }
 
     /// Run the assistant turn through the [`on_assistant`](Chat::on_assistant)
@@ -595,7 +754,7 @@ impl<State, T: Transport> Chat<State, T> {
         &mut self,
         state: &mut State,
         message: AssistantMessage,
-    ) -> Result<Vec<Use>, BoxError> {
+    ) -> Result<Vec<Use>, Stop> {
         let seated: Vec<Message> = match self.on_assistant.as_mut() {
             Some(hook) => hook(state, message),
             None => vec![message.into()],
@@ -618,7 +777,7 @@ impl<State, T: Transport> Chat<State, T> {
 
     /// Dispatch each call through the [`ToolBox`] and seat all results as one
     /// user turn.
-    async fn dispatch(&mut self, calls: Vec<Use>) -> Result<(), BoxError> {
+    async fn dispatch(&mut self, calls: Vec<Use>) -> Result<(), Stop> {
         let mut results = Vec::with_capacity(calls.len());
         for call in calls {
             results.push(Block::from(self.toolbox.call(call).await));
@@ -635,7 +794,7 @@ impl<State, T: Transport> Chat<State, T> {
         &mut self,
         state: &mut State,
         calls: Vec<Use>,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), Stop> {
         log::warn!(
             "beat exhausted {} consecutive model rounds ({:?})",
             self.max_tool_calls,
@@ -644,15 +803,26 @@ impl<State, T: Transport> Chat<State, T> {
         self.synthesize_results(&calls)?;
 
         if self.budget_policy == BudgetPolicy::FinalWord && !calls.is_empty() {
-            let response = self.transport.send(&self.prompt).await?;
-            self.record_usage(&response);
-            // A clipped wrap-up is never seated, same as in `quiesce`.
-            if response.disposition().is_clipped() {
-                log::warn!("final word clipped at max_tokens: not seating it");
-            } else {
-                let again = self.seat_assistant(state, response.inner)?;
-                // No second chance: error these too and hand back regardless.
-                self.synthesize_results(&again)?;
+            let response = self.send().await?;
+            match response.disposition() {
+                Disposition::Clipped => {
+                    cold_path();
+                    log::warn!(
+                        "final word clipped at max_tokens: handing back"
+                    );
+                    return Err(Stop::Clipped(Box::new(response)));
+                }
+                Disposition::Done if response.tool_uses().next().is_some() => {
+                    return Err(self.unusable(response, None));
+                }
+                Disposition::Paused
+                | Disposition::ToolUse
+                | Disposition::Done => {
+                    let again = self.seat_assistant(state, response.inner)?;
+                    // No second chance: error these too and hand back
+                    // regardless.
+                    self.synthesize_results(&again)?;
+                }
             }
         }
         // Seating the results may have flushed a buffered system note.
@@ -663,7 +833,7 @@ impl<State, T: Transport> Chat<State, T> {
     /// Seat one user turn of `is_error` results answering `calls` — the
     /// "tool budget exhausted, wait for the user" explanation. No-op when
     /// there are no dangling calls (a paused turn that ran out of budget).
-    fn synthesize_results(&mut self, calls: &[Use]) -> Result<(), BoxError> {
+    fn synthesize_results(&mut self, calls: &[Use]) -> Result<(), Stop> {
         if calls.is_empty() {
             return Ok(());
         }
@@ -693,16 +863,18 @@ impl<State, T: Transport> Chat<State, T> {
     /// permits and otherwise buffers in `pending_system` (never downgraded to
     /// the user channel — see the module-level notes). A merge that would
     /// trail a `tool_result` behind other content, or any other illegal
-    /// placement, errors loudly ([`TurnOrderError`]) — a programming error in
-    /// the caller's beat or hook.
-    ///
-    /// [`TurnOrderError`]: crate::prompt::TurnOrderError
-    fn seat(
-        &mut self,
-        message: impl Into<Message>,
-    ) -> Result<Seated, BoxError> {
+    /// placement, is a [`Stop::TurnOrder`] — a programming error in the
+    /// caller's beat or hook.
+    fn seat(&mut self, message: impl Into<Message>) -> Result<Seated, Stop> {
         Ok(self.prompt.seat(message, &mut self.pending_system)?)
     }
+}
+
+/// Whether a seeded prompt's tail awaits the model: anything but an
+/// assistant turn — or one paused on a server tool.
+fn awaits_model(tail: &Message) -> bool {
+    tail.role != Role::Assistant
+        || tail.unfinished_server_tool_uses().next().is_some()
 }
 
 /// Await the next notification, or never resolve when there's no notification
@@ -719,8 +891,10 @@ async fn recv_note(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::num::NonZeroU32;
+
     use crate::{
-        response::{self, StopReason},
+        response::StopReason,
         tool::{CustomMethodDef, MethodDef},
         transport::tests::Script,
     };
@@ -785,13 +959,20 @@ mod tests {
             .build()
     }
 
+    /// A turn paused mid-search: its `server_tool_use` is still in flight.
     fn paused_response() -> response::Message {
-        let inner: AssistantMessage =
+        let mut inner: AssistantMessage =
             serde_json::from_value(serde_json::json!({
                 "role": "assistant",
                 "content": [{"type": "text", "text": "searching…"}],
             }))
             .unwrap();
+        inner.content.push(
+            serde_json::from_str::<Block>(include_str!(
+                "../test/data/server_tools/server_tool_use.json"
+            ))
+            .unwrap(),
+        );
         response::Message::builder("test-model", inner)
             .stop_reason(StopReason::PauseTurn)
             .build()
@@ -986,11 +1167,12 @@ mod tests {
     }
 
     /// #124: a `max_tokens`-clipped turn's tool calls may be missing
-    /// arguments, so it is neither seated nor dispatched — the round retries
-    /// with `max_tokens` doubled.
+    /// arguments, so it is neither seated nor dispatched — the driver hands
+    /// the un-advanced prompt back, and a fresh `Chat` on it answers it
+    /// before asking for a beat.
     #[cfg(feature = "mock")]
     #[test]
-    fn clipped_tool_turn_dispatches_nothing_and_is_not_seated() {
+    fn clipped_turn_hands_back_and_resumes() {
         use crate::mock::{self, MockTransport};
 
         let transport = Arc::new(
@@ -1010,66 +1192,34 @@ mod tests {
             ToolBox::new().add(echo),
         );
 
-        let (prompt, ()) =
+        let error =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
-                .unwrap();
+                .unwrap_err();
 
+        assert!(matches!(error.kind, Stop::Clipped(_)), "{error}");
         assert!(calls.lock().unwrap().is_empty(), "clipped calls ran");
-        // user, assistant("done") — the clipped turn never reached the prompt.
-        assert_eq!(prompt.messages.len(), 2);
-        assert_eq!(prompt.messages[1].role, Role::Assistant);
-        assert_eq!(prompt.messages[1].tool_uses().count(), 0);
-        // The retry went out un-advanced, with twice the room.
-        let requests = transport.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0]["messages"], requests[1]["messages"]);
-        assert_eq!(requests[0]["max_tokens"], 4096);
-        assert_eq!(requests[1]["max_tokens"], 8192);
-        assert_eq!(prompt.max_tokens.get(), 8192);
-    }
+        // The clipped turn never reached the prompt.
+        assert_eq!(error.prompt.messages.len(), 1);
+        assert_eq!(transport.len(), 1);
 
-    /// The raise is clamped to the model's declared ceiling, and once there
-    /// is no room to grow the driver hands back at once rather than re-send
-    /// the identical request until the round budget runs out.
-    #[cfg(feature = "mock")]
-    #[test]
-    fn clipping_forever_clamps_to_the_ceiling_and_terminates() {
-        use crate::{
-            mock::{self, MockTransport},
-            model::ModelInfo,
-        };
-
-        let mut info = ModelInfo::new(crate::model::Model::default(), "test");
-        info.max_tokens = 10_000;
-        let transport = Arc::new(
-            MockTransport::with(|_: &Prompt| mock::max_tokens("and then"))
-                .with_models([info]),
-        );
-        let chat =
-            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
-                .max_consecutive_tool_calls(8);
-
+        // Resume with more room: answered at once, no beat needed.
+        let prompt = error.prompt.max_tokens(NonZeroU32::new(8192).unwrap());
+        let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
         let (prompt, ()) =
-            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
-                .unwrap();
+            futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();
 
-        // Only the user's beat: no clipped turn was ever seated.
-        assert_eq!(prompt.messages.len(), 1);
-        // No identical retry at the ceiling, with budget to spare.
-        let sent: Vec<_> = transport
-            .requests()
-            .iter()
-            .map(|r| r["max_tokens"].as_u64().unwrap())
-            .collect();
-        assert_eq!(sent, [4096, 8192, 10_000]);
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(prompt.messages[1].content.to_string(), "done");
+        let requests = transport.requests();
+        assert_eq!(requests[0]["messages"], requests[1]["messages"]);
+        assert_eq!(requests[1]["max_tokens"], 8192);
     }
 
-    /// A resume that clips with the budget spent must not strand the paused
-    /// turn it was resuming: the wire forbids abandoning it in place, so the
-    /// whole paused turn goes and the user's next beat is legal.
+    /// A clipped resume of a paused turn hands back the prompt as sent — the
+    /// paused turn is its tail, legal to resend — and resuming continues it.
     #[cfg(feature = "mock")]
     #[test]
-    fn clipped_resume_at_budget_drops_the_paused_turn() {
+    fn clipped_continuation_hands_back_the_paused_turn() {
         use crate::mock::{self, MockTransport};
 
         let transport = Arc::new(
@@ -1079,28 +1229,35 @@ mod tests {
                 .then(mock::text("done")),
         );
         let chat =
-            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
-                .max_consecutive_tool_calls(1);
+            Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
 
-        let (prompt, ()) = futures::executor::block_on(
-            chat.run((), beats(vec![user("search"), user("never mind")])),
+        let error = futures::executor::block_on(
+            chat.run((), beats(vec![user("search")])),
         )
-        .unwrap();
+        .unwrap_err();
 
+        assert!(matches!(error.kind, Stop::Clipped(_)));
+        let roles: Vec<_> =
+            error.prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::Assistant]);
+
+        let chat = Chat::new(transport.clone(), error.prompt, ToolBox::new());
+        let (prompt, ()) =
+            futures::executor::block_on(chat.run((), beats(vec![]))).unwrap();
+
+        // The continuation merged into the paused turn.
         assert_eq!(transport.len(), 3);
-        // user("search" + "never mind"), assistant("done"): no paused turn.
         assert_eq!(prompt.messages.len(), 2);
-        assert_eq!(prompt.messages[0].role, Role::User);
-        assert_eq!(prompt.messages[1].content.to_string(), "done");
-        assert!(prompt.check_turn_order().is_ok());
+        let turn = &prompt.messages[1].content;
+        assert_eq!(turn.len(), 3);
+        assert_eq!(turn.last().unwrap().to_string(), "done");
     }
 
-    /// A system turn seated right before a clipped call goes back to the
-    /// buffer on hand-back — only an assistant turn may follow one — and
-    /// re-seats after the user's next beat.
+    /// A clip right after a system note hands back with the note as the
+    /// (legal to resend) tail.
     #[cfg(feature = "mock")]
     #[test]
-    fn clipped_hand_back_rebuffers_a_system_tail() {
+    fn clipped_hand_back_keeps_a_system_tail() {
         use crate::mock::{self, MockTransport};
 
         let transport = Arc::new(
@@ -1109,30 +1266,26 @@ mod tests {
                 .then(mock::text("done")),
         );
         let chat =
-            Chat::new(transport.clone(), Prompt::default(), ToolBox::new())
-                .max_consecutive_tool_calls(0);
+            Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
         let first =
             vec![(Role::User, "go").into(), (Role::System, "be brief").into()];
 
-        let (prompt, ()) = futures::executor::block_on(
+        let error = futures::executor::block_on(
             chat.run((), beats(vec![first, user("again")])),
         )
-        .unwrap();
+        .unwrap_err();
 
-        // The clipped call went out with the note as its tail…
-        let requests = transport.requests();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0]["messages"][1]["role"], "system");
-        // …and it re-seated after the next beat instead of blocking it.
-        let roles: Vec<_> = prompt.messages.iter().map(|m| m.role).collect();
-        assert_eq!(roles, [Role::User, Role::System, Role::Assistant]);
-        assert_eq!(prompt.messages[1].content.to_string(), "be brief");
+        let roles: Vec<_> =
+            error.prompt.messages.iter().map(|m| m.role).collect();
+        assert_eq!(roles, [Role::User, Role::System]);
+        error.prompt.check_turn_order().unwrap();
     }
 
-    /// `FinalWord`'s wrap-up call is not seated when it clips.
+    /// `FinalWord`'s wrap-up call hands back when it clips, leaving the
+    /// synthetic results as the tail.
     #[cfg(feature = "mock")]
     #[test]
-    fn clipped_final_word_is_not_seated() {
+    fn clipped_final_word_hands_back() {
         use crate::mock::{self, MockTransport};
 
         let transport = Arc::new(
@@ -1149,14 +1302,110 @@ mod tests {
         .max_consecutive_tool_calls(1)
         .on_budget_exhausted(BudgetPolicy::FinalWord);
 
-        let (prompt, ()) =
+        let error =
             futures::executor::block_on(chat.run((), beats(vec![user("go")])))
-                .unwrap();
+                .unwrap_err();
 
+        assert!(matches!(error.kind, Stop::Clipped(_)));
         assert_eq!(transport.len(), 3);
-        // The synthetic error results stay the tail; the clip isn't seated.
-        let last = prompt.messages.last().unwrap();
+        let last = error.prompt.messages.last().unwrap();
         assert_eq!(last.role, Role::User);
         assert!(last.content.iter().all(|b| b.is_tool_result()));
+    }
+
+    /// A refusal can cut a `tool_use` short: a finished turn carrying client
+    /// calls runs none and is never seated.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn refused_tool_turn_runs_nothing() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new().then(
+                mock::tool_use("toolbox__Echo__echo", serde_json::json!({}))
+                    .refusal("cyber", "no"),
+            ),
+        );
+        let echo = Echo::default();
+        let calls = echo.calls.clone();
+        let chat = Chat::new(
+            transport.clone(),
+            Prompt::default(),
+            ToolBox::new().add(echo),
+        );
+
+        let error =
+            futures::executor::block_on(chat.run((), beats(vec![user("go")])))
+                .unwrap_err();
+
+        let Stop::Unusable(response) = &error.kind else {
+            panic!("expected Unusable, got {error:?}");
+        };
+        assert_eq!(response.stop_reason, Some(StopReason::Refusal));
+        assert!(calls.lock().unwrap().is_empty(), "refused calls ran");
+        assert_eq!(error.prompt.messages.len(), 1);
+        assert_eq!(transport.len(), 1);
+    }
+
+    /// A refused continuation drops the whole turn — the paused turn it
+    /// continued included — so the caller's next beat is legal.
+    #[cfg(feature = "mock")]
+    #[test]
+    fn refused_continuation_drops_the_paused_turn() {
+        use crate::mock::{self, MockTransport};
+
+        let transport = Arc::new(
+            MockTransport::new()
+                .then(mock::message(paused_response()))
+                .then(
+                    mock::tool_use(
+                        "toolbox__Echo__echo",
+                        serde_json::json!({}),
+                    )
+                    .refusal("cyber", "no"),
+                ),
+        );
+        let chat = Chat::new(
+            transport,
+            Prompt::default(),
+            ToolBox::new().add(Echo::default()),
+        );
+
+        let error = futures::executor::block_on(
+            chat.run((), beats(vec![user("search")])),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Unusable(_)));
+        assert_eq!(error.prompt.messages.len(), 1);
+        assert_eq!(error.prompt.messages[0].role, Role::User);
+    }
+
+    /// An error hands the caller's state back along with the prompt, and
+    /// still converts to a `BoxError` with the beat's message.
+    #[test]
+    fn beat_error_hands_back_prompt_and_state() {
+        let script = Script::new([text_response("hello")]);
+        let chat = Chat::new(script, Prompt::default(), ToolBox::new());
+        let mut beat = 0u8;
+
+        let error = futures::executor::block_on(chat.run(
+            41u8,
+            async move |state: &mut u8| {
+                beat += 1;
+                *state += 1;
+                match beat {
+                    1 => Ok(Some(user("hi"))),
+                    _ => Err("stdin closed".into()),
+                }
+            },
+        ))
+        .unwrap_err();
+
+        assert!(matches!(error.kind, Stop::Beat(_)));
+        assert_eq!(error.state, 43);
+        assert_eq!(error.prompt.messages.len(), 2);
+        let boxed: BoxError = error.into();
+        assert_eq!(boxed.to_string(), "stdin closed");
     }
 }

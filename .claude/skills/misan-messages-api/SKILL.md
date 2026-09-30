@@ -299,9 +299,10 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
 breaks the build here, not silently in a driver). `tool_uses()` iterates
 **every** client `tool::Use` in the turn (unlike `tool_use()`, which returns
-only a trailing one). The `chat`-feature `Chat` driver runs this same match,
-retrying a clip with doubled `max_tokens` (clamped to the model's ceiling when
-`Transport::models` states one) within its round budget.
+only a trailing one). Client calls run **only** from a `ToolUse` (or `Paused`)
+turn — a `refusal` can cut a `tool_use` short. The `chat`-feature `Chat` driver
+runs this same match; see *The `Chat` driver* below for how it hands a turn it
+can't use back.
 
 ```no_run
 use std::num::NonZeroU32;
@@ -345,8 +346,15 @@ for _ in 0..8 { // round budget: a model that clips forever still stops
             prompt.seat((Role::User, results), &mut pending)?;
         }
         // end_turn / stop_sequence / refusal (or no stop reason and no
-        // calls): seat and hand back.
-        Disposition::Done => { prompt.seat(response, &mut pending)?; break; }
+        // calls): seat and hand back — but never run a finished turn's
+        // calls; drop such a turn whole (stripping could strand a server
+        // tool).
+        Disposition::Done => {
+            if response.tool_uses().next().is_none() {
+                prompt.seat(response, &mut pending)?;
+            }
+            break;
+        }
     }
 }
 # Ok(())
@@ -356,6 +364,58 @@ for _ in 0..8 { // round budget: a model that clips forever still stops
 Clip handling is policy: raise-and-retry (above), or drop the clipped turn and
 nudge the model to be briefer. Continuing a partial assistant turn (prefill) is
 backend-dependent — Anthropic rejects it with thinking enabled.
+
+### The `Chat` driver — hand-backs and resume
+
+`Chat` (feature `chat`) runs the loop above over any `Transport`. A turn it
+can't use is never seated and its calls never run: `run` returns a
+`chat::Error { kind, prompt, state }` — `Stop::Clipped` (`max_tokens`) or
+`Stop::Unusable` (a finished turn, e.g. a refusal, that still calls tools;
+dropped whole) — alongside transport, beat, tool and turn-order failures. The
+prompt comes back legal to resend, and a fresh `Chat` on it answers it before
+asking for a beat, so resuming is a loop. Pass the beat closure as `&mut` to
+keep it across resumes. `chat::Error` converts into a `BoxError` with `?`.
+
+```no_run
+use std::num::NonZeroU32;
+
+use misanthropic::{
+    Prompt, Transport,
+    chat::{self, BoxError, Chat, Stop},
+    prompt::message::{Message, Role},
+    tool::ToolBox,
+};
+
+# async fn converse<T: Transport + Clone>(
+#     transport: T,
+#     lines: Vec<&str>,
+# ) -> Result<Prompt, BoxError> {
+let mut lines = lines.into_iter();
+let mut next_beat = async |_: &mut ()| {
+    let line = lines.next();
+    Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
+};
+
+let mut prompt = Prompt::default();
+loop {
+    let chat = Chat::new(transport.clone(), prompt, ToolBox::new());
+    match chat.run((), &mut next_beat).await {
+        Ok((prompt, ())) => return Ok(prompt),
+        // Nothing seated or run: raise the limit, resume.
+        Err(chat::Error { kind: Stop::Clipped(_), prompt: clipped, .. }) => {
+            let two = NonZeroU32::new(2).unwrap();
+            let max_tokens = clipped.max_tokens.saturating_mul(two);
+            prompt = clipped.max_tokens(max_tokens);
+        }
+        // A refusal (or other finished turn) that called tools: nothing ran.
+        Err(chat::Error { kind: Stop::Unusable(response), .. }) => {
+            return Err(format!("unusable: {:?}", response.stop_reason).into());
+        }
+        Err(error) => return Err(error.into()),
+    }
+}
+# }
+```
 
 ## Tool use — the `#[tool]` macro (preferred)
 
@@ -882,7 +942,8 @@ your task — they're the most current, compiler-checked usage.
   user channel) until it does, concatenating onto a system tail if it lands on
   one. Returns `Seated::{Appended, Merged, Buffered}`. See the seating example
   above. Pair it with `response.disposition()` (`Paused` / `Clipped` /
-  `ToolUse` / `Done`) to decide what to seat — never a `Clipped` turn.
+  `ToolUse` / `Done`) to decide what to seat — never a `Clipped` turn, and
+  never run the calls of anything but a `ToolUse` / `Paused` one.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.

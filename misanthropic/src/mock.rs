@@ -81,7 +81,6 @@ pub struct MockTransport<P = Prompt> {
     yields: usize,
     quirks: Quirks,
     concurrency: NonZeroUsize,
-    models: Vec<model::ModelInfo>,
 }
 
 /// A [`send`](Transport::send) starting or finishing, by request index —
@@ -174,7 +173,6 @@ impl<P> MockTransport<P> {
             yields: 0,
             quirks: Quirks::default(),
             concurrency: NonZeroUsize::MIN,
-            models: Vec::new(),
         }
     }
 
@@ -241,17 +239,6 @@ impl<P> MockTransport<P> {
     /// default [`send_batch`](Transport::send_batch).
     pub fn with_concurrency(mut self, concurrency: NonZeroUsize) -> Self {
         self.concurrency = concurrency;
-        self
-    }
-
-    /// Report these [`ModelInfo`](model::ModelInfo)s from
-    /// [`Transport::models`] (none by default) — e.g. to give a driver a
-    /// model's `max_tokens` ceiling.
-    pub fn with_models(
-        mut self,
-        models: impl IntoIterator<Item = model::ModelInfo>,
-    ) -> Self {
-        self.models = models.into_iter().collect();
         self
     }
 
@@ -349,7 +336,7 @@ where
     }
 
     async fn models(&self) -> Result<model::Models, Self::Error> {
-        Ok(self.models.iter().cloned().collect())
+        Ok(model::Models::from(vec![]))
     }
 
     fn quirks(&self) -> Quirks {
