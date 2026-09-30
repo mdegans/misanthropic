@@ -2,7 +2,10 @@
 //! written independently of the driver's own bookkeeping, and [`Checked`], a
 //! [`Transport`] that asserts them on every request it forwards.
 
-use std::sync::{Arc, Mutex};
+use std::{
+    sync::{Arc, Mutex},
+    time::{Duration, Instant},
+};
 
 use crate::{
     Prompt, Quirks, Transport, model,
@@ -166,6 +169,9 @@ pub(crate) struct Log {
     pub(crate) sent: Vec<Prompt>,
     /// Every response received (failed sends have none).
     pub(crate) received: Vec<response::Message>,
+    /// The wall time behind each of `received`: its `send`, or the whole
+    /// `send_batch` it came back in.
+    pub(crate) elapsed: Vec<Duration>,
 }
 
 impl Log {
@@ -225,8 +231,11 @@ impl<T: Transport> Transport for Checked<T> {
         prompt: &Prompt,
     ) -> Result<response::Message, Self::Error> {
         self.check(prompt);
+        let start = Instant::now();
         let response = self.inner.send(prompt).await?;
-        self.log().received.push(response.clone());
+        let mut log = self.log();
+        log.elapsed.push(start.elapsed());
+        log.received.push(response.clone());
         Ok(response)
     }
 
@@ -235,9 +244,14 @@ impl<T: Transport> Transport for Checked<T> {
         prompts: &[&Prompt],
     ) -> Result<Vec<Result<response::Message, Self::Error>>, Self::Error> {
         prompts.iter().for_each(|prompt| self.check(prompt));
+        let start = Instant::now();
         let responses = self.inner.send_batch(prompts).await?;
+        let elapsed = start.elapsed();
         let received = responses.iter().filter_map(|r| r.as_ref().ok());
-        self.log().received.extend(received.cloned());
+        let mut log = self.log();
+        log.received.extend(received.cloned());
+        let unmatched = log.received.len() - log.elapsed.len();
+        log.elapsed.extend(std::iter::repeat_n(elapsed, unmatched));
         Ok(responses)
     }
 
@@ -344,6 +358,7 @@ fn checked_forwards_every_method() {
     assert_eq!(replies.len(), 2);
     let log = checked.log();
     assert_eq!((log.sent.len(), log.received.len()), (2, 2));
+    assert_eq!(log.elapsed.len(), 2, "a wall time per response");
     assert_eq!(checked.quirks(), quirks);
     assert_eq!(checked.max_concurrency(), three);
 }
