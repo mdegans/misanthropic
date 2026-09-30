@@ -6,8 +6,8 @@ use std::sync::{Arc, Mutex};
 
 use crate::{
     Prompt, Quirks, Transport, model,
-    prompt::message::{Message, Role},
-    response::{self, TokenCounts},
+    prompt::message::{Block, Message, Role},
+    response::{self, StopReason, TokenCounts},
 };
 
 /// The roles of `prompt`'s turns as one letter each (`U`, `A`, `S`) — a
@@ -111,6 +111,34 @@ pub(crate) fn assert_handback_legal(prompt: &Prompt) {
     }
 }
 
+/// Assert that every server tool `prompt`'s tail leaves in flight came
+/// from a `pause_turn` response — by that response's `stop_reason`, not the
+/// block shape. Any other turn that cuts a server tool short (a refusal, an
+/// `end_turn`) must never be seated: nothing would ever answer it.
+pub(crate) fn assert_in_flight_paused(
+    prompt: &Prompt,
+    received: &[response::Message],
+) {
+    let Some(tail) = prompt.messages.last() else {
+        return;
+    };
+    for id in tail.unfinished_server_tool_uses() {
+        let from = received.iter().rev().find(|response| {
+            response.inner.content.iter().any(|block| {
+                matches!(block, Block::ServerToolUse { call } if call.id == id)
+            })
+        });
+        if let Some(response) = from {
+            assert_eq!(
+                response.stop_reason,
+                Some(StopReason::PauseTurn),
+                "server tool `{id}` left in flight by a finished turn:\n{}",
+                render(prompt)
+            );
+        }
+    }
+}
+
 /// Assert that the caller's next beat may follow `prompt` — what an `Ok`
 /// hand-back owes it: [well formed](assert_well_formed), with a tail a user
 /// turn may follow (a user tail by merging). Unlike an early stop's, it
@@ -179,6 +207,9 @@ impl<T> Checked<T> {
     /// Assert `prompt` is legal, then log it as sent.
     fn check(&self, prompt: &Prompt) {
         assert_request_legal(prompt);
+        // Cloned: a failed assertion mustn't poison the log.
+        let received = self.log().received.clone();
+        assert_in_flight_paused(prompt, &received);
         self.log().sent.push(prompt.clone());
     }
 }
@@ -262,6 +293,23 @@ fn checks_catch_illegal_shapes() {
     assert!(panics(&|| assert_request_legal(&noted)));
     assert_request_legal(&noted.clone().model(crate::Id::Opus48));
     assert_request_legal(&noted.model("local.gguf"));
+
+    // A server tool in flight is legal only from a `pause_turn`.
+    let search: Block = serde_json::from_str(include_str!(
+        "../../test/data/server_tools/server_tool_use.json"
+    ))
+    .unwrap();
+    let mut turn = crate::prompt::AssistantMessage::text("searching…");
+    turn.content.push(search);
+    let stopped = |reason| {
+        response::Message::builder(model::Model::default(), turn.clone())
+            .stop_reason(reason)
+            .build()
+    };
+    let paused = Prompt::user("search").add_message(turn.clone()).unwrap();
+    assert_in_flight_paused(&paused, &[stopped(StopReason::PauseTurn)]);
+    let refused = [stopped(StopReason::Refusal)];
+    assert!(panics(&|| assert_in_flight_paused(&paused, &refused)));
 
     // An empty turn, even one the order allows.
     let mut empty = Prompt::user("hi");

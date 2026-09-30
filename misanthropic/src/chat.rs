@@ -21,7 +21,8 @@
 //! - [`Clipped`](Stop::Clipped) (`max_tokens`): its tool calls can be valid
 //!   JSON missing arguments the model never emitted.
 //! - [`Unusable`](Stop::Unusable): a finished turn — a `refusal` above all —
-//!   that still calls client tools. A refusal can cut a `tool_use` short.
+//!   that still calls client tools or leaves a server tool in flight. A
+//!   refusal can cut either short.
 //!
 //! Handing back never strands an in-flight paused turn.
 //!
@@ -135,13 +136,15 @@ pub enum Stop {
     )]
     Clipped(Box<response::Message>),
     /// A finished ([`Done`](Disposition::Done)) turn — a `refusal` above all
-    /// — that still calls client tools. A refusal can cut a `tool_use` short,
-    /// so none run and the whole turn is dropped (with any paused turn it
-    /// continued), never stripped — stripping could strand a
+    /// — that still calls client tools, or leaves a server tool in flight
+    /// (its own, or the paused turn's it continued): a refusal can cut
+    /// either short. Nothing runs and the whole turn is dropped (with any
+    /// paused turn it continued), never stripped — stripping could strand a
     /// `server_tool_use`. Inspect its
     /// [`stop_reason`](response::Message::stop_reason) and resume.
     #[error(
-        "the model finished its turn ({:?}) with client tool calls; none ran",
+        "the model finished its turn ({:?}) with a tool call unanswerable; \
+         nothing ran",
         .0.stop_reason
     )]
     Unusable(Box<response::Message>),
@@ -752,7 +755,7 @@ impl<State, T: Transport> Chat<State, T> {
                     );
                     return Err(Stop::Clipped(Box::new(response)));
                 }
-                Disposition::Done if calls_tools(&response) => {
+                Disposition::Done if self.unusable_done(&response) => {
                     return Err(self.unusable(response, paused_at));
                 }
                 Disposition::Paused => true,
@@ -846,10 +849,30 @@ impl<State, T: Transport> Chat<State, T> {
         }
     }
 
-    /// A finished turn carrying client tool calls: none run, and the whole
-    /// turn goes — with the paused turn it continued (from `paused_at`), so
-    /// the prompt ends where the caller left it. System notes seated inside
-    /// that turn are kept.
+    /// Whether a finished `response` can't be seated: it calls client
+    /// tools, or leaves a server tool in flight — one of its own, or the
+    /// paused tail's it continues (merging into it). Either way the wire
+    /// would have no answer for the call.
+    fn unusable_done(&self, response: &response::Message) -> bool {
+        let tail = self
+            .prompt
+            .messages
+            .last()
+            .filter(|tail| tail.role == Role::Assistant);
+        let blocks = tail
+            .into_iter()
+            .flat_map(|tail| tail.content.iter())
+            .chain(response.inner.content.iter())
+            .cloned()
+            .collect();
+        let turn = Message::from((Role::Assistant, Content(blocks)));
+        calls_tools(response) || turn.unfinished_server_tool_uses().count() > 0
+    }
+
+    /// A finished turn [the driver can't seat](Self::unusable_done): nothing
+    /// runs, and the whole turn goes — with the paused turn it continued
+    /// (from `paused_at`), so the prompt ends where the caller left it.
+    /// System notes seated inside that turn are kept.
     fn unusable(
         &mut self,
         response: response::Message,
@@ -857,8 +880,8 @@ impl<State, T: Transport> Chat<State, T> {
     ) -> Stop {
         cold_path();
         log::warn!(
-            "turn finished ({:?}) with client tool calls: running none, \
-             handing back without seating it",
+            "turn finished ({:?}) with a tool call unanswerable: running \
+             nothing, handing back without seating it",
             response.stop_reason
         );
         let notes = self.drop_paused_turn(paused_at);
@@ -1065,7 +1088,7 @@ impl<State, T: Transport> Chat<State, T> {
                 log::warn!("final word clipped at max_tokens: handing back");
                 Err(Stop::Clipped(Box::new(response)))
             }
-            Disposition::Done if calls_tools(&response) => {
+            Disposition::Done if self.unusable_done(&response) => {
                 Err(self.unusable(response, None))
             }
             // A paused wrap-up would leave its server tool in flight with no

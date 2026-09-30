@@ -187,6 +187,21 @@ fn paused_on_result() -> Reply {
     )
 }
 
+/// A turn that stops (`reason`) with a search in flight — cutting it short
+/// unless `reason` is `pause_turn`. Built from captured blocks.
+fn cut_short(reason: StopReason) -> Reply {
+    let block = |json: &str| serde_json::from_str::<Block>(json).unwrap();
+    let mut turn = AssistantMessage::text("searching…");
+    turn.content.push(block(include_str!(
+        "../../test/data/server_tools/server_tool_use.json"
+    )));
+    mock::message(
+        response::Message::builder(Model::default(), turn)
+            .stop_reason(reason)
+            .build(),
+    )
+}
+
 /// A turn calling [`Echo`] once per id.
 fn calls(ids: &[&'static str]) -> Reply {
     ids.iter()
@@ -592,11 +607,15 @@ where
         let mut error = match chat.run(tally, &mut next_beat).await {
             Ok((parts, state)) => {
                 checks::assert_beat_may_follow(&parts.prompt);
+                let received = &transport.log().received;
+                checks::assert_in_flight_paused(&parts.prompt, received);
                 break (parts.prompt, parts.pending, state);
             }
             Err(error) => error,
         };
         checks::assert_handback_legal(&error.prompt);
+        let received = &transport.log().received;
+        checks::assert_in_flight_paused(&error.prompt, received);
         stops.push(Kind::of(&error.kind));
         if !row.resume || stops.len() > 2 {
             break (error.prompt, error.pending, error.state);
@@ -822,6 +841,24 @@ fn rows() -> Vec<Row> {
             .requests(2)
             .roles("US")
             .extra(|run| assert_eq!(run.sent_roles(1), "UAS")),
+        // A finished turn with a server tool in flight: nothing answers it.
+        row("refusal_cuts_a_server_tool_short")
+            .reply(cut_short(StopReason::Refusal))
+            .stops([Kind::Unusable])
+            .requests(1)
+            .roles("U"),
+        row("end_turn_cuts_a_server_tool_short")
+            .reply(cut_short(StopReason::EndTurn))
+            .requests(1)
+            .stops([Kind::Unusable])
+            .roles("U"),
+        row("refused_continuation_strands_the_pause")
+            .reply(paused())
+            .reply(mock::text("I can't continue.").refusal("cyber", "no"))
+            .stops([Kind::Unusable])
+            .requests(2)
+            .roles("U")
+            .extra(|run| assert_eq!(run.sent_roles(1), "UA")),
         row("refusal_without_content")
             .beats(["hi", "again"])
             .reply(mock::refusal("cyber", "no"))

@@ -120,6 +120,11 @@ record; this file aggregates them.
   dropped (with any paused turn it continued), never stripped — stripping
   could strand a `server_tool_use`. Calls an `on_assistant` hook seats still
   run.
+- **`Chat` never seats a finished turn that cuts a server tool short.** A
+  refusal (or `end_turn`) leaving a `server_tool_use` unanswered — in its
+  own content, or in the paused turn it continued — was seated as a dead
+  turn nothing would ever answer, and the next beat 400'd. It is now
+  `Stop::Unusable` like a finished turn with client calls, dropped whole.
 - **`Chat` hands back with a legal tail.** Exhausting the round budget
   mid-pause drops the in-flight paused turn whole, and a system turn left
   trailing by a hand-back (seated right before the call, or flushed by
