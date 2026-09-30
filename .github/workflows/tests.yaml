@@ -154,3 +154,18 @@ jobs:
       # The live (--run-ignored, real API) suite and coverage are in
       # live.yaml: they run before merge, gated on the `ready-to-merge`
       # label, as a required check, instead of after the merge here.
+
+  # The one check to require in the ruleset (#150): a matrix's job names are
+  # awkward to require one by one. `always()` so it reports even when a
+  # dependency fails; skipped jobs (the other event's) count as passing.
+  # Keep `needs` listing every other job in this file.
+  ci-ok:
+    if: always()
+    needs: [main-lint, publish-dry-run, bashd-musl, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any job failed or was cancelled
+        if: >-
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled')
+        run: exit 1
