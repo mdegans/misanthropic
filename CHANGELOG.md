@@ -29,7 +29,8 @@ record; this file aggregates them.
   `Done` (`end_turn` / `stop_sequence` / `refusal`). Exhaustive on purpose,
   so a new disposition breaks every driver's `match` at compile time. A
   response with no `stop_reason` (a provider that doesn't report one) is
-  classified from its content: `ToolUse` if it calls tools, else `Done`.
+  classified from its content: `ToolUse` if it calls tools, else `Done` — so
+  a transport that omits it on a truncated turn bypasses the `Clipped` guard.
 - **`tool_uses()` on `response::Message` and `Content`** — every client
   `tool::Use` in the turn, in order (the existing `tool_use()` returns only a
   trailing one, and only on `stop_reason: tool_use`).

@@ -436,7 +436,10 @@ pub enum Disposition {
     /// A complete turn carrying client tool calls
     /// ([`ToolUse`](StopReason::ToolUse)) — see [`Message::tool_uses`].
     /// Also inferred when a provider reports no stop reason but the turn
-    /// calls tools.
+    /// calls tools — which trusts the provider: a transport that omits
+    /// `stop_reason` on a truncated turn bypasses the
+    /// [`Clipped`](Self::Clipped) guard. Transports (and mocks) should always
+    /// set it.
     ToolUse,
     /// Quiescent: [`EndTurn`](StopReason::EndTurn),
     /// [`StopSequence`](StopReason::StopSequence) or
