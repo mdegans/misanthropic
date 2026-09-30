@@ -257,6 +257,7 @@ default = [
     "derive",
     "schema-order",
     "schema-inline",
+    "schema-order-check",
 ]
 # Image crate support. Note that images are supported without this feature but
 # you must handle encoding/decoding yourself, so it almost always makes sense
@@ -384,6 +385,14 @@ schema-order = ["schemars/preserve_order"]
 # usual Cargo additive-features caveat: opting out means `default-features =
 # false` plus re-listing every other default.
 schema-inline = []
+# Reject tool input schemas that declare a required property after an optional
+# one. Anthropic moves required properties first, so an interleaved schema
+# reaches the model in a different order than it was written. On by default:
+# `MethodBuilder::build` errors, so `ToolArgs::definition` (and with it a
+# `#[tool]` method) panics. Turn off for servers that keep declaration order as
+# sent. Enables `schema-order`, without which `properties` order is
+# alphabetical and the check meaningless.
+schema-order-check = ["schema-order"]
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),

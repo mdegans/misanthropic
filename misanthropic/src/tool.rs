@@ -1432,35 +1432,63 @@ impl MethodBuilder {
 
         // `required` is optional per JSON Schema. Validate only when present;
         // every listed key must exist in `properties`.
-        if let Some(required) = obj.get("required") {
-            let required = required.as_array().ok_or_else(|| {
-                format!(
+        let required: Vec<&str> = match obj.get("required") {
+            None => Vec::new(),
+            Some(serde_json::Value::Array(keys)) => keys
+                .iter()
+                .map(|key| match key.as_str() {
+                    Some(key) if properties.contains_key(key) => Ok(key),
+                    Some(key) => Err(format!(
+                        "`required` key `{key}` not found in `properties`.",
+                    )),
+                    None => Err(format!(
+                        "`required` key not a string: `{}`",
+                        serde_json::to_string(key).unwrap()
+                    )),
+                })
+                .collect::<std::result::Result<_, _>>()?,
+            Some(required) => {
+                return Err(format!(
                     "Input `schema` `required` not an array: `{}`",
                     serde_json::to_string(required).unwrap()
                 )
-            })?;
-
-            for key in required {
-                match key.as_str() {
-                    Some(key) if properties.contains_key(key) => {}
-                    Some(key) => {
-                        return Err(format!(
-                            "`required` key `{key}` not found in `properties`.",
-                        )
-                        .into());
-                    }
-                    None => {
-                        return Err(format!(
-                            "`required` key not a string: `{}`",
-                            serde_json::to_string(key).unwrap()
-                        )
-                        .into());
-                    }
-                }
+                .into());
             }
-        }
+        };
+
+        #[cfg(feature = "schema-order-check")]
+        Self::check_property_order(properties, &required)?;
+        #[cfg(not(feature = "schema-order-check"))]
+        let _ = required;
 
         Ok(())
+    }
+
+    /// Reject a required property declared after an optional one. Anthropic
+    /// moves required properties first, so an interleaved schema reaches the
+    /// model in a different order than it was written. Top-level only, and
+    /// only faithful under `preserve_order` (which `schema-order-check`
+    /// enables via `schema-order`).
+    #[cfg(feature = "schema-order-check")]
+    fn check_property_order(
+        properties: &serde_json::Map<String, serde_json::Value>,
+        required: &[&str],
+    ) -> std::result::Result<(), Cow<'static, str>> {
+        let is_required = |key: &&String| required.contains(&key.as_str());
+        let mut keys = properties.keys();
+        let Some(optional) = keys.by_ref().find(|k| !is_required(k)) else {
+            return Ok(());
+        };
+        match keys.find(is_required) {
+            None => Ok(()),
+            Some(late) => Err(format!(
+                "required property `{late}` is declared after optional \
+                 property `{optional}`. Anthropic moves required properties \
+                 first, so declare every required property before any \
+                 optional one (or disable the `schema-order-check` feature)."
+            )
+            .into()),
+        }
     }
 
     /// This will build the [`CustomMethodDef`] and do some basic validation on the fields.
@@ -2311,8 +2339,8 @@ mod tests {
         let method = CustomMethodDef::builder("test_method")
             .description("Test method with multiple params")
             .string_param("name", "A person's name", true)
-            .number_param("age", "A person's age", false)
             .boolean_param("active", "Whether the person is active", true)
+            .number_param("age", "A person's age", false)
             .build()
             .unwrap();
 
@@ -2326,19 +2354,87 @@ mod tests {
                     "type": "string",
                     "description": "A person's name"
                 },
-                "age": {
-                    "type": "number",
-                    "description": "A person's age"
-                },
                 "active": {
                     "type": "boolean",
                     "description": "Whether the person is active"
+                },
+                "age": {
+                    "type": "number",
+                    "description": "A person's age"
                 }
             },
             "required": ["name", "active"]
         });
 
         assert_eq!(method.schema, expected_schema);
+    }
+
+    #[test]
+    #[cfg(feature = "schema-order-check")]
+    fn build_rejects_required_after_optional() {
+        let err = CustomMethodDef::builder("test_method")
+            .description("Interleaved params")
+            .string_param("name", "A person's name", true)
+            .number_param("age", "A person's age", false)
+            .boolean_param("active", "Whether the person is active", true)
+            .build()
+            .unwrap_err();
+
+        let ToolBuildError::InvalidInputSchema { message, .. } = err else {
+            panic!("expected InvalidInputSchema, got {err:?}");
+        };
+        assert!(message.starts_with(
+            "required property `active` is declared after optional property \
+             `age`."
+        ));
+
+        // The unchecked escape hatch still builds the interleaved shape.
+        let def = CustomMethodDef::builder("test_method")
+            .description("Interleaved params")
+            .number_param("age", "A person's age", false)
+            .string_param("name", "A person's name", true)
+            .build_unchecked();
+        assert_eq!(def.schema["required"][0], "name");
+    }
+
+    #[test]
+    #[cfg(feature = "schema-order-check")]
+    fn property_order_check_allows_grouped_and_all_optional() {
+        let ok = |required: &[&str]| {
+            let properties = ["a", "b", "c"]
+                .into_iter()
+                .map(|k| (k.to_string(), serde_json::Value::Null))
+                .collect();
+            MethodBuilder::check_property_order(&properties, required)
+        };
+        assert!(ok(&[]).is_ok());
+        assert!(ok(&["a", "b", "c"]).is_ok());
+        assert!(ok(&["a"]).is_ok());
+        assert!(ok(&["a", "b"]).is_ok());
+        assert!(ok(&["b"]).is_err());
+        assert!(ok(&["a", "c"]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "schema-order-check")]
+    #[should_panic(
+        expected = "tool method `Interleaved`: Invalid input schema"
+    )]
+    fn tool_args_definition_panics_on_required_after_optional() {
+        use crate::tool::ToolArgs;
+
+        #[derive(serde::Deserialize, schemars::JsonSchema)]
+        #[allow(dead_code)]
+        struct Interleaved {
+            note: Option<String>,
+            title: String,
+        }
+        impl ToolArgs for Interleaved {
+            const NAME: &'static str = "Interleaved";
+            const DESCRIPTION: &'static str = "Out of order.";
+        }
+
+        let _ = Interleaved::definition();
     }
 
     #[test]
