@@ -61,7 +61,11 @@ pub enum Event {
     /// Message end.
     MessageStop,
     /// Complete [`response::Message`]. Assembled by [`FilterExt::with_message`]
-    /// not the API.
+    /// not the API. A call the turn left open (a [`MaxTokens`] clip) is
+    /// closed as the non-streaming response closes it — its completed
+    /// arguments only — so the message matches its non-streaming twin.
+    ///
+    /// [`MaxTokens`]: StopReason::MaxTokens
     Message {
         /// The message.
         message: response::Message,
@@ -969,6 +973,211 @@ impl ArrayScanner {
     }
 }
 
+/// Close a tool input the turn ended without closing — a `max_tokens` clip
+/// — as the non-streaming path does: the completed members only, their open
+/// containers closed. The wire stops at a member boundary, so normally only
+/// brackets are missing; a member cut mid-value is dropped whole. `None`
+/// when nothing completed.
+fn close_partial(json: &str) -> Option<serde_json::Value> {
+    /// An open container. A string ending in an object's `key` position is
+    /// a key, not a completed member.
+    enum Frame {
+        Object { key: bool },
+        Array,
+    }
+
+    if let Ok(value) = serde_json::from_str(json) {
+        return Some(value);
+    }
+
+    let closers = |stack: &[Frame]| -> String {
+        stack
+            .iter()
+            .rev()
+            .map(|frame| match frame {
+                Frame::Object { .. } => '}',
+                Frame::Array => ']',
+            })
+            .collect()
+    };
+    // Whether a value ending here is a member value or an array element.
+    let completes = |stack: &[Frame]| {
+        matches!(
+            stack.last(),
+            Some(Frame::Object { key: false } | Frame::Array)
+        )
+    };
+
+    let mut stack = Vec::new();
+    // The last offset where every value before it is complete, and the
+    // closers its open containers need.
+    let mut cut: Option<(usize, String)> = None;
+    let (mut in_string, mut escaped) = (false, false);
+    // Start of a number or literal in progress.
+    let mut scalar: Option<usize> = None;
+
+    for (i, b) in json.bytes().enumerate() {
+        if in_string {
+            match (escaped, b) {
+                (true, _) => escaped = false,
+                (false, b'\\') => escaped = true,
+                (false, b'"') => {
+                    in_string = false;
+                    if completes(&stack) {
+                        cut = Some((i + 1, closers(&stack)));
+                    }
+                }
+                _ => {}
+            }
+            continue;
+        }
+        // A scalar ends at the first delimiter: until then, a number could
+        // still grow.
+        let delimits =
+            b.is_ascii_whitespace() || matches!(b, b',' | b'}' | b']');
+        if delimits && scalar.take().is_some() && completes(&stack) {
+            cut = Some((i, closers(&stack)));
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => {
+                stack.push(match b {
+                    b'{' => Frame::Object { key: true },
+                    _ => Frame::Array,
+                });
+                cut = Some((i + 1, closers(&stack)));
+            }
+            b'}' | b']' => {
+                stack.pop();
+                if completes(&stack) {
+                    cut = Some((i + 1, closers(&stack)));
+                }
+            }
+            b':' | b',' => {
+                if let Some(Frame::Object { key }) = stack.last_mut() {
+                    *key = b == b',';
+                }
+            }
+            b if b.is_ascii_whitespace() => {}
+            _ => {
+                let start = *scalar.get_or_insert(i);
+                // A literal can't grow: complete on its last byte.
+                if matches!(&json[start..=i], "true" | "false" | "null")
+                    && completes(&stack)
+                {
+                    scalar = None;
+                    cut = Some((i + 1, closers(&stack)));
+                }
+            }
+        }
+    }
+
+    let (end, closers) = cut?;
+    serde_json::from_str(&format!("{}{closers}", &json[..end])).ok()
+}
+
+/// What [`assemble_tool_uses`] yields.
+enum Assembled {
+    /// An event to pass on, a completed call included.
+    Event(Result<Event, Error>),
+    /// A call its turn ended without closing, its input closed by
+    /// [`close_partial`]. Never shown as a completed call.
+    Open(Block),
+}
+
+/// Assemble tool calls from their deltas: [`FilterExt::with_tool_use`]'s
+/// engine, which also flushes a call left open for
+/// [`FilterExt::with_message_ip`] to seat.
+fn assemble_tool_uses<S>(stream: S) -> impl futures::Stream<Item = Assembled>
+where
+    S: futures::Stream<Item = Result<Event, Error>> + Send,
+{
+    async_stream::stream! {
+        let mut call: Option<tool::Use> = None;
+        // Whether the block being assembled is a server tool use, so we
+        // emit the matching `Event` variant at the block's end.
+        let mut is_server = false;
+        let mut input = String::new();
+
+        // A call still open when its turn moves on: flushed with whatever
+        // completed. No deltas means the start's input stands.
+        let open = |mut call: tool::Use, input: &str, is_server: bool| {
+            if let Some(input) = close_partial(input) {
+                call.input = input;
+            }
+            Assembled::Open(if is_server {
+                Block::ServerToolUse { call }
+            } else {
+                Block::ToolUse { call }
+            })
+        };
+
+        pin_mut!(stream);
+
+        while let Some(result) = stream.next().await {
+            if let Ok(
+                Event::ContentBlockStart { .. }
+                | Event::MessageDelta { .. }
+                | Event::MessageStop,
+            ) = &result
+                && let Some(call) = call.take()
+            {
+                yield open(call, &input, is_server);
+            }
+
+            match result {
+                Ok(Event::ContentBlockStart {
+                    content_block: Block::ToolUse { call: empty }, .. }) => {
+                    input.clear();
+                    call = Some(empty);
+                    is_server = false;
+                }
+                Ok(Event::ContentBlockStart {
+                    content_block: Block::ServerToolUse { call: empty }, .. }) => {
+                    input.clear();
+                    call = Some(empty);
+                    is_server = true;
+                }
+                Ok(Event::ContentBlockDelta { delta: Delta::Json { partial_json }, .. }) => {
+                    input.push_str(&partial_json);
+                }
+                Ok(Event::ContentBlockStop { .. }) => {
+                    if let Some(mut call) = call.take() {
+                        // No deltas means the call arrived complete in
+                        // `content_block_start` — a PTC / resumed-turn
+                        // `tool_use`, or a zero-argument call. Keep its
+                        // input as-is (captured in
+                        // `ptc.sse.stream.jsonl`).
+                        if !input.is_empty() {
+                            call.input = match serde_json::from_str(&input) {
+                                Ok(input) => input,
+                                Err(err) => {
+                                    yield Assembled::Event(Err(Error::MessageAssembly {
+                                        message: format!("Failed to parse JSON: {}", err).into(),
+                                        delta: None,
+                                    }));
+                                    continue;
+                                }
+                            };
+                        }
+
+                        yield Assembled::Event(Ok(if is_server {
+                            Event::ServerToolUse { tool_use: call }
+                        } else {
+                            Event::ToolUse { tool_use: call }
+                        }));
+                    }
+                }
+                event => yield Assembled::Event(event),
+            }
+        }
+
+        if let Some(call) = call.take() {
+            yield open(call, &input, is_server);
+        }
+    }
+}
+
 /// Extension trait for our crate [`Event`] [`Stream`]s covering several common
 /// use cases such as extracting [`Delta`]s or [`text`] and assembling complete
 /// [`Message`]s in place.
@@ -1008,7 +1217,8 @@ pub trait FilterExt:
     ///
     /// # Note:
     /// - Message is set to `None` at the beginning of the stream.
-    /// - Implies [`with_tool_use`].
+    /// - Implies [`with_tool_use`], and seats a call the turn leaves open
+    ///   (see [`Event::Message`]).
     ///
     /// [`with_tool_use`]: FilterExt::with_tool_use
     /// [`with_message`]: FilterExt::with_message
@@ -1017,14 +1227,30 @@ pub trait FilterExt:
         message: &mut Option<response::Message>,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
         async_stream::stream! {
-            let stream = self.with_tool_use();
+            let stream = assemble_tool_uses(self);
 
             pin_mut!(stream);
 
             // reset the message if it's not already None.
             *message = None;
 
-            while let Some(result) = stream.next().await {
+            while let Some(assembled) = stream.next().await {
+                let result = match assembled {
+                    Assembled::Event(result) => result,
+                    // Seated, not shown: `with_tool_use` never yields it.
+                    Assembled::Open(block) => {
+                        if let Some(message) = message.as_mut() {
+                            message.inner.content.push(block);
+                        } else {
+                            yield Err(Error::MessageAssembly {
+                                message: "Tool use received before message start.".into(),
+                                delta: None,
+                            });
+                        }
+                        continue;
+                    }
+                };
+
                 match &result {
                     // The most common case is content block delta.
                     Ok(Event::ContentBlockDelta { delta, ..}) => {
@@ -1156,7 +1382,8 @@ pub trait FilterExt:
     /// a string argument closes the block, the argument cut at the match. A
     /// clip at `max_tokens` streams a call's input only through its last
     /// completed argument and never closes the block: such a call is never
-    /// yielded, and never errors. To dispatch, use [`with_message`] and take
+    /// yielded here, and never errors ([`with_message`] seats it, closed).
+    /// To dispatch, use [`with_message`] and take
     /// [`response::Message::tool_uses`] from the final [`Event::Message`].
     ///
     /// [`Refusal`]: StopReason::Refusal
@@ -1166,64 +1393,12 @@ pub trait FilterExt:
     fn with_tool_use(
         self,
     ) -> impl futures::Stream<Item = Result<Event, Error>> + Send {
-        async_stream::stream! {
-            let stream = self;
-            let mut call: Option<tool::Use> = None;
-            // Whether the block being assembled is a server tool use, so we
-            // emit the matching `Event` variant at the block's end.
-            let mut is_server = false;
-            let mut input = String::new();
-
-            pin_mut!(stream);
-
-            while let Some(result) = stream.next().await {
-                match result {
-                    Ok(Event::ContentBlockStart {
-                        content_block: Block::ToolUse { call: empty }, .. }) => {
-                        input.clear();
-                        call = Some(empty);
-                        is_server = false;
-                    }
-                    Ok(Event::ContentBlockStart {
-                        content_block: Block::ServerToolUse { call: empty }, .. }) => {
-                        input.clear();
-                        call = Some(empty);
-                        is_server = true;
-                    }
-                    Ok(Event::ContentBlockDelta { delta: Delta::Json { partial_json }, .. }) => {
-                        input.push_str(&partial_json);
-                    }
-                    Ok(Event::ContentBlockStop { .. }) => {
-                        if let Some(mut call) = call.take() {
-                            // No deltas means the call arrived complete in
-                            // `content_block_start` — a PTC / resumed-turn
-                            // `tool_use`, or a zero-argument call. Keep its
-                            // input as-is (captured in
-                            // `ptc.sse.stream.jsonl`).
-                            if !input.is_empty() {
-                                call.input = match serde_json::from_str(&input) {
-                                    Ok(input) => input,
-                                    Err(err) => {
-                                        yield Err(Error::MessageAssembly {
-                                            message: format!("Failed to parse JSON: {}", err).into(),
-                                            delta: None,
-                                        });
-                                        continue;
-                                    }
-                                };
-                            }
-
-                            if is_server {
-                                yield Ok(Event::ServerToolUse { tool_use: call });
-                            } else {
-                                yield Ok(Event::ToolUse { tool_use: call });
-                            }
-                        }
-                    }
-                    event => yield event,
-                }
+        assemble_tool_uses(self).filter_map(|assembled| async move {
+            match assembled {
+                Assembled::Event(result) => Some(result),
+                Assembled::Open(_) => None,
             }
-        }
+        })
     }
 
     /// Adds [`Event::JsonObject`] to the stream by incrementally scanning
@@ -2100,8 +2275,9 @@ pub(crate) mod tests {
 
     /// Synthetic: `sse.stream.txt` (minus its error events) cut off mid
     /// tool input — no closing `input_json_delta` or `content_block_stop` —
-    /// then stopped for `max_tokens`. Nothing is dispatchable, and the open
-    /// block neither panics nor surfaces an error.
+    /// then stopped for `max_tokens`. Nothing is dispatchable or shown, and
+    /// the open block neither panics nor surfaces an error: it assembles
+    /// closed, with its completed arguments.
     #[tokio::test]
     async fn truncated_tool_input_is_not_dispatchable() {
         let captured = include_str!("../test/data/sse.stream.txt");
@@ -2136,8 +2312,14 @@ pub(crate) mod tests {
             })
             .expect("with_message yields the whole turn");
         assert!(message.stop_reason.unwrap().is_max_tokens());
-        // The unclosed call never makes it into the assembled turn.
-        assert!(!message.inner.content.iter().any(|b| b.tool_use().is_some()));
+        assert_eq!(message.disposition(), response::Disposition::Clipped);
+        // The unclosed call assembles closed, the trailing `, ` dropped.
+        let calls: Vec<_> = message.inner.content.tool_uses().collect();
+        assert_eq!(calls.len(), 1);
+        let expected = r#"{"location": "San Francisco, CA"}"#;
+        let expected: serde_json::Value =
+            serde_json::from_str(expected).unwrap();
+        assert_eq!(calls[0].input, expected);
         assert_eq!(message.tool_uses().count(), 0);
         assert!(message.tool_use().is_none());
     }
@@ -2257,13 +2439,13 @@ pub(crate) mod tests {
     /// completed member (the one in progress is never sent) and the wire
     /// never closes the block — no `content_block_stop` — then
     /// `message_delta` and `message_stop` follow. No error and no call
-    /// surface; the turn still assembles, `max_tokens` and **without** the
-    /// open call (the non-streaming twin keeps it, as valid JSON holding
-    /// only the completed members). Either way it is [`Clipped`].
+    /// surface, but the turn assembles *with* the call, closed: exactly the
+    /// non-streaming twin's content, valid JSON holding only the completed
+    /// members. Either way it is [`Clipped`], so nothing dispatches.
     ///
     /// [`Clipped`]: response::Disposition::Clipped
     #[tokio::test]
-    async fn clip_leaves_the_call_open() {
+    async fn clip_closes_the_open_call() {
         let cases = [
             (
                 include_str!("../test/data/stop/clip_tool.sse.stream.txt"),
@@ -2299,16 +2481,67 @@ pub(crate) mod tests {
 
             assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
             assert_eq!(message.disposition(), response::Disposition::Clipped);
-            assert!(message.inner.content.is_empty());
+            assert_eq!(message.tool_uses().count(), 0);
             assert!(message.tool_use().is_none());
+
+            // The twin is a separate generation: only the call's id differs.
             let twin: response::Message = serde_json::from_str(twin).unwrap();
+            let [Block::ToolUse { call }] = &message.inner.content[..] else {
+                panic!("the closed call: {:?}", message.inner.content);
+            };
+            let mut expected = twin.inner.content.clone();
+            if let Some(Block::ToolUse { call: twin_call }) =
+                expected.first_mut()
+            {
+                twin_call.id = call.id.clone();
+            }
+            assert_eq!(message.inner.content, expected);
             assert_eq!(message.usage, twin.usage);
 
-            // `with_tool_use` alone: the open call is dropped at stream end.
+            // `with_tool_use` alone: the open call is never shown.
             let events: Vec<_> =
                 mock_stream(sse).with_tool_use().collect().await;
             assert!(events.iter().all(Result::is_ok), "{events:?}");
             assert!(!events.iter().flatten().any(Event::is_tool_use));
+        }
+    }
+
+    /// [`close_partial`] keeps completed members only, closing their
+    /// containers: whatever is mid-value is dropped whole.
+    #[test]
+    fn close_partial_keeps_completed_members() {
+        let cases = [
+            // Complete input passes through.
+            (r#"{"a": 1}"#, Some(r#"{"a": 1}"#)),
+            // The wire's shape: only brackets missing.
+            (r#"{"path": "story.txt""#, Some(r#"{"path": "story.txt"}"#)),
+            (
+                r#"{"a": {"b": [1, "x"], "c": "y""#,
+                Some(r#"{"a": {"b": [1, "x"], "c": "y"}}"#),
+            ),
+            (
+                r#"{"a": [{"b": null}, {"#,
+                Some(r#"{"a": [{"b": null}, {}]}"#),
+            ),
+            (r#"{"a": true"#, Some(r#"{"a": true}"#)),
+            // Mid-string, mid-escape, mid-key, mid-number: dropped whole.
+            (
+                r#"{"path": "story.txt", "contents": "Once"#,
+                Some(r#"{"path": "story.txt"}"#),
+            ),
+            (r#"{"a": "x\"#, Some("{}")),
+            (r#"{"a": 1, "b"#, Some(r#"{"a": 1}"#)),
+            (r#"{"a": 1, "b": "#, Some(r#"{"a": 1}"#)),
+            (r#"{"a": [1, 2"#, Some(r#"{"a": [1]}"#)),
+            (r#"{"a": 12 "#, Some(r#"{"a": 12}"#)),
+            (r#"{"a": {"#, Some(r#"{"a": {}}"#)),
+            (r#"{"#, Some("{}")),
+            ("", None),
+            ("tru", None),
+        ];
+        for (partial, closed) in cases {
+            let closed = closed.map(|c| serde_json::from_str(c).unwrap());
+            assert_eq!(close_partial(partial), closed, "{partial}");
         }
     }
 

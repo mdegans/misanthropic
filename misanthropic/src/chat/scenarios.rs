@@ -260,8 +260,8 @@ fn clipped_live() -> Reply {
     captured(include_str!("../../test/data/stop/clip_tool.response.json"))
 }
 
-/// [`clipped_live`]'s stream: the call's block never closes, so it
-/// doesn't assemble — the turn arrives empty, stopped `max_tokens`.
+/// [`clipped_live`]'s stream: the call's block never closes; assembly closes
+/// it as [`clipped_live`] does, stopped `max_tokens`.
 fn clipped_live_streamed() -> Reply {
     mock::message(assembled_sse(include_str!(
         "../../test/data/stop/clip_tool.sse.stream.txt"
@@ -1166,7 +1166,11 @@ fn rows() -> Vec<Row> {
             .reply(clipped_live_streamed())
             .stops([Kind::Clipped])
             .requests(1)
-            .roles("U"),
+            .roles("U")
+            .extra(|run| {
+                assert!(run.calls.is_empty());
+                assert_eq!(run.stop_reasons, [Some(StopReason::MaxTokens)]);
+            }),
         row("clip_then_resume")
             .resume()
             .reply(clipped_call())

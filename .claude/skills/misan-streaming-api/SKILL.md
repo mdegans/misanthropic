@@ -280,8 +280,10 @@ match error {
 Use the `#[tool]` macro (default `derive` feature) to declare a typed tool,
 then `with_message()` and dispatch from the final `Event::Message`. **Never run
 a call on `Event::ToolUse`**: it fires as the block closes, *before*
-`message_delta` carries the stop reason, and a `Refusal` or a `StopSequence`
-can cut a call off mid-input (or `MaxTokens` truncate one).
+`message_delta` carries the stop reason, and a `StopSequence` can cut a call
+off mid-input. A `MaxTokens` clip never closes the call's block: it is never
+shown, but `Event::Message` seats it closed, with its completed arguments —
+as the non-streaming response does.
 `response::Message::tool_uses()` yields every call in the turn — parallel
 calls included — and is empty unless the stop reason is `ToolUse`. See the
 misan-messages-api skill for the full macro walk-through; the runnable example

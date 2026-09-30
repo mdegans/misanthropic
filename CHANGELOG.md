@@ -160,8 +160,22 @@ record; this file aggregates them.
   instead of letting the model call tools only to answer them with synthetic
   errors. A transport with `Quirks::tool_choice_not_respected` gets the prompt
   unchanged, and calls a wrap-up makes anyway are still errored.
+- **A streamed `max_tokens` clip's `Event::Message` now holds the open
+  call.** Raw `Content::tool_uses()` on a clipped streamed turn now sees it,
+  as on the non-streaming path; `response::Message::tool_uses()` stays empty
+  and the turn is still `Disposition::Clipped`, so nothing dispatches.
+  `with_tool_use` still never yields it.
 
 ### Fixed
+
+- **A streamed turn clipped mid-call assembled without the call.** On a
+  `max_tokens` clip the wire streams a call's input only through its last
+  completed member and never sends `content_block_stop`; `with_message`
+  dropped the open block, so the turn differed from its non-streaming twin.
+  Assembly now closes it at turn end — completed members only, their
+  containers closed (a member cut mid-value is dropped whole) — which
+  matches the twin's `tool_use` input exactly in both captures
+  (`test/data/stop/clip_*`).
 
 - **A streamed turn's assembled usage double-counted.** `with_message` added
   the `message_delta` usage to `message_start`'s, but the delta's is
