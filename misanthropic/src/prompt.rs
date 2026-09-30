@@ -885,7 +885,8 @@ impl Prompt {
 
     /// Set the [`stop_sequences`]. If one is generated, the completion will
     /// stop with [`StopReason::StopSequence`] in the
-    /// [`response::Message::stop_reason`].
+    /// [`response::Message::stop_reason`]. A whitespace-only sequence is a
+    /// 400 (see the [field](Self#structfield.stop_sequences)).
     ///
     /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence

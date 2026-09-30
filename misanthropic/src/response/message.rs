@@ -489,7 +489,8 @@ pub enum Disposition {
     /// never run client calls such a turn still carries, nor seat a turn
     /// that carries them or leaves a server tool in flight: a refusal can
     /// cut either short, and a stop sequence matched inside a call's input
-    /// closes it truncated (valid JSON, arguments missing — captured live).
+    /// closes it truncated (valid JSON, an argument's value cut off at the
+    /// match).
     /// Nor an empty one: the API rejects an empty turn.
     Done,
 }

@@ -1153,9 +1153,9 @@ pub trait FilterExt:
     /// [`MessageDelta`] carrying the turn's [`StopReason`]. For display only:
     /// a [`Refusal`], [`StopSequence`] or [`MaxTokens`] stop can still
     /// follow, and such a call must not run — a stop sequence matched inside
-    /// the input closes the block truncated. A block that never closes (a
-    /// call clipped at `max_tokens`) is never yielded, and never errors. To
-    /// dispatch, use [`with_message`] and take
+    /// the input closes the block truncated. A clip at `max_tokens` can leave
+    /// a call's block unclosed (captured); one is never yielded, and never
+    /// errors. To dispatch, use [`with_message`] and take
     /// [`response::Message::tool_uses`] from the final [`Event::Message`].
     ///
     /// [`Refusal`]: StopReason::Refusal
