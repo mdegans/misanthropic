@@ -43,7 +43,9 @@
 //!   configured exactly as for Anthropic; `after_assistant` reports
 //!   [`breakpoint_after_assistant`](crate::Quirks::breakpoint_after_assistant)
 //!   so the driver marks assistant turns instead. Each request's `T` must
-//!   also equal the server's `count_tokens`. Run with `just test-cache`.
+//!   also equal the server's `count_tokens`, and fit the server's context
+//!   (`BLALLAMA_N_CTX`, 32768 by default) with its `max_tokens`: the table
+//!   prints the tightest request. Run with `just test-cache`.
 //! - `anthropic::canonical` ([`SHORT`]) and `anthropic::long`: **paid** —
 //!   `claude-haiku-4-5`, about three and eight cents, with
 //!   `misanthropic/api.key`. `#[ignore]`d, and skipped even then unless
@@ -113,6 +115,10 @@ struct Backend {
     /// request of a run prefilled enough to measure one (a server still
     /// warm from an earlier run); `None` leaves such a run unchecked.
     prefill_rate: Option<f64>,
+    /// The server's context, which every prompt plus its `max_tokens` must
+    /// fit (blallama refuses a request that doesn't); `None` for
+    /// Anthropic's, which the scripts come nowhere near.
+    n_ctx: Option<u64>,
 }
 
 /// Anthropic: `read` is the previous prompt less the framing after its
@@ -123,6 +129,7 @@ const ANTHROPIC: Backend = Backend {
     slack: 16,
     latency_slack_ms: None,
     prefill_rate: None,
+    n_ctx: None,
 };
 
 /// A local blallama, configured as for Anthropic. Its template may render
@@ -134,7 +141,14 @@ const BLALLAMA: Backend = Backend {
     slack: 64,
     latency_slack_ms: Some(1500.0),
     prefill_rate: Some(BLALLAMA_PREFILL_RATE),
+    n_ctx: Some(BLALLAMA_N_CTX),
 };
+
+/// blallama's context, unless `BLALLAMA_N_CTX` says otherwise: what the
+/// recipes' server is started with (`--n-ctx 32768`), and what [`LONG`]
+/// needs.
+#[cfg(feature = "blallama")]
+const BLALLAMA_N_CTX: u64 = 32_768;
 
 /// blallama's fallback [`prefill_rate`](Backend::prefill_rate), in tokens
 /// per second, unless `BLALLAMA_PREFILL_RATE` sets one: on 2026-09-30,
@@ -160,6 +174,9 @@ struct Script {
     /// The most uncached `input` a request after the first may pay: a beat
     /// or a tool result, never the conversation.
     input_cap: u64,
+    /// `max_tokens` on a local server: room for a model's thinking, less
+    /// where the conversation must leave room in the context for it.
+    local_max_tokens: NonZeroU32,
 }
 
 /// Ten beats, four with a tool round: the conversation stays around a
@@ -168,16 +185,21 @@ const SHORT: Script = Script {
     beats: &BEATS,
     logbook: false,
     input_cap: 1024,
+    local_max_tokens: NonZeroU32::new(8192).unwrap(),
 };
 
 /// Twenty beats, twelve with a tool round, nine of them reading ten days
 /// of the [`Logbook`] (about a thousand tokens each): the conversation
 /// grows to many thousands of tokens, the regime where a prefix that isn't
-/// reused makes every turn crawl. Needs a context of about 32k.
+/// reused makes every turn crawl. Needs a context of about 32k: a local
+/// template that renders each turn's reasoning back (Qwen3.6's does) grows
+/// the prompt by every thought, so its `max_tokens` is half [`SHORT`]'s,
+/// leaving the prompt about 28k.
 const LONG: Script = Script {
     beats: &LONG_BEATS,
     logbook: true,
     input_cap: 2048,
+    local_max_tokens: NonZeroU32::new(4096).unwrap(),
 };
 
 /// [`SHORT`]'s beats. Four ask for a tool (`ledger`, `stores`), which a
@@ -499,6 +521,8 @@ struct Request {
     /// The server's `count_tokens` for the request (or why it failed),
     /// when asked.
     counted: Option<Result<u64, String>>,
+    /// The request's `max_tokens`.
+    max_tokens: u64,
     output: u64,
     millis: f64,
 }
@@ -546,6 +570,7 @@ fn requests(log: &Log, counted: Option<&[Counted]>) -> Vec<Request> {
                 written: counts.cache_creation_input_tokens,
                 read: counts.cache_read_input_tokens,
                 counted: counted.map(|counted| counted[n].clone()),
+                max_tokens: u64::from(log.sent[n].max_tokens.get()),
                 output: counts.output_tokens,
                 millis: elapsed.as_secs_f64() * 1e3,
             }
@@ -751,8 +776,49 @@ fn table(
     std::iter::once(header)
         .chain(rows)
         .chain([model, totals])
+        .chain(backend.n_ctx.map(|n_ctx| fit(requests, n_ctx)))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The request that came closest to overrunning `n_ctx`: prompt plus
+/// `max_tokens`, and whether it fit.
+fn tightest(requests: &[Request]) -> Option<(usize, &Request)> {
+    let reach = |r: &Request| r.prompt() + r.max_tokens;
+    requests.iter().enumerate().max_by_key(|(_, r)| reach(r))
+}
+
+/// A line on how close the run came to overrunning `n_ctx`.
+fn fit(requests: &[Request], n_ctx: u64) -> String {
+    let last = requests.last().map_or(0, Request::prompt);
+    let Some((n, r)) = tightest(requests) else {
+        return format!("context: no requests, n_ctx {n_ctx}");
+    };
+    let reach = r.prompt() + r.max_tokens;
+    format!(
+        "context: the last prompt was {last} tokens; the tightest, request \
+         {}, was {} + max_tokens {} = {reach} of n_ctx {n_ctx} ({:.0}%)",
+        n + 1,
+        r.prompt(),
+        r.max_tokens,
+        100.0 * reach as f64 / n_ctx.max(1) as f64,
+    )
+}
+
+/// Every request's prompt plus `max_tokens` fits the backend's context.
+fn check_context(requests: &[Request], backend: Backend) {
+    let (Some(n_ctx), Some((n, r))) = (backend.n_ctx, tightest(requests))
+    else {
+        return;
+    };
+    assert!(
+        r.prompt() + r.max_tokens <= n_ctx,
+        "request {}: its prompt of {} tokens plus max_tokens {} overruns \
+         n_ctx {n_ctx}; lower the script's max_tokens or its beats",
+        n + 1,
+        r.prompt(),
+        r.max_tokens,
+    );
 }
 
 /// Hold `log`, a run of `script`, to a healthy cached loop's signature on
@@ -779,6 +845,7 @@ fn assert_caches(
     check_growth(&requests, backend);
     check_reads(&requests, backend, script.input_cap);
     check_tips(&requests, backend);
+    check_context(&requests, backend);
     if let (Ok(latency), Some(slack)) = (&latency, backend.latency_slack_ms) {
         check_latency(&requests, latency, slack);
     }
@@ -989,12 +1056,12 @@ mod blallama {
                 "BLALLAMA_PREFILL_RATE",
                 BLALLAMA_PREFILL_RATE,
             )),
+            n_ctx: Some(from_env("BLALLAMA_N_CTX", BLALLAMA_N_CTX)),
             ..backend
         };
-        // Room for a local model's thinking, and for the prompt beside it.
         let base = Prompt::default()
             .model(model)
-            .max_tokens(NonZeroU32::new(8192).unwrap());
+            .max_tokens(script.local_max_tokens);
         let transport = Checked::new(wrap(client.clone()));
         let log = scenario(transport, base, script, backend).await;
         let counted = counted(&client, &log).await;
@@ -1232,6 +1299,7 @@ fn accounted(input: u64, written: u64, read: u64, output: u64) -> Request {
         written: Some(written),
         read: Some(read),
         counted: None,
+        max_tokens: 512,
         output,
         millis: 0.0,
     }
@@ -1466,4 +1534,34 @@ fn a_warm_run_falls_back_to_the_backends_rate() {
     let panic = checked.expect_err("a re-prefill's time must fail");
     let message = panic.downcast_ref::<String>().expect("a message");
     assert!(message.contains("fallback of 400 tokens/s"), "{message}");
+}
+
+/// A local server's context holds every prompt plus its `max_tokens`, and
+/// the table says how close the tightest request came.
+#[test]
+fn every_request_fits_the_context() {
+    let local = Backend {
+        n_ctx: Some(7000),
+        ..ANTHROPIC
+    };
+    // 6,000 then 6,300 tokens, each with 512 to generate.
+    let fits = [accounted(100, 5900, 0, 200), accounted(50, 250, 6000, 20)];
+    check_context(&fits, local);
+    check_context(&fits, ANTHROPIC);
+    let printed = table(&fits, local, &Latency::fit(&fits, None));
+    let line = printed.lines().last().unwrap();
+    assert!(
+        line.contains("request 2, was 6300 + max_tokens 512"),
+        "{line}"
+    );
+    assert!(line.contains("= 6812 of n_ctx 7000 (97%)"), "{line}");
+
+    let over = [accounted(100, 5900, 0, 200), accounted(50, 550, 6000, 20)];
+    let checked = std::panic::catch_unwind(|| check_context(&over, local));
+    let panic = checked.expect_err("7,112 tokens don't fit 7,000");
+    let message = panic.downcast_ref::<String>().expect("a message");
+    assert!(
+        message.contains("request 2: its prompt of 6600"),
+        "{message}"
+    );
 }

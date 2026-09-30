@@ -67,7 +67,8 @@ test-equivalence model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf":
 # (no request prefills 1024 tokens to measure the rate on) is timed against
 # BLALLAMA_PREFILL_RATE tokens/s instead: 420 by default, measured on Qwen3.6.
 # `which` picks one run: canonical, after_assistant or long (the default runs
-# all three; long needs a context of about 32k).
+# all three; long needs a context of about 32k: set BLALLAMA_N_CTX to the
+# server's --n-ctx if it isn't 32768, and every request must fit it).
 # Live multi-turn prompt-caching check against a local blallama, one model.
 test-cache model="Qwen3.6-35B-A3B-UD-Q4_K_S.gguf" which="":
     BLALLAMA_URL='{{blallama_url}}' BLALLAMA_MODEL='{{model}}' \
