@@ -111,6 +111,26 @@ pub(crate) fn assert_handback_legal(prompt: &Prompt) {
     }
 }
 
+/// Assert that the caller's next beat may follow `prompt` — what an `Ok`
+/// hand-back owes it: [well formed](assert_well_formed), with a tail a user
+/// turn may follow (a user tail by merging). Unlike an early stop's, it
+/// can't lean on a resume answering the tail first.
+pub(crate) fn assert_beat_may_follow(prompt: &Prompt) {
+    assert_well_formed(prompt);
+    let Some(tail) = prompt.messages.last() else {
+        return;
+    };
+    let beat = Message::from((Role::User, "next"));
+    if tail.role != Role::User
+        && let Err(error) = tail.may_precede(&beat)
+    {
+        panic!(
+            "the next beat can't follow an Ok hand-back: {error}\n{}",
+            render(prompt)
+        );
+    }
+}
+
 /// What a [`Checked`] transport saw, in order.
 #[derive(Default)]
 pub(crate) struct Log {
@@ -230,9 +250,15 @@ fn checks_catch_illegal_shapes() {
     assert!(panics(&|| assert_request_legal(&unanswered)));
     assert!(panics(&|| assert_handback_legal(&unanswered)));
 
-    // A system turn to a model without one; fine for a custom model.
+    // A system tail: a resume answers it, but no beat may follow it.
     let noted = Prompt::user("hi").add_message((Role::System, "note"));
-    let noted = noted.unwrap().model(crate::Id::Sonnet46);
+    let noted = noted.unwrap().model(crate::Id::Opus48);
+    assert_handback_legal(&noted);
+    assert!(panics(&|| assert_beat_may_follow(&noted)));
+    assert_beat_may_follow(&prefill);
+
+    // A system turn to a model without one; fine for a custom model.
+    let noted = noted.model(crate::Id::Sonnet46);
     assert!(panics(&|| assert_request_legal(&noted)));
     assert_request_legal(&noted.clone().model(crate::Id::Opus48));
     assert_request_legal(&noted.model("local.gguf"));

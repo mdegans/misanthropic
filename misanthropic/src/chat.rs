@@ -708,15 +708,19 @@ impl<State, T: Transport> Chat<State, T> {
     /// [`Paused`](Disposition::Paused) turn; any other turn carrying them is
     /// a [`Stop`], never seated (see `unusable`).
     ///
-    /// Whatever it returns, a round never leaves a legal prompt illegal: the
-    /// caller's next beat (or a resume) can follow it. Debug builds assert
-    /// that at every exit.
+    /// Whatever it returns, a round never leaves a legal prompt illegal: on
+    /// `Ok` the caller's next beat can follow it, and on a [`Stop`] a resume
+    /// can. Debug builds assert that at every exit.
     async fn quiesce(&mut self, state: &mut State) -> Result<(), Stop> {
         let was_legal =
             cfg!(debug_assertions) && self.prompt.check_turn_order().is_ok();
         let outcome = self.rounds(state).await;
         debug_assert!(
-            !was_legal || resumable(&self.prompt),
+            !was_legal
+                || match outcome {
+                    Ok(()) => takes_a_beat(&self.prompt),
+                    Err(_) => resumable(&self.prompt),
+                },
             "Chat left a prompt the caller can't carry on from ({:?})",
             self.prompt.check_turn_order().err()
         );
@@ -765,6 +769,12 @@ impl<State, T: Transport> Chat<State, T> {
                         .is_some_and(|m| m.role == Role::Assistant),
                 );
             let calls = self.seat_assistant(state, response.inner)?;
+            if calls.is_empty() && !paused {
+                // The assistant is done; back to the caller.
+                self.settle(paused_at);
+                return Ok(());
+            }
+
             // The paused turn starts where it was first seated — a later
             // continuation (a separate turn after a flushed note) doesn't
             // move it — and only this round's seating counts, so a hook that
@@ -782,10 +792,6 @@ impl<State, T: Transport> Chat<State, T> {
                     })
                 })
                 .flatten();
-
-            if calls.is_empty() && !paused {
-                return Ok(()); // assistant is done; back to the caller
-            }
 
             if rounds >= self.config.max_tool_calls {
                 if paused {
@@ -887,6 +893,20 @@ impl<State, T: Transport> Chat<State, T> {
         let tail = self.prompt.messages.pop_if(|m| m.role == Role::System);
         // The trailing note was seated before the paused turn began.
         self.rebuffer(tail.into_iter().flat_map(|m| m.content).chain(dropped));
+    }
+
+    /// Leave a tail the caller's next beat can follow when the beat ends. A
+    /// round that seats nothing new — a bare refusal, an empty `end_turn`, a
+    /// hook returning nothing or only a note — leaves the tail as the round
+    /// found it: a system note seated right before the call, or (a hook
+    /// dropping the continuation) the paused turn starting at `paused_at`.
+    /// Both go back to `pending_system` — see `restore_tail`.
+    fn settle(&mut self, paused_at: Option<usize>) {
+        let in_flight = self.prompt.messages.last().is_some_and(|tail| {
+            tail.role == Role::Assistant
+                && tail.unfinished_server_tool_uses().next().is_some()
+        });
+        self.restore_tail(paused_at.filter(|_| in_flight));
     }
 
     /// Truncate the paused turn starting at `at` (continuations, dispatched
@@ -1112,6 +1132,16 @@ fn calls_tools(response: &response::Message) -> bool {
 fn awaits_model(tail: &Message) -> bool {
     tail.role != Role::Assistant
         || tail.unfinished_server_tool_uses().next().is_some()
+}
+
+/// Whether the caller's next beat — a user turn — may follow `prompt`, as
+/// an `Ok` hand-back owes it. A user tail takes it by merging.
+fn takes_a_beat(prompt: &Prompt) -> bool {
+    let beat = Message::from((Role::User, "…"));
+    prompt.check_turn_order().is_ok()
+        && prompt.messages.last().is_none_or(|tail| {
+            tail.role == Role::User || tail.may_precede(&beat).is_ok()
+        })
 }
 
 /// Whether the caller can carry on from `prompt`: legal turn order, and a
@@ -1362,6 +1392,21 @@ mod tests {
         // The paused assistant turn is gone; the user's beat is the tail.
         assert_eq!(prompt.messages.len(), 1);
         assert_eq!(prompt.messages[0].role, Role::User);
+    }
+
+    /// The continuation of [`paused_response`]: the search's result, then
+    /// `done`.
+    fn continued_response() -> response::Message {
+        let mut inner = AssistantMessage::from(Content(vec![
+            serde_json::from_str::<Block>(include_str!(
+                "../test/data/server_tools/web_search_result.json"
+            ))
+            .unwrap(),
+        ]));
+        inner.content.push("done");
+        response::Message::builder("test-model", inner)
+            .stop_reason(StopReason::EndTurn)
+            .build()
     }
 
     /// A paused turn that ends in a server-tool result, its use answered —
@@ -1816,7 +1861,7 @@ mod tests {
             MockTransport::new()
                 .then(mock::message(paused_response()))
                 .then(mock::max_tokens("and the"))
-                .then(mock::text("done")),
+                .then(mock::message(continued_response())),
         );
         let chat =
             Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
@@ -1839,7 +1884,7 @@ mod tests {
         assert_eq!(transport.len(), 3);
         assert_eq!(prompt.messages.len(), 2);
         let turn = &prompt.messages[1].content;
-        assert_eq!(turn.len(), 3);
+        assert_eq!(turn.len(), 4);
         assert_eq!(turn.last().unwrap().to_string(), "done");
     }
 

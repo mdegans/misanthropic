@@ -140,6 +140,13 @@ record; this file aggregates them.
   the API rejects an empty turn — so the next request 400'd. Such a turn now
   reaches the `on_assistant` hook (which may still seat something) but is
   otherwise dropped, and the caller's next beat follows the previous tail.
+- **A round that seats nothing no longer strands a system note.** A note
+  seated right before the model call (a user + system beat, say) followed by
+  a turn that seats nothing — a bare refusal, an empty `end_turn`, a hook
+  returning nothing or only a system verdict — left a `[…, user, system]`
+  tail, and the next beat failed with `Stop::TurnOrder` (system → user). The
+  note now goes back to the pending buffer and follows the next beat, and a
+  paused turn a hook left uncontinued is dropped whole.
 - **An `on_assistant` return that breaks turn order is seated whole or not at
   all.** A hook returning, say, a `tool_use` turn followed by a user turn got
   `Stop::TurnOrder` with the `tool_use` turn already seated and unanswered —

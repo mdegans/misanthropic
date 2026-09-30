@@ -290,6 +290,8 @@ enum Hook {
     /// Seat a user turn after the first — a caller bug when that turn calls
     /// tools.
     Stray,
+    /// Replace the first turn with a system verdict alone.
+    Verdict,
 }
 
 impl Hook {
@@ -338,6 +340,7 @@ impl Hook {
                 mailbox.send("job done", roles.to_vec()).unwrap();
                 vec![turn.into()]
             }
+            Hook::Verdict if first => vec![(Role::System, "verdict").into()],
             Hook::Stray if first => {
                 vec![turn.into(), (Role::User, "stray").into()]
             }
@@ -588,7 +591,7 @@ where
     let (prompt, pending, tally) = loop {
         let mut error = match chat.run(tally, &mut next_beat).await {
             Ok((parts, state)) => {
-                checks::assert_handback_legal(&parts.prompt);
+                checks::assert_beat_may_follow(&parts.prompt);
                 break (parts.prompt, parts.pending, state);
             }
             Err(error) => error,
@@ -831,6 +834,45 @@ fn rows() -> Vec<Row> {
             .reply(mock::text("ok"))
             .requests(2)
             .roles("UA"),
+        // A round that seats nothing leaves a note seated before the call
+        // trailing; it goes back to the buffer, to follow the next beat.
+        row("note_before_a_bare_refusal")
+            .beats([Beat::Both("hi", "be brief"), Beat::User("again")])
+            .reply(mock::refusal("cyber", "no"))
+            .reply(mock::text("ok"))
+            .requests(2)
+            .roles("USA")
+            .extra(|run| assert_eq!(run.sent_roles(1), "US")),
+        row("note_before_an_empty_turn")
+            .beats([Beat::Both("hi", "be brief"), Beat::User("again")])
+            .reply(empty_turn())
+            .reply(mock::text("ok"))
+            .requests(2)
+            .roles("USA")
+            .extra(|run| assert_eq!(run.sent_roles(1), "US")),
+        row("hook_drops_a_turn_after_a_note")
+            .hook(Hook::Drop)
+            .beats([Beat::Both("hi", "be brief"), Beat::User("again")])
+            .reply(mock::text("x"))
+            .reply(mock::text("y"))
+            .requests(2)
+            .roles("U")
+            .extra(|run| {
+                assert_eq!(run.sent_roles(1), "US");
+                assert_eq!(pending(run), "be brief");
+            }),
+        row("hook_returns_only_a_verdict")
+            .hook(Hook::Verdict)
+            .beats(["hi", "again"])
+            .reply(mock::text("x"))
+            .reply(mock::text("ok"))
+            .requests(2)
+            .roles("USA")
+            .last("ok")
+            .extra(|run| {
+                assert_eq!(run.sent_roles(1), "US");
+                assert_eq!(text(run.turn(1)), "verdict");
+            }),
         row("empty_turn_after_tool_round")
             .beats(["go", "again"])
             .reply(calls(&["a"]))
