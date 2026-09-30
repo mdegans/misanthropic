@@ -145,9 +145,10 @@ The `batch` and `client` features don't build on wasm32.
 
 - Some tests are `#[ignore]`d and require an API key in `api.key` in the
   `misanthropic/` crate directory — i.e. `misanthropic/api.key`, which is the
-  `CRATE_ROOT` that `load_api_key` reads, not the workspace root (CI provides
-  this via secrets on push to main). Run them with e.g. `cargo test -p
-  misanthropic --features client <name> -- --ignored`.
+  `CRATE_ROOT` that `load_api_key` reads, not the workspace root. In CI,
+  `live.yaml` writes it from secrets on `ready-to-merge`-labeled PRs, on
+  release (`workflow_call`), and on manual dispatch. Run them with e.g.
+  `cargo test -p misanthropic --features client <name> -- --ignored`.
 
 ### Wire fixtures — capture, don't trust the docs
 
