@@ -141,14 +141,13 @@ impl Message {
     /// Every client [`tool::Use`] in the turn, in order — the parallel-call
     /// twin of [`Self::tool_use`], and the same gate: empty unless the
     /// [`StopReason`] is [`StopReason::ToolUse`]. A call cut short is still
-    /// valid JSON: a [`StopSequence`] matched inside a string argument keeps
-    /// it, cut at the match; [`MaxTokens`] keeps only the completed
-    /// arguments, dropping the one in progress whole; a [`Refusal`] can cut
-    /// one off too. So a turn's calls are only safe to run once its stop
+    /// valid JSON (captured live, streamed or not): a [`StopSequence`]
+    /// matched inside a string argument keeps it, cut at the match;
+    /// [`MaxTokens`] keeps only the completed arguments, dropping the one in
+    /// progress whole. So a turn's calls are only safe to run once its stop
     /// reason says so.
     ///
     /// [`tool::Use`]: crate::tool::Use
-    /// [`Refusal`]: StopReason::Refusal
     /// [`StopSequence`]: StopReason::StopSequence
     /// [`MaxTokens`]: StopReason::MaxTokens
     pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
