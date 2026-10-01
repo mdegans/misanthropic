@@ -1,6 +1,10 @@
 #![deny(warnings)]
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
+// Rust 1.99's rustdoc flags explicit targets on `pub mod` docs whose outer
+// `///` and inner `//!` halves resolve in different scopes: the same link is
+// "redundant" in one and required in the other, so it can't be satisfied.
+#![allow(rustdoc::redundant_explicit_links)]
 // The README is the crate front page, and including it here doc-tests its
 // code blocks so they can't drift from the API (same trick as `__skills`).
 // Those blocks use `Client` and `#[tool]`, so a build without them (e.g.
