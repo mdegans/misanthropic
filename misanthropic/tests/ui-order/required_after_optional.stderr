@@ -1,0 +1,11 @@
+error: required field `body` is declared after optional field `note`. Declare every required field before any optional one (or disable misanthropic's `schema-order-check` feature): it's the one layout every engine generates in the same order, and field order changes what the model generates.
+  --> tests/ui-order/required_after_optional.rs:11:5
+   |
+11 |     body: String,
+   |     ^^^^
+
+error: required field `body` is declared after optional field `count`. Declare every required field before any optional one (or disable misanthropic's `schema-order-check` feature): it's the one layout every engine generates in the same order, and field order changes what the model generates.
+  --> tests/ui-order/required_after_optional.rs:19:5
+   |
+19 |     body: String,
+   |     ^^^^

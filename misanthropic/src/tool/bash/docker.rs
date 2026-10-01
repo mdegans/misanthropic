@@ -76,6 +76,7 @@ struct Http {
 /// (`--network none` is intentionally absent: with no network there is no port
 /// to publish and no route in, so `bashd` would be unreachable over HTTP.)
 #[derive(Clone, Debug, Default)]
+#[non_exhaustive]
 pub enum Network {
     /// A bridge network with `bashd`'s port published to `127.0.0.1` (an
     /// ephemeral host port). Works out of the box, including on Docker Desktop.

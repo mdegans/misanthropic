@@ -14,6 +14,11 @@ proc-macro = true
 [lints.rust]
 unsafe_code = "forbid"
 
+[features]
+# Reject `#[derive(ToolArgs)]` structs that declare a required field after an
+# optional one. Forwarded from `misanthropic/schema-order-check`; see there.
+schema-order-check = []
+
 [dependencies]
 # `full` is required to parse `impl` blocks with function bodies (the `#[tool]`
 # attribute macro); the default `derive`-only feature set can't.

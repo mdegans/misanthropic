@@ -60,11 +60,35 @@
 //!
 //! # Breakpoint budget
 //!
-//! The API supports up to 4 explicit cache breakpoints.  If more are present,
-//! the API keeps the last 4.  This means you can freely call [`cache`] each
-//! turn without tracking how many breakpoints exist.
+//! Anthropic rejects a request carrying more than 4 `cache_control` markers
+//! with a 400 ("A maximum of 4 blocks with cache_control may be provided.
+//! Found 5.") — it does not keep the last 4. Each marked block counts,
+//! across `tools` + `system` + `messages`, and so does the top-level
+//! automatic slot ([`set_auto_cache`]), even when the last block is marked
+//! too. (Probed against the free `count_tokens` endpoint, 2026-09-30.)
+//!
+//! So the wrapper keeps count: [`cache`] and [`cache_windowed`] never take a
+//! request past 4. They slide a window over the messages — keeping the
+//! newest marker (the one the next request hits), then evicting the oldest
+//! 5-minute message markers first, a 1-hour one only when no other 5-minute
+//! one is left — and never touch the `tools` / `system` markers or the
+//! automatic slot. Calling [`cache`] every turn is safe. An evicted marker
+//! costs no cache hits while a kept one sits within the API's lookback
+//! (about 20 blocks) after it and its entry is still alive (its TTL,
+//! refreshed by each hit); further back, its prefix is written again. So a
+//! 1-hour anchor is kept: after a pause of more than five minutes, its entry
+//! is the one left.
+//!
+//! Mixing TTLs has its own rules: a 1-hour marker must not come after a
+//! 5-minute one, in `tools` → `system` → `messages` order with the automatic
+//! slot last, and the automatic slot must match the TTL of a marker on the
+//! block it lands on — so place 1-hour markers first. The 1-hour and
+//! automatic placements return a [`CacheError`] rather than build a request
+//! that breaks them, and the 5-minute ones never do (see
+//! [`Prompt::check_cache`]).
 //!
 //! [`cache`]: CachedPrompt::cache
+//! [`cache_windowed`]: CachedPrompt::cache_windowed
 
 use std::{
     borrow::Cow,
@@ -75,7 +99,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use super::message::CacheControl;
-use super::{Message, Prompt, TurnOrderError};
+use super::{CacheError, Message, Prompt, TurnOrderError};
 
 /// A [`Prompt`] with an immutable cache prefix.
 ///
@@ -166,7 +190,7 @@ impl CachedPrompt {
     /// Freeze the prompt into a [`CachedPrompt`] **and** add a 1-hour
     /// cache breakpoint on the last cacheable block (via [`Prompt::cache_1h`]).
     ///
-    /// Equivalent to `CachedPrompt::from(prompt.cache_1h())`.
+    /// Equivalent to `prompt.cache_1h().map(CachedPrompt::from)`.
     ///
     /// Use this when priming or caching data that needs to survive longer
     /// than the default 5-minute window — for example, a prompt prefix
@@ -176,10 +200,14 @@ impl CachedPrompt {
     /// For 5-minute TTL, use [`CachedPrompt::cached`].
     /// For wrapping without adding any new breakpoint, use
     /// [`From::from`] / `.into()`.
-    pub fn cached_1h(prompt: Prompt) -> Self {
-        Self {
-            inner: prompt.cache_1h(),
-        }
+    ///
+    /// # Errors
+    /// [`CacheError`] if the prompt already carries a 5-minute marker the
+    /// new one would follow — see [`Prompt::cache_1h`].
+    pub fn cached_1h(prompt: Prompt) -> Result<Self, CacheError> {
+        Ok(Self {
+            inner: prompt.cache_1h()?,
+        })
     }
 }
 
@@ -209,17 +237,17 @@ impl CachedPrompt {
     /// Add a cache breakpoint on the last cacheable block.
     ///
     /// Call this after appending messages to extend the cached region.
-    /// The API keeps only the last 4 breakpoints, so calling this every
-    /// turn is safe.
+    /// Calling this every turn is safe: it never takes the request past
+    /// Anthropic's 4-marker limit (see the [module docs](self)): the new
+    /// marker stays, and the oldest 5-minute message markers (a 1-hour one
+    /// only when no other 5-minute one is left) make room.
     ///
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL (useful
     /// for cache priming across an hourly batch cadence), use
     /// [`cache_1h`](CachedPrompt::cache_1h).
     pub fn cache(&mut self) -> &mut Self {
-        // Prompt::cache() is `fn cache(mut self) -> Self`, so we need to
-        // temporarily take ownership.
-        let taken = std::mem::take(&mut self.inner);
-        self.inner = taken.cache();
+        let plan = self.inner.plan_end(CacheControl::ephemeral());
+        self.inner.apply(plan);
         self
     }
 
@@ -229,10 +257,27 @@ impl CachedPrompt {
     /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
     /// Useful when the priming write and the real requests may be
     /// separated by more than the default 5-minute window.
-    pub fn cache_1h(&mut self) -> &mut Self {
-        let taken = std::mem::take(&mut self.inner);
-        self.inner = taken.cache_1h();
-        self
+    ///
+    /// # Errors
+    /// [`CacheError`] if a 5-minute marker would come before it; the prompt
+    /// is unchanged.
+    pub fn cache_1h(&mut self) -> Result<&mut Self, CacheError> {
+        self.cache_with(CacheControl::one_hour())
+    }
+
+    /// [`cache`](CachedPrompt::cache) with a caller-provided
+    /// [`CacheControl`] — see [`Prompt::cache_with`].
+    ///
+    /// # Errors
+    /// [`CacheError`] if the request would break a rule
+    /// [`Prompt::check_cache`] enforces; the prompt is unchanged.
+    pub fn cache_with(
+        &mut self,
+        cache_control: CacheControl,
+    ) -> Result<&mut Self, CacheError> {
+        let plan = self.inner.plan_end(cache_control).checked()?;
+        self.inner.apply(plan);
+        Ok(self)
     }
 
     /// Place `n` cache breakpoints in a rolling trailing window across
@@ -254,12 +299,12 @@ impl CachedPrompt {
     ///
     /// # Budget enforcement
     ///
-    /// Anthropic accepts at most **4** `cache_control` markers per request,
-    /// counted across `tools` + `system` + `messages`. This method counts
-    /// the existing `system` / tools markers as a fixed prefix-cache cost
-    /// and gives the rolling window the remaining budget. When the total
-    /// would exceed 4 it evicts the **oldest message-level** markers — the
-    /// system and tools markers are left untouched.
+    /// Anthropic rejects a request with more than **4** `cache_control`
+    /// markers, counting each marked block across `tools` + `system` +
+    /// `messages` plus the automatic slot ([`set_auto_cache`]). The markers
+    /// outside `messages` are a fixed cost this method never touches; the
+    /// window gets what is left, newest position first, and older
+    /// message-level markers are evicted to fit.
     ///
     /// A position already carrying a `cache_control` marker is left alone
     /// (its existing TTL is preserved); only freshly marked positions take
@@ -278,8 +323,9 @@ impl CachedPrompt {
     /// [`cache_windowed_with`](CachedPrompt::cache_windowed_with).
     ///
     /// [`cache`]: CachedPrompt::cache
+    /// [`set_auto_cache`]: CachedPrompt::set_auto_cache
     pub fn cache_windowed(&mut self, n: usize) {
-        self.cache_windowed_with(n, CacheControl::ephemeral());
+        self.inner.cache_windowed(n);
     }
 
     /// Like [`cache_windowed`](CachedPrompt::cache_windowed) but uses a
@@ -289,8 +335,12 @@ impl CachedPrompt {
     /// 5-minute window — for example, a human-driven deliberation loop
     /// where the operator reads each response before calling the next
     /// round.
-    pub fn cache_windowed_1h(&mut self, n: usize) {
-        self.cache_windowed_with(n, CacheControl::one_hour());
+    ///
+    /// # Errors
+    /// [`CacheError`] if a 5-minute marker would come before a new one;
+    /// the prompt is unchanged.
+    pub fn cache_windowed_1h(&mut self, n: usize) -> Result<(), CacheError> {
+        self.cache_windowed_with(n, CacheControl::one_hour())
     }
 
     /// Like [`cache_windowed`](CachedPrompt::cache_windowed) but lets the
@@ -299,19 +349,23 @@ impl CachedPrompt {
     ///
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
-    /// eviction, **middle** message-level markers (those not in the tail
-    /// window) are removed first, oldest-non-tail kept last — so the
-    /// earliest message-level marker the caller placed (typically the
-    /// initial prefix marker) survives as long as the budget allows.
+    /// eviction, the window slides as [`Prompt::cache_windowed_with`]'s
+    /// does: never the newest position's marker, then 5-minute message
+    /// markers before 1-hour ones, the oldest outside the window first.
+    ///
+    /// # Errors
+    /// [`CacheError`] if the request would break a rule
+    /// [`Prompt::check_cache`] enforces — say, 1-hour markers after
+    /// 5-minute ones. The prompt is unchanged.
     pub fn cache_windowed_with(
         &mut self,
         n: usize,
         cache_control: CacheControl,
-    ) {
+    ) -> Result<(), CacheError> {
         // The algorithm lives on `Prompt` (promoted so plain prompts get
         // budget-aware windowed marking too); the frozen prefix is
         // unaffected — markers only ever move within `messages`.
-        self.inner.cache_windowed_with(n, cache_control);
+        self.inner.cache_windowed_with(n, cache_control)
     }
 
     /// Set `max_tokens`.  Not part of the cache key.
@@ -355,20 +409,28 @@ impl CachedPrompt {
     /// 5-minute TTL. Cache-safe — it only ever *adds* a trailing breakpoint;
     /// the prefix content is untouched. Composes with the wrapper's manual
     /// breakpoints ([`cache`], [`cache_windowed`], …) under the API's shared
-    /// 4-breakpoint budget.
+    /// 4-breakpoint budget, where it takes a slot of its own; if all 4 are
+    /// placed, a message marker makes way for it, as for [`cache`].
+    ///
+    /// # Errors
+    /// [`CacheError::AutoMismatch`] when the last block carries a 1-hour
+    /// marker (see [`Prompt::auto_cache`]); the prompt is unchanged.
     ///
     /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
     /// [`cache`]: CachedPrompt::cache
     /// [`cache_windowed`]: CachedPrompt::cache_windowed
-    pub fn set_auto_cache(&mut self) {
-        self.inner.cache_control =
-            Some(crate::prompt::message::CacheControl::ephemeral());
+    pub fn set_auto_cache(&mut self) -> Result<(), CacheError> {
+        self.inner.set_auto_cache(CacheControl::ephemeral())
     }
 
     /// [`set_auto_cache`](CachedPrompt::set_auto_cache) with a 1-hour TTL.
-    pub fn set_auto_cache_1h(&mut self) {
-        self.inner.cache_control =
-            Some(crate::prompt::message::CacheControl::one_hour());
+    ///
+    /// # Errors
+    /// [`CacheError`] when any 5-minute marker is placed: the automatic
+    /// slot counts as the last marker, after every block's. The prompt is
+    /// unchanged.
+    pub fn set_auto_cache_1h(&mut self) -> Result<(), CacheError> {
+        self.inner.set_auto_cache(CacheControl::one_hour())
     }
 }
 
@@ -489,7 +551,7 @@ mod tests {
             ..Default::default()
         };
 
-        let cached = CachedPrompt::cached_1h(prompt);
+        let cached = CachedPrompt::cached_1h(prompt).unwrap();
 
         // The system block should now carry a 1-hour cache_control.
         let last = cached.system.as_ref().unwrap().last().unwrap();
@@ -557,7 +619,7 @@ mod tests {
         };
 
         let mut cached = CachedPrompt::from(prompt);
-        cached.cache_1h();
+        cached.cache_1h().unwrap();
 
         // The system block should now carry a 1-hour cache_control.
         let last = cached.system.as_ref().unwrap().last().unwrap();
@@ -664,61 +726,41 @@ mod tests {
         assert!(cached.tools.is_none());
     }
 
+    /// `cache` every turn slides the window: the newest markers stay, the
+    /// oldest go, and a window over them has nothing left to change.
     #[test]
-    fn cache_windowed_marks_slide_2_tail_and_preserves_beginning() {
-        let prompt = Prompt::default();
-        let mut cached = CachedPrompt::from(prompt);
+    fn cache_every_turn_slides_the_window() {
+        let mut cached = CachedPrompt::from(Prompt::default());
 
-        // 7 user/asst pairs (14 messages, indices 0..14). cache() after
-        // each pair marks the trailing asst — odd indices 1, 3, 5, 7, 9,
-        // 11, 13. Total 7 message-level markers.
-        for i in 0..7 {
-            cached
-                .push_message((Role::User, format!("user {i}")))
-                .unwrap();
-            cached
-                .push_message((Role::Assistant, format!("asst {i}")))
-                .unwrap();
+        converse(&mut cached, 7, |cached| {
             cached.cache();
-        }
-        assert_eq!(
-            cached
-                .messages
-                .iter()
-                .filter(|m| m.content.has_cache())
-                .count(),
-            7,
-        );
+        });
+        assert_eq!(marked(&cached), [7, 9, 11, 13]);
 
-        // cache_windowed(3) marks the tail at indices 13, 11, 9 (slide-by-2),
-        // then evicts middle non-tail markers until the budget fits. With no
-        // system/tools markers the budget is 4: tail (3) + 1 non-tail slot,
-        // which goes to the earliest existing non-tail marker — index 1.
+        cached.cache_windowed(3);
+        assert_eq!(marked(&cached), [7, 9, 11, 13]);
+    }
+
+    /// The window's own positions outrank a newer marker outside it.
+    #[test]
+    fn cache_windowed_keeps_its_positions_before_newer_ones() {
+        let mut cached = CachedPrompt::cached(Prompt::default().system("s"));
+        converse(&mut cached, 7, |_| {});
+        cached.inner.messages[12].content.cache();
+
+        // `system` holds one slot; the window's three take the rest.
         cached.cache_windowed(3);
 
-        let cached_indices: Vec<usize> = cached
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.content.has_cache())
-            .map(|(i, _)| i)
-            .collect();
-
-        assert_eq!(
-            cached_indices,
-            vec![1, 9, 11, 13],
-            "tail slide-2 keeps 13/11/9; beginning marker at 1 survives the 4-budget; \
-             middle stragglers 3/5/7 are evicted"
-        );
+        assert_eq!(marked(&cached), [9, 11, 13]);
     }
 
     #[test]
-    fn cache_windowed_evicts_beginning_when_system_marker_consumes_budget() {
+    fn cache_windowed_fits_beside_a_system_marker() {
         use crate::prompt::message::{CacheControl, Content};
 
         // Prefix marker on system consumes 1 of the 4 budget slots. With
         // cache_windowed(3) the tail (3) uses the remaining 3, leaving 0
-        // for any non-tail message-level marker.
+        // for any other message-level marker.
         let mut prompt = Prompt::default();
         let mut system = Content::text("system prompt");
         system.cache_with(CacheControl::ephemeral());
@@ -748,8 +790,7 @@ mod tests {
         assert_eq!(
             cached_indices,
             vec![9, 11, 13],
-            "system marker holds 1 budget slot; tail uses 3; no slot left for \
-             the beginning marker, so index 1 is evicted along with the middle"
+            "system marker holds 1 budget slot; the tail uses the other 3"
         );
         assert!(
             cached.inner.system.as_ref().unwrap().has_cache(),
@@ -788,7 +829,7 @@ mod tests {
 
         cached.push_message((Role::User, "hello")).unwrap();
         cached.push_message((Role::Assistant, "hi")).unwrap();
-        cached.cache_windowed_1h(2);
+        cached.cache_windowed_1h(2).unwrap();
 
         // The last message's last block should carry a 1-hour TTL.
         let last_msg = cached.messages.last().unwrap();
@@ -814,29 +855,31 @@ mod tests {
         let prompt = Prompt::default();
         let mut cached = CachedPrompt::from(prompt);
 
+        // 1h markers first, then 5m: Anthropic rejects the reverse order.
         // Round 1: mark with 1h TTL
         cached.push_message((Role::User, "round 1 user")).unwrap();
         cached
             .push_message((Role::Assistant, "round 1 asst"))
             .unwrap();
-        cached.cache_windowed_1h(3);
+        cached.cache_windowed_1h(3).unwrap();
 
-        // Round 2: mark with 5m (default ephemeral)
+        // Round 2: mark with 1h again
         cached.push_message((Role::User, "round 2 user")).unwrap();
         cached
             .push_message((Role::Assistant, "round 2 asst"))
             .unwrap();
-        cached.cache_windowed(3);
+        cached.cache_windowed_1h(3).unwrap();
 
-        // Round 3: mark with 1h again
+        // Round 3: mark with 5m (default ephemeral), which re-marks the
+        // earlier rounds' positions without touching their TTL.
         cached.push_message((Role::User, "round 3 user")).unwrap();
         cached
             .push_message((Role::Assistant, "round 3 asst"))
             .unwrap();
-        cached.cache_windowed_1h(3);
+        cached.cache_windowed(3);
 
-        // All three rounds should still be cached; round 1 keeps 1h,
-        // round 2 keeps 5m, round 3 is now 1h.
+        // All three rounds should still be cached; rounds 1 and 2 keep 1h,
+        // round 3 is 5m.
         let ttl_at = |idx: usize| -> CacheControl {
             let msg = &cached.messages[idx];
             let block = msg.content.last().unwrap();
@@ -859,15 +902,15 @@ mod tests {
         );
         assert_eq!(
             ttl_at(3),
-            CacheControl::Ephemeral { ttl: None },
-            "round 2 should be 5m (default)"
-        );
-        assert_eq!(
-            ttl_at(5),
             CacheControl::Ephemeral {
                 ttl: Some(CacheTtl::OneHour)
             },
-            "round 3 should be 1h"
+            "round 2 should still be 1h"
+        );
+        assert_eq!(
+            ttl_at(5),
+            CacheControl::Ephemeral { ttl: None },
+            "round 3 should be 5m (default)"
         );
     }
 
@@ -903,16 +946,207 @@ mod tests {
         assert!(!content.has_cache());
     }
 
+    /// The indices of `cached`'s messages carrying a marker.
+    fn marked(cached: &CachedPrompt) -> Vec<usize> {
+        let messages = cached.messages.iter().enumerate();
+        messages
+            .filter(|(_, m)| m.content.has_cache())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// `cached` with `turns` more user/assistant pairs, calling `mark`
+    /// after each, and asserting the budget holds every time.
+    fn converse(
+        cached: &mut CachedPrompt,
+        turns: usize,
+        mark: impl Fn(&mut CachedPrompt),
+    ) {
+        for i in 0..turns {
+            cached.push_message((Role::User, format!("u{i}"))).unwrap();
+            cached
+                .push_message((Role::Assistant, format!("a{i}")))
+                .unwrap();
+            mark(cached);
+            let serialized = serde_json::to_string(&*cached).unwrap();
+            let on_wire = serialized.matches("\"cache_control\"").count();
+            assert_eq!(on_wire, cached.cache_markers(), "turn {i}");
+            assert!(on_wire <= 4, "turn {i}: {on_wire} markers");
+        }
+    }
+
+    /// A 1-hour anchor outlives the 5-minute window sliding past it: the
+    /// fit evicts every 5-minute marker it can before a 1-hour one.
+    #[test]
+    fn cache_every_turn_keeps_a_one_hour_anchor() {
+        use super::super::message::CacheTtl;
+
+        let mut cached = CachedPrompt::from(Prompt::default());
+        cached
+            .push_message((Role::User, "<a long document>"))
+            .unwrap();
+        cached.cache_1h().unwrap();
+        cached.push_message((Role::Assistant, "Read it.")).unwrap();
+
+        converse(&mut cached, 6, |cached| {
+            cached.cache();
+        });
+
+        assert_eq!(marked(&cached), [0, 9, 11, 13]);
+        let anchor = cached.messages[0].content[0].cache_control().unwrap();
+        assert!(matches!(anchor.ttl(), CacheTtl::OneHour));
+        assert_eq!(cached.check_cache(), Ok(()));
+    }
+
+    /// With only 1-hour markers to choose from, the window slides over
+    /// them as it does over 5-minute ones.
+    #[test]
+    fn cache_1h_every_turn_slides_the_window() {
+        let mut cached = CachedPrompt::from(Prompt::default());
+
+        converse(&mut cached, 6, |cached| {
+            cached.cache_1h().unwrap();
+        });
+
+        assert_eq!(marked(&cached), [5, 7, 9, 11]);
+    }
+
+    /// A window full of 1-hour anchors doesn't freeze the tail: `cache`
+    /// keeps the newest position marked every turn, evicting the oldest
+    /// anchor to make room, then the 5-minute tail it slides past.
+    #[test]
+    fn cache_after_a_full_one_hour_window_marks_the_tail() {
+        let mut cached = CachedPrompt::from(Prompt::default());
+        converse(&mut cached, 4, |cached| {
+            cached.cache_1h().unwrap();
+        });
+        assert_eq!(marked(&cached), [1, 3, 5, 7]);
+
+        converse(&mut cached, 3, |cached| {
+            cached.cache();
+            let tail = cached.messages.last().unwrap();
+            assert!(tail.content.has_cache(), "the tail is marked");
+            assert_eq!(cached.check_cache(), Ok(()));
+        });
+
+        assert_eq!(marked(&cached), [3, 5, 7, 13]);
+    }
+
+    /// The automatic slot counts: with it and a system marker, `cache`
+    /// every turn keeps the two newest message markers.
+    #[test]
+    fn cache_every_turn_counts_the_automatic_slot() {
+        let system = Prompt::default().system("You are terse.");
+        let mut cached = CachedPrompt::cached(system);
+        cached.set_auto_cache().unwrap();
+
+        converse(&mut cached, 6, |cached| {
+            cached.cache();
+        });
+
+        assert_eq!(cached.cache_markers(), 4);
+        assert_eq!(marked(&cached), [9, 11]);
+    }
+
+    /// A window wider than the budget keeps its newest positions.
+    #[test]
+    fn cache_windowed_never_exceeds_the_budget() {
+        let mut cached = CachedPrompt::cached(Prompt::default().system("s"));
+        cached.set_auto_cache().unwrap();
+
+        converse(&mut cached, 6, |cached| cached.cache_windowed(5));
+
+        assert_eq!(marked(&cached), [9, 11], "system + auto hold two");
+    }
+
+    /// A marker on each of a message's blocks counts, one per block.
+    #[test]
+    fn cache_counts_every_marked_block() {
+        use crate::prompt::message::{Block, Message};
+
+        let mut cached = CachedPrompt::from(Prompt::default());
+        let blocks = ["a", "b", "c"].map(|text| {
+            let mut block = Block::from(text);
+            block.cache();
+            block
+        });
+        let user = Message::from((Role::User, blocks.to_vec()));
+        cached.push_message(user).unwrap();
+        cached.push_message((Role::Assistant, "ok")).unwrap();
+        assert_eq!(cached.cache_markers(), 3);
+
+        cached.cache();
+        cached.push_message((Role::User, "more")).unwrap();
+        cached.cache();
+
+        // The newest, then the newest of the rest: the assistant's marker
+        // and the user's last two stay, and the user's first goes.
+        assert_eq!(cached.cache_markers(), 4);
+        let first = &cached.messages[0].content;
+        let kept: Vec<bool> = first.iter().map(Block::is_cached).collect();
+        assert_eq!(kept, [false, true, true]);
+        assert!(cached.messages[1].content.has_cache());
+        assert!(cached.messages[2].content.has_cache());
+    }
+
+    /// A prefix already holding every slot leaves no room: `cache` places
+    /// nothing, on the messages or the prefix.
+    #[test]
+    fn cache_with_a_full_prefix_places_nothing() {
+        use crate::prompt::message::{Block, Content};
+
+        let full = Content(
+            ["a", "b", "c", "d", "e"]
+                .map(|text| {
+                    let mut block = Block::from(text);
+                    // The last is left for `cache` to try.
+                    if text != "e" {
+                        block.cache();
+                    }
+                    block
+                })
+                .to_vec(),
+        );
+        let prompt = Prompt {
+            system: Some(full),
+            ..Default::default()
+        };
+
+        let cached = CachedPrompt::cached(prompt.clone());
+        assert_eq!(cached.cache_markers(), 4, "the system isn't re-marked");
+
+        let mut cached = CachedPrompt::from(prompt);
+        converse(&mut cached, 2, |cached| {
+            cached.cache();
+        });
+        assert!(marked(&cached).is_empty());
+    }
+
+    /// With every slot on messages, the automatic slot takes the oldest's.
+    #[test]
+    fn set_auto_cache_makes_room() {
+        let mut cached = CachedPrompt::from(Prompt::default());
+        converse(&mut cached, 4, |cached| {
+            cached.cache();
+        });
+        assert_eq!(marked(&cached), [1, 3, 5, 7]);
+
+        cached.set_auto_cache().unwrap();
+
+        assert_eq!(cached.cache_markers(), 4);
+        assert_eq!(marked(&cached), [3, 5, 7]);
+    }
+
     #[test]
     fn set_auto_cache_sets_top_level_cache_control() {
         let mut cached = CachedPrompt::cached(Prompt::default());
         assert!(cached.cache_control.is_none());
 
-        cached.set_auto_cache();
+        cached.set_auto_cache().unwrap();
         let json = serde_json::to_value(&cached).unwrap();
         assert_eq!(json["cache_control"]["type"], "ephemeral");
 
-        cached.set_auto_cache_1h();
+        cached.set_auto_cache_1h().unwrap();
         let json = serde_json::to_value(&cached).unwrap();
         assert_eq!(json["cache_control"]["ttl"], "1h");
     }

@@ -223,7 +223,7 @@ async fn read_stream<R: AsyncRead + Unpin>(
             Ok(0) | Err(_) => break,
             Ok(n) => {
                 let mut take = 0usize;
-                let _ = budget.fetch_update(
+                let _ = budget.try_update(
                     Ordering::SeqCst,
                     Ordering::SeqCst,
                     |remaining| {

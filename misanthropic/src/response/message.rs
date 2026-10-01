@@ -122,6 +122,10 @@ impl Message {
     /// [`StopReason::ToolUse`] and the final message [`Content`] [`Block`] is
     /// [`ToolUse`].
     ///
+    /// Only the *last* call: complete only when parallel tool use is
+    /// disabled. Prefer [`Self::tool_uses`], answering every call in one
+    /// user turn.
+    ///
     /// [`Content`]: crate::prompt::message::Content
     /// [`Block`]: crate::prompt::message::Block
     /// [`tool::Use`]: crate::tool::Use
@@ -132,6 +136,48 @@ impl Message {
         }
 
         self.inner.content.last()?.tool_use()
+    }
+
+    /// Every client [`tool::Use`] in the turn, in order — the parallel-call
+    /// twin of [`Self::tool_use`], and the same gate: empty unless the
+    /// [`StopReason`] is [`StopReason::ToolUse`]. A call cut short is still
+    /// valid JSON (captured live, streamed or not): a [`StopSequence`]
+    /// matched inside a string argument keeps it, cut at the match;
+    /// [`MaxTokens`] keeps only the completed arguments, dropping the one in
+    /// progress whole. So a turn's calls are only safe to run once its stop
+    /// reason says so.
+    ///
+    /// [`tool::Use`]: crate::tool::Use
+    /// [`StopSequence`]: StopReason::StopSequence
+    /// [`MaxTokens`]: StopReason::MaxTokens
+    pub fn tool_uses(&self) -> impl Iterator<Item = &crate::tool::Use> {
+        let dispatchable =
+            matches!(self.stop_reason, Some(StopReason::ToolUse));
+        self.inner
+            .content
+            .iter()
+            .filter(move |_| dispatchable)
+            .filter_map(prompt::message::Block::tool_use)
+    }
+
+    /// What a driver must do next with this turn — see [`Disposition`].
+    pub fn disposition(&self) -> Disposition {
+        match self.stop_reason {
+            Some(StopReason::PauseTurn) => Disposition::Paused,
+            Some(StopReason::MaxTokens) => Disposition::Clipped,
+            Some(StopReason::ToolUse) => Disposition::ToolUse,
+            Some(
+                StopReason::EndTurn
+                | StopReason::StopSequence
+                | StopReason::Refusal,
+            ) => Disposition::Done,
+            // No stop reason (a provider that doesn't report one): the
+            // content is all there is to go on — raw, as `tool_uses` is gated.
+            None if self.inner.content.tool_uses().next().is_some() => {
+                Disposition::ToolUse
+            }
+            None => Disposition::Done,
+        }
     }
 
     /// Parse the first [`Text`] [`Block`] as JSON into `T`, skipping any
@@ -285,6 +331,9 @@ impl Builder {
     Clone, Copy, Debug, Serialize, Deserialize, derive_more::IsVariant,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+// Test-only (`strum` is a dev-dep): lets `test_disposition` visit every
+// variant.
+#[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 pub enum StopReason {
     /// The model reached a natural stopping point.
@@ -312,6 +361,140 @@ pub enum StopReason {
     /// [`Prompt::output_config`]: crate::Prompt::output_config
     /// [Anthropic docs on invalid outputs]: <https://docs.anthropic.com/en/docs/build-with-claude/structured-outputs#invalid-outputs>
     Refusal,
+}
+
+/// What a driver must do next with a response [`Message`] — the pause / clip /
+/// dispatch lore in one place, classified by [`Message::disposition`] from its
+/// [`StopReason`] ([`stop_reason`](Message::stop_reason) stays available for
+/// finer policy). Pure classification: *how* to handle a clip or a pause is
+/// driver policy.
+///
+/// Deliberately exhaustive (no `#[non_exhaustive]`): a new disposition should
+/// break every driver's `match` at compile time, not slip past a `_` arm.
+///
+/// # Example
+///
+/// A minimal agent loop — `Prompt::user` to start, [`Prompt::seat`] to append:
+///
+/// ```no_run
+/// # #[cfg(feature = "client")]
+/// use misanthropic::{
+///     Client, Prompt,
+///     prompt::message::{Block, Role, SystemMessage},
+///     response::Disposition,
+///     tool::{Tool, ToolBox},
+/// };
+///
+/// # #[cfg(feature = "client")]
+/// # async fn run(
+/// #     client: Client,
+/// #     mut toolbox: ToolBox,
+/// # ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+/// // Infallible: a lone text turn is legal by construction — no `?`.
+/// let mut prompt = Prompt::user("Run the tests and summarize the failures.")
+///     .system("You are a careful CI assistant.");
+/// toolbox.prepare(&mut prompt).await?;
+/// // `seat`'s pending-system buffer is caller-owned; it outlives rounds.
+/// let mut pending: Option<SystemMessage> = None;
+///
+/// // A round budget, so a model that calls tools forever stops.
+/// for _ in 0..8 {
+///     let response = client.message(&prompt).await?;
+///
+///     match response.disposition() {
+///         // max_tokens: a clipped turn's tool calls can be valid JSON that
+///         // is missing arguments the model never emitted. Never seat or
+///         // dispatch it: hand back, to raise `max_tokens` (or ask for
+///         // brevity) and resend.
+///         Disposition::Clipped => break,
+///         // tool_use, or pause_turn (a server tool still running; resending
+///         // resumes it): seat the turn, then answer its client calls, if
+///         // any, in one user turn (results must lead it). The content's
+///         // calls, raw: `response.tool_uses()` is gated on `tool_use`, so
+///         // misses a paused turn's and a turn inferred without a reason.
+///         Disposition::Paused | Disposition::ToolUse => {
+///             let content = &response.inner.content;
+///             let calls: Vec<_> = content.tool_uses().cloned().collect();
+///             prompt.seat(response, &mut pending)?;
+///             if calls.is_empty() {
+///                 continue;
+///             }
+///             let mut results = Vec::with_capacity(calls.len());
+///             for call in calls {
+///                 results.push(Block::from(toolbox.call(call).await));
+///             }
+///             prompt.seat((Role::User, results), &mut pending)?;
+///         }
+///         // end_turn / stop_sequence / refusal: seat it and hand back —
+///         // unless it's empty (the API rejects an empty turn) or cuts a call
+///         // short: a refusal or a stop sequence can leave a `tool_use`
+///         // half-made, a refusal a server tool too, and a finished turn's
+///         // calls never run. Drop such a turn whole; stripping the calls
+///         // could strand a server tool.
+///         Disposition::Done => {
+///             let turn = &response.inner;
+///             let usable = !turn.content.is_empty()
+///                 && turn.content.tool_uses().next().is_none()
+///                 && turn.unfinished_server_tool_uses().next().is_none();
+///             if usable {
+///                 prompt.seat(response, &mut pending)?;
+///             }
+///             break;
+///         }
+///     }
+/// }
+///
+/// // A paused turn left in flight — out of rounds, clipped or dropped while
+/// // resuming it — admits only its continuation: pop it before a user turn
+/// // follows. (It is one message: continuations merge into it.)
+/// let in_flight = |turn: &misanthropic::prompt::message::Message| {
+///     turn.unfinished_server_tool_uses().next().is_some()
+/// };
+/// if prompt.messages.last().is_some_and(in_flight) {
+///     prompt.messages.pop();
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// [`Prompt::seat`]: crate::Prompt::seat
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, derive_more::IsVariant)]
+pub enum Disposition {
+    /// [`PauseTurn`](StopReason::PauseTurn): a server tool is still running.
+    /// Seat the turn (answering any client calls it makes — [programmatic
+    /// tool calling]) and resend to resume it; abandoning it means dropping
+    /// the whole paused turn.
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    Paused,
+    /// [`MaxTokens`](StopReason::MaxTokens): the turn is incomplete. A call
+    /// it clips keeps only its completed arguments — the one in progress is
+    /// dropped whole, leaving valid JSON missing arguments — and, streamed,
+    /// its block never closes. Never seat the turn or dispatch its calls.
+    Clipped,
+    /// A complete turn carrying client tool calls
+    /// ([`ToolUse`](StopReason::ToolUse)) — see [`Message::tool_uses`].
+    /// Also inferred when a provider reports no stop reason but the turn
+    /// calls tools — which trusts the provider: a transport that omits
+    /// `stop_reason` on a truncated turn bypasses the
+    /// [`Clipped`](Self::Clipped) guard. Transports (and mocks) should always
+    /// set it. An inferred turn's calls are its content's
+    /// ([`Content::tool_uses`]): [`Message::tool_uses`] is gated on the
+    /// reported stop reason.
+    ///
+    /// [`Content::tool_uses`]: crate::prompt::message::Content::tool_uses
+    ToolUse,
+    /// Quiescent: [`EndTurn`](StopReason::EndTurn),
+    /// [`StopSequence`](StopReason::StopSequence) or
+    /// [`Refusal`](StopReason::Refusal) (which hands back like any finished
+    /// turn), or no stop reason and no tool calls. Hand control back — and
+    /// never run client calls such a turn still carries, nor seat a turn
+    /// that carries them or leaves a server tool in flight: a refusal can
+    /// cut either short, and a stop sequence matched inside a call's input
+    /// closes it truncated (valid JSON, an argument's value cut off at the
+    /// match).
+    /// Nor an empty one: the API rejects an empty turn.
+    Done,
 }
 
 /// Object-type discriminator on a response [`Message`]. Always
@@ -352,6 +535,10 @@ pub struct StopDetails {
 /// `service_tier`/`inference_geo` strings here, which arguably belong on the
 /// parent response but are out of our control — so downstream code that wants
 /// cheap copyable counters should take `usage.counts` ([`TokenCounts`]).
+///
+/// Adding (`+`) sums *separate* requests. A stream's
+/// [`MessageDelta`](crate::stream::Event::MessageDelta) usage is cumulative
+/// for the turn, so assembly replaces rather than adds.
 #[derive(
     Clone,
     Debug,
@@ -424,6 +611,32 @@ impl TokenCounts {
             output_tokens,
             ..Default::default()
         }
+    }
+
+    /// Fold a `message_delta`'s counts over `message_start`'s. They are
+    /// cumulative, not increments: each counter the delta reports replaces
+    /// ours, and one it omits (`None`, or a zero `u64` — older deltas sent
+    /// only `output_tokens`) keeps ours. So does the TTL breakdown, which
+    /// deltas don't carry.
+    pub(crate) fn apply_delta(&mut self, delta: Self) {
+        let reported = |count: u64| (count != 0).then_some(count);
+        *self = Self {
+            input_tokens: reported(delta.input_tokens)
+                .unwrap_or(self.input_tokens),
+            cache_creation_input_tokens: delta
+                .cache_creation_input_tokens
+                .or(self.cache_creation_input_tokens),
+            cache_creation: delta.cache_creation.or(self.cache_creation),
+            cache_read_input_tokens: delta
+                .cache_read_input_tokens
+                .or(self.cache_read_input_tokens),
+            output_tokens: reported(delta.output_tokens)
+                .unwrap_or(self.output_tokens),
+            output_tokens_details: delta
+                .output_tokens_details
+                .or(self.output_tokens_details),
+            server_tool_use: delta.server_tool_use.or(self.server_tool_use),
+        };
     }
 }
 
@@ -507,6 +720,15 @@ impl std::ops::Add<ServerToolUsage> for ServerToolUsage {
                 .map(|c| c + rhs.tool_search_requests.unwrap_or(0))
                 .or(rhs.tool_search_requests),
         }
+    }
+}
+
+impl Usage {
+    /// `TokenCounts::apply_delta`, keeping the tier and geo the delta omits.
+    pub(crate) fn apply_delta(&mut self, delta: Self) {
+        self.counts.apply_delta(delta.counts);
+        self.service_tier = delta.service_tier.or(self.service_tier.take());
+        self.inference_geo = delta.inference_geo.or(self.inference_geo.take());
     }
 }
 
@@ -646,6 +868,84 @@ mod tests {
         );
     }
 
+    /// Live (Haiku 4.5, 2026-09-30): turns that stop with a client call in
+    /// them, each round-tripping exactly. A stop sequence matched inside the
+    /// call's input truncates it to valid, closed JSON; `max_tokens` leaves
+    /// valid JSON missing a required argument. Neither dispatches: the gated
+    /// accessors are empty, though the raw content still holds the call.
+    #[test]
+    fn captured_turns_cut_a_call_short() {
+        let cases = [
+            (
+                include_str!(
+                    "../../test/data/stop/stop_sequence_tool.response.json"
+                ),
+                StopReason::StopSequence,
+                Disposition::Done,
+            ),
+            (
+                include_str!(
+                    "../../test/data/stop/stop_sequence_text_tool.response.json"
+                ),
+                StopReason::StopSequence,
+                Disposition::Done,
+            ),
+            (
+                include_str!("../../test/data/stop/clip_tool.response.json"),
+                StopReason::MaxTokens,
+                Disposition::Clipped,
+            ),
+        ];
+        for (fixture, reason, disposition) in cases {
+            let message: Message = crate::utils::roundtrip(fixture);
+            assert_eq!(message.stop_reason, Some(reason));
+            assert_eq!(message.disposition(), disposition);
+            assert!(message.tool_use().is_none());
+            assert_eq!(message.tool_uses().count(), 0);
+            let raw: Vec<_> = message.inner.content.tool_uses().collect();
+            assert_eq!(raw.len(), 1, "{reason:?}: the call is still there");
+            assert_eq!(raw[0].name, "write_file");
+            assert_eq!(raw[0].input["path"], "hello.py");
+            match reason {
+                StopReason::StopSequence => {
+                    assert_eq!(
+                        message.stop_sequence.as_deref(),
+                        Some("print(")
+                    );
+                    assert!(raw[0].input["contents"].is_string());
+                }
+                // Valid JSON, missing the required `contents`.
+                _ => assert!(raw[0].input.get("contents").is_none()),
+            }
+        }
+    }
+
+    /// Live (Haiku 4.5, 2026-09-30): a forced call clipped 140 tokens deep
+    /// into its `contents` string. The input keeps only the completed
+    /// member — the one being generated is dropped whole, not cut off — so
+    /// it is valid JSON missing an argument, and never dispatchable.
+    #[test]
+    fn captured_clip_keeps_completed_members() {
+        let message: Message = crate::utils::roundtrip(include_str!(
+            "../../test/data/stop/clip_long_tool.response.json"
+        ));
+        assert_eq!(message.stop_reason, Some(StopReason::MaxTokens));
+        assert_eq!(message.usage.output_tokens, 140);
+        assert_eq!(message.disposition(), Disposition::Clipped);
+        assert!(message.tool_use().is_none());
+        assert_eq!(message.tool_uses().count(), 0);
+
+        let [call] = &message.inner.content.tool_uses().collect::<Vec<_>>()[..]
+        else {
+            panic!("one raw call: {:?}", message.inner.content);
+        };
+        assert_eq!(call.name, "write_file");
+        let members: Vec<_> =
+            call.input.as_object().expect("an object").iter().collect();
+        let path = serde_json::Value::from("story.txt");
+        assert_eq!(members, [(&"path".to_string(), &path)]);
+    }
+
     #[test]
     fn deserialize_response_message() {
         let message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
@@ -684,6 +984,78 @@ mod tests {
             crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
         );
         assert!(message.tool_use().is_some());
+    }
+
+    /// Parallel calls all surface, but only under `stop_reason: tool_use` —
+    /// a refused or truncated turn's calls never reach dispatch.
+    #[test]
+    fn tool_uses_gated_on_stop_reason() {
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let call = |id| {
+            crate::tool::Use::new("n", serde_json::Value::Null).with_id(id)
+        };
+        message.inner.content.push(call("a"));
+        message.inner.content.push("between");
+        message.inner.content.push(call("b"));
+
+        let ids = |m: &Message| -> Vec<String> {
+            m.tool_uses().map(|call| call.id.to_string()).collect()
+        };
+        for reason in [
+            StopReason::EndTurn,
+            StopReason::MaxTokens,
+            StopReason::StopSequence,
+            StopReason::PauseTurn,
+            StopReason::Refusal,
+        ] {
+            message.stop_reason = Some(reason);
+            assert!(ids(&message).is_empty(), "{reason:?} dispatched");
+        }
+        message.stop_reason = None;
+        assert!(ids(&message).is_empty());
+
+        message.stop_reason = Some(StopReason::ToolUse);
+        assert_eq!(ids(&message), ["a", "b"]);
+    }
+
+    #[test]
+    fn test_disposition() {
+        use strum::IntoEnumIterator;
+
+        let mut message: Message = serde_json::from_str(RESPONSE_JSON).unwrap();
+        let classify = |message: &Message, reason| {
+            let mut message = message.clone();
+            message.stop_reason = reason;
+            message.disposition()
+        };
+
+        // The `match` (no `_` arm) is the compile-time guard: a new
+        // `StopReason` won't build until it's classified here. `EnumIter`
+        // visits every variant, so none escapes the assertion.
+        for reason in StopReason::iter() {
+            let expected = match reason {
+                StopReason::PauseTurn => Disposition::Paused,
+                StopReason::MaxTokens => Disposition::Clipped,
+                StopReason::ToolUse => Disposition::ToolUse,
+                StopReason::EndTurn
+                | StopReason::StopSequence
+                | StopReason::Refusal => Disposition::Done,
+            };
+            assert_eq!(classify(&message, Some(reason)), expected);
+        }
+
+        // No stop reason: inferred from the content.
+        assert_eq!(classify(&message, None), Disposition::Done);
+        message.inner.content.push(
+            crate::tool::Use::new("name", serde_json::json!({})).with_id("id"),
+        );
+        assert_eq!(classify(&message, None), Disposition::ToolUse);
+
+        // A clipped turn stays clipped, tool call or not.
+        assert_eq!(
+            classify(&message, Some(StopReason::MaxTokens)),
+            Disposition::Clipped
+        );
     }
 
     #[test]

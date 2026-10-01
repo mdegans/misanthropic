@@ -22,7 +22,7 @@ use misanthropic::{
     Client, Id, Prompt,
     prompt::{
         Effort, Thinking,
-        message::{Block, Content, Role},
+        message::{Block, Content, Role, UserMessage},
     },
     tool::{Tool, tool},
 };
@@ -161,22 +161,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
         }
 
-        match message.tool_use() {
-            // Append the whole turn (thoughts included) so signatures round-trip.
-            Some(call) => {
-                let call = call.clone();
-                chat.push_message(message)?;
-                let result = calc.call(call).await;
-                if args.common.verbose {
-                    println!("   = {}", result.content);
-                }
-                chat.push_message(result)?;
-            }
-            None => {
-                println!("\n✅ {}", message.inner.content);
-                return Ok(());
-            }
+        // Every call in the turn; empty unless it stopped for `tool_use`.
+        let calls: Vec<_> = message.tool_uses().cloned().collect();
+        if calls.is_empty() {
+            println!("\n✅ {}", message.inner.content);
+            return Ok(());
         }
+        // Append the whole turn (thoughts included) so signatures round-trip.
+        chat.push_message(message)?;
+        let mut results = Vec::new();
+        for call in calls {
+            let result = calc.call(call).await;
+            if args.common.verbose {
+                println!("   = {}", result.content);
+            }
+            results.push(result);
+        }
+        // All results in one user turn.
+        chat.push_message(results.into_iter().collect::<UserMessage>())?;
     }
 
     Err("model did not finish within max_turns".into())

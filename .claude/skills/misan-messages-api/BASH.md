@@ -25,7 +25,7 @@ shell session for the life of the sandbox.
 # async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 use misanthropic::{
     Client, Prompt,
-    prompt::message::Role,
+    prompt::message::{Role, UserMessage},
     tool::{Tool, ToolBox, bash::{BashTool, DockerSandbox}},
 };
 
@@ -48,11 +48,16 @@ tools.prepare(&mut chat).await?;
 let mut answer = None;
 for _ in 0..10 {
     let message = client.message(&chat).await?;
-    let Some(call) = message.tool_use() else { answer = Some(message); break };
-    let call = call.clone();
+    // Every call in the turn; empty unless it stopped for `tool_use`.
+    let calls: Vec<_> = message.tool_uses().cloned().collect();
+    if calls.is_empty() { answer = Some(message); break }
     chat.push_message(message)?;
-    let result = tools.call(call).await;          // runs in the container
-    chat.push_message(result)?;
+    let mut results = Vec::new();
+    for call in calls {
+        results.push(tools.call(call).await);     // runs in the container
+    }
+    // All results in one user turn.
+    chat.push_message(results.into_iter().collect::<UserMessage>())?;
 }
 
 // `on_teardown` removes the container (a blocking `Drop` guard backstops it).

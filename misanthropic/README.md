@@ -10,23 +10,8 @@ API.
 - [Documentation](https://docs.rs/misanthropic)
 - [Examples](https://github.com/mdegans/misanthropic/tree/main/misanthropic/examples)
 - [Agent skills](https://github.com/mdegans/misanthropic/tree/main/.claude/skills)
-  for writing code against the crate (doc-tested in CI, so they can't drift)
 
-This README is also the crate front page, and every code block below compiles
-as a doc-test.
-
-## Usage
-
-```toml
-[dependencies]
-misanthropic = "1.0.0-alpha.2"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
-# Tool argument and structured output structs derive these:
-schemars = "0.8"
-serde = { version = "1", features = ["derive"] }
-```
-
-### Streaming
+## Streaming
 
 `Client::stream` returns a `futures::Stream` of events. The `FilterExt`
 combinators reduce it to what you care about — here, text tokens as they
@@ -66,7 +51,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Tool use
+## Tool use
 
 The `#[tool]` macro turns an `impl` block into a typed tool: your argument
 struct's `JsonSchema` becomes the wire definition (field docs become the
@@ -76,7 +61,7 @@ validated for you — no hand-parsing `serde_json::Value`:
 ```rust,no_run
 use misanthropic::{
     Client, Id, Prompt,
-    prompt::message::{Content, Role},
+    prompt::message::{Content, Role, UserMessage},
     tool::{Tool, tool},
 };
 use schemars::JsonSchema;
@@ -114,11 +99,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let message = client.message(&chat).await?;
 
-    if let Some(call) = message.tool_use() {
-        let call = call.clone();
+    // Every call in the turn (parallel ones too); empty unless the turn
+    // stopped for `tool_use` — a refused or clipped call never runs.
+    let calls: Vec<_> = message.tool_uses().cloned().collect();
+    if !calls.is_empty() {
         chat.push_message(message)?;
-        // Typed dispatch — bad arguments become a model-facing error.
-        chat.push_message(weather.call(call).await)?;
+        let mut results = Vec::new();
+        for call in calls {
+            // Typed dispatch — bad arguments become a model-facing error.
+            results.push(weather.call(call).await);
+        }
+        // Every result goes back in one user turn.
+        chat.push_message(results.into_iter().collect::<UserMessage>())?;
 
         println!("{}", client.message(&chat).await?);
     }
@@ -127,7 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
-### Structured output
+## Structured output
 
 `Prompt::structured_output::<T>()` constrains generation (grammar-based
 decoding, not prompting) to JSON matching `T`'s schema. Parse the reply with

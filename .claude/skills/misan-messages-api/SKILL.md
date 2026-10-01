@@ -36,7 +36,8 @@ serde = { version = "1", features = ["derive"] }
 
 ### Feature flags (selected)
 
-Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
+`schema-order`, `schema-inline`, `schema-order-check`.
 
 | Flag | Default | Purpose |
 |------|---------|---------|
@@ -45,6 +46,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
 | `langsan` | yes | Output sanitization (allow-list of benign Unicode). |
 | `derive` | yes | The `#[tool]` / `#[derive(ToolArgs)]` macros. |
 | `batch` | yes | Message Batches API. Does not build on wasm32. |
+| `schema-order-check` | yes | Reject tool schemas with a required property after an optional one. |
 | `prompt-caching` | no | Anthropic prompt-caching beta headers. |
 | `markdown` | no | `ToMarkdown` trait, markdown rendering. |
 | `image` / `png` / `jpeg` / `gif` / `webp` | no | Image support via the `image` crate. |
@@ -53,7 +55,7 @@ Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`.
 ## Quick start — single message
 
 ```no_run
-use misanthropic::{Client, Prompt, prompt::message::Role};
+use misanthropic::{Client, Prompt};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,16 +68,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Build a Prompt (the request type) and send it. `Client::message`
     // forces `stream = false` and returns a `response::Message` directly.
-    // `messages` validates turn order, so the `?` is required — and not
-    // just for correctness: an un-unwrapped `Result` would itself satisfy
-    // `impl Serialize` and reach the wire as `{"Ok": {…}}` if the error
-    // type were serializable. It deliberately isn't.
-    let message = client
-        .message(
-            Prompt::default()
-                .messages([(Role::User, "What is 2+2?")])?,
-        )
-        .await?;
+    // `Prompt::user` (or `Prompt::from("…")`) is infallible — a lone turn
+    // of text, image or document content is always legal. The appending
+    // builders (`messages`, `add_message`, …) validate turn order and
+    // return a `Result`, so they need a `?` — and not just for correctness:
+    // an un-unwrapped `Result` would itself satisfy `impl Serialize` and
+    // reach the wire as `{"Ok": {…}}` if the error type were serializable.
+    // It deliberately isn't.
+    let message = client.message(Prompt::user("What is 2+2?")).await?;
 
     // `response::Message` implements `Display` (prints content).
     println!("{message}");
@@ -248,6 +248,44 @@ println!("Assistant: {reply}");
 # }
 ```
 
+### Prompt caching — `cache()` every turn
+
+`cache()` marks the end of the prompt (5-minute TTL). Call it every turn: it
+keeps Anthropic's 4-marker limit (the automatic slot counts) by sliding a
+window — the new tail marker always stays, the oldest 5-minute message
+markers go first, a 1-hour anchor only when no other 5-minute one is left,
+and an evicted entry stays reachable while a kept marker is within ~20
+blocks after it. `auto_cache()` lets the API place
+the marker instead. Anthropic 400s a 1-hour marker after a 5-minute one
+(`tools` → `system` → `messages`, automatic slot last), so the 1-hour and
+automatic placements return a `CacheError` instead of building one;
+`check_cache()` checks hand-placed markers the same way (the `Chat` driver
+runs it before every request).
+
+```rust
+use misanthropic::{Prompt, prompt::{CacheError, message::Role}};
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// 1-hour markers first: a long-lived prefix, then a 5-minute conversation.
+let mut chat = Prompt::default()
+    .system("<a long manual>")
+    .cache_1h()?
+    .add_message((Role::User, "Where do I start?"))?
+    .cache();
+assert!(chat.check_cache().is_ok());
+
+// Each turn: push the reply and the next line, re-mark the end.
+chat.push_message((Role::Assistant, "Chapter one."))?;
+chat.push_message((Role::User, "And then?"))?;
+chat = chat.cache();
+
+// A 1-hour marker after those 5-minute ones would be a 400: refused.
+let refused = chat.cache_1h();
+assert!(matches!(refused, Err(CacheError::TtlOrder { .. })));
+# Ok(())
+# }
+```
+
 ### Seating turns — `Prompt::seat` (drivers)
 
 `add_message` / `push_message` are the everyday appends. `Prompt::seat` is the
@@ -295,6 +333,147 @@ assert_eq!(prompt.messages.last().unwrap().role, Role::System);
 
 [`Seated`]: https://docs.rs/misanthropic/latest/misanthropic/prompt/enum.Seated.html
 
+### Agent loops — `response.disposition()`
+
+`response.disposition()` classifies a turn by what the loop must do next — the
+pause / clip / dispatch lore in one exhaustive `match` (a new `Disposition`
+breaks the build here, not silently in a driver). `response.tool_uses()`
+iterates **every** client `tool::Use` in the turn (unlike `tool_use()`, which
+returns only a trailing one) — but, like `tool_use()`, only on a `tool_use`
+stop; the content's own `tool_uses()` (`response.inner.content`) is the raw
+view, which a paused turn's calls and a turn inferred without a stop reason
+need. Client calls run **only** from a `ToolUse` (or `Paused`) turn — a
+`refusal` can cut a `tool_use` (or a server tool) short. The `chat`-feature
+`Chat` driver runs this same match; see *The `Chat` driver* below for how it
+hands a turn it can't use back.
+
+```no_run
+use misanthropic::{
+    Client, Prompt,
+    prompt::message::{Block, Message, Role, SystemMessage},
+    response::Disposition,
+    tool::{Tool, ToolBox},
+};
+
+# type Error = Box<dyn std::error::Error + Send + Sync>;
+# async fn run(client: Client, mut toolbox: ToolBox) -> Result<(), Error> {
+let mut prompt = Prompt::user("Run the tests and summarize the failures.");
+toolbox.prepare(&mut prompt).await?;
+let mut pending: Option<SystemMessage> = None;
+
+for _ in 0..8 { // round budget: a model that calls tools forever still stops
+    let response = client.message(&prompt).await?;
+    match response.disposition() {
+        // max_tokens: tool calls may be missing arguments. NEVER seat or
+        // dispatch; hand back — raise max_tokens (or ask for brevity), resend.
+        Disposition::Clipped => break,
+        // tool_use, or pause_turn (resending resumes the server tool): seat
+        // it, answer any client calls in one tool_result-led user turn. Raw
+        // calls: the gated `response.tool_uses()` misses a paused turn's.
+        Disposition::Paused | Disposition::ToolUse => {
+            let content = &response.inner.content;
+            let calls: Vec<_> = content.tool_uses().cloned().collect();
+            prompt.seat(response, &mut pending)?;
+            if calls.is_empty() {
+                continue;
+            }
+            let mut results = Vec::new();
+            for call in calls {
+                results.push(Block::from(toolbox.call(call).await));
+            }
+            prompt.seat((Role::User, results), &mut pending)?;
+        }
+        // end_turn / stop_sequence / refusal: seat and hand back — unless
+        // it's empty (a 400) or cuts a call short (a refusal or a stop
+        // sequence can leave a tool_use half-made, a refusal a server tool
+        // too); drop such a turn whole (stripping could strand a server tool).
+        Disposition::Done => {
+            let turn = &response.inner;
+            let usable = !turn.content.is_empty()
+                && turn.content.tool_uses().next().is_none()
+                && turn.unfinished_server_tool_uses().next().is_none();
+            if usable {
+                prompt.seat(response, &mut pending)?;
+            }
+            break;
+        }
+    }
+}
+// A paused turn left in flight admits only its continuation: pop it (one
+// message — continuations merge) before a user turn follows.
+let in_flight =
+    |turn: &Message| turn.unfinished_server_tool_uses().next().is_some();
+if prompt.messages.last().is_some_and(in_flight) {
+    prompt.messages.pop();
+}
+# Ok(())
+# }
+```
+
+Clip handling is policy: hand back (above), then raise `max_tokens` and
+resend, or nudge the model to be briefer. Continuing a partial assistant turn
+(prefill) is backend-dependent — Anthropic rejects it with thinking enabled.
+
+### The `Chat` driver — hand-backs and resume
+
+`Chat` (feature `chat`) runs the loop above over any `Transport`. A turn it
+can't use is never seated and its calls never run: `run` returns a
+`chat::Error { kind, prompt, pending, state, .. }` — `Stop::Clipped`
+(`max_tokens`) or `Stop::Unusable` (a finished turn, e.g. a refusal, that
+still calls tools or cuts a server tool short; dropped whole) — alongside
+transport, beat, tool and turn-order failures. It hands back everything a
+resume needs: the prompt (legal to resend), buffered system notes, the state,
+and the torn-down toolbox and configuration (hook, budget, caching, usage
+sink). `error.resume(transport)` rebuilds the same `Chat` (re-preparing the
+tools), which answers the prompt before asking for a beat — so resuming is a
+loop. A finished run hands back the same `chat::Parts`; `Chat::from_parts`
+carries on from them. Pass the beat closure as `&mut` to keep it across
+resumes. `chat::Error` converts into a `BoxError` with `?`.
+
+```no_run
+use std::num::NonZeroU32;
+
+use misanthropic::{
+    Prompt, Transport,
+    chat::{BoxError, Chat, Stop},
+    prompt::message::{Message, Role},
+    tool::ToolBox,
+};
+
+# async fn converse<T: Transport + Clone>(
+#     transport: T,
+#     lines: Vec<&str>,
+# ) -> Result<Prompt, BoxError> {
+let mut lines = lines.into_iter();
+let mut next_beat = async |_: &mut ()| {
+    let line = lines.next();
+    Ok::<_, BoxError>(line.map(|l| vec![Message::from((Role::User, l))]))
+};
+
+let mut chat = Chat::new(transport.clone(), Prompt::default(), ToolBox::new());
+loop {
+    let mut error = match chat.run((), &mut next_beat).await {
+        Ok((parts, ())) => return Ok(parts.prompt),
+        Err(error) => error,
+    };
+    match &error.kind {
+        // Nothing seated or run: raise the limit, resume.
+        Stop::Clipped(_) => {
+            let two = NonZeroU32::new(2).unwrap();
+            error.prompt.max_tokens =
+                error.prompt.max_tokens.saturating_mul(two);
+        }
+        // A refusal (or other finished turn) that called tools: nothing ran.
+        Stop::Unusable(response) => {
+            return Err(format!("unusable: {:?}", response.stop_reason).into());
+        }
+        _ => return Err(error.into()),
+    }
+    (chat, _) = error.resume(transport.clone());
+}
+# }
+```
+
 ## Tool use — the `#[tool]` macro (preferred)
 
 The `#[tool]` macro (default `derive` feature) turns an `impl` block into a
@@ -305,7 +484,7 @@ and validated — no hand-parsing of `serde_json::Value`.
 ```no_run
 use misanthropic::{
     Client, Prompt,
-    prompt::message::{Content, Role},
+    prompt::message::{Content, Role, UserMessage},
     tool::{Tool, tool},
 };
 use schemars::JsonSchema;
@@ -354,17 +533,22 @@ chat = chat.add_tools(weather.definitions());
 
 let message = client.message(&chat).await?;
 
-// `tool_use()` is `Some` when stop_reason is ToolUse and the last block is a
-// tool call.
-if let Some(call) = message.tool_use() {
-    let call = call.clone();
+// `tool_uses()` yields every call in the turn (parallel calls too) and is
+// empty unless stop_reason is ToolUse — never run calls from a Refusal /
+// MaxTokens turn (they can be cut short).
+let calls: Vec<_> = message.tool_uses().cloned().collect();
+if !calls.is_empty() {
     chat.push_message(message)?;
 
     // Typed dispatch: `call.input` is deserialized into `GetWeather` and
     // validated. Bad arguments become a helpful, model-facing error
-    // automatically. Returns a `tool::Result` ready to push.
-    let result = weather.call(call).await;
-    chat.push_message(result)?;
+    // automatically. Returns a `tool::Result`.
+    let mut results = Vec::new();
+    for call in calls {
+        results.push(weather.call(call).await);
+    }
+    // Every result goes back in ONE user turn.
+    chat.push_message(results.into_iter().collect::<UserMessage>())?;
 
     let final_reply = client.message(&chat).await?;
     println!("{final_reply}");
@@ -376,6 +560,10 @@ if let Some(call) = message.tool_use() {
 Notes on the macro:
 
 - Each `#[method]` becomes a real inherent method you can still call directly.
+- Several calls in one turn? `message.tool_uses()` yields them all (empty
+  unless `stop_reason` is `ToolUse`); answer them in **one** user turn, as
+  above. `tool_use()` returns only the *last* call — complete only when
+  parallel tool use is disabled.
 - One `#[tool]` block can hold several `#[method]`s; each is namespaced
   `TypeName__method_name` (and a `ToolBox` adds its own segment:
   `toolbox__TypeName__method_name`).
@@ -386,6 +574,18 @@ Notes on the macro:
   un-flattening later renames the methods (prompt-cache / transcript churn).
 - `#[method(defer_loading)]` marks a method's schema as deferrable for use
   with the tool-search server tool (large tool sets).
+- **Declare required fields before optional ones** (`Option<…>` or
+  `#[serde(default)]`). It's the one layout every engine generates in the
+  same order (Anthropic keeps optionals in place; engines following the
+  structured-outputs docs hoist required first), and field order changes what
+  the model generates — put reasoning before answers. The default-on
+  `schema-order-check` feature rejects interleaving in what you author: a
+  compile error under `#[derive(ToolArgs)]`; under `#[tool]`, which can't
+  see its args' fields, a panic from `ToolArgs::definition` (so `add_tool`)
+  at runtime, plus a generated `#[cfg(test)]` test per method that fails
+  your `cargo test` first; and an `Err` from `MethodBuilder::build` (escape
+  hatch: `build_unchecked`). Received
+  schemas (a deserialized `Prompt`) are only checked structurally.
 - The `Tool` trait also has `definitions()`, `call()`, plus optional
   `on_init` / `on_turn` lifecycle hooks and `save_json` / `load_json` for
   state persistence.
@@ -409,7 +609,7 @@ previously named `MethodDef`, and before that `Method`.)
 ```no_run
 use misanthropic::{
     Client, Prompt, json,
-    prompt::{Message, message::Role},
+    prompt::{UserMessage, message::Role},
     tool::CustomMethodDef,
 };
 
@@ -440,30 +640,65 @@ let mut chat = Prompt::default()
 
 let message = client.message(&chat).await?;
 
-if let Some(call) = message.tool_use() {
-    // call.name  — tool name ("get_weather")
-    // call.id    — unique ID for this call
-    // call.input — serde_json::Value with arguments
-    let city = call.input["city"].as_str().unwrap();
-    let weather = format!("Sunny, 22C in {city}"); // your logic
+// One result per call, all in ONE user turn (empty unless ToolUse).
+let results: UserMessage = message
+    .tool_uses()
+    .map(|call| {
+        // call.name  — tool name ("get_weather")
+        // call.id    — unique ID for this call
+        // call.input — serde_json::Value with arguments
+        let city = call.input["city"].as_str().unwrap_or("?");
+        let weather = format!("Sunny, 22C in {city}"); // your logic
+        misanthropic::tool::Result::new(call.id.clone(), weather)
+    })
+    .collect();
 
-    // Build a tool result message (always Role::User under the hood).
-    let result: Message = misanthropic::tool::Result {
-        tool_use_id: call.id.to_string().into(),
-        content: weather.into(),
-        is_error: false,
-        cache_control: None,
-    }
-    .into();
-
+if !results.is_empty() {
     chat.push_message(message)?;
-    chat.push_message(result)?;
+    chat.push_message(results)?;
 
     let final_reply = client.message(&chat).await?;
     println!("{final_reply}");
 }
 # Ok(())
 # }
+```
+
+Tool JSON someone else wrote (an MCP server, a saved `Prompt`) is *received*:
+`CustomMethodDef::try_from(value)`, `from_serializable`, and deserializing a
+`Prompt` check it structurally only, so it parses as written.
+`CustomMethodDef::try_from_checked` holds it to the authoring bar instead —
+with `schema-order-check`, required properties first — and returns a typed
+`ToolBuildError` (`InvalidInputSchema` for a misorder, `Json` for a value
+that isn't a tool definition):
+
+```
+use misanthropic::{
+    json,
+    tool::{CustomMethodDef, ToolBuildError},
+};
+
+let search = json!({
+    "name": "search",
+    "description": "Search the docs.",
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": { "type": "string" },
+            "limit": { "type": "integer" },
+            "lang": { "type": "string" }
+        },
+        "required": ["query", "lang"]
+    }
+});
+
+let received = CustomMethodDef::try_from(search.clone()).unwrap();
+assert_eq!(received.name, "search");
+#[cfg(feature = "schema-order-check")]
+assert!(matches!(
+    CustomMethodDef::try_from_checked(search),
+    Err(ToolBuildError::InvalidInputSchema { .. })
+));
 ```
 
 `add_tool` accepts anything `Into<MethodDef>` — a `CustomMethodDef`, a
@@ -757,7 +992,7 @@ use misanthropic::response::StopReason;
 # fn document(reason: StopReason) {
 match reason {
     StopReason::EndTurn => {}       // natural stopping point
-    StopReason::MaxTokens => {}     // hit max_tokens
+    StopReason::MaxTokens => {}     // hit max_tokens — never dispatch its calls
     StopReason::StopSequence => {}  // a stop sequence was generated
     StopReason::ToolUse => {}       // wants a tool call — see `tool_use()`
     StopReason::PauseTurn => {}     // server tool paused; resend to continue
@@ -819,7 +1054,9 @@ your task — they're the most current, compiler-checked usage.
   `Role::System` content seats when the tail permits or buffers (never on the
   user channel) until it does, concatenating onto a system tail if it lands on
   one. Returns `Seated::{Appended, Merged, Buffered}`. See the seating example
-  above.
+  above. Pair it with `response.disposition()` (`Paused` / `Clipped` /
+  `ToolUse` / `Done`) to decide what to seat — never a `Clipped` turn, and
+  never run the calls of anything but a `ToolUse` / `Paused` one.
 - **Owned data, no lifetimes** — public types own their string data
   (`Cow<'static, str>` under the hood, sanitized when `langsan` is on) and
   carry **no lifetime parameter**. You can freely store a `Use`/`Message`/etc.

@@ -69,7 +69,17 @@ pub fn derive(input: TokenStream) -> syn::Result<TokenStream> {
     let (impl_generics, ty_generics, where_clause) =
         input.generics.split_for_impl();
 
+    // Emitted beside the impl, so an ordering error doesn't cascade into
+    // "`ToolArgs` is not implemented" at every use site.
+    #[cfg(feature = "schema-order-check")]
+    let order = crate::order::check(&input)
+        .err()
+        .map(syn::Error::into_compile_error);
+    #[cfg(not(feature = "schema-order-check"))]
+    let order: Option<TokenStream> = None;
+
     Ok(quote! {
+        #order
         #[automatically_derived]
         impl #impl_generics ::misanthropic::tool::ToolArgs
             for #ident #ty_generics #where_clause
