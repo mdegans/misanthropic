@@ -326,7 +326,7 @@ mod tests {
         toolbox2.load_json(json).await.unwrap();
 
         // Round-trip the inner Notepad's state back out.
-        let tool = toolbox2.tool_name_to_tool.get_mut("Notepad").unwrap();
+        let tool = toolbox2.tool_mut("Notepad").unwrap();
         let json = tool.save_json().await;
         let mut notepad = Notepad::new();
         notepad.load_json(json).await.unwrap();

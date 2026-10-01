@@ -1267,7 +1267,7 @@ fn simulated_long_conversation_passes() {
     let log = simulate(&LONG, true);
 
     let names = log.sent[0].tools.iter().flatten().map(MethodDef::name);
-    assert_eq!(names.collect::<Vec<_>>(), [LEDGER, LOGBOOK, STORES]);
+    assert_eq!(names.collect::<Vec<_>>(), [LEDGER, STORES, LOGBOOK]);
     assert_eq!(log.sent.len(), LONG_BEATS.len() + 12, "twelve tool rounds");
     let requests = requests(&log, None);
     let grown = requests.last().unwrap().prompt() - requests[0].prompt();

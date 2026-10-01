@@ -12,6 +12,10 @@ use crate::{
 /// Container [`Tool`] that calls [`Tool`]s. Nestable, however consider if this
 /// is really necessary.
 ///
+/// Tools are offered in insertion order, which leads the cached prefix: it is
+/// deterministic only if tools are registered in a fixed order. Append new
+/// tools at the end so the earlier tools' cache still hits.
+///
 /// [`call`]: ToolBox::call
 pub struct ToolBox {
     /// Name of the [`ToolBox`].
@@ -20,10 +24,11 @@ pub struct ToolBox {
     ///
     /// Stores namespaced function names in the format `tool__function`.
     pub(crate) method_to_tool_name: BTreeMap<Cow<'static, str>, String>,
-    /// Map of tool names to [`Tool`]s. Ordered, so [`Tool::definitions`]
-    /// renders the same tools in the same order in every box — they lead
-    /// the cached prefix.
-    pub(crate) tool_name_to_tool: BTreeMap<String, Box<dyn Tool + Send>>,
+    /// The [`Tool`]s, in insertion order — the order [`Tool::definitions`]
+    /// renders them in, so appending one keeps the earlier tools' cache.
+    tools: Vec<Box<dyn Tool + Send>>,
+    /// Map of tool names to their index in `tools`.
+    tool_index: BTreeMap<String, usize>,
     /// This box's outbox — owns the aggregate channel. Each tool gets a
     /// send-only [`derive`](Mailbox::derive)d handle on it; the box's own
     /// receiver is taken by [`Tool::subscribe`]. `None` after
@@ -49,7 +54,8 @@ impl Default for ToolBox {
         Self {
             name: "toolbox".into(), // module syntax, snake case
             method_to_tool_name: BTreeMap::new(),
-            tool_name_to_tool: BTreeMap::new(),
+            tools: Vec::new(),
+            tool_index: BTreeMap::new(),
             mailbox: Some(Mailbox::new("toolbox")),
             parked: None,
             source_prefix: None,
@@ -112,9 +118,9 @@ impl ToolBox {
     ///
     /// # Note:
     /// - A duplicate [`MethodDef`] (by name) overwrites the earlier route, and a
-    ///   [`Tool`] whose name already exists overwrites the earlier tool. Stale
-    ///   routes from a differing method set are not pruned, so treat tool names
-    ///   as unique.
+    ///   [`Tool`] whose name already exists replaces the earlier tool in place
+    ///   (keeping its position). Stale routes from a differing method set are
+    ///   not pruned, so treat tool names as unique.
     // Deliberate builder-style name (mirrors `add_boxed`); not `ops::Add::add`.
     #[allow(clippy::should_implement_trait)]
     pub fn add(mut self, tool: impl Tool + 'static) -> Self {
@@ -126,9 +132,9 @@ impl ToolBox {
     ///
     /// # Note:
     /// - A duplicate [`MethodDef`] (by name) overwrites the earlier route, and a
-    ///   [`Tool`] whose name already exists overwrites the earlier tool. Stale
-    ///   routes from a differing method set are not pruned, so treat tool names
-    ///   as unique.
+    ///   [`Tool`] whose name already exists replaces the earlier tool in place
+    ///   (keeping its position). Stale routes from a differing method set are
+    ///   not pruned, so treat tool names as unique.
     pub fn add_boxed(mut self, tool: Box<dyn Tool + Send>) -> Self {
         self.push_boxed(tool);
         self
@@ -192,18 +198,35 @@ impl ToolBox {
             tool.connect(mailbox.derive(source));
         }
 
-        #[allow(unused_variables)] // because of the `log` feature
-        if let Some(existing) =
-            self.tool_name_to_tool.insert(tool.name().to_string(), tool)
-        {
-            #[cfg(feature = "log")]
-            log::debug!("Tool replaced: {}", existing.name());
+        // A same-named tool is replaced in place, so it keeps its position
+        // (and the cached prefix up to it).
+        match self.tool_index.get(tool.name()) {
+            Some(&index) => {
+                #[allow(unused_variables)] // because of the `log` feature
+                let existing = std::mem::replace(&mut self.tools[index], tool);
+                #[cfg(feature = "log")]
+                log::debug!("Tool replaced: {}", existing.name());
+            }
+            None => {
+                self.tool_index
+                    .insert(tool.name().to_string(), self.tools.len());
+                self.tools.push(tool);
+            }
         }
     }
 
-    /// Names of all [`Tool`]s in the [`ToolBox`].
+    /// Names of all [`Tool`]s in the [`ToolBox`], in insertion order.
     pub fn tool_names(&self) -> impl Iterator<Item = &str> {
-        self.tool_name_to_tool.values().map(|tool| tool.name())
+        self.tools.iter().map(|tool| tool.name())
+    }
+
+    /// The [`Tool`] named `name`, if any.
+    pub(crate) fn tool_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<&mut (dyn Tool + Send + 'static)> {
+        let index = *self.tool_index.get(name)?;
+        Some(self.tools[index].as_mut())
     }
 
     /// Names of all the [`MethodDef`]s in the [`ToolBox`].
@@ -241,7 +264,7 @@ impl ToolBox {
         let mut errors = Vec::new();
         let backup = prompt.clone();
 
-        for tool in self.tool_name_to_tool.values_mut() {
+        for tool in self.tools.iter_mut() {
             #[cfg(feature = "log")]
             log::debug!("Initializing tool: {}", tool.name());
 
@@ -273,7 +296,7 @@ impl ToolBox {
         let mut errors = Vec::new();
         let backup = prompt.clone();
 
-        for tool in self.tool_name_to_tool.values_mut() {
+        for tool in self.tools.iter_mut() {
             #[cfg(feature = "log")]
             log::debug!("Updating turn context for tool: {}", tool.name());
 
@@ -325,7 +348,7 @@ impl ToolBox {
     ) -> std::result::Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let mut errors = Vec::new();
 
-        for tool in self.tool_name_to_tool.values_mut() {
+        for tool in self.tools.iter_mut() {
             #[cfg(feature = "log")]
             log::debug!("Tearing down tool: {}", tool.name());
 
@@ -365,11 +388,12 @@ impl Tool for ToolBox {
         &self.name
     }
 
-    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`], by tool
-    /// name — a stable order, so identical boxes share a prompt cache.
+    /// The [`MethodDef`]s for all [`Tool`]s in the [`ToolBox`], in insertion
+    /// order. Register tools in a fixed order so identical boxes share a
+    /// prompt cache, and append new ones so earlier tools' cache still hits.
     fn definitions(&self) -> Vec<MethodDef> {
-        self.tool_name_to_tool
-            .values()
+        self.tools
+            .iter()
             .flat_map(|tool| {
                 tool.definitions().into_iter().map(|mut def| {
                     // Prefix custom method names with this box's segment
@@ -428,7 +452,9 @@ impl Tool for ToolBox {
             }
         };
 
-        if let Some(tool) = self.tool_name_to_tool.get_mut(&tool_name) {
+        // Borrow the fields apart: the name and flatness are read below.
+        let index = self.tool_index.get(&tool_name).copied();
+        if let Some(tool) = index.map(|index| &mut self.tools[index]) {
             // Strip this box's own namespace segment before descending, so a
             // sub-tool sees a name relative to itself. A nested [`ToolBox`]
             // keys its routes by its *own* name only (`tool__method`), so it
@@ -488,11 +514,7 @@ impl Tool for ToolBox {
         self.name = state.name;
 
         for (name, tool_json) in state.tools {
-            let tool = match self
-                .tool_name_to_tool
-                .values_mut()
-                .find(|t| t.name() == name)
-            {
+            let tool = match self.tool_mut(&name) {
                 Some(tool) => tool,
                 None => {
                     errors.push(format!(
@@ -533,7 +555,7 @@ impl Tool for ToolBox {
     async fn save_json(&mut self) -> serde_json::Value {
         let mut tools = serde_json::Map::new();
 
-        for tool in self.tool_name_to_tool.values_mut() {
+        for tool in self.tools.iter_mut() {
             let tool_state = tool.save_json().await;
             tools.insert(tool.name().to_string(), tool_state);
         }
@@ -554,8 +576,9 @@ impl Tool for ToolBox {
         // same method. The adopted handle has no receiver, so our own
         // `subscribe` now yields `None` — pushes flow to the parent.
         let prefix = mailbox.source().to_string();
-        for (name, tool) in self.tool_name_to_tool.iter_mut() {
-            tool.connect(mailbox.derive(format!("{prefix}/{name}")));
+        for tool in self.tools.iter_mut() {
+            let source = format!("{prefix}/{}", tool.name());
+            tool.connect(mailbox.derive(source));
         }
         self.source_prefix = Some(prefix);
         self.mailbox = Some(mailbox);
@@ -707,8 +730,8 @@ mod tests {
         assert!(names.contains(&"toolbox__potato__TestTool__test"));
     }
 
-    /// A one-method stand-in named `.0`.
-    struct Named(&'static str);
+    /// A one-method stand-in named `.0`, its method described by `.1`.
+    struct Named(&'static str, &'static str);
 
     #[async_trait::async_trait]
     impl Tool for Named {
@@ -719,7 +742,7 @@ mod tests {
         fn definitions(&self) -> Vec<MethodDef> {
             let name = format!("{}__run", self.0);
             let def = CustomMethodDef::with_string_param(
-                name, "Run.", "what", "What.", true,
+                name, self.1, "what", "What.", true,
             );
             vec![MethodDef::Custom(def)]
         }
@@ -729,28 +752,95 @@ mod tests {
         }
     }
 
-    /// Tools render first in the cached prefix, so every box holding the
-    /// same tools offers them in the same order — sorted by name, however
-    /// they were added. A per-instance order would share no cache between
-    /// identical agents, or across a restart.
-    #[test]
-    fn test_definitions_order_is_stable() {
-        const NAMES: [&str; 8] = ["h", "c", "f", "a", "g", "b", "e", "d"];
-        let names = |toolbox: ToolBox| -> Vec<String> {
-            let defs = toolbox.definitions().into_iter();
-            defs.map(|def| def.name().to_string()).collect()
-        };
-        let forward = NAMES.iter().fold(ToolBox::new(), |b, n| b.add(Named(n)));
-        let reverse = NAMES
-            .iter()
-            .rev()
-            .fold(ToolBox::new(), |b, n| b.add(Named(n)));
+    const NAMES: [&str; 8] = ["h", "c", "f", "a", "g", "b", "e", "d"];
 
-        let mut sorted: Vec<String> =
-            NAMES.iter().map(|n| format!("toolbox__{n}__run")).collect();
-        sorted.sort_unstable();
-        assert_eq!(names(forward), sorted);
-        assert_eq!(names(reverse), sorted);
+    /// A box holding `names`, added in that order.
+    fn boxed<'n>(names: impl IntoIterator<Item = &'n &'static str>) -> ToolBox {
+        names
+            .into_iter()
+            .fold(ToolBox::new(), |b, n| b.add(Named(n, "Run.")))
+    }
+
+    /// The wire names of `toolbox`'s definitions, in order.
+    fn def_names(toolbox: &ToolBox) -> Vec<String> {
+        let defs = toolbox.definitions().into_iter();
+        defs.map(|def| def.name().to_string()).collect()
+    }
+
+    /// Tools render first in the cached prefix, in the order they were added
+    /// — so the same registration order gives the same prefix every time.
+    #[test]
+    fn test_definitions_follow_insertion_order() {
+        let expected = |names: &mut dyn Iterator<Item = &&str>| {
+            names
+                .map(|n| format!("toolbox__{n}__run"))
+                .collect::<Vec<_>>()
+        };
+        let forward = boxed(&NAMES);
+        let reverse = boxed(NAMES.iter().rev());
+
+        assert_eq!(def_names(&forward), expected(&mut NAMES.iter()));
+        assert_eq!(def_names(&reverse), expected(&mut NAMES.iter().rev()));
+        assert!(forward.tool_names().eq(NAMES));
+        assert_eq!(def_names(&boxed(&NAMES)), def_names(&forward));
+    }
+
+    /// Appending a tool leaves the earlier definitions a byte-identical
+    /// prefix, so a cache breakpoint on them still hits.
+    #[test]
+    fn test_append_keeps_definitions_prefix() {
+        let json = |toolbox: &ToolBox| {
+            serde_json::to_string(&toolbox.definitions()).unwrap()
+        };
+        let before = boxed(&NAMES);
+        let after = boxed(&NAMES).add(Named("z", "Run."));
+
+        let (before, after) = (json(&before), json(&after));
+        // Drop the closing `]` so the shorter list is a strict prefix.
+        let open = &before[..before.len() - 1];
+        assert!(after.starts_with(open), "{after}\n!starts_with\n{open}");
+        assert!(after.len() > before.len());
+    }
+
+    /// Re-adding a same-named tool replaces it where it stood.
+    #[test]
+    fn test_replace_keeps_position() {
+        let toolbox = boxed(&NAMES).add(Named("f", "Run again."));
+
+        assert!(toolbox.tool_names().eq(NAMES));
+        let defs = toolbox.definitions();
+        assert_eq!(defs.len(), NAMES.len());
+        let f = NAMES.iter().position(|n| *n == "f").unwrap();
+        let Some(MethodDef::Custom(def)) = defs.get(f) else {
+            panic!("expected a custom def at {f}");
+        };
+        assert_eq!(def.name, "toolbox__f__run");
+        assert_eq!(def.description, "Run again.");
+    }
+
+    /// A nested box keeps its own insertion order, at the position it was
+    /// added in its parent.
+    #[test]
+    fn test_nested_definitions_order() {
+        let inner = ToolBox::named("inner")
+            .unwrap()
+            .add(Named("y", "Run."))
+            .add(Named("x", "Run."));
+        let toolbox = ToolBox::new()
+            .add(Named("b", "Run."))
+            .add(inner)
+            .add(Named("a", "Run."));
+
+        assert!(toolbox.tool_names().eq(["b", "inner", "a"]));
+        assert_eq!(
+            def_names(&toolbox),
+            [
+                "toolbox__b__run",
+                "toolbox__inner__y__run",
+                "toolbox__inner__x__run",
+                "toolbox__a__run",
+            ]
+        );
     }
 
     #[test]
