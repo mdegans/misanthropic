@@ -176,6 +176,7 @@ struct Script {
     input_cap: u64,
     /// `max_tokens` on a local server: room for a model's thinking, less
     /// where the conversation must leave room in the context for it.
+    #[cfg(feature = "blallama")]
     local_max_tokens: NonZeroU32,
 }
 
@@ -185,6 +186,7 @@ const SHORT: Script = Script {
     beats: &BEATS,
     logbook: false,
     input_cap: 1024,
+    #[cfg(feature = "blallama")]
     local_max_tokens: NonZeroU32::new(8192).unwrap(),
 };
 
@@ -199,6 +201,7 @@ const LONG: Script = Script {
     beats: &LONG_BEATS,
     logbook: true,
     input_cap: 2048,
+    #[cfg(feature = "blallama")]
     local_max_tokens: NonZeroU32::new(4096).unwrap(),
 };
 
@@ -990,6 +993,7 @@ type Counted = Result<u64, String>;
 /// Each of `log`'s requests counted by `client`'s `count_tokens`. A failure
 /// is kept, not raised, so [`assert_caches`] prints the table before
 /// failing on it.
+#[cfg(feature = "blallama")]
 async fn counted(client: &Client, log: &Log) -> Vec<Counted> {
     let mut counted = Vec::with_capacity(log.sent.len());
     for prompt in &log.sent {
