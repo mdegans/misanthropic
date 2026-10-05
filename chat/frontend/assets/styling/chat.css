@@ -5,3 +5,10 @@
 #chat a {
   color: #ffffff;
 }
+
+.notice {
+  margin: 0 1rem 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border-left: 3px solid #e0a030;
+  background: rgba(224, 160, 48, 0.12);
+}

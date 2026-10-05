@@ -13,12 +13,18 @@ use misanthropic::{
         serde_json,
     },
     prompt::{
-        message::{Block, DocumentSource, Image, MediaType, UserMessage},
+        message::{Block, DocumentSource, Image, MediaType, Role, UserMessage},
         Prompt,
     },
+    response::StopReason,
     tool::Tool,
 };
-use model::{request::Request, response::Success, toolbox};
+use model::{
+    request::Request,
+    response::Success,
+    toolbox,
+    turn::{reply, rewind, Disposition},
+};
 use wasm_bindgen::{prelude::Closure, JsCast};
 
 use crate::utils::sleep_ms;
@@ -46,9 +52,10 @@ static DEFAULT_DRAG_CLOSURE: GlobalSignal<
 ///
 /// Distinguished by shape via serde `untagged` (the same way we sniff image
 /// types) since Save writes the two as separate files. The shapes are mutually
-/// exclusive: a tool-state file fails the `Prompt` arm because its `tools` is a
-/// map rather than the array `Prompt::tools` (serialized as `tools`) expects,
-/// and a prompt fails the `ToolState` arm because it has no top-level `name`.
+/// exclusive: a tool-state file fails the `Prompt` arm because it lacks the
+/// required `model`, `messages` and `max_tokens` (and its `tools` is a map, not
+/// an array), and a prompt fails the `ToolState` arm because it has no
+/// top-level `name`.
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum Dropped {
@@ -224,6 +231,19 @@ fn make_prompt() -> Prompt {
     Prompt::default()
 }
 
+/// Shown when a turn is dropped (see [`Disposition::Drop`]).
+fn dropped_notice(reason: Option<StopReason>) -> String {
+    let why = match reason {
+        Some(StopReason::Refusal) => "Claude declined to answer",
+        Some(StopReason::MaxTokens) => "the reply hit the token limit",
+        _ => "the reply was cut short",
+    };
+    format!(
+        "Your last message was removed from the chat because {why}. \
+         Try rephrasing it."
+    )
+}
+
 #[component]
 pub fn Chat() -> Element {
     // Our signals. This is reactive state management. When these signals are
@@ -242,6 +262,8 @@ pub fn Chat() -> Element {
     let mut show_system = use_signal(|| false);
     let mut show_thought = use_signal(|| false);
     let mut show_tool_use = use_signal(|| false);
+    // Why the last turn was dropped, until the next message is sent.
+    let mut notice = use_signal(|| None::<String>);
     // Created un-loaded; persisted state is restored asynchronously as the
     // first step of the stream task (see below), before the first prompt is
     // requested. Doing it here would require `block_on`, which only works for
@@ -322,41 +344,17 @@ pub fn Chat() -> Element {
                             // forwarded from Anthropic. We handle tool use on
                             // the client side.
                             Ok(Success::Stream(event)) => {
-                                // If the event is a tool use event, we handle
-                                // things differently. The tools run on the
-                                // client side.
-                                if let misanthropic::stream::Event::ToolUse {
-                                    tool_use,
-                                } = &event
-                                {
-                                    log::info!("Tool use: {:?}", tool_use);
-                                    // A tool has been used.
-                                    let result = toolbox
-                                        .write()
-                                        .call(tool_use.clone())
-                                        .await;
-                                    persist_tool_state(toolbox).await;
-                                    log::info!("Tool result: {:?}", result);
-
-                                    // We send the result back to the server.
-                                    if let Err(e) = CLIENT
-                                        .read()
-                                        .send(Request::UserMessage(
-                                            result.clone().into(),
-                                        ))
-                                        .await
-                                    {
-                                        connected.set(false);
-                                        log::error!(
-                                            "Failed to set prompt after tool use: {}",
-                                            e
-                                        );
-                                    } else {
-                                        // Sucessfully sent. The server will
-                                        // send it back in a UserMessage.
-                                    }
-                                }
-
+                                // Tools run on the client, but only once the
+                                // whole turn is in: `Event::ToolUse` fires as
+                                // each block closes, *before* `message_delta`
+                                // says why the turn stopped. `Disposition`
+                                // decides from the assembled turn.
+                                let disposition = match &event {
+                                    misanthropic::stream::Event::Message {
+                                        message,
+                                    } => Some(Disposition::from(message)),
+                                    _ => None,
+                                };
                                 if let Err(e) =
                                     // A Prompt and Vec<Message> both implement
                                     // `HandleStreamEvent`. In a real app, the
@@ -375,6 +373,57 @@ pub fn Chat() -> Element {
                                         "Failed to handle stream event: {}",
                                         e
                                     );
+                                }
+
+                                match disposition {
+                                    Some(Disposition::Drop(reason)) => {
+                                        // Unseat the turn (assembled in place
+                                        // from the stream) and the turn that
+                                        // prompted it, as the backend does.
+                                        let mut prompt = prompt.write();
+                                        let messages = &mut prompt.messages;
+                                        if messages.last().is_some_and(|m| {
+                                            m.role == Role::Assistant
+                                        }) {
+                                            messages.pop();
+                                        }
+                                        rewind(messages);
+                                        notice
+                                            .set(Some(dropped_notice(reason)));
+                                    }
+                                    Some(Disposition::Dispatch(calls)) => {
+                                        let mut results = Vec::new();
+                                        for call in calls {
+                                            log::info!("Tool use: {:?}", call);
+                                            let result = toolbox
+                                                .write()
+                                                .call(call)
+                                                .await;
+                                            log::info!(
+                                                "Tool result: {:?}",
+                                                result
+                                            );
+                                            results.push(result);
+                                        }
+                                        persist_tool_state(toolbox).await;
+
+                                        // The server echoes the reply back as a
+                                        // UserMessage.
+                                        if let Err(e) = CLIENT
+                                            .read()
+                                            .send(Request::UserMessage(reply(
+                                                results,
+                                            )))
+                                            .await
+                                        {
+                                            connected.set(false);
+                                            log::error!(
+                                                "Failed to set prompt after tool use: {}",
+                                                e
+                                            );
+                                        }
+                                    }
+                                    Some(Disposition::Keep) | None => {}
                                 }
                             }
                             Ok(Success::Prompt(mut new)) => {
@@ -496,6 +545,10 @@ pub fn Chat() -> Element {
             {prompt.read().into_element_custom(1337, &options.read())}
         }
 
+        if let Some(text) = notice.read().as_ref() {
+            div { class: "notice", "{text}" }
+        }
+
         div {
             class: "input",
             form {
@@ -538,6 +591,7 @@ pub fn Chat() -> Element {
                                 } else {
                                     // Sucessfully sent the message.
                                     input_buffer.write().clear();
+                                    notice.set(None);
                                 }
                             }
                         }

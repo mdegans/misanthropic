@@ -1,0 +1,25 @@
+{
+  "model": "claude-haiku-4-5",
+  "max_tokens": 1024,
+  "messages": [
+    {
+      "role": "user",
+      "content": [{ "type": "text", "text": "Hi." }]
+    }
+  ],
+  "tools": [
+    {
+      "name": "interleaved",
+      "description": "Required, optional, required.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "zulu": { "type": "string" },
+          "alpha": { "type": "string" },
+          "mike": { "type": "string" }
+        },
+        "required": ["zulu", "mike"]
+      }
+    }
+  ]
+}

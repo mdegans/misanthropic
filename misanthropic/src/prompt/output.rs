@@ -1347,8 +1347,8 @@ mod tests {
                             tool::CustomMethodDef::builder("interleaved")
                                 .description("Record three words.")
                                 .schema(schema.clone())
-                                .build()
-                                .expect("tool definition");
+                                // Interleaving is the point of the probe.
+                                .build_unchecked();
                         def.strict(strict);
                         (
                             "tool strict:true ",

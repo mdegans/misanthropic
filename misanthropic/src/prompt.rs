@@ -14,7 +14,7 @@ use crate::{
     stream::{self, DeltaError},
     tool::{self, CustomMethodDef},
 };
-use message::Content;
+use message::{CacheControl, Content};
 
 use futures::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -41,17 +41,28 @@ pub use output::{Effort, Items, JsonSchemaFormat, OutputConfig, OutputFormat};
 pub mod index;
 pub use index::{BlockIndex, Index, IndexMut, IndexRef, MethodIndex};
 
-/// Maximum `cache_control` markers Anthropic accepts in a single request,
-/// counted across `tools` + `system` + `messages`. See
+mod breakpoint;
+use breakpoint::Plan;
+pub use breakpoint::{Breakpoint, CacheError};
+
+/// Maximum `cache_control` markers Anthropic accepts in a single request:
+/// one per marked block across `tools` + `system` + `messages`, plus the
+/// top-level automatic slot ([`Prompt::cache_control`]) when set, even if
+/// the last block is marked too. A fifth is a 400 ("A maximum of 4 blocks
+/// with cache_control may be provided. Found 5."), not a silent drop —
+/// probed against `count_tokens` on 2026-09-30. See
 /// <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching#cache-limitations>.
 const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
 
 /// Request for the [Anthropic Messages API].
 ///
+/// Like the API, deserializing requires `model`, `messages` and `max_tokens`
+/// (a missing one is a `missing field` error); every other field defaults.
+/// [`Prompt::default`] still fills all three for builder use.
+///
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
-#[serde(default)]
 pub struct Prompt {
     /// [`Model`](model::Model) to use for inference.
     pub model: model::Model,
@@ -75,29 +86,33 @@ pub struct Prompt {
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
     pub metadata: serde_json::Map<String, serde_json::Value>,
     /// Optional stop sequences. If the model generates any of these sequences,
-    /// the completion will stop with [`StopReason::StopSequence`].
+    /// the completion will stop with [`StopReason::StopSequence`] — even
+    /// mid tool call, cutting its input short (so the call is never
+    /// dispatchable; see [`Disposition::Done`]). The API rejects a
+    /// whitespace-only sequence (e.g. `"\n"`) with a 400.
     ///
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// [`Disposition::Done`]: crate::response::Disposition::Done
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stop_sequences: Option<Vec<Cow<'static, str>>>,
     /// If `true`, the response will be a stream of [`Event`]s. If `false`, the
     /// response will be a single [`response::Message`].
     ///
     /// [`Event`]: crate::stream::Event
     /// [`response::Message`]: crate::response::Message
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
     /// System prompt as [`Content`].
     ///
     /// [`Content`]: message::Content
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub system: Option<message::Content>,
     /// Temperature for sampling. Must be between 0 and 1. Higher values mean
     /// more randomness. Note that 0.0 is not fully deterministic.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
     /// [`tool::Choice`] for the model.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_choice: Option<tool::Choice>,
     /// Tool definitions for the model — the [`CustomMethodDef`]s you execute
     /// and [`ServerMethodDef`]s the API runs, intermixed via [`MethodDef`].
@@ -105,10 +120,10 @@ pub struct Prompt {
     /// [`ServerMethodDef`]: crate::tool::ServerMethodDef
     /// [`CustomMethodDef`]: crate::tool::CustomMethodDef
     /// [`MethodDef`]: crate::tool::MethodDef
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<tool::MethodDef>>,
     /// Top K tokens to consider for each token.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_k: Option<NonZeroU16>,
     /// Top P nucleus sampling. The probabilities of each token are added in
     /// order from most to least likely until the probability mass exceeds
@@ -116,13 +131,13 @@ pub struct Prompt {
     ///
     /// This is a float between 0 and 1 where higher values mean more
     /// randomness.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub top_p: Option<f32>,
     /// Extended thinking support, for Anthropic's built-in chain-of-thought on
     /// Sonnet 3.7 and later. Use [`Thinking::adaptive`] on current models. The
     /// `cot` feature works with all models instead, provided the system prompt
     /// instructs the Assistant to use `<thinking>` tags.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking: Option<Thinking>,
     /// Structured output configuration. When set, the response is
     /// constrained by grammar-based decoding to a single [`Text`] [`Block`]
@@ -144,16 +159,16 @@ pub struct Prompt {
     /// [streaming]: <https://docs.anthropic.com/en/docs/build-with-claude/streaming>
     /// [batching]: <https://docs.anthropic.com/en/docs/build-with-claude/batch-processing>
     /// [prompt cache]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_config: Option<OutputConfig>,
     /// Capacity tier for the request. See [`ServiceTier`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub service_tier: Option<ServiceTier>,
     /// Geographic region constraint for inference. See [`InferenceGeo`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inference_geo: Option<InferenceGeo>,
     /// Container ID to reuse across requests (used with code execution).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub container: Option<Cow<'static, str>>,
     /// Automatic prompt caching. When set, the API places a cache breakpoint
     /// on the *last cacheable block* of this request, server-side, at request
@@ -162,7 +177,7 @@ pub struct Prompt {
     /// conversation grows, so every request caches its full prefix with no
     /// client-side marker management. Counts toward the API's 4-breakpoint
     /// budget. Set with [`Self::auto_cache`] / [`Self::auto_cache_1h`].
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_control: Option<message::CacheControl>,
 }
 
@@ -228,6 +243,13 @@ impl Default for Prompt {
     }
 }
 
+/// The one-liner: `Prompt::from("…")` is [`Prompt::user`].
+impl From<&str> for Prompt {
+    fn from(text: &str) -> Self {
+        Self::user(text)
+    }
+}
+
 /// Capacity tier for a request. Set via [`Prompt::service_tier`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
@@ -267,7 +289,9 @@ pub enum InferenceGeo {
 /// block is treated as evidence the backend allows it. This is a heuristic,
 /// not a guarantee: a backend that emits `server_tool_use` yet enforces strict
 /// alternation would be wrongly permitted here — but the failure surfaces as a
-/// backend-side error, not silent corruption.
+/// backend-side error, not silent corruption. Conversely, while a server tool
+/// is still in flight *only* that continuation may follow
+/// ([`UnfinishedServerToolUse`](Self::UnfinishedServerToolUse)).
 ///
 /// [`User`]: crate::prompt::message::Role::User
 /// [`Assistant`]: crate::prompt::message::Role::Assistant
@@ -335,6 +359,25 @@ pub enum TurnOrderError {
         /// The `tool_use` ids with no matching leading `tool_result` next.
         unanswered: Vec<String>,
     },
+    /// A non-assistant turn follows an [`Assistant`] turn with a server tool
+    /// [still in flight](message::Message::unfinished_server_tool_uses)
+    /// — a paused (`pause_turn`) turn. Only its continuation may follow:
+    /// resend to resume it, or drop the whole paused turn. Abandoning it in
+    /// place is a 400 on the wire.
+    ///
+    /// [`Assistant`]: crate::prompt::message::Role::Assistant
+    #[error(
+        "{} server_tool_use block(s) are still in flight; only an assistant \
+         continuation may follow: {}",
+        .unfinished.len(),
+        .unfinished.join(", ")
+    )]
+    UnfinishedServerToolUse {
+        /// The assistant message with the in-flight server tool call(s).
+        message: Message,
+        /// The `server_tool_use` ids no result answers yet.
+        unfinished: Vec<String>,
+    },
 }
 static_assertions::assert_impl_all!(TurnOrderError: Send, Sync);
 
@@ -385,6 +428,39 @@ impl Seated {
 }
 
 impl Prompt {
+    /// A [`Prompt::default`] opening with one [`User`] turn — the line every
+    /// program starts with. No [`TurnOrderError`] to handle: a lone turn of
+    /// text, image or document content is always legal. [`ToolResult`]
+    /// blocks are the exception (an opening turn has no `tool_use` for them
+    /// to answer, and they must lead) — [`add_message`] is the checked path;
+    /// here a debug build asserts [`check_turn_order`].
+    ///
+    /// ```
+    /// use misanthropic::Prompt;
+    ///
+    /// let prompt = Prompt::user("What is 2+2?").system("Be terse.");
+    /// assert_eq!(prompt.messages.len(), 1);
+    /// ```
+    ///
+    /// [`User`]: message::Role::User
+    /// [`ToolResult`]: message::Block::ToolResult
+    /// [`add_message`]: Prompt::add_message
+    /// [`check_turn_order`]: Prompt::check_turn_order
+    pub fn user(content: impl Into<Content>) -> Self {
+        let prompt = Self {
+            messages: vec![Message {
+                role: message::Role::User,
+                content: content.into(),
+            }],
+            ..Self::default()
+        };
+        debug_assert!(
+            prompt.check_turn_order().is_ok(),
+            "Prompt::user: tool_result blocks must lead the turn"
+        );
+        prompt
+    }
+
     /// Turn streaming on.
     ///
     /// **Note**: [`Client::stream`] and [`Client::message`] are more ergonomic
@@ -626,11 +702,14 @@ impl Prompt {
     /// driver's per-session field) so casual code that never touches system
     /// notes keeps [`add_message`]/[`push_message`] and passes `&mut None`.
     ///
+    /// Which response turns to seat is the response's
+    /// [`Disposition`](crate::response::Disposition) — never a clipped one.
+    ///
     /// # Errors
     /// [`TurnOrderError`] if the append (or merge) would break turn order.
     /// System content is buffered, not appended, so it never errors here.
     ///
-    /// [`Chat`]: <https://github.com/mdegans/misanthropic/blob/main/misanthropic/examples/utils/chat.rs>
+    /// [`Chat`]: <https://docs.rs/misanthropic/latest/misanthropic/chat/struct.Chat.html>
     /// [`may_precede`]: message::Message::may_precede
     /// [ends]: message::Message::ends_in_server_tool_result
     /// [`System`]: message::Role::System
@@ -814,7 +893,8 @@ impl Prompt {
 
     /// Set the [`stop_sequences`]. If one is generated, the completion will
     /// stop with [`StopReason::StopSequence`] in the
-    /// [`response::Message::stop_reason`].
+    /// [`response::Message::stop_reason`]. A whitespace-only sequence is a
+    /// 400 (see the [field](Self#structfield.stop_sequences)).
     ///
     /// [`stop_sequences`]: Prompt::stop_sequences
     /// [`StopReason::StopSequence`]: crate::response::StopReason::StopSequence
@@ -1316,71 +1396,93 @@ impl Prompt {
         Ok(self)
     }
 
-    /// Add a cache breakpoint to the end of the prompt, setting `cache_control`
-    /// to `Ephemeral`.
+    /// Add a 5-minute cache breakpoint at the end of the prompt: the last
+    /// block of the last message, else of [`system`], else the last of
+    /// [`tools`].
     ///
     /// # Notes
     /// * Cache breakpoints apply to the full prefix in the order of [`tools`],
     ///   [`system`], and [`messages`]. To effectively use this method, call it
     ///   after setting [`tools`] and [`system`] if you have no examples or
     ///   after setting [`messages`] if you do.
-    /// * For [`Sonnet35`] and [`Opus30`] models, the prompt must have at least
-    ///   1024 tokens for this to have an effect. For [`Haiku30`], the minimum
-    ///   is 2048 tokens.
-    /// * Since this is a beta feature, the API may change in the future, likely
-    ///   to include another form of `cache_control`.
+    /// * The prefix must reach the model's minimum cacheable length or
+    ///   nothing is cached, silently: from 512 tokens (Opus 5.5) up to 4096
+    ///   (Haiku 4.5, Opus 4.5 and 4.6). See [prompt caching].
+    /// * Calling it every turn is safe: like [`cache_windowed`], it never
+    ///   takes the request past Anthropic's 4-marker limit. The marker it
+    ///   places at the end always stays — it is what the next request hits
+    ///   — and the rest of the budget goes to 1-hour message markers, then
+    ///   the newest 5-minute ones, so it evicts the oldest 5-minute markers
+    ///   first and, when only 1-hour ones are left, the oldest of those. It
+    ///   places nothing when `tools`, `system` and the automatic slot hold
+    ///   every slot.
+    /// * It never builds a request [`check_cache`] refuses. Under a 1-hour
+    ///   marker at or after the end (a 1-hour [`auto_cache_1h`] slot, say) a
+    ///   5-minute one would be a 400 and adds nothing — the 1-hour entry
+    ///   caches that prefix already, for longer — so none is placed.
     ///
     /// [`tools`]: Prompt::tools
     /// [`system`]: Prompt::system
     /// [`messages`]: Prompt::messages
-    /// [`Sonnet35`]: crate::Id::Sonnet35
-    /// [`Opus30`]: crate::Id::Opus30
-    /// [`Haiku30`]: crate::Id::Haiku30
-    pub fn cache(self) -> Self {
-        self.cache_with(crate::prompt::message::CacheControl::ephemeral())
+    /// [`cache_windowed`]: Prompt::cache_windowed
+    /// [`check_cache`]: Prompt::check_cache
+    /// [`auto_cache_1h`]: Prompt::auto_cache_1h
+    /// [prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
+    pub fn cache(mut self) -> Self {
+        let plan = self.plan_end(CacheControl::ephemeral());
+        self.apply(plan);
+        self
     }
 
-    /// Add a 1-hour cache breakpoint on the last cacheable block.
+    /// [`cache`](Prompt::cache) with a 1-hour TTL, for when the priming
+    /// write and the requests that read it may be more than 5 minutes apart.
     ///
-    /// Behaves identically to [`cache`](Prompt::cache) but uses
-    /// [`CacheControl::one_hour`](crate::prompt::message::CacheControl::one_hour).
-    /// Useful when the priming write and the real requests may be
-    /// separated by more than the default 5-minute window.
-    pub fn cache_1h(self) -> Self {
-        self.cache_with(crate::prompt::message::CacheControl::one_hour())
+    /// # Errors
+    /// [`CacheError`] if a 5-minute marker would come before it — see
+    /// [`check_cache`](Prompt::check_cache). Place 1-hour markers first.
+    pub fn cache_1h(self) -> Result<Self, CacheError> {
+        self.cache_with(CacheControl::one_hour())
     }
 
-    /// Add a cache breakpoint with a caller-provided
-    /// [`CacheControl`](message::CacheControl) on
-    /// the last cacheable block. Shared implementation for
-    /// [`cache`](Prompt::cache) and [`cache_1h`](Prompt::cache_1h).
+    /// [`cache`](Prompt::cache) with a caller-provided [`CacheControl`],
+    /// which replaces a marker already at the end.
+    ///
+    /// # Errors
+    /// [`CacheError`] if the request would break a rule
+    /// [`check_cache`](Prompt::check_cache) enforces.
     pub fn cache_with(
         mut self,
-        cache_control: crate::prompt::message::CacheControl,
-    ) -> Self {
-        // If there are messages, add a cache breakpoint to the last one.
-        if let Some(last) = self.messages.last_mut() {
-            last.content.cache_with(cache_control);
-            return self;
+        cache_control: CacheControl,
+    ) -> Result<Self, CacheError> {
+        let plan = self.plan_end(cache_control).checked()?;
+        self.apply(plan);
+        Ok(self)
+    }
+
+    /// Plan a marker at the end (see [`Self::cache`]). A marker outside
+    /// `messages` can't make room by evicting, so it needs a free slot or a
+    /// block already marked.
+    fn plan_end(&self, cache_control: CacheControl) -> Plan {
+        if let Some(last) = self.messages.len().checked_sub(1) {
+            let end = self.message_end(last);
+            return self.plan(end, cache_control, &[last]);
         }
 
-        // If there are no messages, add a cache breakpoint to the system prompt
-        // if it exists.
-        if let Some(system) = self.system.as_mut() {
-            system.cache_with(cache_control);
-            return self;
-        }
-
-        // If there are no messages or system prompt, add a cache breakpoint to
-        // the tools if they exist.
-        if let Some(tool) =
-            self.tools.as_mut().and_then(|tools| tools.last_mut())
-        {
-            tool.cache_with(cache_control);
-            return self;
-        }
-
-        self
+        let end = match &self.system {
+            Some(system) => {
+                let i = system.len().checked_sub(1);
+                let i = i.filter(|&i| system[i].cache_slot().is_some());
+                let at = |i| Breakpoint::Block(BlockIndex::System(i));
+                i.map(|i| (at(i), system[i].is_cached()))
+            }
+            None => self.tools.as_ref().and_then(|tools| {
+                let tool = tools.last()?;
+                Some((Breakpoint::Tool(tools.len() - 1), tool.is_cached()))
+            }),
+        };
+        let free = self.cache_markers() < MAX_CACHE_CONTROLS_PER_REQUEST;
+        let end = end.filter(|&(_, marked)| free || marked);
+        self.plan(end.map(|(at, _)| at), cache_control, &[])
     }
 
     /// Enable [automatic prompt caching] with the default 5-minute TTL: the
@@ -1395,20 +1497,65 @@ impl Prompt {
     /// Prefixes below the model's minimum cacheable length are silently not
     /// cached — no error, just a zero `cache_creation_input_tokens`.
     ///
+    /// The automatic slot is one of the request's 4 markers, even when the
+    /// last block is marked too; if all 4 are already placed, a message
+    /// marker makes way for it, as for [`cache`](Prompt::cache).
+    ///
+    /// # Errors
+    /// [`CacheError::AutoMismatch`] when the last block carries a 1-hour
+    /// marker: the slot lands on it, and their TTLs must match.
+    ///
     /// [automatic prompt caching]: <https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching>
-    pub fn auto_cache(mut self) -> Self {
-        self.cache_control =
-            Some(crate::prompt::message::CacheControl::ephemeral());
-        self
+    pub fn auto_cache(self) -> Result<Self, CacheError> {
+        self.auto_cache_with(CacheControl::ephemeral())
     }
 
     /// [`Self::auto_cache`] with a 1-hour TTL — see
-    /// [`CacheControl::one_hour`](message::CacheControl::one_hour) for when
-    /// the longer window pays for its doubled write cost.
-    pub fn auto_cache_1h(mut self) -> Self {
-        self.cache_control =
-            Some(crate::prompt::message::CacheControl::one_hour());
-        self
+    /// [`CacheControl::one_hour`] for when the longer window pays for its
+    /// doubled write cost.
+    ///
+    /// # Errors
+    /// [`CacheError`] when any 5-minute marker is placed: the automatic
+    /// slot is read last, and a 1-hour marker may not follow a 5-minute one.
+    pub fn auto_cache_1h(self) -> Result<Self, CacheError> {
+        self.auto_cache_with(CacheControl::one_hour())
+    }
+
+    /// [`Self::auto_cache`] with a caller-provided [`CacheControl`].
+    ///
+    /// # Errors
+    /// [`CacheError`] if the request would break a rule
+    /// [`check_cache`](Prompt::check_cache) enforces.
+    pub fn auto_cache_with(
+        mut self,
+        cache_control: CacheControl,
+    ) -> Result<Self, CacheError> {
+        self.set_auto_cache(cache_control)?;
+        Ok(self)
+    }
+
+    /// [`Self::auto_cache_with`] in place; the prompt is unchanged on error.
+    pub(crate) fn set_auto_cache(
+        &mut self,
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let plan = self.plan([Breakpoint::Auto], cache_control, &[]);
+        self.apply(plan.checked()?);
+        Ok(())
+    }
+
+    /// [`Self::set_auto_cache`] for a request whose end is still to be
+    /// seated — a driver's, before its first beat. Where the slot lands, and
+    /// so whether it matches a marker there, isn't known yet: that rule is
+    /// left to [`check_cache`](Prompt::check_cache) before the request goes.
+    #[cfg(feature = "chat")]
+    pub(crate) fn set_auto_cache_unlanded(
+        &mut self,
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let plan = self.plan([Breakpoint::Auto], cache_control, &[]);
+        self.apply(plan.unlanded().checked()?);
+        Ok(())
     }
 
     /// Place `n` cache breakpoints in a rolling trailing window across
@@ -1430,16 +1577,21 @@ impl Prompt {
     ///
     /// # Budget enforcement
     ///
-    /// Anthropic accepts at most **4** `cache_control` markers per request,
-    /// counted across `tools` + `system` + `messages`. This method counts
-    /// the existing `system` / tools markers as a fixed prefix-cache cost
-    /// and gives the rolling window the remaining budget. When the total
-    /// would exceed 4 it evicts the **oldest message-level** markers — the
-    /// system and tools markers are left untouched.
+    /// Anthropic rejects a request with more than **4** `cache_control`
+    /// markers (a 400, not a silent drop), counting each marked block across
+    /// `tools` + `system` + `messages` plus the top-level automatic slot
+    /// ([`auto_cache`](Prompt::auto_cache)). The markers outside `messages`
+    /// are a fixed cost this method never touches; the window gets what is
+    /// left, newest position first, and older message-level markers are
+    /// evicted to fit. A prefix already holding all 4 leaves no room, so no
+    /// message marker survives.
     ///
     /// A position already carrying a `cache_control` marker is left alone
     /// (its existing TTL is preserved); only freshly marked positions take
-    /// the requested `cache_control`.
+    /// the requested `cache_control`. Like [`cache`](Prompt::cache), a
+    /// 5-minute position under a 1-hour marker at or after it is left
+    /// unmarked, so this never builds a request
+    /// [`check_cache`](Prompt::check_cache) refuses.
     ///
     /// # Typical usage
     ///
@@ -1450,94 +1602,111 @@ impl Prompt {
     ///
     /// Uses the default 5-minute ephemeral TTL. For 1-hour TTL use
     /// [`cache_windowed_1h`](Prompt::cache_windowed_1h), or pass
-    /// an explicit [`CacheControl`](message::CacheControl) via
+    /// an explicit [`CacheControl`] via
     /// [`cache_windowed_with`](Prompt::cache_windowed_with).
     ///
     /// [`cache`]: Prompt::cache
     pub fn cache_windowed(&mut self, n: usize) {
-        self.cache_windowed_with(
-            n,
-            crate::prompt::message::CacheControl::ephemeral(),
-        );
+        let plan = self.plan_window(n, CacheControl::ephemeral());
+        self.apply(plan);
     }
 
     /// Like [`cache_windowed`](Prompt::cache_windowed) but uses a 1-hour
-    /// TTL on the new breakpoint.
+    /// TTL on the new breakpoints.
     ///
     /// Useful when rounds may be separated by more than the default
     /// 5-minute window — for example, a human-driven deliberation loop
     /// where the operator reads each response before calling the next
     /// round.
-    pub fn cache_windowed_1h(&mut self, n: usize) {
-        self.cache_windowed_with(
-            n,
-            crate::prompt::message::CacheControl::one_hour(),
-        );
+    ///
+    /// # Errors
+    /// [`CacheError`] if a 5-minute marker would come before a new one;
+    /// the prompt is unchanged.
+    pub fn cache_windowed_1h(&mut self, n: usize) -> Result<(), CacheError> {
+        self.cache_windowed_with(n, CacheControl::one_hour())
     }
 
     /// Like [`cache_windowed`](Prompt::cache_windowed) but lets the
-    /// caller choose the [`CacheControl`](message::CacheControl) applied
-    /// to freshly marked positions.
+    /// caller choose the [`CacheControl`] applied to freshly marked
+    /// positions.
     ///
     /// Positions already carrying a marker retain whatever `CacheControl`
     /// they were originally given. When the 4-marker budget forces
-    /// eviction, **middle** message-level markers (those not in the tail
-    /// window) are removed first, oldest-non-tail kept last — so the
-    /// earliest message-level marker the caller placed (typically the
-    /// initial prefix marker) survives as long as the budget allows.
+    /// eviction, the window slides: the marker at its newest position
+    /// always stays — it is what the next request hits — then 5-minute
+    /// message markers go before 1-hour ones, and within a TTL the oldest
+    /// outside the window go first, then the window's own oldest positions.
+    ///
+    /// An evicted marker costs no cache hits while a kept marker sits within
+    /// the API's lookback (about 20 blocks) after it and its entry is still
+    /// alive: the entry outlives the marker on the server for its TTL
+    /// (refreshed by each hit), and the lookback from the kept marker finds
+    /// it. Further back, or once that TTL lapses, its prefix is written
+    /// again. That is why 1-hour markers go last but for the newest: after
+    /// a pause of more than five minutes, theirs are the entries left.
+    ///
+    /// # Errors
+    /// [`CacheError`] if the request would break a rule
+    /// [`check_cache`](Prompt::check_cache) enforces — say, 1-hour markers
+    /// after 5-minute ones. The prompt is unchanged.
     pub fn cache_windowed_with(
         &mut self,
         n: usize,
-        cache_control: crate::prompt::message::CacheControl,
-    ) {
-        // 1. Mark up to `n` positions at the tail, spaced by 2:
-        //    `len-1, len-3, …, len-1 - 2(n-1)`. Skip out-of-bounds indices.
-        //    Skip positions that already carry a marker so the existing
-        //    TTL is preserved.
-        let len = self.messages.len();
-        let mut tail_set: std::collections::HashSet<usize> =
-            std::collections::HashSet::with_capacity(n);
-        for k in 0..n {
-            let idx_signed = len as isize - 1 - 2 * (k as isize);
-            if idx_signed < 0 {
-                break;
-            }
-            let idx = idx_signed as usize;
-            if !self.messages[idx].content.has_cache() {
-                self.messages[idx].content.cache_with(cache_control.clone());
-            }
-            tail_set.insert(idx);
-        }
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let plan = self.plan_window(n, cache_control).checked()?;
+        self.apply(plan);
+        Ok(())
+    }
 
-        // 2. Account for sticky prefix markers (system + tools) and the
-        //    tail set the caller just requested, then compute what's left
-        //    for any pre-existing non-tail message-level markers.
-        let system_count =
-            usize::from(self.system.as_ref().is_some_and(|s| s.has_cache()));
-        let tool_count = self
-            .tools
-            .as_ref()
-            .map_or(0, |tools| tools.iter().filter(|t| t.is_cached()).count());
-        let used = system_count + tool_count + tail_set.len();
-        let non_tail_budget =
-            MAX_CACHE_CONTROLS_PER_REQUEST.saturating_sub(used);
+    /// Plan the window of [`Self::cache_windowed`]: up to `n` positions at
+    /// the tail, spaced by 2 (`len-1, len-3, …`), newest first. A position
+    /// already marked keeps its TTL.
+    fn plan_window(&self, n: usize, cache_control: CacheControl) -> Plan {
+        self.plan_window_over(self.messages.len(), n, cache_control)
+    }
 
-        // 3. Walk non-tail message-level breakpoints in document order.
-        //    Keep the earliest `non_tail_budget` (i.e. the beginning);
-        //    evict the rest (the middle stragglers).
-        let non_tail_indices: Vec<usize> = self
-            .messages
-            .iter()
-            .enumerate()
-            .filter(|(i, msg)| msg.content.has_cache() && !tail_set.contains(i))
-            .map(|(i, _)| i)
-            .collect();
+    /// Whether [`cache_windowed_with`](Prompt::cache_windowed_with) could
+    /// mark the assistant turn a request sent now gets back, once it is
+    /// seated — the window a driver places after each assistant turn — so
+    /// it can refuse before paying for the turn. Every rule is checked but
+    /// the automatic slot's landing, which the turn's blocks decide.
+    #[cfg(feature = "chat")]
+    pub(crate) fn check_next_window(
+        &self,
+        n: usize,
+        cache_control: CacheControl,
+    ) -> Result<(), CacheError> {
+        let len = self.next_turn() + 1;
+        let plan = self.plan_window_over(len, n, cache_control);
+        plan.unlanded().checked().map(drop)
+    }
 
-        if non_tail_indices.len() > non_tail_budget {
-            for &idx in &non_tail_indices[non_tail_budget..] {
-                self.messages[idx].content.uncache();
-            }
-        }
+    /// Where the assistant turn a request sent now gets back is seated: it
+    /// merges into an assistant tail (a continuation), else it is appended.
+    #[cfg(feature = "chat")]
+    fn next_turn(&self) -> usize {
+        let tail = self.messages.last().map(|m| m.role);
+        let merges = tail == Some(message::Role::Assistant);
+        self.messages.len() - usize::from(merges)
+    }
+
+    /// [`Self::plan_window`] over `len` messages, those past the end yet to
+    /// come: each is marked on its first block, standing in for its end.
+    fn plan_window_over(
+        &self,
+        len: usize,
+        n: usize,
+        cache_control: CacheControl,
+    ) -> Plan {
+        let tail: Vec<usize> =
+            (0..n).map_while(|k| len.checked_sub(1 + 2 * k)).collect();
+        let fresh = tail.iter().filter_map(|&m| match self.messages.get(m) {
+            None => Some(Breakpoint::Block(BlockIndex::Message((m, 0)))),
+            Some(message) if message.content.has_cache() => None,
+            Some(_) => self.message_end(m),
+        });
+        self.plan(fresh, cache_control, &tail)
     }
 
     /// Apply a [`stream::Event`] to the [`Prompt`]. This is useful for
@@ -2282,29 +2451,30 @@ mod tests {
     /// assistant → system is legal iff the assistant turn ends in a
     /// server-tool *result* — strictly the last block, and a *use* (the
     /// paused-turn tail) does not qualify. The fixture blocks keep the
-    /// shapes wire-sourced.
+    /// shapes wire-sourced, and the result answers the use (a use no result
+    /// answers is in flight — see `test_unfinished_server_tool_use`).
     #[test]
     fn test_system_after_server_tool_tails() {
         use crate::prompt::message::{Block, Content};
 
-        let fetch_use: Block = serde_json::from_str(include_str!(
+        let search_use: Block = serde_json::from_str(include_str!(
             "../test/data/server_tools/server_tool_use.json"
         ))
         .unwrap();
-        let fetch_result: Block = serde_json::from_str(include_str!(
-            "../test/data/server_tools/web_fetch_result.json"
+        let search_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_search_result.json"
         ))
         .unwrap();
         let text = Block::text("done.");
 
         // (assistant tail blocks, may a system turn follow?)
         let cases = [
-            (vec![text.clone(), fetch_use.clone()], false), // paused turn
+            (vec![text.clone(), search_use.clone()], false), // paused turn
             (
-                vec![fetch_use.clone(), fetch_result.clone(), text.clone()],
+                vec![search_use.clone(), search_result.clone(), text.clone()],
                 false, // "ending in" is strict on the last block
             ),
-            (vec![fetch_use, fetch_result], true),
+            (vec![search_use, search_result], true),
         ];
 
         for (blocks, legal) in cases {
@@ -2316,6 +2486,81 @@ mod tests {
                 .add_message((Role::System, "note"));
             assert_eq!(outcome.is_ok(), legal);
         }
+    }
+
+    /// Offline mirror of the live "abandoning a paused server tool" probe
+    /// (`client::tests::test_count_tokens_validates_system_placement`): a
+    /// `server_tool_use` no result answers admits only its continuation. A
+    /// programmatic call awaiting client results is not in flight.
+    #[test]
+    fn test_unfinished_server_tool_use() {
+        use crate::prompt::message::{Block, Content};
+
+        let block =
+            |json: &str| -> Block { serde_json::from_str(json).unwrap() };
+        let search_use = block(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ));
+        let search_result = block(include_str!(
+            "../test/data/server_tools/web_search_result.json"
+        ));
+        let text = Block::text("searching…");
+        // Programmatic tool calling, as captured: a code-execution
+        // `server_tool_use` whose client call (`caller.tool_id`) awaits a
+        // `tool_result`.
+        let ptc = crate::stream::tests::assembled(include_str!(
+            "../test/data/server_tools/ptc.sse.stream.jsonl"
+        ));
+        let ptc_turn: Vec<Block> = ptc.inner.content.iter().cloned().collect();
+        let ptc_call = ptc.inner.content.tool_uses().next().unwrap();
+        let ptc_answer = Block::from(crate::tool::Result::new(
+            ptc_call.id.clone(),
+            "{\"revenue\": 1}",
+        ));
+
+        let with = |assistant: Vec<Block>, next: Message| {
+            let mut prompt = Prompt::user("search it");
+            prompt
+                .messages
+                .push((Role::Assistant, Content(assistant)).into());
+            prompt.messages.push(next);
+            prompt.check_turn_order()
+        };
+        let paused = vec![text.clone(), search_use.clone()];
+        let unfinished = |outcome: Result<(), TurnOrderError>| {
+            matches!(
+                outcome,
+                Err(TurnOrderError::UnfinishedServerToolUse { unfinished, .. })
+                    if unfinished == ["srvtoolu_01XAxdGfRL2vypN6SF17MJXT"]
+            )
+        };
+
+        // Paused: a user turn abandons it in place (the live 400).
+        assert!(unfinished(with(paused.clone(), (Role::User, "nvm").into())));
+        // Its continuation is the one legal successor.
+        with(
+            paused,
+            (Role::Assistant, Content(vec![search_result.clone()])).into(),
+        )
+        .unwrap();
+        // Answered in the same turn (a merged continuation): anything goes.
+        with(
+            vec![search_use.clone(), search_result.clone()],
+            (Role::User, "thanks").into(),
+        )
+        .unwrap();
+        // Ending in *a* result doesn't excuse an earlier unanswered use.
+        let other_result = block(include_str!(
+            "../test/data/server_tools/web_fetch_result.json"
+        ));
+        assert!(unfinished(with(
+            vec![search_use, other_result],
+            (Role::System, "note").into(),
+        )));
+        // PTC: the container waits on the client, which answers next.
+        let container = |b: &Block| matches!(b, Block::ServerToolUse { .. });
+        assert!(ptc_turn.iter().any(container));
+        with(ptc_turn, (Role::User, Content(vec![ptc_answer])).into()).unwrap();
     }
 
     #[test]
@@ -2342,6 +2587,27 @@ mod tests {
             ])
             .unwrap_err();
         assert!(matches!(err, TurnOrderError::BadTransition { .. }));
+    }
+
+    #[test]
+    fn test_user_matches_add_message() {
+        let expected =
+            Prompt::default().add_message((Role::User, "hi")).unwrap();
+
+        assert_eq!(Prompt::user("hi"), expected);
+        assert_eq!(Prompt::from("hi"), expected);
+        assert!(Prompt::user("hi").check_turn_order().is_ok());
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "tool_result blocks must lead")]
+    fn test_user_asserts_results_lead() {
+        let content = Content(vec![
+            message::Block::from("see:"),
+            message::Block::from(crate::tool::Result::new("id", "out")),
+        ]);
+        let _ = Prompt::user(content);
     }
 
     #[test]
@@ -2536,12 +2802,12 @@ mod tests {
         // An assistant turn ending in a server-tool result is the one assistant
         // tail a system turn may follow — the note seats immediately.
         use crate::prompt::message::{Block, Content};
-        let fetch_use: Block = serde_json::from_str(include_str!(
+        let search_use: Block = serde_json::from_str(include_str!(
             "../test/data/server_tools/server_tool_use.json"
         ))
         .unwrap();
-        let fetch_result: Block = serde_json::from_str(include_str!(
-            "../test/data/server_tools/web_fetch_result.json"
+        let search_result: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/web_search_result.json"
         ))
         .unwrap();
 
@@ -2550,7 +2816,7 @@ mod tests {
         prompt.seat((Role::User, "fetch it"), &mut pending).unwrap();
         prompt
             .seat(
-                (Role::Assistant, Content(vec![fetch_use, fetch_result])),
+                (Role::Assistant, Content(vec![search_use, search_result])),
                 &mut pending,
             )
             .unwrap();
@@ -2562,6 +2828,34 @@ mod tests {
         assert_eq!(prompt.messages.last().unwrap().role, Role::System);
         assert!(pending.is_none());
         prompt.check_turn_order().unwrap();
+    }
+
+    /// `seat` refuses to abandon a paused turn: a user beat after it errors
+    /// (the tail is untouched), and a system note buffers.
+    #[test]
+    fn test_seat_rejects_a_beat_after_a_paused_turn() {
+        use crate::prompt::message::{Block, Content};
+        let search_use: Block = serde_json::from_str(include_str!(
+            "../test/data/server_tools/server_tool_use.json"
+        ))
+        .unwrap();
+
+        let mut prompt = Prompt::user("search it");
+        let mut pending = None;
+        prompt
+            .seat((Role::Assistant, Content(vec![search_use])), &mut pending)
+            .unwrap();
+
+        let err = prompt.seat((Role::User, "nvm"), &mut pending).unwrap_err();
+        assert!(matches!(
+            err,
+            TurnOrderError::UnfinishedServerToolUse { .. }
+        ));
+        assert_eq!(prompt.messages.len(), 2);
+        assert_eq!(
+            prompt.seat((Role::System, "note"), &mut pending).unwrap(),
+            Seated::Buffered
+        );
     }
 
     #[test]
@@ -2767,12 +3061,14 @@ mod tests {
     fn test_auto_cache_serde() {
         // Top-level `cache_control` — the automatic-caching request param.
         let json =
-            serde_json::to_value(Prompt::default().auto_cache()).unwrap();
+            serde_json::to_value(Prompt::default().auto_cache().unwrap())
+                .unwrap();
         assert_eq!(json["cache_control"]["type"], "ephemeral");
         assert!(json["cache_control"].get("ttl").is_none());
 
         let json =
-            serde_json::to_value(Prompt::default().auto_cache_1h()).unwrap();
+            serde_json::to_value(Prompt::default().auto_cache_1h().unwrap())
+                .unwrap();
         assert_eq!(json["cache_control"]["type"], "ephemeral");
         assert_eq!(json["cache_control"]["ttl"], "1h");
 
@@ -2961,18 +3257,49 @@ mod tests {
         );
     }
 
+    /// The smallest body the API accepts: `model`, `messages`, `max_tokens`.
+    const MINIMAL: &str = r#"{
+        "model": "claude-haiku-4-5",
+        "messages": [
+            {"role": "user", "content": [{"type": "text", "text": "Hi"}]}
+        ],
+        "max_tokens": 32
+    }"#;
+
     #[test]
-    fn test_serde() {
-        // Test default deserialization.
-        const JSON: &str = r#"{}"#;
+    fn test_serde_minimal_roundtrips() {
+        let prompt = crate::utils::roundtrip::<Prompt>(MINIMAL);
+        assert_eq!(prompt.max_tokens.get(), 32);
+        assert_eq!(prompt.messages.len(), 1);
+        assert!(prompt.system.is_none());
+        assert!(prompt.metadata.is_empty());
 
-        let defaults = serde_json::from_str::<Prompt>(JSON).unwrap();
+        // And the builder's default serializes all three, so it loads back.
+        let json = serde_json::to_string(&Prompt::default()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<Prompt>(&json).unwrap(),
+            Prompt::default()
+        );
+    }
 
-        // Another round trip to ensure serialization works.
-        let json = serde_json::to_string(&defaults).unwrap();
-        let _ = serde_json::from_str::<Prompt>(&json).unwrap();
+    #[test]
+    fn test_serde_requires_model_messages_max_tokens() {
+        // Anthropic 400s with "<field>: Field required"; we fail to
+        // deserialize, naming the same field.
+        for field in ["model", "messages", "max_tokens"] {
+            let mut body: serde_json::Value =
+                serde_json::from_str(MINIMAL).unwrap();
+            body.as_object_mut().unwrap().remove(field);
+            let err = serde_json::from_value::<Prompt>(body).unwrap_err();
+            assert_eq!(
+                err.to_string(),
+                format!("missing field `{field}`"),
+                "{field}"
+            );
+        }
 
-        // TODO: impl Default and PartialEq when `cfg(test)`
+        // An empty body no longer silently becomes a 4096-token request.
+        assert!(serde_json::from_str::<Prompt>("{}").is_err());
     }
 
     #[test]
@@ -3262,6 +3589,29 @@ mod tests {
         } else {
             panic!("Expected an error.");
         }
+    }
+
+    // A received prompt parses whatever its tools' property order: Anthropic
+    // accepts interleaved schemas, and blallama deserializes `Json<Prompt>`.
+    #[test]
+    fn prompt_with_interleaved_tool_round_trips() {
+        let prompt: Prompt = crate::utils::roundtrip(include_str!(
+            "../test/data/interleaved_tool.prompt.json"
+        ));
+
+        let method = prompt.tools.as_ref().unwrap()[0].as_method().unwrap();
+        let mut keys: Vec<&str> = method.schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        // Order is exact under `schema-order`; without it `preserve_order`
+        // may still be on elsewhere in the graph, so only the set is pinned.
+        #[cfg(feature = "schema-order")]
+        assert_eq!(keys, ["zulu", "alpha", "mike"]);
+        keys.sort_unstable();
+        assert_eq!(keys, ["alpha", "mike", "zulu"]);
     }
 
     #[test]

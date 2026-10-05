@@ -44,6 +44,7 @@ gate (`hooks/pre-commit` runs `just test` via `core.hooksPath`).
 just                # list recipes
 just test           # offline gate: fmt, clippy, all-features + no-default tests
 just test-ignored   # live-API #[ignore]d tests (needs misanthropic/api.key)
+just test-blallama <model>  # live Chat scenarios on a local blallama server
 just install-hooks  # enable the pre-commit gate (once per clone)
 ```
 
@@ -132,7 +133,8 @@ building the old shape silently.
 
 ## Key features to know about
 
-Default features: `rustls-tls`, `langsan`, `client`, `batch`.
+Default features: `rustls-tls`, `langsan`, `client`, `batch`, `derive`,
+`schema-order`, `schema-inline`, `schema-order-check`.
 
 Notable optional features: `prompt-caching`, `markdown`, `html`, `memsecurity`,
 `dioxus`, `notepad`, `cot`.
@@ -145,9 +147,10 @@ The `batch` and `client` features don't build on wasm32.
 
 - Some tests are `#[ignore]`d and require an API key in `api.key` in the
   `misanthropic/` crate directory — i.e. `misanthropic/api.key`, which is the
-  `CRATE_ROOT` that `load_api_key` reads, not the workspace root (CI provides
-  this via secrets on push to main). Run them with e.g. `cargo test -p
-  misanthropic --features client <name> -- --ignored`.
+  `CRATE_ROOT` that `load_api_key` reads, not the workspace root. In CI,
+  `live.yaml` writes it from secrets on `ready-to-merge`-labeled PRs, on
+  release (`workflow_call`), and on manual dispatch. Run them with e.g.
+  `cargo test -p misanthropic --features client <name> -- --ignored`.
 
 ### Wire fixtures — capture, don't trust the docs
 
@@ -176,6 +179,14 @@ that omits `citations`, `tool_search_requests` absent from the wire entirely
   drifts. Prefer a known/unknown `untagged` enum (à la `model::Model`,
   `tool::Caller`) for API-sourced unions so a future variant round-trips instead
   of failing to deserialize a live response.
+- **A documented *capability* needs a behavioral probe, not a fixture.** Shape
+  fixtures can't catch a construct the API accepts and then mishandles —
+  `$ref` round-trips perfectly while `strict` decoding silently substitutes
+  values (#147). When the docs claim support for something the model's output
+  depends on, A/B it against the semantically-identical alternative over N
+  samples with an unambiguous correct answer, and check the *controls* too —
+  non-strict tools and `output_config.format` coming back clean is what
+  located the bug in the strict grammar compiler rather than in us.
 
 ## GitHub conventions
 

@@ -18,7 +18,7 @@
 //!
 //! [`Message`]: crate::prompt::message::Message
 
-use std::sync::Arc;
+use std::{collections::VecDeque, sync::Arc};
 
 use futures::{StreamExt, channel::mpsc, stream::FusedStream};
 
@@ -154,25 +154,42 @@ impl Mailbox {
 /// [`recv`](Self::recv) (await), [`try_recv`](Self::try_recv) (non-blocking), or
 /// as a [`Stream`](futures::Stream); all are cancel-safe under `select!`.
 pub struct Notifications {
+    /// Pushes a driver handed back unseated, delivered before the channel's.
+    returned: VecDeque<Notification>,
     rx: mpsc::UnboundedReceiver<Notification>,
 }
 
 impl Notifications {
     pub(crate) fn new(rx: mpsc::UnboundedReceiver<Notification>) -> Self {
-        Self { rx }
+        Self {
+            returned: VecDeque::new(),
+            rx,
+        }
     }
 
     /// Await the next push. `None` once every [`Mailbox`] sender has dropped
     /// (a [`ToolBox`](crate::tool::ToolBox) drops its own in
     /// [`teardown_tools`](crate::tool::ToolBox::teardown_tools)).
     pub async fn recv(&mut self) -> Option<Notification> {
-        self.rx.next().await
+        match self.returned.pop_front() {
+            Some(note) => Some(note),
+            None => self.rx.next().await,
+        }
     }
 
     /// The next already-queued push without blocking, or why there isn't one
     /// ([`Empty`](TryRecvError::Empty) vs [`Closed`](TryRecvError::Closed)).
     pub fn try_recv(&mut self) -> Result<Notification, TryRecvError> {
-        self.rx.try_recv().map_err(Into::into)
+        match self.returned.pop_front() {
+            Some(note) => Ok(note),
+            None => self.rx.try_recv().map_err(Into::into),
+        }
+    }
+
+    /// Hand back a push the driver took but couldn't seat, to come next.
+    #[cfg(any(feature = "chat", test))]
+    pub(crate) fn put_back(&mut self, note: Notification) {
+        self.returned.push_front(note);
     }
 }
 
@@ -203,13 +220,16 @@ impl futures::Stream for Notifications {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        self.rx.poll_next_unpin(cx)
+        match self.returned.pop_front() {
+            Some(note) => std::task::Poll::Ready(Some(note)),
+            None => self.rx.poll_next_unpin(cx),
+        }
     }
 }
 
 impl FusedStream for Notifications {
     fn is_terminated(&self) -> bool {
-        self.rx.is_terminated()
+        self.returned.is_empty() && self.rx.is_terminated()
     }
 }
 

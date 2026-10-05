@@ -300,6 +300,33 @@ impl<R> RoleMessage<R> {
             .any(|b| matches!(b, Block::ServerToolUse { .. }))
     }
 
+    /// Ids of this turn's in-flight [`ServerToolUse`](Block::ServerToolUse)
+    /// calls: answered by no server-tool result in the turn, and not waiting
+    /// on a client [`ToolUse`](Block::ToolUse) they made ([programmatic tool
+    /// calling], by its [`caller`](crate::tool::Use::caller)). Non-empty on a
+    /// paused turn — which only an assistant continuation may follow (see
+    /// [`Message::may_precede`]).
+    ///
+    /// [programmatic tool calling]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling>
+    pub fn unfinished_server_tool_uses(&self) -> impl Iterator<Item = &str> {
+        let settled: std::collections::BTreeSet<&str> = self
+            .content
+            .iter()
+            .filter_map(|block| {
+                block
+                    .server_tool_result_id()
+                    .or_else(|| block.tool_use()?.caller.as_ref()?.tool_id())
+            })
+            .collect();
+        self.content
+            .iter()
+            .filter_map(|block| match block {
+                Block::ServerToolUse { call } => Some(call.id.as_ref()),
+                _ => None,
+            })
+            .filter(move |id| !settled.contains(id))
+    }
+
     /// Whether the final [`Content`] [`Block`] is a server-tool *result* —
     /// the one assistant tail the API allows a [`System`](Role::System) turn
     /// to follow (the turn-order rule behind
@@ -375,6 +402,11 @@ impl Message {
     ///     (2026-06-12, pinned by the `count_tokens` placement probes): the
     ///     docs' "ending in server tool use" is wrong, so a *paused* turn
     ///     (ending in the in-flight use) is **not** a legal predecessor.
+    /// - only an `Assistant` continuation may follow a turn with a server
+    ///   tool [still in flight](Self::unfinished_server_tool_uses) — an
+    ///   [`UnfinishedServerToolUse`] otherwise. A `server_tool_use` left
+    ///   without its result 400s once any other turn follows (verified live);
+    ///   a programmatic call awaiting client results is not in flight.
     /// - every client [`ToolUse`](Block::ToolUse) in this turn is answered by
     ///   a matching leading [`ToolResult`](Block::ToolResult) in `next` — an
     ///   [`UnansweredToolUse`] otherwise (#102).
@@ -385,6 +417,7 @@ impl Message {
     /// [`TurnOrderError`]: crate::prompt::TurnOrderError
     /// [`BadTransition`]: crate::prompt::TurnOrderError::BadTransition
     /// [`UnansweredToolUse`]: crate::prompt::TurnOrderError::UnansweredToolUse
+    /// [`UnfinishedServerToolUse`]: super::TurnOrderError::UnfinishedServerToolUse
     pub fn may_precede(
         &self,
         next: &Self,
@@ -409,6 +442,20 @@ impl Message {
                 first: self.clone(),
                 second: next.clone(),
             });
+        }
+
+        // An in-flight server tool admits only its continuation.
+        if next.role != Assistant {
+            let unfinished: Vec<String> = self
+                .unfinished_server_tool_uses()
+                .map(String::from)
+                .collect();
+            if !unfinished.is_empty() {
+                return Err(TurnOrderError::UnfinishedServerToolUse {
+                    message: self.clone(),
+                    unfinished,
+                });
+            }
         }
 
         // Every client `tool_use` must be answered by a matching leading
@@ -810,6 +857,16 @@ impl Content {
     /// Returns `true` if any block in this content has a cache breakpoint.
     pub fn has_cache(&self) -> bool {
         self.0.iter().any(|b| b.is_cached())
+    }
+
+    /// Every client [`tool::Use`] ([`Block::ToolUse`]), in order. Server tool
+    /// calls ([`Block::ServerToolUse`]) are not included — the API runs those.
+    /// Raw: a response's [`tool_uses`] is the stop-reason-gated view, the one
+    /// to dispatch from.
+    ///
+    /// [`tool_uses`]: crate::response::Message::tool_uses
+    pub fn tool_uses(&self) -> impl Iterator<Item = &tool::Use> {
+        self.0.iter().filter_map(Block::tool_use)
     }
 
     /// Push a [`Delta`] into the final [`Block`]. The types must be compatible
@@ -1627,19 +1684,28 @@ impl Block {
     }
 
     /// Is a server-tool *result* block (the output half of a
-    /// [`ServerToolUse`](Self::ServerToolUse), any server tool). Exhaustive on
-    /// purpose: a new [`Block`] variant fails to compile until it's
-    /// classified result / not-result, because turn-order legality (a
-    /// [`System`](Role::System) turn may follow an assistant turn ending in
-    /// one of these) depends on the answer.
+    /// [`ServerToolUse`](Self::ServerToolUse), any server tool) — see
+    /// [`server_tool_result_id`](Self::server_tool_result_id).
     pub fn is_server_tool_result(&self) -> bool {
+        self.server_tool_result_id().is_some()
+    }
+
+    /// The [`ServerToolUse`](Self::ServerToolUse) id a server-tool result
+    /// block answers; `None` for any other block. Exhaustive on purpose: a new
+    /// [`Block`] variant fails to compile until it's classified result /
+    /// not-result, because turn-order legality (a [`System`](Role::System)
+    /// turn may follow an assistant turn ending in one of these; only a
+    /// continuation may follow an unanswered use) depends on the answer.
+    pub fn server_tool_result_id(&self) -> Option<&str> {
         match self {
-            Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. } => true,
+            Self::WebSearchToolResult { tool_use_id, .. }
+            | Self::WebFetchToolResult { tool_use_id, .. }
+            | Self::ToolSearchToolResult { tool_use_id, .. }
+            | Self::CodeExecutionToolResult { tool_use_id, .. }
+            | Self::BashCodeExecutionToolResult { tool_use_id, .. }
+            | Self::TextEditorCodeExecutionToolResult { tool_use_id, .. } => {
+                Some(tool_use_id)
+            }
             Self::Text { .. }
             | Self::Thought { .. }
             | Self::RedactedThought { .. }
@@ -1648,7 +1714,7 @@ impl Block {
             | Self::ToolUse { .. }
             | Self::ToolResult { .. }
             | Self::ServerToolUse { .. }
-            | Self::ToolReference { .. } => false,
+            | Self::ToolReference { .. } => None,
         }
     }
 
@@ -1852,77 +1918,91 @@ impl Block {
 
     /// Create a cache breakpoint at this block with a caller-provided
     /// [`CacheControl`]. Returns true if the block was cached; returns
-    /// false for thought blocks (which are automatically cached).
-    pub fn cache_with(&mut self, cache_control_value: CacheControl) -> bool {
-        use crate::tool;
-
-        match self {
-            Self::Text { cache_control, .. }
-            | Self::Image { cache_control, .. }
-            | Self::Document { cache_control, .. }
-            | Self::ToolUse {
-                call: tool::Use { cache_control, .. },
-            }
-            | Self::ToolResult {
-                result: tool::Result { cache_control, .. },
-            }
-            | Self::ServerToolUse {
-                call: tool::Use { cache_control, .. },
-            } => {
-                *cache_control = Some(cache_control_value);
-
-                true
-            }
-            // These are automatically cached or carry no cache_control.
-            // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
-            Self::Thought { .. }
-            | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
-        }
+    /// false for thought blocks (which are automatically cached) and the
+    /// others that carry no `cache_control`.
+    ///
+    /// On a [`ToolResult`](Block::ToolResult) it replaces any marker inside
+    /// the result's content: Anthropic takes one per tool result, on it or
+    /// on one of its content blocks (see
+    /// [`CacheError::Nested`](crate::prompt::CacheError::Nested)).
+    pub fn cache_with(&mut self, cache_control: CacheControl) -> bool {
+        // These are automatically cached or carry no cache_control.
+        // https://docs.anthropic.com/en/docs/build-with-claude/extended-thinking#using-extended-thinking-with-prompt-caching
+        let Some(slot) = self.cache_slot_mut() else {
+            return false;
+        };
+        *slot = Some(cache_control);
+        self.uncache_content();
+        true
     }
 
-    /// Remove the cache breakpoint from this block. Returns `true` if a
-    /// breakpoint was removed.
+    /// Remove the cache breakpoint from this block — on a tool result, any
+    /// inside its content too. Returns `true` if a breakpoint was removed.
     pub fn uncache(&mut self) -> bool {
-        use crate::tool;
+        let inner = self.uncache_content();
+        let own = self.cache_slot_mut().and_then(Option::take).is_some();
+        own || inner
+    }
 
-        match self {
-            Self::Text { cache_control, .. }
-            | Self::Image { cache_control, .. }
-            | Self::Document { cache_control, .. }
-            | Self::ToolUse {
-                call: tool::Use { cache_control, .. },
-            }
-            | Self::ToolResult {
-                result: tool::Result { cache_control, .. },
-            }
-            | Self::ServerToolUse {
-                call: tool::Use { cache_control, .. },
-            } => {
-                let was_cached = cache_control.is_some();
-                *cache_control = None;
-                was_cached
-            }
-            Self::Thought { .. }
-            | Self::RedactedThought { .. }
-            | Self::WebSearchToolResult { .. }
-            | Self::WebFetchToolResult { .. }
-            | Self::ToolSearchToolResult { .. }
-            | Self::CodeExecutionToolResult { .. }
-            | Self::BashCodeExecutionToolResult { .. }
-            | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
+    /// Remove the markers inside a tool result's content, returning whether
+    /// there were any.
+    fn uncache_content(&mut self) -> bool {
+        let Self::ToolResult { result } = self else {
+            return false;
+        };
+        let cached = result.content.has_cache();
+        result.content.uncache();
+        cached
+    }
+
+    /// This block's cache breakpoint, if it carries one. A tool result's may
+    /// sit on one of its content blocks instead, which Anthropic reads as
+    /// the result's own (probed on `count_tokens`, 2026-09-30).
+    pub fn cache_control(&self) -> Option<&CacheControl> {
+        match self.cache_slot()? {
+            Some(cache_control) => Some(cache_control),
+            None => self.content_cache_controls().next().map(|(_, cc)| cc),
         }
     }
 
-    /// Returns true if the block has a `cache_control` breakpoint.
+    /// The markers on a tool result's content blocks, by index.
+    pub(crate) fn content_cache_controls(
+        &self,
+    ) -> impl Iterator<Item = (usize, &CacheControl)> {
+        let content: &[Block] = match self {
+            Self::ToolResult { result } => &result.content,
+            _ => &[],
+        };
+        content
+            .iter()
+            .enumerate()
+            .filter_map(|(i, block)| Some((i, block.cache_slot()?.as_ref()?)))
+    }
+
+    /// Returns true if the block has a `cache_control` breakpoint — on a
+    /// tool result, on it or on one of its content blocks.
     pub const fn is_cached(&self) -> bool {
+        if let Some(Some(_)) = self.cache_slot() {
+            return true;
+        }
+        let Self::ToolResult { result } = self else {
+            return false;
+        };
+        // A loop, not an iterator: this is a `const fn`.
+        let content = result.content.0.as_slice();
+        let mut i = 0;
+        while i < content.len() {
+            if let Some(Some(_)) = content[i].cache_slot() {
+                return true;
+            }
+            i += 1;
+        }
+        false
+    }
+
+    /// This block's own `cache_control` field, or `None` for a block that
+    /// can't carry one (see [`cache_with`](Block::cache_with)).
+    pub(crate) const fn cache_slot(&self) -> Option<&Option<CacheControl>> {
         use crate::tool;
 
         match self {
@@ -1937,7 +2017,7 @@ impl Block {
             }
             | Self::ServerToolUse {
                 call: tool::Use { cache_control, .. },
-            } => cache_control.is_some(),
+            } => Some(cache_control),
             Self::Thought { .. }
             | Self::RedactedThought { .. }
             | Self::WebSearchToolResult { .. }
@@ -1946,7 +2026,36 @@ impl Block {
             | Self::CodeExecutionToolResult { .. }
             | Self::BashCodeExecutionToolResult { .. }
             | Self::TextEditorCodeExecutionToolResult { .. }
-            | Self::ToolReference { .. } => false,
+            | Self::ToolReference { .. } => None,
+        }
+    }
+
+    /// [`cache_slot`](Block::cache_slot), mutably.
+    const fn cache_slot_mut(&mut self) -> Option<&mut Option<CacheControl>> {
+        use crate::tool;
+
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::Image { cache_control, .. }
+            | Self::Document { cache_control, .. }
+            | Self::ToolUse {
+                call: tool::Use { cache_control, .. },
+            }
+            | Self::ToolResult {
+                result: tool::Result { cache_control, .. },
+            }
+            | Self::ServerToolUse {
+                call: tool::Use { cache_control, .. },
+            } => Some(cache_control),
+            Self::Thought { .. }
+            | Self::RedactedThought { .. }
+            | Self::WebSearchToolResult { .. }
+            | Self::WebFetchToolResult { .. }
+            | Self::ToolSearchToolResult { .. }
+            | Self::CodeExecutionToolResult { .. }
+            | Self::BashCodeExecutionToolResult { .. }
+            | Self::TextEditorCodeExecutionToolResult { .. }
+            | Self::ToolReference { .. } => None,
         }
     }
 
@@ -2205,6 +2314,16 @@ impl CacheControl {
     pub fn one_hour() -> Self {
         CacheControl::Ephemeral {
             ttl: Some(CacheTtl::OneHour),
+        }
+    }
+
+    /// How long the entry lives: an omitted `ttl` is
+    /// [`FiveMinutes`](CacheTtl::FiveMinutes), as on the wire.
+    pub fn ttl(&self) -> CacheTtl {
+        match self {
+            CacheControl::Ephemeral { ttl } => {
+                ttl.clone().unwrap_or(CacheTtl::FiveMinutes)
+            }
         }
     }
 }

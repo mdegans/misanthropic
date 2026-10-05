@@ -57,6 +57,11 @@ real projects.
 - **`Chat<State>` event loop + `spawn_readline_loop` / `Printer`** (requires
   `client` feature) — `Chat` drives the model to quiescence on each user beat,
   dispatches tool calls, and races tool-pushed notifications against user input.
+  A turn it can't use — clipped at `max_tokens`, or a refusal that calls tools
+  — ends `run` with a `chat::Error` handing everything back, and
+  `error.resume(client)` carries on. The chat examples just report it (rerun
+  with a larger `--max-tokens`); `swarm`'s workers resume, doubling a clipped
+  worker's `max_tokens`.
   `spawn_readline_loop` runs `rustyline` on a dedicated thread so async output
   can print *above* the live prompt via the returned `Printer`.
 

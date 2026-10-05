@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Collect the stream into a single string.
     let content: String = stream
         .map_ok(|piece| {
-            print!("{}", &piece);
+            print!("{}", piece);
             piece
         })
         .try_collect()

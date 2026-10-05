@@ -17,7 +17,7 @@ use misanthropic::{
     Client, Id, Prompt, json,
     markdown::ToMarkdown,
     prompt::{
-        Message,
+        Message, UserMessage,
         message::{Content, Role},
     },
     tool::{self, CustomMethodDef},
@@ -55,15 +55,14 @@ fn prompt_user(script: &str) -> bool {
     input.trim().eq_ignore_ascii_case("y")
 }
 
-/// Handle the tool call. Returns a [`User`] [`Message`] with the result.
-///
-/// [`User`]: Role::User
-pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
+/// Handle the tool call. Returns the [`tool::Result`]; `Err` means the
+/// Assistant should retry.
+pub fn handle_tool_call(
+    call: &tool::Use,
+) -> Result<tool::Result, tool::Result> {
     if call.name != "python" {
         let content = format!("Unknown tool: {}", call.name);
-        return Err(tool::Result::new(call.id.to_string(), content)
-            .error()
-            .into());
+        return Err(tool::Result::new(call.id.to_string(), content).error());
     }
 
     if let Some(script) = call.input["script"].as_str() {
@@ -74,8 +73,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                 call.id.to_string(),
                 "User declined to run the Python script. Do you really need Python for this?",
             )
-            .error()
-            .into());
+            .error());
         }
 
         // Write the code to a temporary file.
@@ -106,7 +104,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                     .read_to_string(&mut output)
                     .unwrap();
 
-                Ok(tool::Result::new(call.id.to_string(), output).into())
+                Ok(tool::Result::new(call.id.to_string(), output))
             } else {
                 // Send stderr to the Assistant (the exception).
                 p.stderr
@@ -115,9 +113,7 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                     .read_to_string(&mut output)
                     .unwrap();
 
-                Err(tool::Result::new(call.id.to_string(), output)
-                    .error()
-                    .into())
+                Err(tool::Result::new(call.id.to_string(), output).error())
             }
         } else {
             // The Python script timed out.
@@ -125,14 +121,11 @@ pub fn handle_tool_call(call: &tool::Use) -> Result<Message, Message> {
                 call.id.to_string(),
                 "Python script timed out.",
             )
-            .error()
-            .into())
+            .error())
         }
     } else {
         // The Assistant did not use the `script` key. This should never happen.
-        Err(tool::Result::new(call.id.to_string(), "Invalid input.")
-            .error()
-            .into())
+        Err(tool::Result::new(call.id.to_string(), "Invalid input.").error())
     }
 }
 
@@ -258,41 +251,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("Assistant reply:\n\n{}", message.markdown_verbose());
         }
 
-        if let Some(call) = message.tool_use() {
-            match handle_tool_call(call) {
-                Ok(result) => {
-                    // Tool use was successful
-                    //
-                    // If the agent retried, we pop the incorrect tool use. This
-                    // way the assistant "got it right" the first time and the
-                    // context isn't polluted incorrect tool use.
-                    if retry > 0 {
-                        chat.messages
-                            .truncate(chat.messages.len() - (retry * 2));
-                    }
-
-                    let _ = chat.push_message(message);
-                    let _ = chat.push_message(result);
-
-                    // Generate a message with the result.
-                    let message = client.message(&chat).await?;
-                    let _ = chat.push_message(message);
-                    break;
-                }
-                Err(error) => {
-                    // Something went wrong with the tool use. We'll append the
-                    // error message so the Assistant can learn from it and try
-                    // again.
-                    let _ = chat.push_message(message);
-                    let _ = chat.push_message(error);
-                }
-            }
-        } else {
+        // Every call in the turn; empty unless it stopped for `tool_use`.
+        let results: Vec<_> =
+            message.tool_uses().map(handle_tool_call).collect();
+        if results.is_empty() {
             // Tool was not called. This is fine if the user didn't ask for
             // something that requires Python.
             let _ = chat.push_message(message);
             break;
         }
+
+        // All results go back in one user turn; any error means a retry.
+        let failed = results.iter().any(Result::is_err);
+        let reply: UserMessage = results
+            .into_iter()
+            .map(|r| r.unwrap_or_else(|e| e))
+            .collect();
+
+        if failed {
+            // Something went wrong with the tool use. We'll append the error
+            // message so the Assistant can learn from it and try again.
+            let _ = chat.push_message(message);
+            let _ = chat.push_message(reply);
+            continue;
+        }
+
+        // Tool use was successful.
+        //
+        // If the agent retried, we pop the incorrect tool use. This way the
+        // assistant "got it right" the first time and the context isn't
+        // polluted incorrect tool use.
+        if retry > 0 {
+            chat.messages.truncate(chat.messages.len() - (retry * 2));
+        }
+
+        let _ = chat.push_message(message);
+        let _ = chat.push_message(reply);
+
+        // Generate a message with the result.
+        let message = client.message(&chat).await?;
+        let _ = chat.push_message(message);
+        break;
     }
 
     println!(
