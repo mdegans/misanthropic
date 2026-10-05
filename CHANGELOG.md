@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.21] — 2026-10-05
+
 ### Breaking
 
 - **Cache placements that Anthropic would reject now return a
