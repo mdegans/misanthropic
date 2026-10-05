@@ -1,6 +1,6 @@
 # `misanthropic`
 
-![Build Status](https://github.com/mdegans/misanthropic/actions/workflows/tests.yaml/badge.svg)
+[![Build Status](https://github.com/mdegans/misanthropic/actions/workflows/tests.yaml/badge.svg?branch=main)](https://github.com/mdegans/misanthropic/actions/workflows/tests.yaml?query=branch%3Amain)
 [![codecov](https://codecov.io/gh/mdegans/misanthropic/branch/main/graph/badge.svg)](https://codecov.io/gh/mdegans/misanthropic)
 [![unsafe forbidden](https://img.shields.io/badge/unsafe-forbidden-success.svg)](https://github.com/rust-secure-code/safety-dance/)
 
