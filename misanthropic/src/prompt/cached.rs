@@ -492,6 +492,24 @@ impl<'de> Deserialize<'de> for CachedPrompt {
     }
 }
 
+/// A [`Prompt`] on the wire, so its schema is a reference to [`Prompt`]'s.
+#[cfg(feature = "json-schema")]
+impl schemars::JsonSchema for CachedPrompt {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "CachedPrompt".into()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        generator.subschema_for::<Prompt>()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

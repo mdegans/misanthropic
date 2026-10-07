@@ -20,6 +20,8 @@ use std::{borrow::Cow, pin::Pin, task::Poll};
 #[derive(Debug, Serialize, Deserialize, derive_more::IsVariant)]
 #[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "StreamEvent"))]
 pub enum Event {
     /// Periodic ping.
     Ping,
@@ -169,6 +171,8 @@ enum ErrorTag {
 /// [`Json`]: Delta::Json
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "StreamDelta"))]
 pub enum Delta {
     /// Text delta for a [`Text`] [`Content`] [`Block`].
     ///
@@ -366,6 +370,8 @@ impl Delta {
 /// deltas. That's the [`Delta`] in [`Event::ContentBlockDelta`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(test, feature = "partial-eq"), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "MessageDelta"))]
 pub struct MessageDelta {
     /// Stop reason.
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -181,7 +181,13 @@ impl<P: Serialize> Serialize for Prompts<P> {
 #[serde(transparent)]
 #[repr(transparent)] // might as well, in case someone needs this guarantee.
 #[display("{uuid}")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "BatchId"))]
 pub struct Id {
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "crate::json_schema::Uuid")
+    )]
     uuid: uuid::Uuid,
 }
 
@@ -210,11 +216,46 @@ impl FromStr for Id {
 ///
 /// [`Client`]: crate::Client
 #[derive(Serialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "BatchRequest_for_{P}"))]
 struct Request<'r, P: Serialize> {
+    /// The caller's id for this request, echoed on its result.
     #[serde(rename = "custom_id")]
     id: &'r Id,
+    /// The request body.
     #[serde(rename = "params")]
     prompt: &'r P,
+}
+
+/// The `requests` body [`Prompts`] serialize to — the schema mirror of the
+/// hand-written `Serialize` above.
+#[cfg(feature = "json-schema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "BatchRequests_for_{P}")]
+#[allow(dead_code)] // never built: only its schema is used
+struct PromptsWire<P: Serialize + 'static> {
+    /// One entry per prompt.
+    requests: Vec<Request<'static, P>>,
+}
+
+/// Serialize-only: the `{"requests": [{"custom_id", "params"}, …]}` body.
+#[cfg(feature = "json-schema")]
+impl<P: Serialize + schemars::JsonSchema + 'static> schemars::JsonSchema
+    for Prompts<P>
+{
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        PromptsWire::<P>::schema_name()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        generator.subschema_for::<PromptsWire<P>>()
+    }
 }
 
 /// An Anthropic `message_batch` response with [`Batch`] metadata.
@@ -222,6 +263,14 @@ struct Request<'r, P: Serialize> {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename = "message_batch")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "BatchMeta",
+        transform = crate::json_schema::Tag("message_batch")
+    )
+)]
 pub struct Meta {
     /// Anthropic-assigned Response ID. Format may change.
     pub id: String,
@@ -232,17 +281,41 @@ pub struct Meta {
     #[serde(rename = "request_counts")]
     pub stats: Stats,
     /// Time the batch was created.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "crate::json_schema::DateTime")
+    )]
     pub created_at: DateTime<Utc>,
     /// Time the batch expires.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "crate::json_schema::DateTime")
+    )]
     pub expires_at: DateTime<Utc>,
     /// Time the batch ended.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "Option<crate::json_schema::DateTime>")
+    )]
     pub ended_at: Option<DateTime<Utc>>,
     /// Time the batch was canceled.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "Option<crate::json_schema::DateTime>")
+    )]
     pub cancel_initiated_at: Option<DateTime<Utc>>,
     /// Time the batch was archived.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "Option<crate::json_schema::DateTime>")
+    )]
     pub archived_at: Option<DateTime<Utc>>,
     /// Results URL. Available after processing ends. A `.jsonl` file with
     /// responses.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "Option<crate::json_schema::Uri>")
+    )]
     pub results_url: Option<Url>,
 }
 
@@ -250,6 +323,8 @@ pub struct Meta {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "BatchStatus"))]
 pub enum Status {
     /// Processing is in progress.
     InProgress,
@@ -262,6 +337,8 @@ pub enum Status {
 /// Request statistics for a batch of [`Prompts`].
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "BatchStats"))]
 pub struct Stats {
     /// Number of processing requests.
     pub processing: u32,
@@ -331,6 +408,26 @@ impl<P: Serialize> Serialize for Pending<P> {
         // Serialize just the prompts (the API submission format).
         // Meta is handled separately by the client.
         self.prompts.serialize(serializer)
+    }
+}
+
+/// Serializes as its [`Prompts`], so shares their schema.
+#[cfg(feature = "json-schema")]
+impl<P: Serialize + schemars::JsonSchema + 'static> schemars::JsonSchema
+    for Pending<P>
+{
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        Prompts::<P>::schema_name()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        generator.subschema_for::<Prompts<P>>()
     }
 }
 

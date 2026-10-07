@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 /// A citation referencing a location in a source document.
 #[derive(Clone, Debug, Serialize, Deserialize, Hash, PartialEq)]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Citation {
     /// Citation from a plain text document (character offsets, 0-indexed,
     /// exclusive end).

@@ -36,6 +36,7 @@ use crate::prompt::Effort;
     derive_more::DerefMut,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Models {
     /// List of available models.
     pub data: Vec<ModelInfo>,
@@ -85,6 +86,7 @@ impl<'a> IntoIterator for &'a mut Models {
 /// Model information, as returned by [`Client::models`](crate::Client::models).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct ModelInfo {
     /// Model ID.
     pub id: Model,
@@ -103,6 +105,10 @@ pub struct ModelInfo {
     #[serde(default, rename = "type")]
     pub kind: Kind,
     /// Created at.
+    #[cfg_attr(
+        feature = "json-schema",
+        schemars(with = "crate::json_schema::DateTime")
+    )]
     pub created_at: DateTime<Utc>,
 }
 
@@ -156,6 +162,8 @@ impl ModelInfo {
 )]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ModelKind"))]
 pub enum Kind {
     /// A model.
     #[default]
@@ -170,6 +178,7 @@ pub enum Kind {
 #[derive(
     Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq,
 )]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Capability {
     /// Whether the capability is supported.
     pub supported: bool,
@@ -228,6 +237,7 @@ fn map_satisfies<K: Ord>(
 /// capabilities are ignored on deserialization — mirroring the forward-compat
 /// stance of [`Model::Custom`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Capabilities {
     /// [Message Batches](crate::Client::batch) support.
     #[serde(default)]
@@ -287,6 +297,7 @@ impl Capabilities {
 /// These are date-versioned and open-ended, so they are kept as an untyped map
 /// rather than an enum.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct ContextManagement {
     /// Whether context management is supported at all.
     #[serde(default)]
@@ -312,6 +323,7 @@ impl ContextManagement {
 /// The API reports a flag per level (`low`, `medium`, `high`, `xhigh`,
 /// `max`), kept as an untyped map so new levels don't break parsing.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct EffortSupport {
     /// Whether configurable effort is supported at all.
     #[serde(default)]
@@ -335,6 +347,7 @@ impl EffortSupport {
 /// Extended-[`thinking`](crate::prompt::Thinking) support — the `thinking`
 /// capability.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct ThinkingSupport {
     /// Whether extended thinking is supported.
     #[serde(default)]
@@ -360,6 +373,7 @@ impl ThinkingSupport {
     Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 #[serde(rename_all = "snake_case", untagged)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Model {
     /// Anthropic model.
     Anthropic(Id),
@@ -504,6 +518,8 @@ impl Default for Model {
 )]
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ModelId"))]
 pub enum Id {
     // ── Claude 3.x ───────────────────────────────────────────────────────
     /// Sonnet 3.7 (latest)
