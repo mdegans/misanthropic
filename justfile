@@ -25,9 +25,13 @@ test: && test-no-default
 # `--no-default-features`, so they're never combined). The lib-only clippy is
 # the featureless build; test builds also get the self dev-dependency's `log`
 # and `chat`. Examples needing more are skipped by their required-features.
+# `json-schema` again without defaults: the one build where its impls meet
+# `CowStr` as a plain `Cow` (no `langsan`) and no `batch` types.
 test-no-default:
     cargo clippy -p misanthropic --no-default-features
     cargo test -p misanthropic --no-default-features
+    cargo clippy -p misanthropic --no-default-features --features json-schema
+    cargo test -p misanthropic --no-default-features --features json-schema
 
 # Build the docs with broken intra-doc links (and any rustdoc warning) treated as
 # errors — the doc half of the gate. Covers the lib (incl. the `__skills` skill
