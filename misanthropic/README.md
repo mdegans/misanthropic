@@ -183,6 +183,8 @@ element as it's generated.
 - [x] Custom request and endpoint support
 - [x] A scripted, recording `MockTransport` for offline tests (`mock`
   feature)
+- [x] JSON Schemas (`schemars`) for the request, response, and batch types,
+  for documenting APIs that embed them (`json-schema` feature)
 - [x] API keys zeroized on drop, optionally encrypted in memory
   (`memsecurity` feature)
 - [ ] Amazon Bedrock support
