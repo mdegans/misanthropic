@@ -93,6 +93,10 @@ pub(crate) type CowStr = langsan::CowStr<'static>;
 /// Small utility functions and types.
 pub(crate) mod utils;
 
+/// Schema stand-ins for foreign types, for the `json-schema` feature.
+#[cfg(feature = "json-schema")]
+pub(crate) mod json_schema;
+
 /// Crate-internal, cross-cutting tests (the `wire_coverage` gate, …).
 #[cfg(test)]
 mod tests;

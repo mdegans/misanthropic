@@ -19,7 +19,7 @@ categories = [
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
-features = ["chat"]
+features = ["chat", "json-schema"]
 
 [dependencies]
 # For base64 encoding/decoding, obvs.
@@ -418,6 +418,15 @@ schema-order-check = [
     "schema-order",
     "misanthropic-derive?/schema-order-check",
 ]
+# Implement `schemars::JsonSchema` for the wire types: `Prompt`, the message
+# and content types (`Message`, `Content`, `Block`, …), `response::Message`
+# and its usage/stop types, the tool definitions and calls, `OutputConfig`, and
+# the batch request/result types. The schemas describe the JSON serde actually
+# produces and accepts, so downstream crates can embed these types in their own
+# documented APIs (e.g. OpenAPI via `aide`). Off by default; `schemars` is
+# already a dependency, so this adds only the impls. These are documentation
+# schemas: they keep `$ref`/`$defs` (see `schema-inline` for tool schemas).
+json-schema = []
 # Doc-tests the agent skill files (`.claude/skills/*/SKILL.md` and the per-tool
 # resource files they point at) so their code blocks can't drift from the public
 # API. Implies the features the skills document: `client` (Client / streaming),

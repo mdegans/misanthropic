@@ -1163,6 +1163,48 @@ impl<'de> Deserialize<'de> for AnthropicError {
     }
 }
 
+/// The schema of an [`AnthropicError`] body. One object shape covers both
+/// directions: the `Deserialize` above accepts any `type` (an unknown one
+/// becomes [`AnthropicError::Unknown`]), and every serialized variant is this
+/// object with its own `type`.
+#[cfg(feature = "json-schema")]
+#[derive(schemars::JsonSchema)]
+#[schemars(rename = "AnthropicError")]
+#[allow(dead_code)] // never built: only its schema is used
+struct AnthropicErrorWire {
+    /// The error kind, e.g. `invalid_request_error`, `rate_limit_error`,
+    /// `overloaded_error`. Unrecognized kinds are accepted.
+    #[serde(rename = "type")]
+    kind: String,
+    /// A human-readable description of the error.
+    #[serde(default)]
+    message: String,
+    /// Seconds to wait before retrying (`rate_limit_error` and
+    /// `overloaded_error` only), from the `retry-after` header.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_after: Option<u64>,
+    /// The HTTP status of an error of unrecognized kind, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    code: Option<NonZeroU16>,
+}
+
+#[cfg(feature = "json-schema")]
+impl schemars::JsonSchema for AnthropicError {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        AnthropicErrorWire::schema_name()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        generator.subschema_for::<AnthropicErrorWire>()
+    }
+}
+
 // This is because the API tags errors and there isn't a way to tag
 // both fields with "type" *and* the enum itself so we must wrap it.
 #[derive(Deserialize)]

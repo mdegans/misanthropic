@@ -29,6 +29,7 @@ use crate::{
     derive_more::IsVariant,
 )]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Role {
     /// From the user.
     User,
@@ -173,6 +174,24 @@ pub mod markers {
                     }
                 }
             }
+
+            /// The one role string this marker (de)serializes as.
+            #[cfg(feature = "json-schema")]
+            impl schemars::JsonSchema for $name {
+                fn inline_schema() -> bool {
+                    true
+                }
+
+                fn schema_name() -> std::borrow::Cow<'static, str> {
+                    stringify!($name).into()
+                }
+
+                fn json_schema(
+                    _: &mut schemars::SchemaGenerator,
+                ) -> schemars::Schema {
+                    crate::json_schema::const_str($str)
+                }
+            }
         };
     }
 
@@ -221,6 +240,8 @@ pub mod markers {
     derive_more::DerefMut,
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "{R}Message"))]
 pub struct RoleMessage<R> {
     /// Who is the message from.
     pub role: R,
@@ -617,6 +638,7 @@ marker_conversions!(System);
 /// role doesn't match.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, thiserror::Error)]
 #[error("expected a {expected} message, got {actual}")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct WrongRole {
     /// The [`Role`] the target type requires.
     pub expected: Role,
@@ -798,6 +820,30 @@ impl<'de> Deserialize<'de> for Content {
             }],
             Wire::Blocks(blocks) => blocks,
         }))
+    }
+}
+
+/// Hand-written to match the asymmetric serde above: always an array of
+/// [`Block`]s when serialized, but a bare string is accepted too.
+#[cfg(feature = "json-schema")]
+impl schemars::JsonSchema for Content {
+    fn schema_name() -> Cow<'static, str> {
+        "Content".into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        concat!(module_path!(), "::Content").into()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        let blocks = generator.subschema_for::<Vec<Block>>();
+        if generator.contract().is_serialize() {
+            return blocks;
+        }
+        let text = generator.subschema_for::<String>();
+        schemars::json_schema!({ "anyOf": [text, blocks] })
     }
 }
 
@@ -1048,12 +1094,14 @@ where
     strum_discriminants(name(BlockKind), derive(strum::EnumIter, Hash))
 )]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Block {
     /// Text content.
     #[serde(alias = "text_delta")]
     #[cfg_attr(not(feature = "markdown"), display("{text}"))]
     Text {
         /// The actual text content.
+        #[cfg_attr(feature = "json-schema", schemars(with = "String"))]
         text: crate::CowStr,
         /// Citations referencing source [`Document`]s, populated by the API on
         /// response [`Text`] blocks when a document had citations enabled.
@@ -1312,6 +1360,14 @@ pub enum Block {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "code_execution_result")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "CodeExecutionResult",
+        transform = crate::json_schema::Tag("code_execution_result")
+    )
+)]
 pub struct CodeExecutionResult {
     /// Captured standard output.
     pub stdout: Cow<'static, str>,
@@ -1339,6 +1395,7 @@ pub struct CodeExecutionResult {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum BashCodeExecutionResultContent {
     /// The command ran (its own exit code is in [`return_code`](Self::Result::return_code)).
     #[serde(rename = "bash_code_execution_result")]
@@ -1379,6 +1436,14 @@ pub enum BashCodeExecutionResultContent {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "bash_code_execution_output")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "BashCodeExecutionOutput",
+        transform = crate::json_schema::Tag("bash_code_execution_output")
+    )
+)]
 pub struct BashCodeExecutionOutput {
     /// The Files API id (`file_…`) of the emitted file.
     pub file_id: Cow<'static, str>,
@@ -1391,6 +1456,7 @@ pub struct BashCodeExecutionOutput {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum TextEditorCodeExecutionResultContent {
     /// A `view` of a file's contents.
     #[serde(rename = "text_editor_code_execution_view_result")]
@@ -1448,6 +1514,7 @@ pub enum TextEditorCodeExecutionResultContent {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum WebSearchToolResultContent {
     /// Successful search results.
     Results(Vec<WebSearchResult>),
@@ -1461,6 +1528,14 @@ pub enum WebSearchToolResultContent {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "web_search_result")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "WebSearchResult",
+        transform = crate::json_schema::Tag("web_search_result")
+    )
+)]
 pub struct WebSearchResult {
     /// The result URL.
     pub url: Cow<'static, str>,
@@ -1482,6 +1557,14 @@ pub struct WebSearchResult {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "web_search_tool_result_error")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "WebSearchToolError",
+        transform = crate::json_schema::Tag("web_search_tool_result_error")
+    )
+)]
 pub struct WebSearchToolError {
     /// The error code, e.g. `"max_uses_exceeded"`, `"too_many_requests"`,
     /// `"query_too_long"`, `"invalid_input"`, or `"unavailable"`.
@@ -1499,6 +1582,7 @@ impl WebSearchToolError {}
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum WebFetchToolResultContent {
     /// The fetch succeeded.
     #[serde(rename = "web_fetch_result")]
@@ -1530,6 +1614,14 @@ pub enum WebFetchToolResultContent {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "document")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "FetchedDocument",
+        transform = crate::json_schema::Tag("document")
+    )
+)]
 pub struct FetchedDocument {
     /// The fetched content: [`text/plain`] for web pages, base64
     /// [`application/pdf`] for PDFs.
@@ -1560,6 +1652,7 @@ impl FetchedDocument {}
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum ToolSearchToolResultContent {
     /// The tools the search discovered. The API expands each
     /// [`ToolReference`] into the matching deferred tool's full definition
@@ -1586,6 +1679,14 @@ pub enum ToolSearchToolResultContent {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(tag = "type", rename = "tool_reference")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "ToolReference",
+        transform = crate::json_schema::Tag("tool_reference")
+    )
+)]
 pub struct ToolReference {
     /// The [`name`](crate::tool::MethodDef::name) of the discovered tool.
     pub tool_name: Cow<'static, str>,
@@ -2259,6 +2360,7 @@ impl From<image::DynamicImage> for Block {
 /// Time-to-live for prompt cache entries.
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum CacheTtl {
     /// Cache for 5 minutes — the default. Equivalent to omitting `ttl`; this
     /// variant exists so an explicit `"5m"` round-trips.
@@ -2283,6 +2385,7 @@ impl std::fmt::Display for CacheTtl {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type")]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum CacheControl {
     /// Ephemeral cache. Default TTL is 5 minutes; set `ttl` for longer
     /// durations.
@@ -2333,6 +2436,7 @@ impl CacheControl {
 /// [`Document`]: Block::Document
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct CitationsConfig {
     /// Whether citations are enabled for this document.
     pub enabled: bool,
@@ -2343,6 +2447,7 @@ pub struct CitationsConfig {
 /// [`Document`]: Block::Document
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum DocumentMediaType {
     /// `application/pdf`
     #[serde(rename = "application/pdf")]
@@ -2362,6 +2467,7 @@ impl std::fmt::Display for DocumentMediaType {
 /// [`Document`]: Block::Document
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum PlainTextMediaType {
     /// `text/plain`
     #[serde(rename = "text/plain")]
@@ -2380,6 +2486,14 @@ impl std::fmt::Display for PlainTextMediaType {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type", rename = "text")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "ContentText",
+        transform = crate::json_schema::Tag("text")
+    )
+)]
 pub struct ContentText {
     /// The text content of this chunk.
     pub text: Cow<'static, str>,
@@ -2394,6 +2508,7 @@ impl ContentText {}
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case", tag = "type")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum DocumentSource {
     /// Base64-encoded document (PDF).
     Base64 {
@@ -2514,6 +2629,7 @@ impl std::fmt::Display for DocumentSource {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[serde(tag = "type")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Image {
     /// Base64 encoded image data. When displayed, it will be rendered as a
     /// markdown image with embedded data.
@@ -2634,6 +2750,7 @@ impl TryInto<image::RgbaImage> for Image {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "snake_case")]
 #[allow(missing_docs)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum MediaType {
     #[serde(rename = "image/jpeg")]
     Jpeg,

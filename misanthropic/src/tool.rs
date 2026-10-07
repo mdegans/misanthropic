@@ -85,6 +85,8 @@ mod fs;
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ToolChoice"))]
 pub enum Choice {
     /// [`Model`] chooses whether and which [`CustomMethodDef`] of a [`Tool`] to use.
     ///
@@ -199,6 +201,7 @@ impl Choice {
 #[derive(Clone, Debug, Serialize, Deserialize, derive_more::From)]
 #[serde(tag = "type")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum ServerMethodDef {
     /// Anthropic's web search tool (`web_search_20250305`). The model issues
     /// queries and receives results it can cite via
@@ -431,6 +434,14 @@ impl ServerMethodDef {
 /// [`ServerMethodDef::tool_search_bm25`].
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "ToolSearch_for_{N}",
+        bound = "N: schemars::JsonSchema + Default + Serialize"
+    )
+)]
 pub struct ToolSearch<N> {
     /// The fixed tool `name`, supplied automatically by [`Default`]. Not meant
     /// to be set by hand.
@@ -454,6 +465,7 @@ pub struct ToolSearch<N> {
 /// [`blocked_domains`]: WebSearch::blocked_domains
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct WebSearch {
     /// The fixed tool `name` (`"web_search"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
@@ -499,6 +511,7 @@ impl WebSearch {}
 /// [`citations`]: WebFetch::citations
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct WebFetch {
     /// The fixed tool `name` (`"web_fetch"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
@@ -541,6 +554,7 @@ impl WebFetch {}
 /// [code execution]: <https://platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool>
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct CodeExecution {
     /// The fixed tool `name` (`"code_execution"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
@@ -571,6 +585,7 @@ pub struct CodeExecution {
 #[cfg(feature = "memory")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Memory {
     /// The fixed tool `name` (`"memory"`), supplied automatically by
     /// [`Default`]. Not meant to be set by hand; use `..Default::default()`.
@@ -625,6 +640,7 @@ impl From<Memory> for MethodDef {
 #[cfg(feature = "text-editor")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct TextEditor {
     /// The fixed tool `name` (`"str_replace_based_edit_tool"`), supplied
     /// automatically by [`Default`]. Not meant to be set by hand; use
@@ -680,6 +696,7 @@ impl From<TextEditor> for MethodDef {
 #[cfg(feature = "bash")]
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Bash {
     /// The fixed tool `name` (`"bash"`), supplied automatically by [`Default`].
     /// Not meant to be set by hand; use `..Default::default()`.
@@ -753,6 +770,23 @@ macro_rules! tool_name_marker {
                 }
             }
         }
+
+        #[cfg(feature = "json-schema")]
+        impl schemars::JsonSchema for $name {
+            fn inline_schema() -> bool {
+                true
+            }
+
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($name).into()
+            }
+
+            fn json_schema(
+                _: &mut schemars::SchemaGenerator,
+            ) -> schemars::Schema {
+                crate::json_schema::const_str($wire)
+            }
+        }
     };
 }
 
@@ -799,6 +833,14 @@ tool_name_marker!(
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(tag = "type", rename = "approximate")]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "UserLocation",
+        transform = crate::json_schema::Tag("approximate")
+    )
+)]
 pub struct UserLocation {
     /// City name, e.g. `"San Francisco"`.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -837,6 +879,7 @@ impl UserLocation {}
 )]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum MethodDef {
     /// A server-side tool the API executes (carries a `type`).
     Server(ServerMethodDef),
@@ -1058,6 +1101,8 @@ static_assertions::assert_impl_all!(dyn Tool: Send);
 #[serde(try_from = "received::Received")]
 #[serde(rename = "tool")]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "CustomMethodDef"))]
 pub struct CustomMethodDef {
     /// Name of the function. This should be in a `Tool::function` format.
     pub name: Cow<'static, str>,
@@ -1180,6 +1225,56 @@ mod received {
     #[derive(serde::Deserialize)]
     #[serde(transparent)]
     pub struct Received(pub(super) super::MethodBuilder);
+
+    /// A [`MethodBuilder`](super::MethodBuilder)'s shape, narrowed by what
+    /// `build_structural` checks: a non-empty `name` and `description`, and an
+    /// `input_schema` that is a non-empty object whose `properties` (if any)
+    /// is an object and `required` (if any) an array of strings. The one check
+    /// a schema can't state — each `required` key names a property — stays
+    /// the deserializer's.
+    #[cfg(feature = "json-schema")]
+    impl schemars::JsonSchema for Received {
+        fn inline_schema() -> bool {
+            true
+        }
+
+        fn schema_name() -> std::borrow::Cow<'static, str> {
+            "CustomMethodDef".into()
+        }
+
+        fn json_schema(
+            generator: &mut schemars::SchemaGenerator,
+        ) -> schemars::Schema {
+            let mut schema =
+                <super::MethodBuilder as schemars::JsonSchema>::json_schema(
+                    generator,
+                );
+            let properties = schema
+                .get_mut("properties")
+                .and_then(serde_json::Value::as_object_mut)
+                .expect("a struct schema has properties");
+            for name in ["name", "description"] {
+                properties[name]["minLength"] = 1.into();
+            }
+            let input = &mut properties["input_schema"];
+            let structural = schemars::json_schema!({
+                "type": "object",
+                "minProperties": 1,
+                "properties": {
+                    "properties": { "type": "object" },
+                    "required": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                    },
+                },
+            });
+            for (keyword, value) in structural.as_object().into_iter().flatten()
+            {
+                input[keyword] = value.clone();
+            }
+            schema
+        }
+    }
 }
 
 #[doc(hidden)]
@@ -1207,26 +1302,39 @@ pub struct MethodBuilder {
 // `MethodBuilder::deserialize` — an infinite loop. So we hand-roll it via
 // a private `Foreign` helper struct that owns the actual field mapping.
 // Every public field on `CustomMethodDef` must have a matching entry here.
+//
+// `Foreign` also serves as the accepted wire shape for the `json-schema`
+// feature (a `CustomMethodDef`'s deserialize schema is `Received`'s, which is
+// this), so its fields carry docs for the generated schema.
+#[derive(Deserialize)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "CustomMethodDef"))]
+struct Foreign {
+    /// Name of the tool.
+    name: Cow<'static, str>,
+    /// Description of the tool. The model uses this as documentation.
+    description: Cow<'static, str>,
+    /// JSON Schema for the tool's input.
+    input_schema: serde_json::Value,
+    /// A cache breakpoint.
+    #[serde(default)]
+    cache_control: Option<crate::prompt::message::CacheControl>,
+    /// Whether to enable strict (grammar-constrained) tool use.
+    #[serde(default)]
+    strict: Option<bool>,
+    /// Whether the API may defer loading this tool's full definition.
+    #[serde(default)]
+    defer_loading: Option<bool>,
+    /// Which contexts may invoke this tool.
+    #[serde(default)]
+    allowed_callers: Option<Vec<AllowedCaller>>,
+}
+
 impl<'de> Deserialize<'de> for MethodBuilder {
     fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        struct Foreign {
-            name: Cow<'static, str>,
-            description: Cow<'static, str>,
-            input_schema: serde_json::Value,
-            #[serde(default)]
-            cache_control: Option<crate::prompt::message::CacheControl>,
-            #[serde(default)]
-            strict: Option<bool>,
-            #[serde(default)]
-            defer_loading: Option<bool>,
-            #[serde(default)]
-            allowed_callers: Option<Vec<AllowedCaller>>,
-        }
-
         let foreign = Foreign::deserialize(deserializer)?;
 
         let Foreign {
@@ -1250,6 +1358,24 @@ impl<'de> Deserialize<'de> for MethodBuilder {
                 allowed_callers,
             },
         })
+    }
+}
+
+/// The accepted wire shape: what [`MethodBuilder`]'s `Deserialize` reads.
+#[cfg(feature = "json-schema")]
+impl schemars::JsonSchema for MethodBuilder {
+    fn inline_schema() -> bool {
+        true
+    }
+
+    fn schema_name() -> Cow<'static, str> {
+        "MethodBuilder".into()
+    }
+
+    fn json_schema(
+        generator: &mut schemars::SchemaGenerator,
+    ) -> schemars::Schema {
+        <Foreign as schemars::JsonSchema>::json_schema(generator)
     }
 }
 
@@ -1835,6 +1961,7 @@ impl TryFrom<serde_json::Value> for CustomMethodDef {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Caller {
     /// A caller shape this crate recognizes.
     Known(KnownCaller),
@@ -1854,6 +1981,7 @@ pub enum Caller {
     test,
     strum_discriminants(name(KnownCallerKind), derive(strum::EnumIter, Hash))
 )]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum KnownCaller {
     /// The model called the tool directly (traditional tool use).
     #[serde(rename = "direct")]
@@ -1930,6 +2058,7 @@ impl Caller {
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
 #[serde(untagged)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum AllowedCaller {
     /// A caller kind this crate recognizes.
     Known(KnownAllowedCaller),
@@ -1941,6 +2070,7 @@ pub enum AllowedCaller {
 /// string (`"direct"`, `"code_execution_20260120"`, …).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum KnownAllowedCaller {
     /// The model may call the tool directly. The default the API assumes when
     /// `allowed_callers` is omitted.
@@ -1989,6 +2119,8 @@ impl AllowedCaller {
 )]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ToolUse"))]
 pub struct Use {
     /// Unique Id for this tool call.
     ///
@@ -2130,6 +2262,8 @@ impl std::fmt::Display for Use {
 // standard library, but on the other hand it's what the API uses. We should
 // probably rename this to avoid confusion, since it is confusing.
 #[display("{}", self.content)]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ToolResult"))]
 pub struct Result {
     /// Unique Id for this tool call.
     pub tool_use_id: Cow<'static, str>,

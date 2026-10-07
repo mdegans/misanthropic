@@ -34,6 +34,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct OutputConfig {
     /// Desired [`OutputFormat`] for the response. `None` leaves the response
     /// unconstrained — useful for an [`effort`](Self::effort)-only config.
@@ -171,6 +172,30 @@ impl<'de> Deserialize<'de> for Effort {
     }
 }
 
+/// Any string: the named levels, or a [`Custom`](Effort::Custom) one.
+#[cfg(feature = "json-schema")]
+impl schemars::JsonSchema for Effort {
+    fn schema_name() -> Cow<'static, str> {
+        "Effort".into()
+    }
+
+    fn schema_id() -> Cow<'static, str> {
+        concat!(module_path!(), "::Effort").into()
+    }
+
+    fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        use Effort::*;
+        let levels = [Low, Medium, High, XHigh, Max];
+        let known: Vec<&str> = levels.iter().map(Effort::as_str).collect();
+        schemars::json_schema!({
+            "anyOf": [
+                { "type": "string", "enum": known },
+                { "type": "string" },
+            ]
+        })
+    }
+}
+
 /// Format the response must conform to.
 ///
 /// Currently only [`JsonSchema`] is supported upstream; the enum is
@@ -189,6 +214,7 @@ impl<'de> Deserialize<'de> for Effort {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum OutputFormat {
     /// Constrain output to a [JSON Schema].
     ///
@@ -206,6 +232,7 @@ pub enum OutputFormat {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct JsonSchemaFormat {
     /// The JSON Schema to enforce.
     pub schema: serde_json::Value,

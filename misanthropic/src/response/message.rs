@@ -35,6 +35,7 @@ pub enum JsonError {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[display("{}", inner)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Message {
     /// Unique `id` for the message.
     pub id: Cow<'static, str>,
@@ -91,6 +92,7 @@ pub struct Message {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Container {
     /// The container id (`container_…`), reused via [`Prompt::container`].
     ///
@@ -335,6 +337,7 @@ impl Builder {
 // variant.
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum StopReason {
     /// The model reached a natural stopping point.
     EndTurn,
@@ -504,6 +507,8 @@ pub enum Disposition {
 )]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "MessageKind"))]
 pub enum Kind {
     /// A message.
     #[default]
@@ -516,6 +521,7 @@ pub enum Kind {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct StopDetails {
     /// Refusal category, e.g. `"cyber"` or `"bio"`; `null` when the API
     /// doesn't classify the refusal.
@@ -551,6 +557,7 @@ pub struct StopDetails {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Usage {
     /// The numeric token counters, `Copy` — see [`TokenCounts`].
     #[serde(flatten)]
@@ -576,6 +583,7 @@ pub struct Usage {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct TokenCounts {
     /// Number of input tokens used.
     pub input_tokens: u64,
@@ -648,6 +656,7 @@ impl TokenCounts {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct OutputTokensDetails {
     /// Number of output tokens spent thinking.
     pub thinking_tokens: u64,
@@ -670,6 +679,7 @@ impl std::ops::Add<OutputTokensDetails> for OutputTokensDetails {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct CacheCreation {
     /// Input tokens written to the 5-minute-TTL cache.
     pub ephemeral_5m_input_tokens: u64,
@@ -683,6 +693,7 @@ pub struct CacheCreation {
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(default)]
 #[non_exhaustive]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct ServerToolUsage {
     /// Number of web searches performed.
     pub web_search_requests: u64,

@@ -63,6 +63,7 @@ const MAX_CACHE_CONTROLS_PER_REQUEST: usize = 4;
 /// [Anthropic Messages API]: <https://docs.anthropic.com/en/api/messages>
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub struct Prompt {
     /// [`Model`](model::Model) to use for inference.
     pub model: model::Model,
@@ -254,6 +255,7 @@ impl From<&str> for Prompt {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum ServiceTier {
     /// Let the API choose the tier (priority when available).
     Auto,
@@ -266,6 +268,7 @@ pub enum ServiceTier {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, Hash)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq, Eq))]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum InferenceGeo {
     /// United States.
     Us,

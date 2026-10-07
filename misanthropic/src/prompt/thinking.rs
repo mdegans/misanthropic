@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(tag = "type", rename_all = "lowercase")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
 pub enum Thinking {
     /// The model decides when and how much to think per request. Recommended
     /// on Claude 4 and required on Opus 4.7 and newer. Interleaved thinking
@@ -69,6 +70,8 @@ impl Thinking {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
 #[serde(rename_all = "lowercase")]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ThinkingDisplay"))]
 pub enum Display {
     /// Summarized thinking text. Default on Claude 4 models except Opus 4.7
     /// and newer. Billed for the full thinking tokens, not the summary.
