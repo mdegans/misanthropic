@@ -34,16 +34,51 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-features --all-targets
 
-  # Prove the workspace is *publishable* before anything is tagged — the
-  # missing-version-on-path-dep class of failure (#133, repeated at
-  # alpha.9) only surfaces at `cargo publish` time otherwise. Dry-run
-  # packages and verifies every publishable member without touching
-  # crates.io.
-  publish-dry-run:
+  # Merging is releasing (release.yaml publishes when `v<version>` is not
+  # tagged yet), so the gate checks both halves before anything merges:
+  #
+  # 1. **That a merge will release.** A PR that changes what the crates ship
+  #    must carry a version not yet released, with its CHANGELOG section;
+  #    otherwise the merge ships nothing and whoever waits on it waits for a
+  #    release that never comes (#168 merged at the already-published
+  #    alpha.21). A PR that changes no shipped file (CI, docs, tests)
+  #    passes. To batch changes, put them in one PR with the bump.
+  # 2. **That the release can publish.** The missing-version-on-path-dep
+  #    class of failure (#133, repeated at alpha.9) only surfaces at
+  #    `cargo publish` time otherwise. Dry-run packages and verifies every
+  #    publishable member without touching crates.io.
+  release-ready:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The base commit and the release tags.
+          fetch-depth: 0
+
+      - name: Require an unreleased version for a change that ships
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          SHIPPED=$(git diff --name-only "$BASE"...HEAD -- \
+            Cargo.toml \
+            misanthropic/Cargo.toml misanthropic/src misanthropic/build.rs \
+            misanthropic-derive/Cargo.toml misanthropic-derive/src)
+          if [ -z "$SHIPPED" ]; then
+            echo "No shipped file changes; nothing to release."
+            exit 0
+          fi
+          echo "Shipped files changed:"; echo "$SHIPPED"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::This PR changes what the crates ship, but v$VERSION is already released, so merging would publish nothing. Bump the workspace version (and the misanthropic-derive pin) in this PR, as a chore(release) commit does."
+            exit 1
+          fi
+          if ! grep -qF "## [$VERSION]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section for the version this merge will release."
+            exit 1
+          fi
+          echo "Merging releases v$VERSION."
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -176,14 +211,14 @@ jobs:
   # Keep `needs` and the checks below listing every other job in this file.
   ci-ok:
     if: ${{ !cancelled() }}
-    needs: [main-lint, publish-dry-run, bashd-musl, build]
+    needs: [main-lint, release-ready, bashd-musl, build]
     runs-on: ubuntu-latest
     steps:
       - name: Require this event's jobs to succeed
         if: >-
           (github.event_name == 'pull_request' && (
             needs.build.result != 'success' ||
-            needs.publish-dry-run.result != 'success' ||
+            needs.release-ready.result != 'success' ||
             needs.bashd-musl.result != 'success')) ||
           (github.event_name == 'push' &&
             needs.main-lint.result != 'success')
