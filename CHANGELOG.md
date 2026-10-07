@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.22] — 2026-10-07
+
 ### Added
 
 - **`prompt::message::Thought`: a thinking block on its own.** The
