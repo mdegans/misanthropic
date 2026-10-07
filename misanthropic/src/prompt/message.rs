@@ -3014,6 +3014,15 @@ pub(crate) mod tests {
         assert!(!crate::prompt::output::contains_ref(&plain), "{plain}");
     }
 
+    /// `Model` and its `Id` inline too, for the same records
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn a_models_schema_inlines() {
+        let plain =
+            serde_json::to_value(schemars::schema_for!(crate::Model)).unwrap();
+        assert!(!crate::prompt::output::contains_ref(&plain), "{plain}");
+    }
+
     /// One of every [`Block`] variant — result kinds as both success and
     /// failure — for tests that must handle them all. Server-tool blocks are
     /// the captured fixtures.

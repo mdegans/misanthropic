@@ -374,6 +374,9 @@ impl ThinkingSupport {
 )]
 #[serde(rename_all = "snake_case", untagged)]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+// Inline (here and on `Id`): neither recurses, and a record that names a
+// model carries it in a schema with no `$ref`.
+#[cfg_attr(feature = "json-schema", schemars(inline))]
 pub enum Model {
     /// Anthropic model.
     Anthropic(Id),
@@ -519,7 +522,7 @@ impl Default for Model {
 #[cfg_attr(test, derive(strum::EnumIter))]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
-#[cfg_attr(feature = "json-schema", schemars(rename = "ModelId"))]
+#[cfg_attr(feature = "json-schema", schemars(rename = "ModelId", inline))]
 pub enum Id {
     // ── Claude 3.x ───────────────────────────────────────────────────────
     /// Sonnet 3.7 (latest)
