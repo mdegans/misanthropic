@@ -1075,6 +1075,90 @@ where
     }
 }
 
+/// A thinking [`Block`] on its own: what the API returns of the model's
+/// thinking, and nothing else a [`Block`] can be.
+///
+/// The wire form is the [`Block::Thought`] or [`Block::RedactedThought`] it
+/// converts to and from, byte for byte, so a [`Thought`] stored and later
+/// put back into a conversation is still the block the API signed. Unlike
+/// [`Block`] its schema does not recurse (a [`Block`] can hold a tool
+/// result, which holds [`Content`]), so it inlines completely: a record
+/// that keeps a turn's thinking can carry it as `Vec<Thought>`.
+#[derive(Clone, Debug, Serialize, Deserialize, Hash)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(feature = "json-schema", schemars(inline))]
+#[serde(tag = "type")]
+pub enum Thought {
+    /// See [`Block::Thought`]. On models that summarize their thinking,
+    /// `thought` is the summary and `signature` covers the full thinking.
+    #[serde(rename = "thinking")]
+    Thinking {
+        /// The thinking, or its summary
+        #[serde(rename = "thinking")]
+        thought: Cow<'static, str>,
+        /// Signature over the thinking; empty from a provider that signs
+        /// nothing
+        #[serde(default)]
+        signature: Cow<'static, str>,
+    },
+    /// See [`Block::RedactedThought`].
+    #[serde(rename = "redacted_thinking")]
+    Redacted {
+        /// The encrypted thinking
+        #[serde(rename = "data")]
+        signature: Cow<'static, str>,
+    },
+}
+
+impl Thought {
+    /// The thinking's text; `None` when it was redacted
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Thinking { thought, .. } => Some(thought),
+            Self::Redacted { .. } => None,
+        }
+    }
+}
+
+impl From<Thought> for Block {
+    fn from(thought: Thought) -> Self {
+        match thought {
+            Thought::Thinking { thought, signature } => {
+                Block::Thought { thought, signature }
+            }
+            Thought::Redacted { signature } => {
+                Block::RedactedThought { signature }
+            }
+        }
+    }
+}
+
+impl TryFrom<Block> for Thought {
+    /// The block, when it is not a thinking block
+    type Error = Block;
+
+    fn try_from(block: Block) -> Result<Self, Self::Error> {
+        match block {
+            Block::Thought { thought, signature } => {
+                Ok(Thought::Thinking { thought, signature })
+            }
+            Block::RedactedThought { signature } => {
+                Ok(Thought::Redacted { signature })
+            }
+            other => Err(other),
+        }
+    }
+}
+
+impl Content {
+    /// The thinking blocks, in order
+    pub fn thoughts(&self) -> impl Iterator<Item = Thought> + '_ {
+        self.iter()
+            .filter_map(|block| Thought::try_from(block.clone()).ok())
+    }
+}
+
 /// A [`Content`] [`Block`] of a [`Message`].
 #[derive(
     Clone, Debug, Serialize, Deserialize, Hash, derive_more::IsVariant,
@@ -2851,6 +2935,84 @@ pub(crate) mod tests {
     use crate::stream::{Delta, DeltaError};
 
     use super::*;
+
+    fn thoughts() -> [(Thought, Block); 3] {
+        [
+            (
+                Thought::Thinking {
+                    thought: "Weighed it.".into(),
+                    signature: "EqQB".into(),
+                },
+                Block::Thought {
+                    thought: "Weighed it.".into(),
+                    signature: "EqQB".into(),
+                },
+            ),
+            (
+                Thought::Thinking {
+                    thought: "A local model's own.".into(),
+                    signature: "".into(),
+                },
+                Block::Thought {
+                    thought: "A local model's own.".into(),
+                    signature: "".into(),
+                },
+            ),
+            (
+                Thought::Redacted {
+                    signature: "EmwK".into(),
+                },
+                Block::RedactedThought {
+                    signature: "EmwK".into(),
+                },
+            ),
+        ]
+    }
+
+    /// A `Thought` is its block on the wire, byte for byte, so a stored
+    /// one goes back into a conversation as the block the API signed
+    #[test]
+    fn a_thought_is_its_block_on_the_wire() {
+        for (thought, block) in thoughts() {
+            let wire = serde_json::to_string(&block).unwrap();
+            assert_eq!(serde_json::to_string(&thought).unwrap(), wire);
+            let read: Thought = serde_json::from_str(&wire).unwrap();
+            assert_eq!(read, thought);
+            assert_eq!(Block::from(thought.clone()), block);
+            assert_eq!(Thought::try_from(block).unwrap(), thought);
+        }
+        let text = Block::text("Not a thought.");
+        assert_eq!(Thought::try_from(text.clone()).unwrap_err(), text);
+        assert!(
+            serde_json::from_str::<Thought>(
+                &serde_json::to_string(&Block::text("Not a thought.")).unwrap()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn content_yields_its_thoughts_in_order() {
+        let [(first, a), (_, _), (third, c)] = thoughts();
+        let content = Content(vec![a, Block::text("between"), c]);
+        let found: Vec<Thought> = content.thoughts().collect();
+        assert_eq!(found, [first, third]);
+        assert_eq!(found[0].text(), Some("Weighed it."));
+        assert_eq!(found[1].text(), None);
+    }
+
+    /// Unlike `Block`, whose tool results hold `Content`, a `Thought` does
+    /// not recurse, and it is marked inline: its schema carries no `$ref`
+    /// under any settings, `schema-inline` or not
+    #[cfg(feature = "json-schema")]
+    #[test]
+    fn a_thoughts_schema_inlines() {
+        let schema = crate::prompt::output::schema_for::<Vec<Thought>>();
+        assert!(!crate::prompt::output::contains_ref(&schema), "{schema}");
+        let plain =
+            serde_json::to_value(schemars::schema_for!(Vec<Thought>)).unwrap();
+        assert!(!crate::prompt::output::contains_ref(&plain), "{plain}");
+    }
 
     /// One of every [`Block`] variant — result kinds as both success and
     /// failure — for tests that must handle them all. Server-tool blocks are
