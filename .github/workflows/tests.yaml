@@ -52,6 +52,45 @@ jobs:
       - name: cargo publish --workspace --dry-run
         run: cargo publish --workspace --dry-run --locked
 
+  # Merging is releasing (release.yaml): a PR that changes what the crates
+  # ship must carry a version not yet released, or the merge ships nothing
+  # and whoever waits on it waits for a release that never comes (#168,
+  # 2026-10-07: merged at alpha.21, already published). A PR that changes no
+  # shipped file (CI, docs, tests) passes. To batch changes, put them in one
+  # PR with its version bump.
+  release-eligible:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The base commit and the release tags.
+          fetch-depth: 0
+
+      - name: Require an unreleased version for a change that ships
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          SHIPPED=$(git diff --name-only "$BASE"...HEAD -- \
+            Cargo.toml \
+            misanthropic/Cargo.toml misanthropic/src misanthropic/build.rs \
+            misanthropic-derive/Cargo.toml misanthropic-derive/src)
+          if [ -z "$SHIPPED" ]; then
+            echo "No shipped file changes; nothing to release."
+            exit 0
+          fi
+          echo "Shipped files changed:"; echo "$SHIPPED"
+          if git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "::error::This PR changes what the crates ship, but v$VERSION is already released, so merging would publish nothing. Bump the workspace version (and the misanthropic-derive pin) in this PR, as a chore(release) commit does."
+            exit 1
+          fi
+          if ! grep -qF "## [$VERSION]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section for the version this merge will release."
+            exit 1
+          fi
+          echo "Merging releases v$VERSION."
+
   # Build the `bashd` daemon as a static linux-musl binary (the artifact the
   # `DockerSandbox` injects into a container) and run its unit tests.
   bashd-musl:
@@ -176,7 +215,7 @@ jobs:
   # Keep `needs` and the checks below listing every other job in this file.
   ci-ok:
     if: ${{ !cancelled() }}
-    needs: [main-lint, publish-dry-run, bashd-musl, build]
+    needs: [main-lint, publish-dry-run, release-eligible, bashd-musl, build]
     runs-on: ubuntu-latest
     steps:
       - name: Require this event's jobs to succeed
@@ -184,6 +223,7 @@ jobs:
           (github.event_name == 'pull_request' && (
             needs.build.result != 'success' ||
             needs.publish-dry-run.result != 'success' ||
+            needs.release-eligible.result != 'success' ||
             needs.bashd-musl.result != 'success')) ||
           (github.event_name == 'push' &&
             needs.main-lint.result != 'success')
