@@ -117,6 +117,37 @@ mod tests {
         (material, format!("{cli_key}{cli_cert}"), ca_pem)
     }
 
+    /// Each piece of bad material is refused, naming which: no key, a PEM
+    /// block that will not decode in the chain, the key or the CA
+    #[test]
+    fn bad_material_is_refused_with_what_was_wrong() {
+        let broken =
+            "-----BEGIN CERTIFICATE-----\n!!!!\n-----END CERTIFICATE-----\n";
+        let error = |material: TlsServerMaterial| {
+            server_config(&material)
+                .expect_err("bad material")
+                .to_string()
+        };
+
+        let mut m = pki().0;
+        m.key_pem = String::new();
+        assert_eq!(error(m), "no private key in bashd server material");
+
+        let mut m = pki().0;
+        m.key_pem =
+            "-----BEGIN PRIVATE KEY-----\n!!!!\n-----END PRIVATE KEY-----\n"
+                .into();
+        assert!(error(m).starts_with("bad PEM in server key"));
+
+        let mut m = pki().0;
+        m.cert_chain_pem = broken.into();
+        assert!(error(m).starts_with("bad PEM in server cert chain"));
+
+        let mut m = pki().0;
+        m.ca_pem = broken.into();
+        assert!(error(m).starts_with("bad PEM in CA cert"));
+    }
+
     /// End-to-end: serve a trivial route over the real axum-server mTLS path; a
     /// client presenting the matching identity succeeds, one without is refused.
     #[tokio::test]
