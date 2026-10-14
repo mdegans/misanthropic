@@ -15,6 +15,47 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.23] — 2026-10-14
+
+### Added
+
+- **Markdown for reading a transcript exactly** (`markdown` feature). Four
+  options on `markdown::Options`, each off by default so existing output is
+  unchanged, and a preset, `Options::transcript()`, with all of them plus the
+  system prompt, tool use and results, and no attributes:
+  - `verbatim` (`.verbatim()`): text and thinking pass through exactly as
+    given. Parsing and rendering them again normalized them (`-` list markers
+    became `*`, `[` became `\[`), so a reader did not see what a model saw.
+    Markdown output only: HTML rendering ignores it.
+  - `readable_tools` (`.readable_tools()`): a tool call renders as
+    **Tool call** `name` (`id`) and its input as pretty JSON; a result as
+    **Tool result** for `id` (", an error") and its content with the same
+    options. A prompt's tool blocks rendered as compact one-line JSON, so a
+    result's text arrived as one escaped string (a 64 KB line, in an Agora
+    seed-runner prompt).
+  - `tools` (`.with_tools()`): a `Prompt`'s tool definitions, under a
+    **Tools** heading after the system prompt.
+  - `label_thoughts` (`.label_thoughts()`): thinking under a **Thinking**
+    label, and **Thinking** (redacted) where it was redacted (it rendered as
+    nothing).
+
+### Breaking
+
+- `markdown::Options` has four more public fields; a struct literal needs
+  them, or `..Default::default()`.
+
+### Not changed (noted)
+
+- Without `readable_tools`, a tool block in a prompt still renders as compact
+  JSON with its `type`, while `tool::Use` and `tool::Result` rendered on
+  their own are pretty JSON without it. Unifying them changes default output
+  (and its tests); left for a decision.
+
+### CI
+
+- Codecov: absolute 90% targets for the project and the patch, replacing the
+  default that failed any drop below the parent commit.
+
 ## [1.0.0-alpha.22] — 2026-10-07
 
 ### Added
