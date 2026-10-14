@@ -11,6 +11,10 @@ pub const DEFAULT_OPTIONS: Options = Options {
     system: false,
     attrs: false,
     heading_level: None,
+    verbatim: false,
+    readable_tools: false,
+    tools: false,
+    label_thoughts: false,
 };
 
 /// Verbose [`Options`]
@@ -21,6 +25,10 @@ pub const VERBOSE_OPTIONS: Options = Options {
     system: true,
     attrs: true,
     heading_level: None,
+    verbatim: false,
+    readable_tools: false,
+    tools: false,
+    label_thoughts: false,
 };
 
 mod serde_inner {
@@ -77,6 +85,29 @@ pub struct Options {
     pub attrs: bool,
     /// Heading level to begin at (optional)
     pub heading_level: Option<HeadingLevel>,
+    /// Pass text and thinking through exactly as given, rather than parsing
+    /// them as Markdown and rendering them again (which normalizes them:
+    /// `-` list markers become `*`, a `[` is escaped). For a reader who must
+    /// see what a model saw, byte for byte. Markdown output only: HTML
+    /// rendering ignores it, since verbatim text would pass as raw HTML.
+    pub verbatim: bool,
+    /// Render tool calls and results for reading: a call as a labelled line
+    /// and its input as pretty JSON, a result as a labelled line and its
+    /// content rendered with these same options, rather than each block as
+    /// JSON (where a result's text is one escaped string). Applies where
+    /// [`tool_use`] and [`tool_results`] include them.
+    ///
+    /// [`tool_use`]: Options::tool_use
+    /// [`tool_results`]: Options::tool_results
+    pub readable_tools: bool,
+    /// Include a [`Prompt`]'s tool definitions, after the system prompt
+    ///
+    /// [`Prompt`]: crate::prompt::Prompt
+    pub tools: bool,
+    /// Label thinking as thinking, and mark where thinking was redacted,
+    /// rather than rendering thinking like any text and redacted thinking
+    /// as nothing
+    pub label_thoughts: bool,
 }
 
 impl Options {
@@ -107,6 +138,52 @@ impl Options {
     pub fn with_system(mut self) -> Self {
         self.system = true;
         self
+    }
+
+    /// Set [`verbatim`] to true
+    ///
+    /// [`verbatim`]: Options::verbatim
+    pub fn verbatim(mut self) -> Self {
+        self.verbatim = true;
+        self
+    }
+
+    /// Set [`readable_tools`] to true
+    ///
+    /// [`readable_tools`]: Options::readable_tools
+    pub fn readable_tools(mut self) -> Self {
+        self.readable_tools = true;
+        self
+    }
+
+    /// Set [`tools`] to true
+    ///
+    /// [`tools`]: Options::tools
+    pub fn with_tools(mut self) -> Self {
+        self.tools = true;
+        self
+    }
+
+    /// Set [`label_thoughts`] to true
+    ///
+    /// [`label_thoughts`]: Options::label_thoughts
+    pub fn label_thoughts(mut self) -> Self {
+        self.label_thoughts = true;
+        self
+    }
+
+    /// Everything a reader needs to see exactly what a model was sent: the
+    /// system prompt, tool definitions, calls and results (readable), and
+    /// labelled thinking, with text verbatim. No attributes.
+    pub fn transcript() -> Self {
+        Self {
+            attrs: false,
+            ..Self::verbose()
+                .verbatim()
+                .readable_tools()
+                .with_tools()
+                .label_thoughts()
+        }
     }
 }
 
@@ -177,6 +254,41 @@ impl PartialEq<str> for Markdown {
     fn eq(&self, other: &str) -> bool {
         self.text == other
     }
+}
+
+/// `text` as events that render to exactly `text`: an HTML block, which the
+/// Markdown writer passes through unescaped. Used by [`Options::verbatim`].
+pub(crate) fn verbatim_events(
+    text: &str,
+) -> impl Iterator<Item = pulldown_cmark::Event<'_>> {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+
+    [
+        Event::Start(Tag::HtmlBlock),
+        Event::Html(text.into()),
+        Event::End(TagEnd::HtmlBlock),
+    ]
+    .into_iter()
+}
+
+/// A labelled paragraph: `**label**` and the rest as text. Used to head tool
+/// calls, tool results and thinking under [`Options::readable_tools`] and
+/// [`Options::label_thoughts`].
+pub(crate) fn label_events<'a>(
+    label: &'a str,
+    rest: impl Into<pulldown_cmark::CowStr<'a>>,
+) -> impl Iterator<Item = pulldown_cmark::Event<'a>> {
+    use pulldown_cmark::{Event, Tag, TagEnd};
+
+    [
+        Event::Start(Tag::Paragraph),
+        Event::Start(Tag::Strong),
+        Event::Text(label.into()),
+        Event::End(TagEnd::Strong),
+        Event::Text(rest.into()),
+        Event::End(TagEnd::Paragraph),
+    ]
+    .into_iter()
 }
 
 /// A trait for types that can be converted to [`Markdown`]
@@ -306,6 +418,171 @@ mod tests {
             message.markdown().as_ref(),
             "### User\n\nHello, **world**!"
         );
+    }
+
+    /// What a reader of a transcript needs: the text as the model saw it,
+    /// the tool definitions, and calls and results it can read
+    #[test]
+    fn transcript_options_show_what_the_model_saw() {
+        use crate::prompt::{Message, Prompt, message::Role};
+        use crate::tool::{self, CustomMethodDef, MethodDef};
+        use serde_json::json;
+
+        let read = "## A post\n[post_id: 4d1f3047]\n\n- a comment\n- another";
+        let prompt = Prompt {
+            system: Some("You are *an agent*.\n- one rule".into()),
+            tools: Some(vec![MethodDef::Custom(CustomMethodDef {
+                name: "get_content".into(),
+                description: "Read anything.".into(),
+                schema: json!({"type": "object", "properties": {}}),
+                cache_control: None,
+                strict: None,
+                defer_loading: None,
+                allowed_callers: None,
+            })]),
+            messages: vec![
+                Message {
+                    role: Role::User,
+                    content: "Read [this] - please".into(),
+                },
+                tool::Use::new("get_content", json!({"id": "4d1f3047"}))
+                    .with_id("toolu_1")
+                    .into(),
+                tool::Result::new("toolu_1", read).into(),
+            ],
+            ..Default::default()
+        };
+        let md = prompt.markdown_custom(Options::transcript()).to_string();
+
+        // Text exactly as given, nothing escaped or re-listed
+        assert!(md.contains("You are *an agent*.\n- one rule"), "{md}");
+        assert!(md.contains("Read [this] - please"), "{md}");
+        // The definition, by name, with its description
+        assert!(
+            md.contains("### Tools") && md.contains("`get_content`"),
+            "{md}"
+        );
+        assert!(md.contains("Read anything."), "{md}");
+        // The call: labelled, input alone, pretty
+        assert!(
+            md.contains("**Tool call** `get_content` (`toolu_1`)"),
+            "{md}"
+        );
+        assert!(md.contains("\"id\": \"4d1f3047\""), "{md}");
+        // The result: labelled, its text as text, not escaped JSON
+        assert!(md.contains("**Tool result** for `toolu_1`"), "{md}");
+        assert!(md.contains(read), "{md}");
+        assert!(!md.contains("\\n"), "no escaped newlines: {md}");
+        // No attributes in Markdown meant for reading
+        assert!(!md.contains("role="), "{md}");
+    }
+
+    #[test]
+    fn thinking_is_labelled_and_redaction_marked() {
+        use crate::prompt::message::{Block, Content};
+
+        let content: Content = vec![
+            Block::Thought {
+                thought: "First, the *facts*.".into(),
+                signature: "sig".into(),
+            },
+            Block::RedactedThought {
+                signature: "x".into(),
+            },
+        ]
+        .into();
+        let plain = content.markdown_custom(Options::default()).to_string();
+        assert!(!plain.contains("Thinking"), "{plain}");
+        let labelled = content
+            .markdown_custom(Options::default().label_thoughts().verbatim())
+            .to_string();
+        assert!(labelled.contains("**Thinking**"), "{labelled}");
+        assert!(labelled.contains("First, the *facts*."), "{labelled}");
+        assert!(labelled.contains("**Thinking** (redacted)"), "{labelled}");
+    }
+
+    #[test]
+    fn each_option_and_its_branches() {
+        use crate::prompt::{
+            Prompt,
+            message::{Block, Content},
+        };
+        use crate::tool::{self, MethodDef, ServerMethodDef};
+
+        // Builders set exactly their field
+        let o = Options::default();
+        assert!(o.verbatim().verbatim && !o.verbatim);
+        assert!(o.readable_tools().readable_tools);
+        assert!(o.with_tools().tools);
+        assert!(o.label_thoughts().label_thoughts);
+        let t = Options::transcript();
+        assert!(t.verbatim && t.readable_tools && t.tools && t.label_thoughts);
+        assert!(t.system && t.tool_use && t.tool_results && !t.attrs);
+
+        // Thinking: verbatim alone, labelled alone
+        let thought: Content = vec![Block::Thought {
+            thought: "- a *plan*".into(),
+            signature: "sig".into(),
+        }]
+        .into();
+        let verbatim = thought.markdown_custom(o.verbatim()).to_string();
+        assert!(
+            verbatim.contains("- a *plan*") && !verbatim.contains("Thinking")
+        );
+        let labelled = thought.markdown_custom(o.label_thoughts()).to_string();
+        assert!(labelled.contains("**Thinking**") && labelled.contains("plan"));
+
+        // An error result says so; readable without tool_results shows nothing
+        let error = tool::Result {
+            is_error: true,
+            ..tool::Result::new("toolu_9", "it broke")
+        };
+        let shown = error.markdown_custom(Options::transcript()).to_string();
+        assert!(
+            shown.contains("**Tool result** for `toolu_9`, an error"),
+            "{shown}"
+        );
+        assert!(shown.contains("it broke"));
+        assert!(
+            error
+                .markdown_custom(o.readable_tools())
+                .to_string()
+                .is_empty()
+        );
+
+        // A server tool's definition is its JSON
+        let prompt = Prompt {
+            tools: Some(vec![MethodDef::Server(
+                ServerMethodDef::tool_search_regex(),
+            )]),
+            ..Default::default()
+        };
+        let defs = prompt.markdown_custom(Options::transcript()).to_string();
+        assert!(
+            defs.contains("### Tools") && defs.contains("```json"),
+            "{defs}"
+        );
+        // ...and no tools heading without the option, or with none defined
+        assert!(
+            !prompt
+                .markdown_custom(Options::verbose())
+                .to_string()
+                .contains("Tools")
+        );
+        assert!(
+            !Prompt::default()
+                .markdown_custom(t)
+                .to_string()
+                .contains("Tools")
+        );
+    }
+
+    #[test]
+    fn verbatim_text_renders_exactly() {
+        let text =
+            "- a list [post_id: 1]\n- *not* emphasis_here\n\n## A heading\n";
+        let rendered: Markdown = verbatim_events(text).into();
+        assert_eq!(rendered.as_ref().trim_end(), text.trim_end());
     }
 
     #[test]

@@ -2148,12 +2148,64 @@ impl crate::markdown::ToMarkdown for Prompt {
             Box::new(std::iter::empty())
         };
 
+        // The tool definitions, after the system prompt, when asked for:
+        // each as its name and its definition's JSON (a custom tool's as its
+        // own renderer gives it, without wire-only fields)
+        let tools: Box<dyn Iterator<Item = Event<'_>>> = match &self.tools {
+            Some(defs) if options.tools && !defs.is_empty() => {
+                let heading_level = options.heading_level.unwrap_or(H3);
+                let header = [
+                    Event::Start(Tag::Heading {
+                        level: heading_level,
+                        id: None,
+                        classes: vec![],
+                        attrs: vec![],
+                    }),
+                    Event::Text("Tools".into()),
+                    Event::End(TagEnd::Heading(heading_level)),
+                ];
+                let defs = defs.iter().flat_map(move |def| {
+                    let name = [
+                        Event::Start(Tag::Paragraph),
+                        Event::Code(def.name().to_owned().into()),
+                        Event::End(TagEnd::Paragraph),
+                    ];
+                    let body: Box<dyn Iterator<Item = Event<'_>>> = match def {
+                        tool::MethodDef::Custom(custom) => custom
+                            .markdown_events_custom(crate::markdown::Options {
+                                tool_use: true,
+                                ..options
+                            }),
+                        tool::MethodDef::Server(server) => Box::new(
+                            [
+                                Event::Start(Tag::CodeBlock(
+                                    pulldown_cmark::CodeBlockKind::Fenced(
+                                        "json".into(),
+                                    ),
+                                )),
+                                Event::Text(
+                                    serde_json::to_string_pretty(server)
+                                        .unwrap()
+                                        .into(),
+                                ),
+                                Event::End(TagEnd::CodeBlock),
+                            ]
+                            .into_iter(),
+                        ),
+                    };
+                    name.into_iter().chain(body)
+                });
+                Box::new(header.into_iter().chain(defs))
+            }
+            _ => Box::new(std::iter::empty()),
+        };
+
         let messages = self
             .messages
             .iter()
             .flat_map(move |m| m.markdown_events_custom(options));
 
-        Box::new(system.chain(messages))
+        Box::new(system.chain(tools).chain(messages))
     }
 }
 

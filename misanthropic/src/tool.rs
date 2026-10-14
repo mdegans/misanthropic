@@ -2222,7 +2222,33 @@ impl crate::markdown::ToMarkdown for Use {
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
-        if options.tool_use {
+        if options.tool_use && options.readable_tools {
+            // **Tool call** `name` (`id`), then the input alone
+            Box::new(
+                [
+                    Event::Start(Tag::Paragraph),
+                    Event::Start(Tag::Strong),
+                    Event::Text("Tool call".into()),
+                    Event::End(TagEnd::Strong),
+                    Event::Text(" ".into()),
+                    Event::Code(self.name.as_ref().into()),
+                    Event::Text(" (".into()),
+                    Event::Code(self.id.as_ref().into()),
+                    Event::Text(")".into()),
+                    Event::End(TagEnd::Paragraph),
+                    Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(
+                        "json".into(),
+                    ))),
+                    Event::Text(
+                        serde_json::to_string_pretty(&self.input)
+                            .unwrap()
+                            .into(),
+                    ),
+                    Event::End(TagEnd::CodeBlock),
+                ]
+                .into_iter(),
+            )
+        } else if options.tool_use {
             Box::new(
                 [
                     Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(
@@ -2344,7 +2370,26 @@ impl crate::markdown::ToMarkdown for Result {
     ) -> Box<dyn Iterator<Item = pulldown_cmark::Event<'_>> + '_> {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
-        if options.tool_results {
+        if options.tool_results && options.readable_tools {
+            // **Tool result** for `id` (an error), then the content itself,
+            // rendered with the same options
+            let head = [
+                Event::Start(Tag::Paragraph),
+                Event::Start(Tag::Strong),
+                Event::Text("Tool result".into()),
+                Event::End(TagEnd::Strong),
+                Event::Text(" for ".into()),
+                Event::Code(self.tool_use_id.as_ref().into()),
+                Event::Text(
+                    if self.is_error { ", an error" } else { "" }.into(),
+                ),
+                Event::End(TagEnd::Paragraph),
+            ];
+            Box::new(
+                head.into_iter()
+                    .chain(self.content.markdown_events_custom(options)),
+            )
+        } else if options.tool_results {
             Box::new(
                 [
                     Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(

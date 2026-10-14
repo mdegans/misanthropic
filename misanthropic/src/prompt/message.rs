@@ -2293,6 +2293,9 @@ impl crate::markdown::ToMarkdown for Block {
         use pulldown_cmark::{CodeBlockKind, Event, Tag, TagEnd};
 
         let it: Box<dyn Iterator<Item = Event<'_>> + '_> = match self {
+            Self::Text { text, .. } if options.verbatim => {
+                Box::new(crate::markdown::verbatim_events(text))
+            }
             Self::Text { text, .. } => {
                 // We'll parse the inner text as markdown.
                 Box::new(pulldown_cmark::Parser::new_ext(text, options.inner))
@@ -2301,6 +2304,11 @@ impl crate::markdown::ToMarkdown for Block {
                 // We use Event::Text for images because they are rendered as
                 // markdown images with embedded base64 data.
                 Box::new([Event::Text(image.to_string().into())].into_iter())
+            }
+            // Readable: the call's own renderer. Otherwise the block as
+            // compact JSON, as before.
+            Block::ToolUse { call } if options.readable_tools => {
+                call.markdown_events_custom(options)
             }
             Block::ToolUse { .. } | Block::ServerToolUse { .. } => {
                 if options.tool_use {
@@ -2322,6 +2330,27 @@ impl crate::markdown::ToMarkdown for Block {
             }
             Block::Thought {
                 thought: thinking, ..
+            } if options.label_thoughts => {
+                let body: Box<dyn Iterator<Item = Event<'_>>> =
+                    if options.verbatim {
+                        Box::new(crate::markdown::verbatim_events(thinking))
+                    } else {
+                        Box::new(pulldown_cmark::Parser::new_ext(
+                            thinking,
+                            options.inner,
+                        ))
+                    };
+                Box::new(
+                    crate::markdown::label_events("Thinking", "").chain(body),
+                )
+            }
+            Block::Thought {
+                thought: thinking, ..
+            } if options.verbatim => {
+                Box::new(crate::markdown::verbatim_events(thinking))
+            }
+            Block::Thought {
+                thought: thinking, ..
             } => Box::new(Box::new(pulldown_cmark::Parser::new_ext(
                 thinking,
                 options.inner,
@@ -2329,8 +2358,18 @@ impl crate::markdown::ToMarkdown for Block {
             // Anthropic says to be transparent with the user but I think this
             // is naive. Users do not need to know if a thought was redacted.
             // A `tool_reference` is tool-search plumbing, not user content.
+            Block::RedactedThought { .. } if options.label_thoughts => {
+                Box::new(crate::markdown::label_events(
+                    "Thinking",
+                    " (redacted)",
+                ))
+            }
             Block::RedactedThought { .. } | Block::ToolReference { .. } => {
                 Box::new(std::iter::empty())
+            }
+            // Readable: the result's own renderer, as for a call
+            Block::ToolResult { result } if options.readable_tools => {
+                result.markdown_events_custom(options)
             }
             Block::ToolResult { .. }
             | Block::WebSearchToolResult { .. }

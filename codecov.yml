@@ -30,3 +30,17 @@ flag_management:
 # misanthropic/src/dioxus.rs, ships and stays counted.
 ignore:
   - "chat/**"
+
+# Coverage gates (Steward, 2026-10-14): at least 90%, and free to move
+# between 90 and 100 without failing CI or reddening the badge. Codecov's
+# default (`target: auto`, threshold 0) failed any drop below the parent
+# commit, however small; an absolute target fails only below the floor.
+# New code (the patch) is held to the same floor.
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+    patch:
+      default:
+        target: 90%

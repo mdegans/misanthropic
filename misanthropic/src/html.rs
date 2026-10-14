@@ -162,6 +162,11 @@ pub trait ToHtml: ToMarkdown {
 
     /// Render the type to an HTML string with custom [`Options`].
     fn html_custom(&self, options: Options) -> Html {
+        // Verbatim text would pass through as raw HTML: never here
+        let options = Options {
+            verbatim: false,
+            ..options
+        };
         self.markdown_events_custom(options).collect()
     }
 }
@@ -202,6 +207,14 @@ mod tests {
             message.html_custom(opts).as_ref(),
             "<h3 role=\"user\">User</h3>\n<p>Hello, <strong>world</strong>!</p>\n",
         );
+    }
+
+    /// HTML never takes text verbatim: it would pass as raw HTML
+    #[test]
+    fn html_ignores_verbatim() {
+        let content: crate::prompt::message::Content = "<b>hi</b>".into();
+        let html = content.html_custom(Options::default().verbatim());
+        assert!(!html.contains("<b>hi</b>"), "{html}");
     }
 
     #[test]
