@@ -15,6 +15,18 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.24] — 2026-10-14
+
+### Changed
+
+- **Dependencies refreshed to clear RustSec advisories.** rustls 0.23.46
+  (RUSTSEC-2026-0346..0349); the optional `shuttle` feature now uses
+  shuttle-runtime 0.57 (0.51 pulled in rustls 0.21, rustls-webpki 0.101 and
+  h2 0.3, each with open advisories).
+- **bashd parses PEM with `rustls::pki_types`** instead of the unmaintained
+  rustls-pemfile (RUSTSEC-2025-0134). A malformed PEM error now names which
+  input was bad.
+
 ## [1.0.0-alpha.23] — 2026-10-14
 
 ### Added
