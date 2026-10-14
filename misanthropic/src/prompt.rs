@@ -2170,12 +2170,25 @@ impl crate::markdown::ToMarkdown for Prompt {
                         Event::Code(def.name().to_owned().into()),
                         Event::End(TagEnd::Paragraph),
                     ];
+                    // Each definition whole, `strict` included: a reader of
+                    // a transcript must see what changes decoding
                     let body: Box<dyn Iterator<Item = Event<'_>>> = match def {
-                        tool::MethodDef::Custom(custom) => custom
-                            .markdown_events_custom(crate::markdown::Options {
-                                tool_use: true,
-                                ..options
-                            }),
+                        tool::MethodDef::Custom(custom) => Box::new(
+                            [
+                                Event::Start(Tag::CodeBlock(
+                                    pulldown_cmark::CodeBlockKind::Fenced(
+                                        "json".into(),
+                                    ),
+                                )),
+                                Event::Text(
+                                    serde_json::to_string_pretty(custom)
+                                        .unwrap()
+                                        .into(),
+                                ),
+                                Event::End(TagEnd::CodeBlock),
+                            ]
+                            .into_iter(),
+                        ),
                         tool::MethodDef::Server(server) => Box::new(
                             [
                                 Event::Start(Tag::CodeBlock(
@@ -2205,7 +2218,41 @@ impl crate::markdown::ToMarkdown for Prompt {
             .iter()
             .flat_map(move |m| m.markdown_events_custom(options));
 
-        Box::new(system.chain(tools).chain(messages))
+        // The settings: the request less what is rendered elsewhere
+        let settings: Box<dyn Iterator<Item = Event<'_>>> = if options.settings
+        {
+            let mut rest = serde_json::to_value(self).unwrap();
+            if let Some(map) = rest.as_object_mut() {
+                map.retain(|key, _| {
+                    !matches!(key.as_str(), "system" | "tools" | "messages")
+                });
+            }
+            let heading_level = options.heading_level.unwrap_or(H3);
+            Box::new(
+                [
+                    Event::Start(Tag::Heading {
+                        level: heading_level,
+                        id: None,
+                        classes: vec![],
+                        attrs: vec![],
+                    }),
+                    Event::Text("Settings".into()),
+                    Event::End(TagEnd::Heading(heading_level)),
+                    Event::Start(Tag::CodeBlock(
+                        pulldown_cmark::CodeBlockKind::Fenced("json".into()),
+                    )),
+                    Event::Text(
+                        serde_json::to_string_pretty(&rest).unwrap().into(),
+                    ),
+                    Event::End(TagEnd::CodeBlock),
+                ]
+                .into_iter(),
+            )
+        } else {
+            Box::new(std::iter::empty())
+        };
+
+        Box::new(system.chain(settings).chain(tools).chain(messages))
     }
 }
 

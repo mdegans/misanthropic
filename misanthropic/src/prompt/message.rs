@@ -719,7 +719,13 @@ where
                     return Box::new(std::iter::empty());
                 }
 
-                if *is_error { "Error" } else { "Tool" }
+                // Readable results say each one's error themselves, so a
+                // message of several is not headed by its last one's
+                if *is_error && !options.readable_tools {
+                    "Error"
+                } else {
+                    "Tool"
+                }
             }
             Some(Block::ToolUse { .. }) => {
                 if !options.tool_use {
@@ -747,7 +753,12 @@ where
             Event::End(heading_end),
         ];
 
-        Box::new(heading.into_iter().chain(content))
+        let rule: Box<dyn Iterator<Item = Event<'_>>> = if options.separators {
+            Box::new(std::iter::once(Event::Rule))
+        } else {
+            Box::new(std::iter::empty())
+        };
+        Box::new(rule.chain(heading).chain(content))
     }
 }
 

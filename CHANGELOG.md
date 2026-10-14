@@ -38,10 +38,19 @@ record; this file aggregates them.
   - `label_thoughts` (`.label_thoughts()`): thinking under a **Thinking**
     label, and **Thinking** (redacted) where it was redacted (it rendered as
     nothing).
+  - `settings` (`.with_settings()`): a `Prompt`'s settings (everything but
+    the system prompt, tools and messages: model, `max_tokens`, thinking,
+    `tool_choice`, `output_config`…) as JSON, under **Settings**.
+  - `separators` (`.separators()`): a horizontal rule before each message,
+    so a message's heading can't be mistaken for a heading in the content
+    before it.
+  - Under `readable_tools`, a message of tool results is headed **Tool**
+    even when its last result is an error (each result says its own); and
+    with `tools`, a definition is shown whole, `strict` included.
 
 ### Breaking
 
-- `markdown::Options` has four more public fields; a struct literal needs
+- `markdown::Options` has six more public fields; a struct literal needs
   them, or `..Default::default()`.
 
 ### Not changed (noted)

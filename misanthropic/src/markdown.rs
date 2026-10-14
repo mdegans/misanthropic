@@ -15,6 +15,8 @@ pub const DEFAULT_OPTIONS: Options = Options {
     readable_tools: false,
     tools: false,
     label_thoughts: false,
+    settings: false,
+    separators: false,
 };
 
 /// Verbose [`Options`]
@@ -29,6 +31,8 @@ pub const VERBOSE_OPTIONS: Options = Options {
     readable_tools: false,
     tools: false,
     label_thoughts: false,
+    settings: false,
+    separators: false,
 };
 
 mod serde_inner {
@@ -108,6 +112,15 @@ pub struct Options {
     /// rather than rendering thinking like any text and redacted thinking
     /// as nothing
     pub label_thoughts: bool,
+    /// Include a [`Prompt`]'s settings (model, `max_tokens`, thinking,
+    /// `tool_choice`, `output_config` and the rest: everything but the
+    /// system prompt, tools and messages), as JSON, after the system prompt
+    ///
+    /// [`Prompt`]: crate::prompt::Prompt
+    pub settings: bool,
+    /// A horizontal rule before each message's heading, so a message's
+    /// start can't be mistaken for a heading inside the content before it
+    pub separators: bool,
 }
 
 impl Options {
@@ -172,9 +185,26 @@ impl Options {
         self
     }
 
+    /// Set [`settings`] to true
+    ///
+    /// [`settings`]: Options::settings
+    pub fn with_settings(mut self) -> Self {
+        self.settings = true;
+        self
+    }
+
+    /// Set [`separators`] to true
+    ///
+    /// [`separators`]: Options::separators
+    pub fn separators(mut self) -> Self {
+        self.separators = true;
+        self
+    }
+
     /// Everything a reader needs to see exactly what a model was sent: the
-    /// system prompt, tool definitions, calls and results (readable), and
-    /// labelled thinking, with text verbatim. No attributes.
+    /// system prompt, the settings, tool definitions, calls and results
+    /// (readable), and labelled thinking, with text verbatim and each
+    /// message set off by a rule. No attributes.
     pub fn transcript() -> Self {
         Self {
             attrs: false,
@@ -183,6 +213,8 @@ impl Options {
                 .readable_tools()
                 .with_tools()
                 .label_thoughts()
+                .with_settings()
+                .separators()
         }
     }
 }
@@ -261,11 +293,18 @@ impl PartialEq<str> for Markdown {
 pub(crate) fn verbatim_events(
     text: &str,
 ) -> impl Iterator<Item = pulldown_cmark::Event<'_>> {
-    use pulldown_cmark::{Event, Tag, TagEnd};
+    use pulldown_cmark::{CowStr, Event, Tag, TagEnd};
 
+    // The block must end in a newline, or the next block's first line
+    // joins its last (a result's text ran into the next result's label)
+    let text: CowStr<'_> = if text.ends_with('\n') {
+        text.into()
+    } else {
+        format!("{text}\n").into()
+    };
     [
         Event::Start(Tag::HtmlBlock),
-        Event::Html(text.into()),
+        Event::Html(text),
         Event::End(TagEnd::HtmlBlock),
     ]
     .into_iter()
@@ -475,6 +514,73 @@ mod tests {
         assert!(!md.contains("\\n"), "no escaped newlines: {md}");
         // No attributes in Markdown meant for reading
         assert!(!md.contains("role="), "{md}");
+        // Each message set off by a rule; the settings shown
+        assert!(md.contains("---\n\n### User"), "{md}");
+        assert!(
+            md.contains("### Settings") && md.contains("\"max_tokens\""),
+            "{md}"
+        );
+        assert!(
+            !md.contains("\"messages\""),
+            "the settings leave out messages: {md}"
+        );
+    }
+
+    /// A message of several results is headed Tool even when its last is an
+    /// error; each result says its own. Verbatim text is set off from the
+    /// next block by a blank line. A definition is shown whole.
+    #[test]
+    fn transcript_mixed_results_blank_lines_and_strict() {
+        use crate::prompt::{
+            Prompt,
+            message::{Block, Content, Message, Role},
+        };
+        use crate::tool::{self, CustomMethodDef, MethodDef};
+        use serde_json::json;
+
+        let results: Content = vec![
+            Block::ToolResult {
+                result: tool::Result::new("t1", "Vote recorded"),
+            },
+            Block::ToolResult {
+                result: tool::Result {
+                    is_error: true,
+                    ..tool::Result::new("t2", "No community")
+                },
+            },
+        ]
+        .into();
+        let prompt = Prompt {
+            system: Some("The end of the system prompt.".into()),
+            tools: Some(vec![MethodDef::Custom(CustomMethodDef {
+                name: "cast_vote".into(),
+                description: "Vote.".into(),
+                schema: json!({"type": "object", "properties": {}}),
+                cache_control: None,
+                strict: Some(true),
+                defer_loading: None,
+                allowed_callers: None,
+            })]),
+            messages: vec![Message {
+                role: Role::User,
+                content: results,
+            }],
+            ..Default::default()
+        };
+        let md = prompt.markdown_custom(Options::transcript()).to_string();
+        assert!(
+            md.contains("### Tool\n") && !md.contains("### Error"),
+            "{md}"
+        );
+        assert!(
+            md.contains("Vote recorded\n\n**Tool result** for `t2`, an error"),
+            "{md}"
+        );
+        assert!(md.contains("The end of the system prompt.\n\n"), "{md}");
+        assert!(md.contains("\"strict\": true"), "{md}");
+        // Without readable tools, an error last still heads the message
+        let plain = prompt.markdown_custom(Options::verbose()).to_string();
+        assert!(plain.contains("### Error"), "{plain}");
     }
 
     #[test]
@@ -515,8 +621,10 @@ mod tests {
         assert!(o.readable_tools().readable_tools);
         assert!(o.with_tools().tools);
         assert!(o.label_thoughts().label_thoughts);
+        assert!(o.with_settings().settings && o.separators().separators);
         let t = Options::transcript();
         assert!(t.verbatim && t.readable_tools && t.tools && t.label_thoughts);
+        assert!(t.settings && t.separators);
         assert!(t.system && t.tool_use && t.tool_results && !t.attrs);
 
         // Thinking: verbatim alone, labelled alone
