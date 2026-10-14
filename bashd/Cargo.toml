@@ -45,7 +45,6 @@ nix = { version = "0.29", features = ["signal"] }
 # aws-lc-rs is rustls's default backend (tried first on the static-musl build; a
 # one-line flip to `ring` if it ever fights the toolchain — see `tls.rs`).
 rustls = "0.23"
-rustls-pemfile = "2"
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 # Wipe the raw TLS material read from stdin once it's parsed into rustls.
 zeroize = "1"
