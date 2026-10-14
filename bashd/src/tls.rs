@@ -14,6 +14,8 @@ use std::sync::Arc;
 
 use misanthropic::tool::bash::TlsServerMaterial;
 use rustls::ServerConfig;
+use rustls::pki_types::pem::{self, PemObject};
+use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use rustls::server::WebPkiClientVerifier;
 
 /// Build the mutual-TLS [`ServerConfig`] from the host-supplied [`TlsServerMaterial`]:
@@ -23,15 +25,23 @@ pub fn server_config(
 ) -> std::io::Result<Arc<ServerConfig>> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
 
-    let certs = rustls_pemfile::certs(&mut tls.cert_chain_pem.as_bytes())
-        .collect::<Result<Vec<_>, _>>()?;
-    let key = rustls_pemfile::private_key(&mut tls.key_pem.as_bytes())?
-        .ok_or_else(|| invalid("no private key in bashd server material"))?;
+    let certs = CertificateDer::pem_slice_iter(tls.cert_chain_pem.as_bytes())
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| pem_error("server cert chain", e))?;
+    let key =
+        PrivateKeyDer::from_pem_slice(tls.key_pem.as_bytes()).map_err(|e| {
+            match e {
+                pem::Error::NoItemsFound => {
+                    invalid("no private key in bashd server material")
+                }
+                e => pem_error("server key", e),
+            }
+        })?;
 
     let mut roots = rustls::RootCertStore::empty();
-    for ca in rustls_pemfile::certs(&mut tls.ca_pem.as_bytes()) {
+    for ca in CertificateDer::pem_slice_iter(tls.ca_pem.as_bytes()) {
         roots
-            .add(ca?)
+            .add(ca.map_err(|e| pem_error("CA cert", e))?)
             .map_err(|e| invalid(&format!("bad CA cert: {e}")))?;
     }
     let verifier = WebPkiClientVerifier::builder_with_provider(
@@ -51,6 +61,11 @@ pub fn server_config(
     // clients can stall the handshake.
     config.alpn_protocols = vec![b"http/1.1".to_vec()];
     Ok(Arc::new(config))
+}
+
+/// An `InvalidData` I/O error for PEM that would not parse as `what`.
+fn pem_error(what: &str, e: pem::Error) -> std::io::Error {
+    invalid(&format!("bad PEM in {what}: {e}"))
 }
 
 /// An `InvalidData` I/O error with `msg`.

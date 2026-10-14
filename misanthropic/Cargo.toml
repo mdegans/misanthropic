@@ -169,7 +169,7 @@ langsan = { version = "0.0.15", features = [
 # For HTML escaping
 xml-rs = { version = "0.8", optional = true }
 # For shuttle-runtime support
-shuttle-runtime = { version = "0.51", optional = true }
+shuttle-runtime = { version = "0.57", optional = true }
 # async/await
 async-stream = "0.3"
 # for date and time parsing
