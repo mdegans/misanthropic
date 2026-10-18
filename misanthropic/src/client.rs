@@ -1786,7 +1786,7 @@ mod tests {
         init_log();
 
         let client = Client::new(FAKE_API_KEY.to_string()).unwrap();
-        assert_eq!(client.key.to_string(), FAKE_API_KEY);
+        assert_eq!(client.key.read().as_ref(), FAKE_API_KEY.as_bytes());
 
         // Apparently there isn't a way to check if the headers have been set
         // on the client. Making a request returns a builder but the headers

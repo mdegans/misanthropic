@@ -22,12 +22,11 @@ impl From<InvalidKeyLength> for shuttle_runtime::Error {
     }
 }
 
-/// Stores an Anthropic API key securely. The object features a [`Display`]
-/// implementation that can be used to write out the key. **Be sure to zeroize
-/// whatever you write it to**. The key is zeroized on drop.
+/// Stores an Anthropic API key securely. The key is zeroized on drop and its
+/// [`Debug`] output is redacted; use [`Key::read`] to get at the bytes.
 ///
-/// [`Display`]: std::fmt::Display
-#[derive(Debug, ZeroizeOnDrop)]
+/// [`Debug`]: std::fmt::Debug
+#[derive(ZeroizeOnDrop)]
 pub struct Key {
     mem: Arr,
 }
@@ -74,17 +73,10 @@ impl TryFrom<Vec<u8>> for Key {
     }
 }
 
-impl std::fmt::Display for Key {
-    /// Write out the key. Make sure to zeroize whatever you write it to if at
-    /// all possible.
-    ///
-    /// Prefer [`Self::read`] if you want a return value that will automatically
-    /// zeroize the key on drop.
+impl std::fmt::Debug for Key {
+    /// Prints `Key([REDACTED])`, never the key.
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Unwrap can never panic because a Key can only be created from String
-        // whic is guaranteed to be valid UTF-8.
-        let key_str = std::str::from_utf8(self.read()).unwrap();
-        write!(f, "{}", key_str)
+        f.write_str("Key([REDACTED])")
     }
 }
 
@@ -100,9 +92,29 @@ mod tests {
     #[test]
     fn test_key() {
         let key = Key::try_from(API_KEY.to_string()).unwrap();
-        let key_str = key.to_string();
-        assert_eq!(key_str, API_KEY);
+        assert_eq!(key.read().as_ref(), API_KEY.as_bytes());
     }
+
+    #[test]
+    fn test_debug_is_redacted() {
+        let key = Key::try_from(API_KEY.to_string()).unwrap();
+        for debug in [format!("{key:?}"), format!("{key:#?}")] {
+            assert_eq!(debug, "Key([REDACTED])");
+            // Belt and braces: no 8-byte window of the key appears.
+            assert!(
+                API_KEY
+                    .as_bytes()
+                    .windows(8)
+                    .all(|w| !debug.contains(std::str::from_utf8(w).unwrap()))
+            );
+        }
+    }
+
+    // Both variants of `Key` must wipe themselves on drop.
+    const _: fn() = || {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<Key>();
+    };
 
     #[test]
     fn test_invalid_key_length() {
