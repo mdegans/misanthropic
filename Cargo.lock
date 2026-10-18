@@ -484,7 +484,7 @@ checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
 
 [[package]]
 name = "bashd"
-version = "1.0.0-alpha.24"
+version = "1.0.0-alpha.25"
 dependencies = [
  "async-stream",
  "axum",
@@ -3115,7 +3115,7 @@ dependencies = [
 
 [[package]]
 name = "misanthropic"
-version = "1.0.0-alpha.24"
+version = "1.0.0-alpha.25"
 dependencies = [
  "arboard",
  "async-stream",
@@ -3163,7 +3163,7 @@ dependencies = [
 
 [[package]]
 name = "misanthropic-derive"
-version = "1.0.0-alpha.24"
+version = "1.0.0-alpha.25"
 dependencies = [
  "proc-macro2",
  "quote",

@@ -15,6 +15,26 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.25] — 2026-10-18
+
+### Breaking
+
+- **`Key` no longer implements `Display`.** It wrote the raw key out to
+  anything formatting it (`to_string()`, `format!("{key}")`, a log line).
+  Use `Key::read()` for the bytes; the encrypted (`memsecurity`) variant's
+  return value is zeroized on drop.
+
+### Fixed
+
+- **`Key`'s `Debug` is redacted.** The unencrypted `Key` derived `Debug`,
+  which printed the key's raw bytes (`Key { mem: [115, 107, …] }`) wherever a
+  `Key`, or anything holding one, was `{:?}`-formatted. Both variants now
+  print `Key([REDACTED])`.
+- **The encrypted `Key` implements `ZeroizeOnDrop`**, as the unencrypted one
+  already did. Its ciphertext is a `memsecurity::ZeroizeBytes`, which already
+  zeroized on drop; the marker makes that guarantee visible to bounds. A test
+  asserts both variants implement it.
+
 ## [1.0.0-alpha.24] — 2026-10-14
 
 ### Changed
