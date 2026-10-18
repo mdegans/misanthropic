@@ -22,14 +22,11 @@ impl From<InvalidKeyLength> for shuttle_runtime::Error {
         shuttle_runtime::Error::Custom(e.into())
     }
 }
-/// Stores an Anthropic API key securely. The API key is encrypted in memory.
-/// The object features a [`Display`] implementation that can be used to write
-/// out the key. **Be sure to zeroize whatever you write it to**. Prefer
-/// [`Key::read`] if you want a return value that will automatically zeroize
-/// the key on drop.
+/// Stores an Anthropic API key securely. The API key is encrypted in memory,
+/// zeroized on drop, and its [`Debug`] output is redacted. Use [`Key::read`]
+/// to get at the bytes; the value it returns is zeroized on drop.
 ///
-/// [`Display`]: std::fmt::Display
-#[derive(Debug)]
+/// [`Debug`]: std::fmt::Debug
 pub struct Key {
     // FIXME: `memsecurity` does not build on wasm32. Find a solution for web.
     // The `keyring` crate may work, but I'm likewise not sure if it builds on
@@ -79,21 +76,19 @@ impl TryFrom<Vec<u8>> for Key {
     }
 }
 
-impl std::fmt::Display for Key {
-    /// Write out the key. Make sure to zeroize whatever you write it to if at
-    /// all possible.
-    ///
-    /// Prefer [`Self::read`] if you want a return value that will automatically
-    /// zeroize the key on drop.
+impl std::fmt::Debug for Key {
+    /// Prints `Key([REDACTED])`, never the key (nor its ciphertext).
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Zeroized on drop
-        let key = self.read();
-        // Unwrap can never panic because a Key can only be created from a
-        // String which is guaranteed to be valid UTF-8.
-        let key_str = std::str::from_utf8(key.as_ref()).unwrap();
-        write!(f, "{}", key_str)
+        f.write_str("Key([REDACTED])")
     }
 }
+
+// The only field is a `memsecurity::EncryptedMem`, whose ciphertext is a
+// `memsecurity::ZeroizeBytes`. That type zeroizes itself in its `Drop` impl
+// (and implements `ZeroizeOnDrop` itself), so dropping a `Key` wipes the
+// ciphertext with no `Drop` of our own. The nonce beside it is not secret.
+// `EncryptedMem` doesn't implement `ZeroizeOnDrop`, so this can't be derived.
+impl zeroize::ZeroizeOnDrop for Key {}
 
 #[cfg(test)]
 mod tests {
@@ -107,9 +102,29 @@ mod tests {
     #[test]
     fn test_key() {
         let key = Key::try_from(API_KEY.to_string()).unwrap();
-        let key_str = key.to_string();
-        assert_eq!(key_str, API_KEY);
+        assert_eq!(key.read().as_ref(), API_KEY.as_bytes());
     }
+
+    #[test]
+    fn test_debug_is_redacted() {
+        let key = Key::try_from(API_KEY.to_string()).unwrap();
+        for debug in [format!("{key:?}"), format!("{key:#?}")] {
+            assert_eq!(debug, "Key([REDACTED])");
+            // Belt and braces: no 8-byte window of the key appears.
+            assert!(
+                API_KEY
+                    .as_bytes()
+                    .windows(8)
+                    .all(|w| !debug.contains(std::str::from_utf8(w).unwrap()))
+            );
+        }
+    }
+
+    // Both variants of `Key` must wipe themselves on drop.
+    const _: fn() = || {
+        fn assert_zeroize_on_drop<T: zeroize::ZeroizeOnDrop>() {}
+        assert_zeroize_on_drop::<Key>();
+    };
 
     #[test]
     fn test_invalid_key_length() {
