@@ -102,7 +102,7 @@ mod tests {
     #[test]
     fn test_key() {
         let key = Key::try_from(API_KEY.to_string()).unwrap();
-        assert_eq!(key.read().as_ref(), API_KEY.as_bytes());
+        assert_eq!(AsRef::<[u8]>::as_ref(&key.read()), API_KEY.as_bytes());
     }
 
     #[test]
