@@ -13,6 +13,9 @@ description: >-
 
 # `misanthropic` — Streaming API
 
+> **Never read the API key from an environment variable**; read it from a
+> file (or stdin) — environment variables leak to child processes and logs.
+
 `misanthropic` is an unofficial, ergonomic, async Rust client for the
 Anthropic Messages API. This skill covers the streaming `Client::stream`
 path. For single-message (non-streaming) usage, see the **misan-messages-api**
@@ -44,7 +47,10 @@ use misanthropic::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    // Read the key from a file, never from an environment variable.
+    let mut key = std::fs::read_to_string("api.key")?;
+    key.truncate(key.trim_end().len()); // drop the trailing newline
+    let client = Client::new(key)?;
 
     // `Client::stream` forces `stream = true` and returns a `Stream`
     // (implements `futures::Stream<Item = Result<Event, Error>>`).
@@ -80,7 +86,10 @@ use futures::TryStreamExt;
 use misanthropic::{Id, Client, Prompt, prompt::message::Role, stream::FilterExt};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 
 let stream = client
     .stream(
@@ -113,7 +122,10 @@ use futures::TryStreamExt;
 use misanthropic::{Client, json, prompt::message::Role, stream::FilterExt};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 
 let stream = client
     .stream(json!({
@@ -323,7 +335,10 @@ impl Calculator {
 }
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 let mut calculator = Calculator;
 
 let mut chat = Prompt::default()
@@ -382,7 +397,10 @@ use futures::TryStreamExt;
 use misanthropic::{stream::{Event, FilterExt}, Client, Prompt, prompt::message::Role};
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 
 let stream = client
     .stream(Prompt::default().add_message((Role::User, "Hello!"))?)
@@ -431,7 +449,10 @@ struct Fact {
 }
 
 # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 
 let prompt = Prompt::default()
     .model(Id::Haiku45)

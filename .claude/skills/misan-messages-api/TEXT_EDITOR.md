@@ -19,7 +19,10 @@ use misanthropic::{
     tool::{TextEditor, Tool, text_editor::FsEditorBackend},
 };
 
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 let mut editor = FsEditorBackend::new("./workspace").await?; // jailed to dir
 
 let mut chat = Prompt::default()
