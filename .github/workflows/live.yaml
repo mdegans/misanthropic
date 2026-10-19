@@ -136,17 +136,42 @@ jobs:
         uses: taiki-e/install-action@nextest
 
       # load_api_key reads CRATE_ROOT/api.key — the misanthropic crate dir.
+      # The key itself goes on tmpfs (/dev/shm is RAM on hosted and
+      # self-hosted runners alike), so it never reaches an ext4 disk; api.key
+      # is a symlink to it. Only without /dev/shm does it fall back to a plain
+      # file in the workspace. The path is not secret, so it goes in
+      # GITHUB_ENV for the cleanup step.
       - name: Write API key to api.key
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: printf '%s' "$ANTHROPIC_API_KEY" > misanthropic/api.key
+        run: |
+          if [ -d /dev/shm ]; then
+            keyfile=$(mktemp -p /dev/shm misanthropic-key.XXXXXX)
+            printf '%s' "$ANTHROPIC_API_KEY" > "$keyfile"
+            ln -sf "$keyfile" misanthropic/api.key
+          else
+            keyfile=misanthropic/api.key
+            printf '%s' "$ANTHROPIC_API_KEY" > "$keyfile"
+          fi
+          echo "MISANTHROPIC_KEYFILE=$keyfile" >> "$GITHUB_ENV"
 
       - name: Collect coverage data (including ignored tests)
         run: cargo llvm-cov nextest --all-features --run-ignored all --lcov --output-path lcov.info
 
+      # Only the test step above needs the key. Third-party actions later in
+      # the job (the Codecov uploader was compromised in 2021 to exfiltrate CI
+      # secrets) must never run with it on disk, so remove it even on failure.
+      # On tmpfs shred is belt-and-braces; on the fallback disk its overwrite
+      # is best-effort (journaling and copy-on-write filesystems). Removing
+      # the key before third-party steps is what counts.
       - name: Remove api.key
         if: always()
-        run: rm -f misanthropic/api.key
+        run: |
+          if [ -n "$MISANTHROPIC_KEYFILE" ]; then
+            shred -u "$MISANTHROPIC_KEYFILE" 2>/dev/null \
+              || rm -f "$MISANTHROPIC_KEYFILE"
+          fi
+          rm -f misanthropic/api.key
 
       # Kept for coverage-main.yaml: a squash merge takes the PR head out of
       # main's history, so the report below never reaches main. The push to
