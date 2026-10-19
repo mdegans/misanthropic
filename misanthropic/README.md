@@ -25,7 +25,10 @@ use misanthropic::{
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    // Read the key from a file, never from an environment variable.
+    let mut key = std::fs::read_to_string("api.key")?;
+    key.truncate(key.trim_end().len()); // drop the trailing newline
+    let client = Client::new(key)?;
 
     let stream = client
         .stream(
@@ -89,7 +92,10 @@ impl Weather {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    // Read the key from a file, never from an environment variable.
+    let mut key = std::fs::read_to_string("api.key")?;
+    key.truncate(key.trim_end().len()); // drop the trailing newline
+    let client = Client::new(key)?;
     let mut weather = Weather;
 
     let mut chat = Prompt::default()
@@ -140,7 +146,10 @@ struct Triage {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+    // Read the key from a file, never from an environment variable.
+    let mut key = std::fs::read_to_string("api.key")?;
+    key.truncate(key.trim_end().len()); // drop the trailing newline
+    let client = Client::new(key)?;
 
     let prompt = Prompt::default()
         .model(Id::Haiku45)

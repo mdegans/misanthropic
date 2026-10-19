@@ -29,7 +29,10 @@ use misanthropic::{
     tool::{Tool, ToolBox, bash::{BashTool, DockerSandbox}},
 };
 
-let client = Client::new(std::env::var("ANTHROPIC_API_KEY")?)?;
+// Read the key from a file, never from an environment variable.
+let mut key = std::fs::read_to_string("api.key")?;
+key.truncate(key.trim_end().len()); // drop the trailing newline
+let client = Client::new(key)?;
 
 // The default sandbox: the baked `misan-bashd` image (read-only rootfs, bashd
 // already inside), booted as a non-root user and torn down at the end.
