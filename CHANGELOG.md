@@ -15,6 +15,8 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+## [1.0.0-alpha.26] — 2026-11-17
+
 ### Added
 
 - **`WebFetch::url_sources`**: which parts of the conversation the web fetch
