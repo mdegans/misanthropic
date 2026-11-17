@@ -688,6 +688,18 @@ mod tests {
                 ..Default::default()
             }))
             .add_tool(tool::ServerMethodDef::web_fetch(Default::default()))
+            .add_tool(tool::ServerMethodDef::web_fetch(tool::WebFetch {
+                url_sources: Some(tool::UrlSources {
+                    user_input: Some(tool::UserInputSource::None),
+                    client_tool_results: Some(tool::ToolResultSource::except(
+                        ["lookup"],
+                    )),
+                    server_tool_results: Some(tool::ToolResultSource::only([
+                        tool::ServerToolName::WebSearch,
+                    ])),
+                }),
+                ..Default::default()
+            }))
             .add_tool(tool::ServerMethodDef::tool_search_regex())
             .add_tool(tool::ServerMethodDef::tool_search_bm25())
             .add_tool(tool::ServerMethodDef::code_execution())

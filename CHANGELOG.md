@@ -15,6 +15,32 @@ record; this file aggregates them.
 
 ## [Unreleased]
 
+### Added
+
+- **`WebFetch::url_sources`**: which parts of the conversation the web fetch
+  tool may take URLs from (Anthropic's `url_sources` parameter). A
+  `UrlSources` has one optional key per source, each omitted from the wire
+  when unset, so a default `WebFetch` serializes as before:
+  - `user_input`: a `UserInputSource`, `All` or `None`. It has no filter
+    variants, so an `only`/`except` here can't be built.
+  - `client_tool_results`: a `ToolResultSource<Cow<'static, str>>`, `All`,
+    `None`, `Only { tools }` or `Except { tools }`, naming client tools.
+    `ToolResultSource::only(["a", "b"])` / `::except([…])` build the
+    filters.
+  - `server_tool_results`: a `ToolResultSource<ServerToolName>`, whose
+    filters name `ServerToolName::WebSearch` or `ServerToolName::WebFetch`.
+
+  A filter's tools are `SourceTool`s, serialized
+  `{"type": "tool_reference", "name": …}`. That is not the tool-search
+  `ToolReference`, which is keyed `tool_name`. The web fetch `error_code`
+  docs list `url_not_in_prior_context`, the error for a URL found only in
+  excluded sources.
+
+### Breaking
+
+- `tool::WebFetch` has a new public field; a struct literal needs it, or
+  `..Default::default()`.
+
 ## [1.0.0-alpha.25] — 2026-10-18
 
 ### Breaking
