@@ -537,6 +537,11 @@ pub struct WebFetch {
     /// cost of large pages and PDFs.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_content_tokens: Option<u32>,
+    /// Which parts of the conversation the model may take URLs from. Unset,
+    /// every source is allowed. A URL found only in excluded sources fails
+    /// with a `url_not_in_prior_context` error.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url_sources: Option<UrlSources>,
     /// Set a cache breakpoint on this tool. See [`Prompt::cache`].
     ///
     /// [`Prompt::cache`]: crate::Prompt::cache
@@ -545,6 +550,144 @@ pub struct WebFetch {
 }
 
 impl WebFetch {}
+
+/// The [`url_sources`](WebFetch::url_sources) of a [`WebFetch`]: one optional
+/// key per place a URL can come from. An unset key allows that source (the
+/// API's default for each is `{"type": "all"}`).
+///
+/// ```
+/// use misanthropic::tool::{ToolResultSource, UrlSources, WebFetch};
+///
+/// // Fetch URLs from anywhere but the `run_code` tool's results.
+/// let fetch = WebFetch {
+///     url_sources: Some(UrlSources {
+///         client_tool_results: Some(ToolResultSource::except(["run_code"])),
+///         ..Default::default()
+///     }),
+///     ..Default::default()
+/// };
+/// # let _ = fetch;
+/// ```
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub struct UrlSources {
+    /// URLs in user messages.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_input: Option<UserInputSource>,
+    /// URLs in the results of client-side tools. A filter names tools in the
+    /// request's tools array; any other name fails the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub client_tool_results: Option<ToolResultSource<Cow<'static, str>>>,
+    /// URLs in the results of earlier web searches and fetches. A filter
+    /// names server tools in the request's tools array.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server_tool_results: Option<ToolResultSource<ServerToolName>>,
+}
+
+impl UrlSources {}
+
+/// Whether a [`WebFetch`] may take URLs from user messages. Unlike a
+/// [`ToolResultSource`], it can't be filtered.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum UserInputSource {
+    /// URLs in any user message (the default).
+    All,
+    /// No URLs from user messages.
+    None,
+}
+
+/// Which tools' results a [`WebFetch`] may take URLs from, in
+/// [`UrlSources`]. `N` names a tool: a client tool's name, or a
+/// [`ServerToolName`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ToolResultSource<N> {
+    /// Every tool's results (the default).
+    All,
+    /// No tool's results.
+    None,
+    /// Only these tools' results. A tool added to the request later is not a
+    /// source.
+    Only {
+        /// The tools whose results are sources.
+        tools: Vec<SourceTool<N>>,
+    },
+    /// Every tool's results but these. A tool added to the request later is
+    /// a source.
+    Except {
+        /// The tools whose results are not sources.
+        tools: Vec<SourceTool<N>>,
+    },
+}
+
+impl<N> ToolResultSource<N> {
+    /// Only the results of `tools`. See [`Self::Only`].
+    pub fn only<T>(tools: impl IntoIterator<Item = T>) -> Self
+    where
+        T: Into<N>,
+    {
+        Self::Only {
+            tools: tools.into_iter().map(SourceTool::new).collect(),
+        }
+    }
+
+    /// Every tool's results but those of `tools`. See [`Self::Except`].
+    pub fn except<T>(tools: impl IntoIterator<Item = T>) -> Self
+    where
+        T: Into<N>,
+    {
+        Self::Except {
+            tools: tools.into_iter().map(SourceTool::new).collect(),
+        }
+    }
+}
+
+/// A tool named in a [`ToolResultSource`] filter. Serializes as
+/// `{"type": "tool_reference", "name": …}`: the same `type` as tool search's
+/// [`ToolReference`], but keyed `name` rather than `tool_name`.
+///
+/// [`ToolReference`]: crate::prompt::message::ToolReference
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename = "tool_reference")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+#[cfg_attr(
+    feature = "json-schema",
+    schemars(
+        rename = "SourceTool_for_{N}",
+        transform = crate::json_schema::Tag("tool_reference")
+    )
+)]
+pub struct SourceTool<N> {
+    /// The tool's name, as in the request's tools array.
+    pub name: N,
+}
+
+impl<N> SourceTool<N> {
+    /// Name a tool.
+    pub fn new(name: impl Into<N>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+/// A server tool whose results can be a [`WebFetch`] URL source, named in
+/// [`UrlSources::server_tool_results`].
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(any(feature = "partial-eq", test), derive(PartialEq))]
+#[cfg_attr(feature = "json-schema", derive(schemars::JsonSchema))]
+pub enum ServerToolName {
+    /// [`ServerMethodDef::WebSearch`] (`"web_search"`).
+    WebSearch,
+    /// [`ServerMethodDef::WebFetch`] (`"web_fetch"`).
+    WebFetch,
+}
 
 /// Configuration for the [code execution] server tool
 /// ([`ServerMethodDef::CodeExecution`]). Construct via
@@ -2517,6 +2660,93 @@ mod tests {
         };
         assert_eq!(config.max_uses, Some(5));
         assert_eq!(config.max_content_tokens, Some(50_000));
+    }
+
+    #[test]
+    fn web_fetch_without_url_sources_omits_it() {
+        let tool = ServerMethodDef::web_fetch(WebFetch::default());
+        assert_eq!(
+            serde_json::to_string(&tool).unwrap(),
+            r#"{"type":"web_fetch_20250910","name":"web_fetch"}"#
+        );
+        // Every key of an empty `UrlSources` is omitted too.
+        assert_eq!(
+            serde_json::to_string(&UrlSources::default()).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn url_sources_docs_examples_round_trip() {
+        // The two examples in Anthropic's web fetch docs, as a tool.
+        let except = r#"{"type":"web_fetch_20250910","name":"web_fetch","url_sources":{"client_tool_results":{"type":"except","tools":[{"type":"tool_reference","name":"run_code"}]}}}"#;
+        let none = r#"{"type":"web_fetch_20250910","name":"web_fetch","url_sources":{"client_tool_results":{"type":"none"}}}"#;
+
+        for (wire, client_tool_results) in [
+            (except, ToolResultSource::except(["run_code"])),
+            (none, ToolResultSource::None),
+        ] {
+            let built = ServerMethodDef::web_fetch(WebFetch {
+                url_sources: Some(UrlSources {
+                    client_tool_results: Some(client_tool_results),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+            assert_eq!(serde_json::to_string(&built).unwrap(), wire);
+            let parsed: ServerMethodDef = crate::utils::roundtrip(wire);
+            assert_eq!(parsed, built);
+        }
+    }
+
+    #[test]
+    fn url_sources_every_shape_round_trips() {
+        let wire = r#"{"user_input":{"type":"none"},"client_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"search_docs"},{"type":"tool_reference","name":"read_inbox"}]},"server_tool_results":{"type":"except","tools":[{"type":"tool_reference","name":"web_search"}]}}"#;
+        let built = UrlSources {
+            user_input: Some(UserInputSource::None),
+            client_tool_results: Some(ToolResultSource::only([
+                "search_docs",
+                "read_inbox",
+            ])),
+            server_tool_results: Some(ToolResultSource::except([
+                ServerToolName::WebSearch,
+            ])),
+        };
+        assert_eq!(serde_json::to_string(&built).unwrap(), wire);
+        assert_eq!(crate::utils::roundtrip::<UrlSources>(wire), built);
+
+        let wire = r#"{"user_input":{"type":"all"},"client_tool_results":{"type":"all"},"server_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"web_fetch"}]}}"#;
+        let built = UrlSources {
+            user_input: Some(UserInputSource::All),
+            client_tool_results: Some(ToolResultSource::All),
+            server_tool_results: Some(ToolResultSource::Only {
+                tools: vec![SourceTool::new(ServerToolName::WebFetch)],
+            }),
+        };
+        assert_eq!(serde_json::to_string(&built).unwrap(), wire);
+        assert_eq!(crate::utils::roundtrip::<UrlSources>(wire), built);
+
+        let wire = r#"{"server_tool_results":{"type":"none"}}"#;
+        assert_eq!(
+            crate::utils::roundtrip::<UrlSources>(wire).server_tool_results,
+            Some(ToolResultSource::None)
+        );
+    }
+
+    #[test]
+    fn url_sources_rejects_what_the_api_does_not_take() {
+        // `user_input` takes no filter.
+        for bad in [
+            r#"{"user_input":{"type":"only","tools":[]}}"#,
+            r#"{"user_input":{"type":"except","tools":[]}}"#,
+            // Server tool filters name only web search and web fetch.
+            r#"{"server_tool_results":{"type":"only","tools":[{"type":"tool_reference","name":"run_code"}]}}"#,
+        ] {
+            assert!(
+                serde_json::from_str::<UrlSources>(bad).is_err(),
+                "accepted {bad}"
+            );
+        }
     }
 
     #[test]

@@ -1694,9 +1694,12 @@ pub enum WebFetchToolResultContent {
     #[serde(rename = "web_fetch_tool_result_error")]
     Error {
         /// The error code, e.g. `"url_not_accessible"`, `"url_not_allowed"`,
-        /// `"url_too_long"`, `"too_many_requests"`,
+        /// `"url_too_long"`, `"url_not_in_prior_context"` (see
+        /// [`WebFetch::url_sources`]), `"too_many_requests"`,
         /// `"unsupported_content_type"`, `"max_uses_exceeded"`,
         /// `"invalid_input"`, or `"unavailable"`.
+        ///
+        /// [`WebFetch::url_sources`]: crate::tool::WebFetch::url_sources
         error_code: Cow<'static, str>,
     },
 }
